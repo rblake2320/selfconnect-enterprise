@@ -9,6 +9,7 @@ description = "Enterprise AI agent infrastructure on Win32 — built on SelfConn
 requires-python = ">=3.10"
 dependencies = [
     "selfconnect @ git+https://github.com/rblake2320/selfconnect.git@v1.0.0-session15",
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]
@@ -17,6 +18,8 @@ dev = ["pytest>=8", "ruff>=0.4"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "strict"
+tmp_path_retention_count = 0
+tmp_path_retention_policy = "none"
 
 [tool.ruff]
 line-length = 120
