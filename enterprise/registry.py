@@ -339,20 +339,28 @@ def read_birth_tag(hwnd: int) -> Optional[BirthTag]:
 
 # ── Mesh discovery ────────────────────────────────────────────────────────────
 
-def discover_mesh(verified_only: bool = False) -> list[BirthTag]:
+def discover_mesh(
+    verified_only: bool = False,
+    max_heartbeat_age: Optional[float] = None,
+) -> list[BirthTag]:
     """Enumerate all SelfConnect agents visible on this machine.
 
     Walks all top-level windows, reads their SCID property, and returns
     BirthTag records for every window that has been stamped.
 
     Destroyed windows are automatically absent — the registry cannot contain
-    dead entries for closed windows. Hung (unresponsive but alive) windows
-    ARE included unless verified_only=True.
+    dead entries for closed windows.
+
+    Three conditions can exclude a result:
+      1. verified_only=True  → HWND + PID + creation time don't match (dead/spoofed)
+      2. max_heartbeat_age   → heartbeat is older than N seconds (hung/frozen)
+      3. Neither set         → returns all stamped windows, caller filters
 
     Args:
-        verified_only: If True, runs verify_tag() on each result and excludes
-                       tags where HWND → PID → creation time don't match.
-                       Slower but filters hung/spoofed agents.
+        verified_only:     If True, runs verify_tag() — filters dead and spoofed agents.
+        max_heartbeat_age: If set (seconds), excludes agents whose heartbeat is older
+                           than this value — filters frozen/hung agents that still have
+                           a live window. Recommended: 60-120 seconds.
     """
     results: list[BirthTag] = []
 
@@ -360,8 +368,11 @@ def discover_mesh(verified_only: bool = False) -> list[BirthTag]:
     def _cb(hwnd: int, _: int) -> bool:
         tag = read_birth_tag(hwnd)
         if tag:
-            if not verified_only or verify_tag(tag):
-                results.append(tag)
+            if verified_only and not verify_tag(tag):
+                return True
+            if max_heartbeat_age is not None and tag.seconds_since_heartbeat() > max_heartbeat_age:
+                return True
+            results.append(tag)
         return True
 
     user32.EnumWindows(_cb, 0)

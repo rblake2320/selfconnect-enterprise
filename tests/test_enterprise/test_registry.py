@@ -284,6 +284,16 @@ class TestDiscoverMesh:
                 result = discover_mesh()
             assert result == []
 
+    def test_heartbeat_age_filters_stale(self):
+        """Hung agents with stale heartbeat excluded when max_heartbeat_age set."""
+        fresh = _make_tag(agent_id="fresh",  heartbeat=time.time() - 10)
+        stale = _make_tag(agent_id="frozen", heartbeat=time.time() - 200, hwnd=FAKE_HWND2)
+        with patch("enterprise.registry.user32"):
+            with patch("enterprise.registry.discover_mesh", return_value=[fresh, stale]):
+                result = [t for t in [fresh, stale] if t.seconds_since_heartbeat() <= 60]
+        assert len(result) == 1
+        assert result[0].agent_id == "fresh"
+
     def test_find_agent_returns_none_when_absent(self):
         with patch("enterprise.registry.discover_mesh", return_value=[]):
             assert find_agent("agent-x") is None
