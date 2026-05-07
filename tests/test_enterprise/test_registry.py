@@ -1,4 +1,4 @@
-"""tests/test_sc_enterprise.py — Unit tests for sc_enterprise (Win32 surface expansion)
+"""tests/test_enterprise/test_registry.py — Unit tests for enterprise.registry
 
 All Win32 calls are mocked — no live desktop required.
 """
@@ -9,10 +9,12 @@ from unittest.mock import patch
 
 from enterprise.registry import (
     PROP_BORN,
+    PROP_CTIME,
     PROP_HB,
     PROP_ID,
     PROP_MODEL,
     PROP_PARENT,
+    PROP_PID,
     PROP_SESSION,
     PROP_TYPE,
     BirthTag,
@@ -26,6 +28,7 @@ from enterprise.registry import (
     signal_ready,
     stamp_birth_tag,
     update_heartbeat,
+    verify_tag,
     wait_for,
 )
 
@@ -42,11 +45,14 @@ def _make_tag(
     born: float = 1000.0,
     parent: int = 0,
     heartbeat: float = 1000.0,
+    pid: int = 1234,
+    os_create_time: float = 999.0,
     session: str = "s16",
 ) -> BirthTag:
     return BirthTag(
         hwnd=hwnd, agent_id=agent_id, agent_type=agent_type,
-        model=model, born=born, parent=parent, heartbeat=heartbeat, session=session,
+        model=model, born=born, parent=parent, heartbeat=heartbeat,
+        pid=pid, os_create_time=os_create_time, session=session,
     )
 
 
@@ -60,7 +66,9 @@ class TestBirthTag:
         assert d["agent_id"] == "agent-test"
         assert "age_seconds" in d
         assert "seconds_since_heartbeat" in d
-        assert "alive" in d
+        assert "heartbeat_alive" in d
+        assert d["pid"] == 1234
+        assert d["os_create_time"] == 999.0
 
     def test_age_seconds(self):
         born = time.time() - 10
@@ -89,22 +97,22 @@ class TestBirthTag:
 
 class TestAgentProps:
     def test_set_prop_calls_setpropw(self):
-        with patch("sc_enterprise.user32") as mock_u32, \
-             patch("sc_enterprise._str_to_atom", return_value=42):
+        with patch("enterprise.registry.user32") as mock_u32, \
+             patch("enterprise.registry._str_to_atom", return_value=42):
             mock_u32.SetPropW.return_value = 1
             result = set_agent_prop(FAKE_HWND, PROP_ID, "agent-x")
             mock_u32.SetPropW.assert_called_once_with(FAKE_HWND, PROP_ID, 42)
             assert result is True
 
     def test_get_prop_returns_empty_when_absent(self):
-        with patch("sc_enterprise.user32") as mock_u32:
+        with patch("enterprise.registry.user32") as mock_u32:
             mock_u32.GetPropW.return_value = 0
             result = get_agent_prop(FAKE_HWND, PROP_ID)
             assert result == ""
 
     def test_get_prop_resolves_atom(self):
-        with patch("sc_enterprise.user32") as mock_u32, \
-             patch("sc_enterprise._atom_to_str", return_value="agent-b"):
+        with patch("enterprise.registry.user32") as mock_u32, \
+             patch("enterprise.registry._atom_to_str", return_value="agent-b"):
             mock_u32.GetPropW.return_value = 99  # non-zero atom
             result = get_agent_prop(FAKE_HWND, PROP_ID)
             assert result == "agent-b"
@@ -114,7 +122,8 @@ class TestAgentProps:
 
 class TestStampBirthTag:
     def test_returns_birth_tag(self):
-        with patch("sc_enterprise.set_agent_prop", return_value=True):
+        with patch("enterprise.registry.set_agent_prop", return_value=True), \
+             patch("enterprise.registry.get_process_creation_time", return_value=12345.0):
             tag = stamp_birth_tag(
                 hwnd=FAKE_HWND,
                 agent_id="agent-b-local",
@@ -136,22 +145,32 @@ class TestStampBirthTag:
         def fake_set(hwnd, key, val):
             calls_made.append(key)
             return True
-        with patch("sc_enterprise.set_agent_prop", side_effect=fake_set):
+        with patch("enterprise.registry.set_agent_prop", side_effect=fake_set), \
+             patch("enterprise.registry.get_process_creation_time", return_value=12345.0):
             stamp_birth_tag(FAKE_HWND, "x", "y", "z")
-        for required in [PROP_ID, PROP_TYPE, PROP_BORN, PROP_PARENT, PROP_MODEL, PROP_HB]:
+        for required in [PROP_ID, PROP_TYPE, PROP_BORN, PROP_PARENT, PROP_MODEL, PROP_HB, PROP_PID, PROP_CTIME]:
             assert required in calls_made, f"{required} not stamped"
+
+    def test_stamp_includes_pid_and_ctime(self):
+        with patch("enterprise.registry.set_agent_prop", return_value=True), \
+             patch("enterprise.registry.get_process_creation_time", return_value=99999.5):
+            tag = stamp_birth_tag(FAKE_HWND, "ag", "claude_code", "model-x")
+        assert tag.pid > 0
+        assert tag.os_create_time == 99999.5
 
     def test_session_prop_only_when_provided(self):
         calls_made = []
         def fake_set(hwnd, key, val):
             calls_made.append(key)
             return True
-        with patch("sc_enterprise.set_agent_prop", side_effect=fake_set):
+        with patch("enterprise.registry.set_agent_prop", side_effect=fake_set), \
+             patch("enterprise.registry.get_process_creation_time", return_value=0.0):
             stamp_birth_tag(FAKE_HWND, "x", "y", "z", session="")
         assert PROP_SESSION not in calls_made
 
         calls_made.clear()
-        with patch("sc_enterprise.set_agent_prop", side_effect=fake_set):
+        with patch("enterprise.registry.set_agent_prop", side_effect=fake_set), \
+             patch("enterprise.registry.get_process_creation_time", return_value=0.0):
             stamp_birth_tag(FAKE_HWND, "x", "y", "z", session="s16")
         assert PROP_SESSION in calls_made
 
@@ -160,12 +179,12 @@ class TestStampBirthTag:
 
 class TestUpdateHeartbeat:
     def test_returns_false_if_not_stamped(self):
-        with patch("sc_enterprise.get_agent_prop", return_value=""):
+        with patch("enterprise.registry.get_agent_prop", return_value=""):
             assert update_heartbeat(FAKE_HWND) is False
 
     def test_updates_hb_if_stamped(self):
-        with patch("sc_enterprise.get_agent_prop", return_value="agent-x"), \
-             patch("sc_enterprise.set_agent_prop", return_value=True) as mock_set:
+        with patch("enterprise.registry.get_agent_prop", return_value="agent-x"), \
+             patch("enterprise.registry.set_agent_prop", return_value=True) as mock_set:
             result = update_heartbeat(FAKE_HWND)
             assert result is True
             mock_set.assert_called_once()
@@ -176,22 +195,24 @@ class TestUpdateHeartbeat:
 
 class TestReadBirthTag:
     def test_returns_none_if_no_scid(self):
-        with patch("sc_enterprise.get_agent_prop", return_value=""):
+        with patch("enterprise.registry.get_agent_prop", return_value=""):
             assert read_birth_tag(FAKE_HWND) is None
 
     def test_returns_birth_tag_when_stamped(self):
         prop_values = {
-            PROP_ID:     "agent-b",
-            PROP_TYPE:   "local_model",
-            PROP_BORN:   "1000.5",
-            PROP_PARENT: "12345",
-            PROP_MODEL:  "qwen3.6:27b",
-            PROP_HB:     "1001.0",
+            PROP_ID:      "agent-b",
+            PROP_TYPE:    "local_model",
+            PROP_BORN:    "1000.5",
+            PROP_PARENT:  "12345",
+            PROP_MODEL:   "qwen3.6:27b",
+            PROP_HB:      "1001.0",
             PROP_SESSION: "s16",
+            PROP_PID:     "9999",
+            PROP_CTIME:   "888.5",
         }
         def fake_get(hwnd, key):
             return prop_values.get(key, "")
-        with patch("sc_enterprise.get_agent_prop", side_effect=fake_get):
+        with patch("enterprise.registry.get_agent_prop", side_effect=fake_get):
             tag = read_birth_tag(FAKE_HWND)
         assert tag is not None
         assert tag.agent_id == "agent-b"
@@ -200,27 +221,76 @@ class TestReadBirthTag:
         assert tag.parent == 12345
         assert tag.model == "qwen3.6:27b"
         assert tag.heartbeat == 1001.0
+        assert tag.pid == 9999
+        assert tag.os_create_time == 888.5
         assert tag.session == "s16"
+
+
+# ── verify_tag ────────────────────────────────────────────────────────────────
+
+class TestVerifyTag:
+    def test_fails_if_window_dead(self):
+        tag = _make_tag(pid=1234, os_create_time=999.0)
+        with patch("enterprise.registry.user32") as mock_u32:
+            mock_u32.IsWindow.return_value = 0
+            assert verify_tag(tag) is False
+
+    def test_fails_if_no_pid(self):
+        tag = _make_tag(pid=0)
+        with patch("enterprise.registry.user32") as mock_u32:
+            mock_u32.IsWindow.return_value = 1
+            assert verify_tag(tag) is False
+
+    def test_fails_if_pid_mismatch(self):
+        tag = _make_tag(pid=1234)
+        with patch("enterprise.registry.user32") as mock_u32, \
+             patch("enterprise.registry.get_hwnd_pid", return_value=9999):
+            mock_u32.IsWindow.return_value = 1
+            assert verify_tag(tag) is False
+
+    def test_fails_if_ctime_mismatch(self):
+        tag = _make_tag(pid=1234, os_create_time=1000.0)
+        with patch("enterprise.registry.user32") as mock_u32, \
+             patch("enterprise.registry.get_hwnd_pid", return_value=1234), \
+             patch("enterprise.registry.get_process_creation_time", return_value=5000.0):
+            mock_u32.IsWindow.return_value = 1
+            assert verify_tag(tag) is False
+
+    def test_passes_when_all_match(self):
+        tag = _make_tag(pid=1234, os_create_time=1000.0)
+        with patch("enterprise.registry.user32") as mock_u32, \
+             patch("enterprise.registry.get_hwnd_pid", return_value=1234), \
+             patch("enterprise.registry.get_process_creation_time", return_value=1000.0):
+            mock_u32.IsWindow.return_value = 1
+            assert verify_tag(tag) is True
+
+    def test_passes_without_ctime_if_zero(self):
+        """Tags stamped without OS creation time (os_create_time=0) skip ctime check."""
+        tag = _make_tag(pid=1234, os_create_time=0.0)
+        with patch("enterprise.registry.user32") as mock_u32, \
+             patch("enterprise.registry.get_hwnd_pid", return_value=1234):
+            mock_u32.IsWindow.return_value = 1
+            assert verify_tag(tag) is True
 
 
 # ── discover_mesh ──────────────────────────────────────────────────────────────
 
 class TestDiscoverMesh:
     def test_empty_when_no_stamped_windows(self):
-        with patch("sc_enterprise.user32") as mock_u32:
+        with patch("enterprise.registry.user32") as mock_u32:
             # EnumWindows calls the callback for 0 windows
             mock_u32.EnumWindows.return_value = 1
-            with patch("sc_enterprise.read_birth_tag", return_value=None):
+            with patch("enterprise.registry.read_birth_tag", return_value=None):
                 result = discover_mesh()
             assert result == []
 
     def test_find_agent_returns_none_when_absent(self):
-        with patch("sc_enterprise.discover_mesh", return_value=[]):
+        with patch("enterprise.registry.discover_mesh", return_value=[]):
             assert find_agent("agent-x") is None
 
     def test_find_agent_returns_match(self):
         tag = _make_tag(agent_id="agent-b-local")
-        with patch("sc_enterprise.discover_mesh", return_value=[tag, _make_tag(agent_id="agent-e")]):
+        with patch("enterprise.registry.discover_mesh", return_value=[tag, _make_tag(agent_id="agent-e")]):
             result = find_agent("agent-b-local")
             assert result is not None
             assert result.agent_id == "agent-b-local"
@@ -230,7 +300,7 @@ class TestDiscoverMesh:
 
 class TestSendData:
     def test_send_data_calls_sendmessagew(self):
-        with patch("sc_enterprise.user32") as mock_u32:
+        with patch("enterprise.registry.user32") as mock_u32:
             mock_u32.SendMessageW.return_value = 1
             result = send_data(FAKE_HWND, {"task": "ping"})
             assert mock_u32.SendMessageW.called
@@ -240,7 +310,7 @@ class TestSendData:
             assert result is True
 
     def test_send_data_returns_false_on_failure(self):
-        with patch("sc_enterprise.user32") as mock_u32:
+        with patch("enterprise.registry.user32") as mock_u32:
             mock_u32.SendMessageW.return_value = 0
             result = send_data(FAKE_HWND, {"task": "ping"})
             assert result is False
@@ -250,7 +320,7 @@ class TestSendData:
 
 class TestNamedEvents:
     def test_signal_ready_creates_and_sets(self):
-        with patch("sc_enterprise.kernel32") as mock_k32:
+        with patch("enterprise.registry.kernel32") as mock_k32:
             mock_k32.CreateEventW.return_value = 99
             mock_k32.SetEvent.return_value = 1
             result = signal_ready("AGENT-B-READY")
@@ -260,20 +330,20 @@ class TestNamedEvents:
             assert result is True
 
     def test_signal_ready_returns_false_on_create_failure(self):
-        with patch("sc_enterprise.kernel32") as mock_k32:
+        with patch("enterprise.registry.kernel32") as mock_k32:
             mock_k32.CreateEventW.return_value = 0
             assert signal_ready("AGENT-B-READY") is False
 
     def test_wait_for_returns_true_when_signaled(self):
         WAIT_OBJECT_0 = 0x00000000
-        with patch("sc_enterprise.kernel32") as mock_k32:
+        with patch("enterprise.registry.kernel32") as mock_k32:
             mock_k32.CreateEventW.return_value = 99
             mock_k32.WaitForSingleObject.return_value = WAIT_OBJECT_0
             assert wait_for("AGENT-B-READY", timeout_ms=100) is True
 
     def test_wait_for_returns_false_on_timeout(self):
         WAIT_TIMEOUT = 0x00000102
-        with patch("sc_enterprise.kernel32") as mock_k32:
+        with patch("enterprise.registry.kernel32") as mock_k32:
             mock_k32.CreateEventW.return_value = 99
             mock_k32.WaitForSingleObject.return_value = WAIT_TIMEOUT
             assert wait_for("AGENT-B-READY", timeout_ms=100) is False
@@ -284,7 +354,7 @@ class TestNamedEvents:
 class TestHeartbeatDaemon:
     def test_daemon_calls_update_heartbeat(self):
         calls = []
-        with patch("sc_enterprise.update_heartbeat", side_effect=lambda h: calls.append(h)):
+        with patch("enterprise.registry.update_heartbeat", side_effect=lambda h: calls.append(h)):
             hb = HeartbeatDaemon(FAKE_HWND, interval=0.05)
             hb.start()
             time.sleep(0.2)

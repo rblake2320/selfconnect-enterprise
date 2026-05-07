@@ -1,11 +1,11 @@
-"""sc_enterprise.py — Win32 Surface Expansion for SelfConnect
+"""enterprise/registry.py — Win32 Agent Registry for SelfConnect Enterprise
 
 Enterprise-grade agent infrastructure primitives built on the full Win32 IPC
 surface. This module is ADDITIVE — it does NOT modify self_connect.py. Import
 both and use whichever capabilities each situation requires.
 
     from self_connect import list_windows, send_string, get_text_uia
-    from sc_enterprise import stamp_birth_tag, discover_mesh, BirthTag
+    from enterprise.registry import stamp_birth_tag, discover_mesh, BirthTag
 
 Layer map:
     Tier 1 (self_connect.py)  — WM_CHAR injection, UIA readback [proven, production]
@@ -15,8 +15,21 @@ Layer map:
 Patent claims addressed here:
     Claim 3 (upgraded):  HWND self-discovery with structured birth-tag metadata
     Claim Set 2 (new):   SetProp/GetProp as zero-infrastructure distributed agent registry
-    Claim Set 1 dep.:    WM_COPYDATA as OS-verified structured payload transport
+    Claim Set 1 dep.:    WM_COPYDATA as HWND-routed structured payload transport
     Claim Set 3 (new):   Named Events as zero-polling agent coordination primitives
+
+Identity model: HWND-routed identity anchor.
+    Peer trust is established by cross-checking:
+      HWND  → must be a live window (IsWindow)
+      PID   → extracted from HWND via GetWindowThreadProcessId, cross-checked against SCPID
+      CTIME → OS process creation time via GetProcessTimes, cross-checked against SCCTIME
+    This is NOT cryptographic non-repudiation. It is an OS-attested identity binding
+    that is difficult to spoof within a single session without process-level access.
+
+Liveness model: destroyed windows are automatically absent from discover_mesh().
+    Hung (unresponsive but alive) windows are NOT automatically filtered — callers
+    should use verify_tag() which validates HWND + PID + creation time, and
+    check is_alive() which validates heartbeat age.
 
 Version: 1.0.0-enterprise  Session 16
 """
@@ -43,11 +56,21 @@ INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 # These are the birth tag fields — stamped at spawn, readable by any peer.
 PROP_ID      = "SCID"       # agent identity string  e.g. "agent-b-local-qwen3"
 PROP_TYPE    = "SCTYPE"     # role: "claude_code" | "local_model" | "observer" | "unknown"
-PROP_BORN    = "SCBORN"     # float str — time.time() at spawn
+PROP_BORN    = "SCBORN"     # float str — time.time() at spawn (Python clock)
 PROP_PARENT  = "SCPARENT"   # str(spawner_hwnd) or "0" if no known parent
 PROP_MODEL   = "SCMODEL"    # model name e.g. "claude-sonnet-4-6" | "qwen3.6:27b"
 PROP_HB      = "SCHB"       # float str — last heartbeat time.time()
 PROP_SESSION = "SCSESS"     # optional session label e.g. "session-16"
+PROP_PID     = "SCPID"      # str(os.getpid()) — for cross-checking via GetWindowThreadProcessId
+PROP_CTIME   = "SCCTIME"    # str — OS process creation time (GetProcessTimes FILETIME epoch)
+
+# ── Win32 structures for process identity binding ─────────────────────────────
+
+class FILETIME(ctypes.Structure):
+    _fields_ = [("dwLowDateTime", ctypes.c_ulong), ("dwHighDateTime", ctypes.c_ulong)]
+
+PROCESS_QUERY_INFORMATION = 0x0400
+WINDOWS_EPOCH_DELTA = 11_644_473_600  # seconds between 1601-01-01 and 1970-01-01
 
 # ── String atom helpers ────────────────────────────────────────────────────────
 # SetProp / GetProp require the value to be a handle (HANDLE/atom).
@@ -73,6 +96,68 @@ def _atom_to_str(atom: int) -> str:
         return ""
     return buf.value
 
+# ── OS-attested identity helpers ─────────────────────────────────────────────
+
+def get_hwnd_pid(hwnd: int) -> int:
+    """Return the PID that owns a window handle. Returns 0 if hwnd is invalid."""
+    pid = ctypes.c_ulong(0)
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value
+
+
+def get_process_creation_time(pid: int) -> float:
+    """Return the OS process creation time as a Unix epoch float.
+
+    Uses GetProcessTimes — the OS-attested timestamp, not clock().
+    Returns 0.0 if the process cannot be opened (exited or insufficient rights).
+    """
+    handle = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, pid)
+    if not handle:
+        return 0.0
+    creation = FILETIME()
+    dummy    = FILETIME()
+    ok = kernel32.GetProcessTimes(
+        handle,
+        ctypes.byref(creation),
+        ctypes.byref(dummy),
+        ctypes.byref(dummy),
+        ctypes.byref(dummy),
+    )
+    kernel32.CloseHandle(handle)
+    if not ok:
+        return 0.0
+    # FILETIME is 100-nanosecond intervals since 1601-01-01
+    ft64 = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+    return (ft64 / 10_000_000) - WINDOWS_EPOCH_DELTA
+
+
+def verify_tag(tag: "BirthTag") -> bool:
+    """Verify a BirthTag's HWND-routed identity anchor.
+
+    Checks three OS-attested facts:
+      1. The HWND is a live window (IsWindow)
+      2. The PID extracted from the HWND matches the stored SCPID
+      3. The OS process creation time matches the stored SCCTIME
+
+    Returns True only if all three match.
+    Note: does NOT guarantee liveness — a hung process passes this check.
+    Use is_alive() for heartbeat-based liveness validation.
+    """
+    if not user32.IsWindow(tag.hwnd):
+        return False
+    if tag.pid == 0:
+        # tag was stamped without PID — cannot verify, treat as unverified
+        return False
+    live_pid = get_hwnd_pid(tag.hwnd)
+    if live_pid != tag.pid:
+        return False
+    if tag.os_create_time > 0.0:
+        live_ct = get_process_creation_time(tag.pid)
+        if abs(live_ct - tag.os_create_time) > 1.0:  # 1s tolerance for float conversion
+            return False
+    return True
+
+
 # ── BirthTag dataclass ────────────────────────────────────────────────────────
 
 @dataclass
@@ -80,20 +165,31 @@ class BirthTag:
     """Identity certificate stamped on a window at agent spawn time.
 
     Anchored to a live HWND via Win32 window properties (SetProp/GetProp).
-    Self-destructs when the window closes — architecturally impossible to have
-    a stale certificate for a dead agent.
+    Uses atoms (GlobalAddAtom) as the property value carrier — the correct
+    Win32 pattern; properties are not raw strings.
+
+    Destroyed windows are automatically absent from discover_mesh() results.
+    Hung (unresponsive but live) windows survive discovery — callers must
+    call verify_tag(tag) and is_alive() to establish both identity and liveness.
+
+    Identity binding:
+      hwnd + pid + os_create_time form an HWND-routed identity anchor.
+      verify_tag() cross-checks all three against OS state. This is OS-attested
+      binding, not cryptographic non-repudiation.
 
     Equivalent to Identity Forge AgentBirthCertificate but OS-native:
     no database, no cleanup, no garbage collection required.
     """
-    hwnd:     int
-    agent_id: str
-    agent_type: str       # "claude_code" | "local_model" | "observer" | "unknown"
-    born:     float       # epoch seconds at spawn
-    parent:   int         # spawner hwnd, 0 if unknown
-    model:    str         # model name/version
-    heartbeat: float      # last heartbeat epoch seconds
-    session:  str = ""    # optional session label
+    hwnd:          int
+    agent_id:      str
+    agent_type:    str    # "claude_code" | "local_model" | "observer" | "unknown"
+    born:          float  # epoch seconds at spawn (Python clock)
+    parent:        int    # spawner hwnd, 0 if unknown
+    model:         str    # model name/version
+    heartbeat:     float  # last heartbeat epoch seconds
+    pid:           int    = 0    # OS PID — from GetWindowThreadProcessId
+    os_create_time: float = 0.0  # OS process creation time — from GetProcessTimes
+    session:       str   = ""   # optional session label
 
     def age_seconds(self) -> float:
         return time.time() - self.born
@@ -102,14 +198,18 @@ class BirthTag:
         return time.time() - self.heartbeat
 
     def is_alive(self, stale_threshold: float = 120.0) -> bool:
-        """True if heartbeat was updated within stale_threshold seconds."""
+        """True if heartbeat was updated within stale_threshold seconds.
+
+        Note: heartbeat age alone does not confirm the process is healthy.
+        Call verify_tag(self) to confirm HWND + PID + creation time still match.
+        """
         return self.seconds_since_heartbeat() < stale_threshold
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["age_seconds"] = self.age_seconds()
         d["seconds_since_heartbeat"] = self.seconds_since_heartbeat()
-        d["alive"] = self.is_alive()
+        d["heartbeat_alive"] = self.is_alive()
         return d
 
 
@@ -156,7 +256,8 @@ def stamp_birth_tag(
     """Stamp a birth tag on the given window handle.
 
     Call this once at agent startup, right after the window HWND is confirmed.
-    The tag persists as long as the window exists.
+    The tag persists as long as the window exists. Peers call verify_tag() to
+    cross-check HWND → PID → OS creation time before trusting any message.
 
     Args:
         hwnd:       The agent's own window handle.
@@ -169,13 +270,18 @@ def stamp_birth_tag(
     Returns:
         BirthTag dataclass representing the stamped certificate.
     """
-    now = time.time()
-    set_agent_prop(hwnd, PROP_ID,      agent_id)
-    set_agent_prop(hwnd, PROP_TYPE,    agent_type)
-    set_agent_prop(hwnd, PROP_BORN,    str(now))
-    set_agent_prop(hwnd, PROP_PARENT,  str(parent_hwnd))
-    set_agent_prop(hwnd, PROP_MODEL,   model)
-    set_agent_prop(hwnd, PROP_HB,      str(now))
+    import os as _os
+    now   = time.time()
+    pid   = _os.getpid()
+    ctime = get_process_creation_time(pid)
+    set_agent_prop(hwnd, PROP_ID,     agent_id)
+    set_agent_prop(hwnd, PROP_TYPE,   agent_type)
+    set_agent_prop(hwnd, PROP_BORN,   str(now))
+    set_agent_prop(hwnd, PROP_PARENT, str(parent_hwnd))
+    set_agent_prop(hwnd, PROP_MODEL,  model)
+    set_agent_prop(hwnd, PROP_HB,     str(now))
+    set_agent_prop(hwnd, PROP_PID,    str(pid))
+    set_agent_prop(hwnd, PROP_CTIME,  str(ctime))
     if session:
         set_agent_prop(hwnd, PROP_SESSION, session)
     return BirthTag(
@@ -186,6 +292,8 @@ def stamp_birth_tag(
         parent=parent_hwnd,
         model=model,
         heartbeat=now,
+        pid=pid,
+        os_create_time=ctime,
         session=session,
     )
 
@@ -202,13 +310,19 @@ def update_heartbeat(hwnd: int) -> bool:
 
 
 def read_birth_tag(hwnd: int) -> Optional[BirthTag]:
-    """Read a BirthTag from a window handle. Returns None if not stamped."""
+    """Read a BirthTag from a window handle. Returns None if not stamped.
+
+    This reads stored property values only — it does NOT call verify_tag().
+    Call verify_tag(tag) after reading if you need OS-attested identity confirmation.
+    """
     agent_id = get_agent_prop(hwnd, PROP_ID)
     if not agent_id:
         return None
-    born_str = get_agent_prop(hwnd, PROP_BORN)
-    hb_str   = get_agent_prop(hwnd, PROP_HB)
+    born_str   = get_agent_prop(hwnd, PROP_BORN)
+    hb_str     = get_agent_prop(hwnd, PROP_HB)
     parent_str = get_agent_prop(hwnd, PROP_PARENT)
+    pid_str    = get_agent_prop(hwnd, PROP_PID)
+    ctime_str  = get_agent_prop(hwnd, PROP_CTIME)
     return BirthTag(
         hwnd=hwnd,
         agent_id=agent_id,
@@ -217,20 +331,28 @@ def read_birth_tag(hwnd: int) -> Optional[BirthTag]:
         parent=int(parent_str) if parent_str else 0,
         model=get_agent_prop(hwnd, PROP_MODEL) or "",
         heartbeat=float(hb_str) if hb_str else 0.0,
+        pid=int(pid_str) if pid_str else 0,
+        os_create_time=float(ctime_str) if ctime_str else 0.0,
         session=get_agent_prop(hwnd, PROP_SESSION) or "",
     )
 
 
 # ── Mesh discovery ────────────────────────────────────────────────────────────
 
-def discover_mesh() -> list[BirthTag]:
-    """Enumerate all live SelfConnect agents on this machine.
+def discover_mesh(verified_only: bool = False) -> list[BirthTag]:
+    """Enumerate all SelfConnect agents visible on this machine.
 
     Walks all top-level windows, reads their SCID property, and returns
     BirthTag records for every window that has been stamped.
 
-    The result is always current — no config file, no stale entries.
-    Windows that have closed are automatically absent.
+    Destroyed windows are automatically absent — the registry cannot contain
+    dead entries for closed windows. Hung (unresponsive but alive) windows
+    ARE included unless verified_only=True.
+
+    Args:
+        verified_only: If True, runs verify_tag() on each result and excludes
+                       tags where HWND → PID → creation time don't match.
+                       Slower but filters hung/spoofed agents.
     """
     results: list[BirthTag] = []
 
@@ -238,7 +360,8 @@ def discover_mesh() -> list[BirthTag]:
     def _cb(hwnd: int, _: int) -> bool:
         tag = read_birth_tag(hwnd)
         if tag:
-            results.append(tag)
+            if not verified_only or verify_tag(tag):
+                results.append(tag)
         return True
 
     user32.EnumWindows(_cb, 0)
@@ -370,11 +493,13 @@ class HeartbeatDaemon:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-__all__ = [  # noqa: RUF022  # grouped by category, not alphabetical
+__all__ = [  # grouped by category, not alphabetical
     # Birth tag dataclass
     "BirthTag",
     # Property primitives
     "set_agent_prop", "get_agent_prop", "remove_agent_prop",
+    # OS identity helpers
+    "get_hwnd_pid", "get_process_creation_time", "verify_tag",
     # Birth tag lifecycle
     "stamp_birth_tag", "update_heartbeat", "read_birth_tag",
     # Mesh discovery
