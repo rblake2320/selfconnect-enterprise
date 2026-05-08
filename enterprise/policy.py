@@ -264,11 +264,13 @@ class PolicyEnforcer:
         policy: PolicyBundle,
         trust_root_pub: Optional[bytes] = None,
         require_signature: bool = True,
+        control_plane=None,
     ) -> None:
         self._policy          = policy
         self._trust_root_pub  = trust_root_pub
         self._require_sig     = require_signature
         self._sig_ok: Optional[bool] = None   # lazily cached
+        self._control_plane   = control_plane  # Optional[ControlPlane]
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -311,6 +313,16 @@ class PolicyEnforcer:
                 allowed=True, reason=reason,
                 requires_approval=requires_approval, approval_mode=mode, **base,
             )
+
+        # 0. Control plane gate (pause / quarantine / revoke)
+        if self._control_plane is not None:
+            state = self._control_plane.get_state(agent_id)
+            if state == "paused":
+                return _deny(f"agent {agent_id!r} is paused by operator", mode="paused")
+            if state == "quarantined":
+                return _deny(f"agent {agent_id!r} is quarantined by operator", mode="quarantined")
+            if state == "revoked":
+                return _deny(f"agent {agent_id!r} has been revoked", mode="revoked")
 
         # 1. Agent registered
         agent = self._policy.get_agent(agent_id)
