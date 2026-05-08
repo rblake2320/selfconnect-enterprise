@@ -404,10 +404,15 @@ SCDATA_RESULT  = 0x5C03   # task result / tool output
 SCDATA_PING    = 0x5C04   # liveness probe
 
 
-def send_data(target_hwnd: int, payload: dict, data_type: int = SCDATA_JSON) -> bool:
+def send_data(
+    target_hwnd: int,
+    payload: dict,
+    data_type: int = SCDATA_JSON,
+    sender_hwnd: int = 0,
+) -> bool:
     """Send a structured JSON payload to another agent via WM_COPYDATA.
 
-    OS-verified: the recipient can read wParam to confirm sender HWND.
+    OS-verified: the recipient reads wParam to confirm sender HWND.
     Atomic: the entire payload is delivered in one message, no chunking.
     Up to 64KB per message. Sender does not need focus.
 
@@ -415,6 +420,8 @@ def send_data(target_hwnd: int, payload: dict, data_type: int = SCDATA_JSON) -> 
         target_hwnd: Destination agent's HWND.
         payload:     Python dict — will be JSON-encoded and sent as bytes.
         data_type:   SCDATA_* constant identifying payload type.
+        sender_hwnd: Caller's own HWND — appears as wParam at the receiver.
+                     Pass 0 only when the sender has no window (message-only agents).
 
     Returns:
         True if SendMessage returned non-zero (message delivered).
@@ -429,7 +436,7 @@ def send_data(target_hwnd: int, payload: dict, data_type: int = SCDATA_JSON) -> 
     result = user32.SendMessageW(
         target_hwnd,
         WM_COPYDATA,
-        0,  # wParam: sender hwnd (OS fills this for us when using SendMessage)
+        sender_hwnd,  # wParam: sender HWND — receiver uses this to reply / verify sender
         ctypes.byref(cds),
     )
     return bool(result)

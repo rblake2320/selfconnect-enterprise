@@ -11,3 +11,4 @@ build/
 observer_logs/
 *.png
 *.jpg
+.pytest_tmp/
