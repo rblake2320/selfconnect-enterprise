@@ -56,6 +56,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from enterprise.classified_mode import ClassifiedModeProfile
 from enterprise.labels import (
     ALLOWED_CAVEATS,
     CLASSIFICATION_LEVELS,
@@ -257,12 +258,14 @@ class PolicyEnforcer:
         trust_root_pub: Optional[bytes] = None,
         require_signature: bool = True,
         control_plane=None,
+        profile: Optional[ClassifiedModeProfile] = None,
     ) -> None:
         self._policy          = policy
         self._trust_root_pub  = trust_root_pub
         self._require_sig     = require_signature
         self._sig_ok: Optional[bool] = None   # lazily cached
         self._control_plane   = control_plane  # Optional[ControlPlane]
+        self._profile         = profile        # Optional[ClassifiedModeProfile]
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -275,6 +278,7 @@ class PolicyEnforcer:
         app: Optional[str] = None,
         classification: str = "UNCLASSIFIED",
         label: Optional[LabelEnvelope] = None,
+        identity_type: str = "",
     ) -> PolicyDecision:
         """Evaluate whether agent_id may perform action.
 
@@ -286,6 +290,9 @@ class PolicyEnforcer:
             classification: Data classification label of the payload/context.
             label:          Optional LabelEnvelope.  When provided, overrides
                             the classification string and also validates caveats.
+            identity_type:  "cng" | "dpapi" | "".  When a ClassifiedModeProfile
+                            with require_cng_identity=True is active, "dpapi"
+                            causes an immediate denial.
 
         Returns:
             PolicyDecision — callers must check .allowed before proceeding.
@@ -322,6 +329,24 @@ class PolicyEnforcer:
                 return _deny(f"agent {agent_id!r} is quarantined by operator", mode="quarantined")
             if state == "revoked":
                 return _deny(f"agent {agent_id!r} has been revoked", mode="revoked")
+
+        # 0.5. Classified mode profile gate
+        if self._profile is not None:
+            # Profile classification ceiling (before agent is looked up)
+            if _rank(effective_classification) > _rank(self._profile.max_classification.name):
+                return _deny(
+                    f"classification {effective_classification!r} exceeds profile "
+                    f"ceiling {self._profile.max_classification.name!r}"
+                )
+            # Require CNG identity: if identity_type is supplied as a kwarg it
+            # must equal "cng".  Callers signal DPAPI identity via identity_type="dpapi".
+            # When identity_type is absent, no enforcement (unknown = pass-through).
+            if self._profile.require_cng_identity:
+                if identity_type == "dpapi":
+                    return _deny(
+                        f"profile {self._profile.profile_id!r} requires CNG identity; "
+                        f"DPAPI identity rejected for agent {agent_id!r}"
+                    )
 
         # 1. Agent registered
         agent = self._policy.get_agent(agent_id)

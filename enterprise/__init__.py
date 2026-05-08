@@ -15,8 +15,11 @@ Modules:
     coordination   — Named Events zero-polling sync (planned)
     hidden_desktop — CreateDesktop invisible execution (planned)
 """
+from enterprise.classified_mode import ClassifiedModeProfile  # noqa: F401
 from enterprise.control import AgentControlRecord, ControlPlane  # noqa: F401
 from enterprise.crypto import CngSigner, cng_delete_key, cng_key_exists, cng_sha384, cng_verify  # noqa: F401
+from enterprise.egress_guard import EgressGuard  # noqa: F401
+from enterprise.export_guard import ExportGuard  # noqa: F401
 from enterprise.identity import AgentIdentity  # noqa: F401
 from enterprise.identity_cng import CngIdentity, CngLedger  # noqa: F401
 from enterprise.labels import (
