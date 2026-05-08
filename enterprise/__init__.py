@@ -19,6 +19,14 @@ from enterprise.control import AgentControlRecord, ControlPlane  # noqa: F401
 from enterprise.crypto import CngSigner, cng_delete_key, cng_key_exists, cng_sha384, cng_verify  # noqa: F401
 from enterprise.identity import AgentIdentity  # noqa: F401
 from enterprise.identity_cng import CngIdentity, CngLedger  # noqa: F401
+from enterprise.labels import (
+    ALLOWED_CAVEATS,  # noqa: F401
+    CLASSIFICATION_LEVELS,  # noqa: F401
+    Classification,  # noqa: F401
+    LabelEnvelope,  # noqa: F401
+)
+from enterprise.labels import le as classification_le  # noqa: F401
+from enterprise.labels import rank as classification_rank  # noqa: F401
 from enterprise.ledger import AgentLedger  # noqa: F401
 from enterprise.observer import (  # noqa: F401
     EvidenceExporter,

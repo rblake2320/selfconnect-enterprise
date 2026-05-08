@@ -56,22 +56,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-# ── Classification levels ──────────────────────────────────────────────────────
-
-_CLASSIFICATION_RANK: dict[str, int] = {
-    "UNCLASSIFIED": 0,
-    "CUI":          1,
-    "SECRET":       2,
-    "TOP_SECRET":   3,
-}
-
-CLASSIFICATION_LEVELS = list(_CLASSIFICATION_RANK.keys())
-
-
-def _rank(level: str) -> int:
-    """Return numeric rank for a classification string.  Unknown → -1."""
-    return _CLASSIFICATION_RANK.get(level.upper(), -1)
-
+from enterprise.labels import (
+    ALLOWED_CAVEATS,
+    CLASSIFICATION_LEVELS,
+    LabelEnvelope,
+)
+from enterprise.labels import (
+    rank as _rank,
+)
 
 # ── AgentPolicy ────────────────────────────────────────────────────────────────
 
@@ -282,6 +274,7 @@ class PolicyEnforcer:
         target_agent: Optional[str] = None,
         app: Optional[str] = None,
         classification: str = "UNCLASSIFIED",
+        label: Optional[LabelEnvelope] = None,
     ) -> PolicyDecision:
         """Evaluate whether agent_id may perform action.
 
@@ -291,17 +284,23 @@ class PolicyEnforcer:
             target_agent:   Recipient agent_id (for routed messages).
             app:            Application name being targeted (e.g. "notepad.exe").
             classification: Data classification label of the payload/context.
+            label:          Optional LabelEnvelope.  When provided, overrides
+                            the classification string and also validates caveats.
 
         Returns:
             PolicyDecision — callers must check .allowed before proceeding.
             Pass .to_ledger_metadata() to the ledger to record the decision.
         """
-        pid  = self._policy.policy_id
+        # If a LabelEnvelope is provided, it is authoritative for classification
+        effective_classification = (
+            label.classification.name if label is not None else classification
+        )
+        pid = self._policy.policy_id
 
         def _deny(reason: str, mode: str = "denied") -> PolicyDecision:
             return PolicyDecision(
                 allowed=False, reason=reason, approval_mode=mode,
-                policy_id=pid, classification=classification,
+                policy_id=pid, classification=effective_classification,
                 agent_id=agent_id, action=action,
             )
 
@@ -310,7 +309,7 @@ class PolicyEnforcer:
             return PolicyDecision(
                 allowed=True, reason=reason,
                 requires_approval=requires_approval, approval_mode=mode,
-                policy_id=pid, classification=classification,
+                policy_id=pid, classification=effective_classification,
                 agent_id=agent_id, action=action,
             )
 
@@ -361,10 +360,17 @@ class PolicyEnforcer:
             return _deny(f"action {action!r} not in allowed_actions for {agent_id!r}")
 
         # 8. Classification ceiling
-        if _rank(classification) > _rank(agent.max_classification):
+        if _rank(effective_classification) > _rank(agent.max_classification):
             return _deny(
-                f"classification {classification!r} exceeds max "
+                f"classification {effective_classification!r} exceeds max "
                 f"{agent.max_classification!r} for {agent_id!r}"
+            )
+
+        # 8b. Caveat validation (only when a LabelEnvelope is provided)
+        if label is not None and not label.validate():
+            bad = sorted(label.caveats - ALLOWED_CAVEATS)
+            return _deny(
+                f"label for agent {agent_id!r} contains invalid caveats: {bad!r}"
             )
 
         # Step 9 — approval gate (flagged, not blocked — caller drives queue)

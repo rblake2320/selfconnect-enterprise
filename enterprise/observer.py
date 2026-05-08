@@ -36,19 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-# ── Classification rank (same scale as policy.py, no import dependency) ────────
-
-_CLASSIFICATION_RANK: dict[str, int] = {
-    "UNCLASSIFIED": 0,
-    "CUI":          1,
-    "SECRET":       2,
-    "TOP_SECRET":   3,
-}
-
-
-def _rank(level: str) -> int:
-    return _CLASSIFICATION_RANK.get(level.upper(), -1)
-
+from enterprise.labels import rank as _rank
 
 # ── ObserverFilter ─────────────────────────────────────────────────────────────
 
@@ -70,6 +58,10 @@ class ObserverFilter:
         allowed_approval_modes: Modes to include.  Default both autonomous and
                                 human-approved (but never denied/quarantined).
         min_seq:                Skip entries with seq <= this value (resume).
+        allowed_caveats:        Whitelist of permitted caveats.  Empty = no
+                                restriction.  When non-empty, entries whose
+                                caveats are not a subset of this list are
+                                excluded from training data.
     """
     allowed_decisions:      list[str] = field(default_factory=lambda: ["allow"])
     allowed_policy_ids:     list[str] = field(default_factory=list)
@@ -78,7 +70,8 @@ class ObserverFilter:
     allowed_approval_modes: list[str] = field(
         default_factory=lambda: ["autonomous", "human_approved"]
     )
-    min_seq: int = 0
+    min_seq:         int       = 0
+    allowed_caveats: list[str] = field(default_factory=list)
 
     def matches(self, entry: dict) -> bool:
         """Return True if the entry satisfies all filter criteria."""
@@ -98,6 +91,12 @@ class ObserverFilter:
         # Classification ceiling
         if _rank(entry.get("classification", "UNCLASSIFIED")) > _rank(self.max_classification):
             return False
+
+        # Caveat filter (only when a restriction is configured)
+        if self.allowed_caveats:
+            entry_caveats = set(entry.get("caveats", []))
+            if not entry_caveats <= set(self.allowed_caveats):
+                return False
 
         # Action whitelist
         if self.allowed_actions and entry.get("action", "") not in self.allowed_actions:

@@ -48,6 +48,7 @@ from enterprise.crypto import (
     cng_verify,
 )
 from enterprise.identity import _default_data_dir
+from enterprise.labels import LabelEnvelope
 
 # Genesis hash for CngLedger chains.
 # SHA-384 digest is 96 hex chars — distinct from AgentLedger's 64-char SHA-256 genesis,
@@ -265,8 +266,14 @@ class CngLedger:
         action: str,
         result: str = "",
         metadata: Optional[dict] = None,
+        label: Optional[LabelEnvelope] = None,
     ) -> dict:
         """Append a signed, SHA-384 chained entry to the ledger.
+
+        Args:
+            label: Optional LabelEnvelope.  When provided, its to_dict() is
+                   merged after metadata so the label is authoritative for
+                   classification and caveat fields.
 
         Returns the full entry dict as written (including sig and algo fields).
         """
@@ -283,6 +290,8 @@ class CngLedger:
         }
         if metadata:
             entry.update(metadata)
+        if label is not None:
+            entry.update(label.to_dict())
 
         entry_bytes     = json.dumps(entry, sort_keys=True, separators=(",", ":")).encode()
         sig_bytes       = self._identity.sign(entry_bytes)

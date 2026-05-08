@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Optional
 
 from enterprise.identity import AgentIdentity, _default_data_dir
+from enterprise.labels import LabelEnvelope
 
 # ── Sentinel for genesis entry ─────────────────────────────────────────────────
 
@@ -97,6 +98,7 @@ class AgentLedger:
         action: str,
         result: str = "",
         metadata: Optional[dict] = None,
+        label: Optional[LabelEnvelope] = None,
     ) -> dict:
         """Append a signed, chained entry to the ledger.
 
@@ -106,6 +108,9 @@ class AgentLedger:
             metadata: Optional extra fields (merged into entry at top level).
                       Keys must not clash with reserved fields:
                       seq, agent_id, action, result, ts, prev_hash, sig.
+            label:    Optional LabelEnvelope.  When provided, its to_dict()
+                      is merged after metadata so the label is authoritative
+                      for classification and caveat fields.
 
         Returns:
             The full entry dict as written (including sig).
@@ -122,6 +127,8 @@ class AgentLedger:
         }
         if metadata:
             entry.update(metadata)
+        if label is not None:
+            entry.update(label.to_dict())
 
         # Sign the entry (canonical JSON, sorted keys, no sig field yet)
         entry_bytes = json.dumps(entry, sort_keys=True, separators=(",", ":")).encode()
