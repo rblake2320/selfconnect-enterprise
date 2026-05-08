@@ -39,7 +39,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 # ── AgentControlRecord ─────────────────────────────────────────────────────────
 
@@ -98,14 +98,14 @@ class ControlPlane:
 
     def __init__(
         self,
-        ledger=None,
-        operator_queue=None,
+        ledger: Any = None,
+        operator_queue: Any = None,
     ) -> None:
         self._lock           = threading.Lock()
         self._states:  dict[str, str] = {}        # agent_id → state
         self._history: list[AgentControlRecord] = []
-        self._ledger         = ledger
-        self._queue          = operator_queue
+        self._ledger: Any    = ledger
+        self._queue: Any     = operator_queue
 
     # ── Registration ─────────────────────────────────────────────────────────
 

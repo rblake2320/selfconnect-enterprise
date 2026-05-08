@@ -20,6 +20,15 @@ from enterprise.crypto import CngSigner, cng_delete_key, cng_key_exists, cng_sha
 from enterprise.identity import AgentIdentity  # noqa: F401
 from enterprise.identity_cng import CngIdentity, CngLedger  # noqa: F401
 from enterprise.ledger import AgentLedger  # noqa: F401
+from enterprise.observer import (  # noqa: F401
+    EvidenceExporter,
+    EvidenceRecord,
+    LedgerObserver,
+    ObserverFilter,
+    RedactionConfig,
+    ShadowHook,
+    TrainingTrigger,
+)
 from enterprise.operator import OperatorQueue, PendingApproval  # noqa: F401
 from enterprise.policy import AgentPolicy, PolicyBundle, PolicyDecision, PolicyEnforcer, make_bundle  # noqa: F401
 from enterprise.policy_sign import sign_policy, verify_policy_signature  # noqa: F401
@@ -34,14 +43,5 @@ from enterprise.registry import (  # noqa: F401
     stamp_birth_tag,
     update_heartbeat,
     wait_for,
-)
-from enterprise.observer import (  # noqa: F401
-    EvidenceExporter,
-    EvidenceRecord,
-    LedgerObserver,
-    ObserverFilter,
-    RedactionConfig,
-    ShadowHook,
-    TrainingTrigger,
 )
 from enterprise.transport import CopyDataListener  # noqa: F401

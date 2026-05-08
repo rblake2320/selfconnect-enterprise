@@ -297,21 +297,21 @@ class PolicyEnforcer:
             Pass .to_ledger_metadata() to the ledger to record the decision.
         """
         pid  = self._policy.policy_id
-        base = dict(
-            policy_id      = pid,
-            classification = classification,
-            agent_id       = agent_id,
-            action         = action,
-        )
 
         def _deny(reason: str, mode: str = "denied") -> PolicyDecision:
-            return PolicyDecision(allowed=False, reason=reason, approval_mode=mode, **base)
+            return PolicyDecision(
+                allowed=False, reason=reason, approval_mode=mode,
+                policy_id=pid, classification=classification,
+                agent_id=agent_id, action=action,
+            )
 
         def _allow(reason: str, *, requires_approval: bool = False) -> PolicyDecision:
             mode = "human_approved" if requires_approval else "autonomous"
             return PolicyDecision(
                 allowed=True, reason=reason,
-                requires_approval=requires_approval, approval_mode=mode, **base,
+                requires_approval=requires_approval, approval_mode=mode,
+                policy_id=pid, classification=classification,
+                agent_id=agent_id, action=action,
             )
 
         # 0. Control plane gate (pause / quarantine / revoke)

@@ -148,7 +148,7 @@ class CopyDataListener:
         self._ready:     threading.Event = threading.Event()
         self._callbacks: dict[int, list[Callable[[int, dict], None]]] = {}
         self._lock:      threading.Lock = threading.Lock()
-        self._wndproc:   Optional[WNDPROCTYPE] = None  # keep reference alive
+        self._wndproc:   Optional[WNDPROCTYPE] = None  # type: ignore[valid-type]  # keep reference alive
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -266,8 +266,8 @@ class CopyDataListener:
     ) -> ctypes.c_int64:
         """Win32 WndProc — handles WM_COPYDATA, delegates rest to DefWindowProc."""
         if msg == WM_COPYDATA:
-            self._handle_copydata(int(wparam), lparam)
-            return 1
+            self._handle_copydata(int(wparam), int(lparam))  # type: ignore[arg-type]
+            return ctypes.c_int64(1)  # type: ignore[return-value]
 
         return DefWindowProcW(hwnd, msg, wparam, lparam)
 

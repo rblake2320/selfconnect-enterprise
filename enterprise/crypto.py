@@ -336,8 +336,8 @@ class CngSigner:
     def close(self) -> None:
         """Release NCrypt handles.  Safe to call multiple times."""
         h_key, h_prov = self._h_key, self._h_prov
-        self._h_key  = None
-        self._h_prov = None
+        self._h_key  = None  # type: ignore[assignment]
+        self._h_prov = None  # type: ignore[assignment]
         if h_key:
             _ncrypt.NCryptFreeObject(h_key)
         if h_prov:

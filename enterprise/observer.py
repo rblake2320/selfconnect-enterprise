@@ -34,7 +34,7 @@ import json
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # ── Classification rank (same scale as policy.py, no import dependency) ────────
 
@@ -231,7 +231,7 @@ class LedgerObserver:
         observer_filter: Optional[ObserverFilter] = None,
         redaction: Optional[RedactionConfig] = None,
         context_window: int = 3,
-        observer_ledger: object = None,
+        observer_ledger: Any = None,
     ) -> None:
         """
         Args:
@@ -347,7 +347,7 @@ class EvidenceExporter:
         self,
         output_path: Path,
         fmt: str = "alpaca",
-        observer_ledger: object = None,
+        observer_ledger: Any = None,
     ) -> None:
         self._output_path     = Path(output_path)
         self._fmt             = fmt
@@ -429,7 +429,7 @@ class TrainingTrigger:
         self,
         threshold: int,
         command: list[str],
-        observer_ledger: object = None,
+        observer_ledger: Any = None,
     ) -> None:
         self._threshold       = threshold
         self._command         = command
@@ -486,7 +486,7 @@ class ShadowHook:
     def observe(
         self,
         record: EvidenceRecord,
-        observer_ledger: object = None,
+        observer_ledger: Any = None,
     ) -> Optional[str]:
         """Called for each qualifying evidence record.
 
