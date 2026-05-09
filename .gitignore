@@ -12,3 +12,4 @@ observer_logs/
 *.png
 *.jpg
 .pytest_tmp/
+.coverage
