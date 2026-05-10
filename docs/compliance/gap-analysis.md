@@ -46,7 +46,7 @@ that a specific action by a specific agent was denied, and the denial reason.
 
 ---
 
-## G-2 — Network-Layer Egress Not Enforced
+## G-2 — Network-Layer Egress Not Enforced ✓ CLOSED (v1.1.0)
 
 **What the gap is:**  
 `EgressGuard` enforces the `allow_cloud_egress=False` restriction at the Python
@@ -68,15 +68,20 @@ no internet routing regardless of process behaviour. `EgressGuard` is a defence-
 in-depth control, not a primary boundary. The gap is in the depth layer, not the
 primary perimeter.
 
-**Remediation plan:**  
-- v1.1.0: Windows Filtering Platform (WFP) policy generation utility — produces
-  a WFP ruleset that blocks all outbound traffic from the agent process except
-  to explicitly allowlisted hosts. Shipped as a deployment helper script, not
-  as Python runtime code.
-- AppContainer isolation wrapper for agent processes (Mode C deployments only)
-- Document WFP configuration in the operator deployment guide
+**Remediation delivered (v1.1.0):**  
+- `tools/wfp_policy.py` — WFP egress policy generator. Produces a PowerShell
+  deployment script (`New-NetFirewallRule`) that installs a deny-by-default
+  outbound block rule for the agent process and per-entry allow rules for
+  explicitly allowlisted hosts/ports. Idempotent install; includes `-Verify`
+  and `-Remove` modes.
+- Four built-in profiles: `mode_a` (permissive/dev), `mode_b` (CUI/SaaS),
+  `mode_c` (classified/loopback-only), `mode_c_strict` (classified/port-specific).
+- Custom profiles via `--allow host:port/proto` flags or JSON config file.
+- 36 tests in `tests/test_wfp_policy.py` — all pass.
+- **Residual:** AppContainer isolation for sub-processes deferred. Physical host
+  isolation remains the primary perimeter for Mode C.
 
-**Milestone:** v1.1.0
+**Milestone:** v1.1.0 — CLOSED
 
 ---
 
@@ -153,17 +158,17 @@ compromise is low on a correctly configured host.
 
 ## Gap Summary
 
-| Gap ID | Description | Controls | Risk | Target |
+| Gap ID | Description | Controls | Risk | Status |
 |--------|-------------|----------|------|--------|
-| G-1 | Deny entries visible in raw ledger | AC-4, SI-12 | Low-Medium | v1.1.0 |
-| G-2 | No OS-layer egress enforcement | SC-7, SC-8, AC-4 | Medium | v1.1.0 |
-| G-3 | Ledger write not protected | AU-9, AU-10 | Low-Medium | v1.1.0 |
-| G-4 | No key rotation protocol | IA-5, AC-2, SC-12 | Low | v1.1.0 |
+| G-1 | Deny entries visible in raw ledger | AC-4, SI-12 | Low-Medium | Open — v1.1.0 |
+| G-2 | No OS-layer egress enforcement | SC-7, SC-8, AC-4 | Medium | **CLOSED v1.1.0** |
+| G-3 | Ledger write not protected | AU-9, AU-10 | Low-Medium | Open — v1.1.0 |
+| G-4 | No key rotation protocol | IA-5, AC-2, SC-12 | Low | Open — v1.1.0 |
 
-All four gaps are scheduled for remediation in v1.1.0. None of the gaps
-represent an exploitable vulnerability in the primary security controls —
-classification ceiling enforcement, deny-by-default policy, signed policy
-verification, and training data isolation are all fully satisfied at v1.0.0.
+G-2 is closed in v1.1.0. G-1, G-3, G-4 remain open for subsequent remediation.
+None of the open gaps represent an exploitable vulnerability in the primary
+security controls — classification ceiling enforcement, deny-by-default policy,
+signed policy verification, and training data isolation are all fully satisfied.
 The gaps are depth-of-defence items and infrastructure hardening requirements
 for production classified deployment.
 

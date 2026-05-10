@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.1.0 — G-2 Remediation: WFP Egress Policy Generator (2026-05-09)
+
+Closes gap G-2 (Network-Layer Egress Not Enforced) from `docs/compliance/gap-analysis.md`.
+
+**Added:** `tools/wfp_policy.py` — Windows Filtering Platform (WFP) egress policy
+generator. Produces a PowerShell deployment script that installs deny-by-default
+outbound firewall rules for the agent process, with per-entry allow rules for
+explicitly allowlisted hosts/ports. Controls addressed: SC-7, SC-8, AC-4.
+
+Four built-in deployment profiles:
+- `mode_a` — permissive (dev/simulation, no restriction)
+- `mode_b` — CUI (cloud APIs allowlisted, local services)
+- `mode_c` — classified (loopback only, any port)
+- `mode_c_strict` — classified strict (loopback only, specific ports)
+
+Custom profiles via CLI flags (`--allow host:port/proto`) or JSON config file.
+Generated scripts are idempotent, include `-Verify` and `-Remove` modes, and
+are validated for injection-safety (no `Invoke-Expression`, `eval`, or shell
+execution patterns in output).
+
+36 new tests in `tests/test_wfp_policy.py`. Full suite: **564/564 passing**.
+
+Gap status: G-2 CLOSED. G-1, G-3, G-4 remain open (scheduled).
+
+---
+
 ## v1.0.0 — Production Release (2026-05-08)  `71170e2` → packaging commit
 
 Packaging and verification. No logic changes from v0.9.0. All guarantees
