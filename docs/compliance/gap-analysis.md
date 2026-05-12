@@ -156,16 +156,54 @@ compromise is low on a correctly configured host.
 
 ---
 
+## G-5 — WFP Generator: PowerShell Script Injection ✓ CLOSED (v1.1.1)
+
+**What the gap is:**  
+`tools/wfp_policy.py` embedded the `--process` value into generated PowerShell
+scripts via string interpolation without sanitization. Two injection classes:
+(1) CWE-93: newline characters (`\n`, `\r\n`) broke out of PS string literals,
+inserting bare commands that execute when an admin runs the .ps1 elevated.
+(2) CWE-93: `$(...)` subexpression expansion and backtick escapes within
+double-quoted PS string literals could execute arbitrary commands at parse time.
+
+**Why it existed:**  
+The initial generator did not anticipate control character injection in an
+operator-supplied `--process` argument.  The double-quoted PS string context
+was carried over from template construction without considering PS parse rules.
+
+**Controls affected:** SI-3 (malicious code protection), SA-11 (developer testing),
+CM-7 (least functionality — script generator must not amplify attack surface)
+
+**Risk posture:** HIGH for environments where the generator is used in any
+pipeline or where `--process` is not strictly operator-controlled.  Generated
+.ps1 scripts are executed with administrator privileges.
+
+**Remediation delivered (v1.1.1):**  
+- `_sanitize_ps_string()` rejects control characters (`\n`, `\r`, `\t`, `\x00`)
+  at `WfpProfile` construction time (fail-closed, no script generated)
+- All interpolated values in PS templates changed from double-quoted to
+  single-quoted literals (`'value'` not `"value"`); single-quoted PS strings
+  are fully literal — no `$`-expansion, no backtick escape sequences
+- Single quotes in values are escaped as `''` (PS standard)
+- 6 dedicated regression tests: newline-LF, newline-CRLF, `$(cmd)` expansion,
+  backtick injection, `"` injection, `'` escaping — all pass
+- Full suite: 632/632 passing
+
+**Milestone:** v1.1.1 — CLOSED
+
+---
+
 ## Gap Summary
 
 | Gap ID | Description | Controls | Risk | Status |
 |--------|-------------|----------|------|--------|
-| G-1 | Deny entries visible in raw ledger | AC-4, SI-12 | Low-Medium | Open — v1.1.0 |
+| G-1 | Deny entries visible in raw ledger | AC-4, SI-12 | Low-Medium | Open — v1.2.0 |
 | G-2 | No OS-layer egress enforcement | SC-7, SC-8, AC-4 | Medium | **CLOSED v1.1.0** |
-| G-3 | Ledger write not protected | AU-9, AU-10 | Low-Medium | Open — v1.1.0 |
-| G-4 | No key rotation protocol | IA-5, AC-2, SC-12 | Low | Open — v1.1.0 |
+| G-3 | Ledger write not protected | AU-9, AU-10 | Low-Medium | Open — v1.2.0 |
+| G-4 | No key rotation protocol | IA-5, AC-2, SC-12 | Low | Open — v1.2.0 |
+| G-5 | WFP generator PS injection (CWE-93) | SI-3, SA-11, CM-7 | High | **CLOSED v1.1.1** |
 
-G-2 is closed in v1.1.0. G-1, G-3, G-4 remain open for subsequent remediation.
+G-2 and G-5 are closed. G-1, G-3, G-4 remain open for subsequent remediation.
 None of the open gaps represent an exploitable vulnerability in the primary
 security controls — classification ceiling enforcement, deny-by-default policy,
 signed policy verification, and training data isolation are all fully satisfied.
