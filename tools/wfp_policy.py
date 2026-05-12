@@ -46,14 +46,26 @@ _CONTROL_CHARS = {"\n", "\r", "\t", "\x00", "\x0b", "\x0c"}
 
 
 def _sanitize_ps_string(value: str, field_name: str = "value") -> str:
-    """Strip control characters that could inject newlines into a PowerShell script.
+    """Sanitize a value for safe embedding in a PowerShell single-quoted string.
 
-    Raises ValueError if the value contains any character from _CONTROL_CHARS.
-    This is a hard reject — callers must provide clean values.
+    Two-step hardening (FINDING-1 + GPT-review follow-up):
 
-    Addresses FINDING-1 (CWE-93): newline injection via process name in
-    generated PowerShell.  Applied at WfpProfile construction time so that
-    generate_powershell() always receives sanitized input.
+    Step 1 — Reject control characters (\n, \r, \t, \x00, etc.).
+             These break script line structure even inside single-quoted strings.
+
+    Step 2 — Escape single quotes ('' is the PowerShell single-quote escape).
+             Values are embedded in PS single-quoted literals (no $-expansion,
+             no backtick-expansion), so the only character that needs escaping
+             is the single quote itself.
+
+    Using single-quoted PS literals instead of double-quoted eliminates the
+    entire $(...)/$(cmd)/`n/variable-expansion injection class structurally
+    rather than via a deny-list.
+
+    Raises:
+        ValueError: if value contains any character from _CONTROL_CHARS.
+    Returns:
+        Value with single quotes doubled, safe for embedding as 'value' in PS.
     """
     for ch in _CONTROL_CHARS:
         if ch in value:
@@ -61,7 +73,8 @@ def _sanitize_ps_string(value: str, field_name: str = "value") -> str:
                 f"Invalid control character {ch!r} in {field_name!r}: "
                 f"control characters are not permitted in PowerShell script fields"
             )
-    return value
+    # Escape single quotes for single-quoted PS context: ' → ''
+    return value.replace("'", "''")
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
@@ -267,8 +280,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$RulePrefix = "{rule_prefix}"
-$ProcessName = "{process}"
+$RulePrefix = '{rule_prefix}'
+$ProcessName = '{process}'
 """
 
 _PS_REMOVE = """
@@ -326,7 +339,7 @@ New-NetFirewallRule `
     -Direction Outbound `
     -Action Block `
     -Protocol Any `
-    -Program "{process_path}" `
+    -Program '{process_path}' `
     -Profile Any `
     -Enabled True `
     | Out-Null
@@ -339,9 +352,9 @@ New-NetFirewallRule `
     -Direction Outbound `
     -Action Allow `
     -Protocol {proto} `
-    -RemoteAddress "{remote}" `
+    -RemoteAddress '{remote}' `
     {port_line}`
-    -Program "{process_path}" `
+    -Program '{process_path}' `
     -Profile Any `
     -Enabled True `
     | Out-Null
