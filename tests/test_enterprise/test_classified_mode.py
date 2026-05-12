@@ -90,6 +90,7 @@ class TestClassifiedModeProfile:
             "profile_id", "signed_by", "max_classification", "allowed_caveats",
             "require_cng_identity", "require_signed_policy", "allow_cloud_egress",
             "allow_export", "require_operator_approval_for", "allowed_apps", "blocked_apps",
+            "allowed_paths", "allowed_script_hashes",
         }
         assert set(d.keys()) == expected
 

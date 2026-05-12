@@ -69,6 +69,12 @@ class ClassifiedModeProfile:
                                       to policy-level allowlist.
         blocked_apps:                 App blocklist overlay.  Merged with
                                       policy-level blocked_apps.
+        allowed_paths:                Path prefixes the Win32 executor may
+                                      read or write.  Empty = deny all file
+                                      operations (fail-closed default).
+        allowed_script_hashes:        SHA-256 hex digests of scripts the
+                                      executor may run.  Empty = deny all
+                                      script execution (fail-closed default).
         profile_id:                   Unique identifier for this profile
                                       version.
         signed_by:                    agent_id of the authority that signed
@@ -83,6 +89,8 @@ class ClassifiedModeProfile:
     require_operator_approval_for: frozenset[str]          = field(default_factory=frozenset)
     allowed_apps:                  frozenset[str]          = field(default_factory=frozenset)
     blocked_apps:                  frozenset[str]          = field(default_factory=frozenset)
+    allowed_paths:                 frozenset[str]          = field(default_factory=frozenset)
+    allowed_script_hashes:         frozenset[str]          = field(default_factory=frozenset)
     profile_id:                    str                     = ""
     signed_by:                     str                     = ""
 
@@ -127,6 +135,8 @@ class ClassifiedModeProfile:
             "require_operator_approval_for": sorted(self.require_operator_approval_for),
             "allowed_apps":                  sorted(self.allowed_apps),
             "blocked_apps":                  sorted(self.blocked_apps),
+            "allowed_paths":                 sorted(self.allowed_paths),
+            "allowed_script_hashes":         sorted(self.allowed_script_hashes),
         }
 
     # ── Serialisation ─────────────────────────────────────────────────────────
@@ -145,6 +155,8 @@ class ClassifiedModeProfile:
             "require_operator_approval_for": sorted(self.require_operator_approval_for),
             "allowed_apps":                  sorted(self.allowed_apps),
             "blocked_apps":                  sorted(self.blocked_apps),
+            "allowed_paths":                 sorted(self.allowed_paths),
+            "allowed_script_hashes":         sorted(self.allowed_script_hashes),
         }
 
     def save(self, path: Path) -> None:
@@ -176,6 +188,8 @@ class ClassifiedModeProfile:
             require_operator_approval_for = frozenset(d.get("require_operator_approval_for", [])),
             allowed_apps                  = frozenset(d.get("allowed_apps", [])),
             blocked_apps                  = frozenset(d.get("blocked_apps", [])),
+            allowed_paths                 = frozenset(d.get("allowed_paths", [])),
+            allowed_script_hashes         = frozenset(d.get("allowed_script_hashes", [])),
         )
 
     @classmethod
