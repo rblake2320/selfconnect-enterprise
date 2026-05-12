@@ -193,25 +193,89 @@ pipeline or where `--process` is not strictly operator-controlled.  Generated
 
 ---
 
+## G-6 — AgentLedger Concurrent Write Safety (Design Boundary)
+
+**What the gap is:**
+`AgentLedger.log()` (and `CngLedger.log()`) have no threading lock. The `_seq`,
+`_prev_hash`, and JSONL file write are not protected against concurrent callers.
+Concurrent writes corrupt the hash chain.
+
+**Why it exists:**
+The ledger is designed as a single-writer component — one agent process, one ledger
+instance, sequential calls. The contract is enforced at the architecture level, not
+the code level.
+
+**Controls affected:** AU-9 (protection of audit information), AU-10 (non-repudiation)
+
+**Risk posture:** Low. Exploitation requires two threads sharing the same AgentLedger
+instance and calling log() simultaneously — a usage pattern that violates the stated
+single-writer contract. `verify()` correctly detects corruption after the fact.
+
+**Remediation plan:**
+- v1.3.0: Optional `threading.Lock` wrapper — `ThreadSafeAgentLedger(AgentLedger)`
+  that wraps log() with a lock, for callers who cannot guarantee single-writer usage.
+  The base class stays lockless (fast path for the common case).
+- Document single-writer contract explicitly in class docstring.
+
+**Status:** Documented (v1.2.0). Discovered by concurrency stress test `test_concurrent_writes_documented_unsafe`.
+
+**Milestone:** v1.3.0
+
+---
+
+## G-7 — May 2026 Zero-Day CVE Audit ✓ CLOSED (v1.2.0)
+
+**What the audit covered:**
+Proactive sweep of the May 2026 zero-day threat landscape against the SelfConnect
+Enterprise codebase and dependency tree.
+
+**Threats assessed:**
+
+| CVE / Threat | Attack Class | Our Exposure | Disposition |
+|---|---|---|---|
+| sonatype-2026-001357 (LiteLLM 1.82.7–1.82.8) | Supply chain — credential stealer + backdoor | litellm not a direct dep; env has 1.82.5 (safe) | CI gate added in `test_supply_chain.py` |
+| CVE-2026-26007 (cryptography < 46.0.5) | ECDH small-subgroup — SECT curves | We use P-384/ed25519 (not exploitable via our paths) | Version floor raised to >=46.0.6; static scan added |
+| CVE-2026-34073 (cryptography < 46.0.6) | X.509 name constraint bypass | We use Windows NCrypt/CNG, not x509.verification (not exploitable) | Version floor >=46.0.6; static x509.verification scan added |
+| CVE-2026-33825 / BlueHammer (Defender TOCTOU) | NTFS junction redirect → SYSTEM | Affects Defender's internal staging paths, not .ps1 output paths | SHA-256 integrity hash added to wfp_policy.py output |
+| CVE-2026-32202 (Windows NTLM coercion) | Net-NTLMv2 hash capture | We use NCrypt ECDSA, no NTLM auth paths | OS patch control (not in-app) |
+| CVE-2026-41089 (Windows Netlogon heap RCE) | Unauthenticated domain controller RCE | No Netlogon usage | OS patch control (not in-app) |
+
+**Controls affected:** SA-10 (developer security testing), SA-15 (development process), SI-2 (flaw remediation), SR-11 (component authenticity)
+
+**Deliverables (v1.2.0):**
+- `tests/test_enterprise/test_supply_chain.py` — 10 tests: LiteLLM backdoor version gate,
+  cryptography version floor, SECT curve static scan, x509.verification static scan,
+  WFP script determinism and tamper detection.
+- `pyproject.toml` — `cryptography>=46.0.6` (was `>=42`)
+- `tools/wfp_policy.py` — SHA-256 hash printed to console at script generation time
+- Installed version upgraded to `cryptography==48.0.0`
+
+**Residual:** OS CVEs (CVE-2026-32202, CVE-2026-41089) are environment/OS patch controls.
+Not tracked as SelfConnect code gaps — tracked as deployment requirements in the operator
+guide.
+
+**Milestone:** v1.2.0 — CLOSED
+
+---
+
 ## Gap Summary
 
 | Gap ID | Description | Controls | Risk | Status |
 |--------|-------------|----------|------|--------|
-| G-1 | Deny entries visible in raw ledger | AC-4, SI-12 | Low-Medium | Open — v1.2.0 |
+| G-1 | Deny entries visible in raw ledger | AC-4, SI-12 | Low-Medium | Open — v1.3.0 |
 | G-2 | No OS-layer egress enforcement | SC-7, SC-8, AC-4 | Medium | **CLOSED v1.1.0** |
-| G-3 | Ledger write not protected | AU-9, AU-10 | Low-Medium | Open — v1.2.0 |
-| G-4 | No key rotation protocol | IA-5, AC-2, SC-12 | Low | Open — v1.2.0 |
+| G-3 | Ledger write not protected | AU-9, AU-10 | Low-Medium | Open — v1.3.0 |
+| G-4 | No key rotation protocol | IA-5, AC-2, SC-12 | Low | Open — v1.3.0 |
 | G-5 | WFP generator PS injection (CWE-93) | SI-3, SA-11, CM-7 | High | **CLOSED v1.1.1** |
+| G-6 | AgentLedger single-writer contract undocumented | AU-9, AU-10 | Low | Open — v1.3.0 |
+| G-7 | May 2026 CVE audit | SA-10, SA-15, SI-2, SR-11 | — | **CLOSED v1.2.0** |
 
-G-2 and G-5 are closed. G-1, G-3, G-4 remain open for subsequent remediation.
+G-2, G-5, and G-7 are closed. G-1, G-3, G-4, G-6 remain open for v1.3.0.
 None of the open gaps represent an exploitable vulnerability in the primary
 security controls — classification ceiling enforcement, deny-by-default policy,
 signed policy verification, and training data isolation are all fully satisfied.
-The gaps are depth-of-defence items and infrastructure hardening requirements
-for production classified deployment.
 
 ---
 
 *This gap analysis was produced as a self-assessment. It has not been reviewed
-by an accredited third-party assessor (3PAO). Gaps are classified as open items
-pending v1.1.0 remediation.*
+by an accredited third-party assessor (3PAO).*

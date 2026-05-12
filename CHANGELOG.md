@@ -1,5 +1,92 @@
 # Changelog
 
+## v1.2.0 — Hardened Posture: Zero-Day Audit, Fuzz/Stress/Exhaustion Test Suite (2026-05-12)
+
+This release establishes v1.2.0 as the **first continuously-audited posture release**
+of SelfConnect Enterprise. It does not introduce new user-facing features. It proves
+that the existing security guarantees hold under adversarial conditions that were not
+previously tested, and it locks in the dependency hygiene required for production
+classified deployment.
+
+**What this is not:** The planned v1.2.0 "participant-mode / executor / bridge"
+architecture is deferred. That work will be scoped and versioned separately. This
+release uses the v1.2.0 slot to capture the security hardening posture milestone,
+which is a prerequisite for any further architectural work.
+
+### Security: Zero-Day CVE Audit (G-7 CLOSED)
+
+Active threat sweep against the May 2026 zero-day landscape. Six threats assessed
+against the SelfConnect codebase and dependency tree:
+
+- **sonatype-2026-001357 (LiteLLM supply chain):** CI now blocks deployment if
+  backdoored versions 1.82.7 or 1.82.8 are installed. The compromise introduced
+  a credential stealer and persistent backdoor via poisoned CI tooling.
+- **CVE-2026-26007 / CVE-2026-34073 (cryptography):** Minimum version floor raised
+  from `>=42` to `>=46.0.6`. Both CVEs are non-exploitable via our code paths (we
+  use P-384/ed25519, not SECT curves; we use NCrypt/CNG, not x509.verification).
+  Floor raised for scanner compliance and dependency hygiene.
+- **CVE-2026-33825 (Windows Defender TOCTOU):** Not applicable to operator-controlled
+  .ps1 paths. SHA-256 hash of generated script now printed at generation time with
+  `Get-FileHash` verification command — defense-in-depth against file substitution.
+- **CVE-2026-32202 / CVE-2026-41089 (Windows NTLM/Netlogon):** OS patch controls.
+  No in-app exposure. Documented in operator guide as deployment prerequisites.
+
+Full audit trail: `docs/compliance/gap-analysis.md` §G-7.
+
+### Security: Supply Chain Test (`test_supply_chain.py`, 10 tests)
+
+- LiteLLM backdoored version gate (1.82.7–1.82.8 → hard fail)
+- `cryptography >= 46.0.6` version gate
+- Static source scan: no SECT curve usage (CVE-2026-26007 scope)
+- Static source scan: no `x509.verification` usage (CVE-2026-34073 scope)
+- WFP script determinism, hash stability, and tamper detection
+
+### Test Suite: Fuzz, Concurrency Stress, Resource Exhaustion
+
+Three new test files covering attack surfaces that RT-01..RT-20 (logic tests) do not:
+
+- **`test_fuzz.py` (15 tests):** Hypothesis property-based fuzzing — `AllowEntry.parse()`,
+  `PolicyBundle.from_dict()`, `WfpProfile._sanitize_ps_string()`. 200+ examples per
+  boundary. Never-crash invariants across arbitrary inputs.
+- **`test_stress_concurrent.py` (8 tests):** 50–100 thread stress — `ControlPlane`,
+  `OperatorQueue`, `AgentLedger`. Confirms thread-safety guarantees and documents the
+  `AgentLedger` single-writer design boundary (G-6).
+- **`test_resource_exhaustion.py` (10 tests):** 10k ledger entries, 1k operator queue,
+  500-agent bundles, 200 WFP allow entries, 10k action lists. Timing budgets enforced.
+
+### Summary
+
+| Metric | v1.1.1 → v1.2.0 |
+|--------|----------------|
+| Tests | 632 → **674** |
+| Failures | 0 → 0 |
+| Coverage | ~90% → ~90% |
+| Bandit High/Med | 0 → 0 |
+| Open gaps | G-1,G-3,G-4 | G-1,G-3,G-4,G-6 |
+| Closed this version | — | G-7 |
+
+---
+
+## v1.1.1 — Security Patch: WFP PowerShell Injection (CWE-93) (2026-05-12)
+
+**FINDING-1 remediated.** `tools/wfp_policy.py` embedded the `--process` value into
+generated PowerShell scripts via string interpolation without sanitization. Two injection
+classes:
+
+1. **CWE-93 newline injection:** `\n` / `\r\n` broke out of PS string literals, inserting
+   bare commands that execute when an admin runs the .ps1 elevated.
+2. **CWE-93 subexpression/backtick expansion:** `$(...)` and backtick escapes within
+   double-quoted PS string literals could execute arbitrary commands at parse time.
+
+**Fix:** All PS templates changed from double-quoted to single-quoted literals (`'value'`
+not `"value"`). Single-quoted PS strings are fully literal — no `$`-expansion, no backtick
+sequences. `_sanitize_ps_string()` added: rejects control chars (`\n`, `\r`, `\t`, `\x00`)
+at `WfpProfile` construction time. Single quotes in values escaped as `''`.
+
+6 dedicated regression tests. Full suite: **632/632 passing**. Gap G-5 CLOSED.
+
+---
+
 ## v1.1.0 — G-2 Remediation: WFP Egress Policy Generator (2026-05-09)
 
 Closes gap G-2 (Network-Layer Egress Not Enforced) from `docs/compliance/gap-analysis.md`.

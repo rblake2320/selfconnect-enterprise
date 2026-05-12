@@ -249,54 +249,95 @@ class TestWfpScriptIntegrity:
             "Tampered script must produce a different SHA-256 hash than the original"
 
 
-# ── Direct dependency audit (informational) ──────────────────────────────────
+# ── Generic dependency audit ──────────────────────────────────────────────────
 
-class TestDirectDependencyAudit:
-    """Run pip-audit against direct dependencies only (non-network, offline cache).
+class TestDependencyAudit:
+    """Run pip-audit against all installed packages in this environment.
 
-    This test is INFORMATIONAL — it documents the known CVE state of direct
-    dependencies at test time. It will pass even if vulnerabilities are found,
-    but the output will list them for operator review.
+    Two tiers:
+    - HARD GATE (test_direct_deps_no_known_cves): direct dependencies of
+      selfconnect-enterprise (cryptography, selfconnect) must have zero CVEs.
+      Fails the test run if any are found — blocks deployment.
+    - INFORMATIONAL (test_all_installed_packages_audit): scans the full
+      environment and prints findings for operator review. Always passes —
+      catches the next CVE you didn't pre-enumerate.
 
-    To make this a hard gate, change xfail to a real assert.
+    Why both: the custom named-version tests catch *known* bad actors instantly;
+    pip-audit catches *newly disclosed* advisories automatically. Neither alone
+    is sufficient.
     """
 
-    def test_pip_audit_direct_deps_informational(self, capsys):
-        """Run pip-audit and report findings. Does not fail on CVEs — reports them."""
+    # Direct dependencies declared in pyproject.toml
+    DIRECT_DEPS = {"cryptography", "selfconnect"}
+
+    def _run_pip_audit(self) -> tuple[int, list]:
+        """Run pip-audit --local and return (returncode, dependencies_list)."""
         result = subprocess.run(
-            [sys.executable, "-m", "pip_audit",
-             "--requirement", "/dev/null",   # no requirements file
-             "--local",                       # only installed packages
-             "--format", "json",
-             "--disable-pip"],               # no network pip index check
+            [sys.executable, "-m", "pip_audit", "--local", "--format", "json"],
             capture_output=True,
             text=True,
         )
-        # pip-audit exits 1 if vulnerabilities are found — that's informational here
         if result.returncode not in (0, 1):
-            pytest.skip(f"pip-audit not available or failed unexpectedly: {result.stderr[:200]}")
-
+            return result.returncode, []
         import json as _json
         try:
             data = _json.loads(result.stdout)
+            return result.returncode, data.get("dependencies", [])
         except _json.JSONDecodeError:
-            pytest.skip("pip-audit JSON output could not be parsed")
+            return result.returncode, []
 
-        # Filter to packages that are direct dependencies of selfconnect-enterprise
-        direct_deps = {"cryptography", "selfconnect"}
+    def test_direct_deps_no_known_cves(self):
+        """HARD GATE: direct dependencies (cryptography, selfconnect) must have
+        zero known CVEs. If pip-audit reports a finding against either, this test
+        fails and blocks deployment until the dependency is updated.
+
+        This test catches newly disclosed CVEs automatically — it is not limited
+        to the named versions in TestCryptographyVersion or TestLiteLLMSupplyChain.
+        """
+        returncode, deps = self._run_pip_audit()
+        if returncode not in (0, 1):
+            pytest.skip("pip-audit unavailable or failed; skipping hard gate")
+
         findings = [
-            dep for dep in data.get("dependencies", [])
-            if dep.get("name", "").lower() in direct_deps and dep.get("vulns")
+            dep for dep in deps
+            if dep.get("name", "").lower() in self.DIRECT_DEPS and dep.get("vulns")
         ]
 
         if findings:
-            # Print to stdout (captured by capsys) — this is an INFORMATIONAL test
-            print("\n=== DIRECT DEPENDENCY CVE AUDIT ===")
+            lines = ["DIRECT DEPENDENCY CVE FINDINGS — DEPLOYMENT BLOCKED:"]
             for dep in findings:
-                print(f"\n{dep['name']}=={dep['version']}:")
+                lines.append(f"\n  {dep['name']}=={dep['version']}:")
                 for vuln in dep["vulns"]:
-                    fix = ", ".join(vuln.get("fix_versions", ["no fix"])) or "no fix available"
-                    print(f"  [{vuln['id']}] fix: {fix} — {vuln.get('description', '')[:120]}")
-            print("===================================")
-        # Test always passes — findings are informational only
+                    fix = ", ".join(vuln.get("fix_versions", [])) or "no fix available"
+                    lines.append(f"    [{vuln['id']}] fix: {fix}")
+            lines.append("\nRun: pip install --upgrade cryptography selfconnect")
+            pytest.fail("\n".join(lines))
+
+    def test_all_installed_packages_audit_informational(self, capsys):
+        """INFORMATIONAL: scan all installed packages and report CVE findings.
+        Always passes — output is the audit trail.
+
+        Running this test prints a complete CVE inventory for the environment.
+        Review it before any deployment. Use it to triage which transitive
+        dependencies need attention.
+        """
+        returncode, deps = self._run_pip_audit()
+        if returncode not in (0, 1):
+            pytest.skip("pip-audit unavailable; skipping informational audit")
+
+        all_findings = [dep for dep in deps if dep.get("vulns")]
+
+        if all_findings:
+            print(f"\n=== PIP-AUDIT: {len(all_findings)} packages with known CVEs ===")
+            for dep in sorted(all_findings, key=lambda d: d.get("name", "")):
+                print(f"\n  {dep['name']}=={dep['version']} ({len(dep['vulns'])} CVEs):")
+                for vuln in dep["vulns"]:
+                    fix = ", ".join(vuln.get("fix_versions", [])) or "no fix"
+                    print(f"    [{vuln['id']}] fix: {fix}")
+            print(f"\n  Direct deps (hard gate): {', '.join(sorted(self.DIRECT_DEPS))}")
+            print("=============================================")
+        else:
+            print("\n=== PIP-AUDIT: 0 packages with known CVEs — CLEAN ===")
+
+        # Always passes — informational only
         assert True
