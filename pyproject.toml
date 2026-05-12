@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "selfconnect-enterprise"
-version = "1.1.0"
+version = "1.2.0"
 description = "Enterprise AI agent infrastructure on Win32 — built on SelfConnect SDK"
 requires-python = ">=3.10"
 dependencies = [
     "selfconnect @ git+https://github.com/rblake2320/selfconnect.git@v1.0.0-session15",
-    "cryptography>=42",
+    "cryptography>=46.0.6",
 ]
 
 [project.optional-dependencies]

@@ -31,6 +31,7 @@ Controls addressed: SC-7, SC-8, AC-4.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import ipaddress
 import json
 import sys
@@ -536,10 +537,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.out:
         args.out.write_text(script, encoding="utf-8")
+        sha256 = hashlib.sha256(script.encode("utf-8")).hexdigest()
         print(f"Written: {args.out}  ({args.out.stat().st_size} bytes)")
         print(f"Profile: {profile.name}")
         print(f"Process: {profile.process}")
         print(f"Allow entries: {len(profile.allow)}")
+        print(f"SHA-256: {sha256}")
+        print()
+        print("VERIFY before running (compare hash above):")
+        print(f'  powershell -Command "(Get-FileHash -Algorithm SHA256 \'{args.out}\').Hash"')
         print()
         print(f"Install (as Admin): powershell -ExecutionPolicy Bypass -File {args.out}")
         print(f"Verify:             powershell -ExecutionPolicy Bypass -File {args.out} -Verify")
