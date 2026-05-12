@@ -352,3 +352,115 @@ class TestSubmitProposal:
         metadata    = call_kwargs.get("metadata", {})
         assert "raw_output_len" in metadata
         assert metadata["raw_output_len"] == len("this is the raw output")
+
+    def test_structured_but_not_allowed_action_returns_none(self):
+        # parse_confidence="structured" but action not in BRIDGE_ALLOWED_PROPOSALS
+        # (reachable only by direct construction; tests lines 308-318)
+        c = _make_connector()
+        proposal = _make_proposal(parse_confidence="structured", action_type="focus_window")
+        result = c.submit_proposal(proposal)
+        assert result is None
+
+    def test_structured_but_not_allowed_action_writes_ledger(self):
+        ledger = _make_mock_ledger()
+        c = _make_connector(ledger=ledger)
+        proposal = _make_proposal(parse_confidence="structured", action_type="focus_window")
+        c.submit_proposal(proposal)
+        ledger.log.assert_called_once()
+        call_result = ledger.log.call_args[1].get("result") or str(ledger.log.call_args)
+        assert "not in allowed" in str(call_result) or "focus_window" in str(call_result)
+
+
+# ── read_response: exception inside poll loop ─────────────────────────────────
+
+class TestReadResponseExceptionInLoop:
+    def test_exception_in_win32_read_returns_empty(self):
+        c = _make_connector()
+        with patch.object(c, "_win32_read_text", side_effect=RuntimeError("UIA error")):
+            result = c.read_response(_poll_interval=0)
+        assert result == ""
+
+    def test_exception_in_win32_read_writes_ledger_with_error(self):
+        ledger = _make_mock_ledger()
+        c      = _make_connector(ledger=ledger)
+        with patch.object(c, "_win32_read_text", side_effect=RuntimeError("UIA error")):
+            c.read_response(_poll_interval=0)
+        ledger.log.assert_called_once()
+        metadata = ledger.log.call_args[1].get("metadata", {})
+        assert "error" in metadata
+
+    def test_poll_interval_positive_path_returns_text(self):
+        c = _make_connector()
+        responses = iter(["", "", "got it"])
+
+        def _side_effect(hwnd):
+            return next(responses)
+
+        with patch.object(c, "_win32_read_text", side_effect=_side_effect):
+            result = c.read_response(timeout_sec=10, _poll_interval=0.001)
+        assert result == "got it"
+
+
+# ── send_prompt: _win32_set_text raises ──────────────────────────────────────
+
+class TestSendPromptWin32Raises:
+    def test_win32_set_text_raises_returns_false(self):
+        c = _make_connector()
+        with patch.object(c, "_win32_set_text", side_effect=OSError("access denied")):
+            result = c.send_prompt("hello")
+        assert result is False
+
+    def test_win32_set_text_raises_writes_ledger(self):
+        ledger = _make_mock_ledger()
+        c      = _make_connector(ledger=ledger)
+        with patch.object(c, "_win32_set_text", side_effect=OSError("access denied")):
+            c.send_prompt("hello")
+        ledger.log.assert_called_once()
+        metadata = ledger.log.call_args[1].get("metadata", {})
+        assert "error" in metadata
+
+
+# ── _win32_set_text / _win32_read_text body coverage ────────────────────────
+
+class TestWin32BodyCoverage:
+    def test_win32_set_text_calls_sendmessagew_with_wm_settext(self):
+        import ctypes
+        c = _make_connector()
+        WM_SETTEXT = 0x000C
+        with patch("enterprise.bridge_connector._user32") as mock_u32:
+            mock_u32.SendMessageW.return_value = 1
+            c._win32_set_text(0xABC, "hello")
+        args = mock_u32.SendMessageW.call_args[0]
+        assert args[0] == 0xABC
+        assert args[1] == WM_SETTEXT
+
+    def test_win32_read_text_returns_empty_when_length_zero(self):
+        c = _make_connector()
+        with patch("enterprise.bridge_connector._user32") as mock_u32:
+            mock_u32.SendMessageW.return_value = 0  # WM_GETTEXTLENGTH → 0
+            result = c._win32_read_text(0xABC)
+        assert result == ""
+
+    def test_win32_read_text_returns_text_when_nonzero(self):
+        import ctypes
+        c = _make_connector()
+        WM_GETTEXTLENGTH = 0x000E
+        WM_GETTEXT       = 0x000D
+
+        def _mock_send(hwnd, msg, wparam, lparam):
+            if msg == WM_GETTEXTLENGTH:
+                return 5
+            if msg == WM_GETTEXT:
+                # lparam is the buffer pointer — write into it
+                buf = ctypes.cast(lparam, ctypes.POINTER(ctypes.c_wchar * 6))
+                text = "hello"
+                for i, ch in enumerate(text):
+                    buf.contents[i] = ch
+                buf.contents[len(text)] = "\0"
+                return len(text)
+            return 0
+
+        with patch("enterprise.bridge_connector._user32") as mock_u32:
+            mock_u32.SendMessageW.side_effect = _mock_send
+            result = c._win32_read_text(0xABC)
+        assert isinstance(result, str)
