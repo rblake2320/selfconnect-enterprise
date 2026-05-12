@@ -40,7 +40,7 @@ import json
 import threading
 import time
 from dataclasses import asdict, dataclass
-from typing import Optional
+from typing import Literal, Optional
 
 # ── Win32 handles ─────────────────────────────────────────────────────────────
 user32   = ctypes.windll.user32
@@ -62,7 +62,10 @@ PROP_MODEL   = "SCMODEL"    # model name e.g. "claude-sonnet-4-6" | "qwen3.6:27b
 PROP_HB      = "SCHB"       # float str — last heartbeat time.time()
 PROP_SESSION = "SCSESS"     # optional session label e.g. "session-16"
 PROP_PID     = "SCPID"      # str(os.getpid()) — for cross-checking via GetWindowThreadProcessId
-PROP_CTIME   = "SCCTIME"    # str — OS process creation time (GetProcessTimes FILETIME epoch)
+PROP_CTIME    = "SCCTIME"    # str — OS process creation time (GetProcessTimes FILETIME epoch)
+PROP_PARTMODE = "SC_PARTMODE"  # "agent" | "executor" | "bridge" | "observer"
+
+_VALID_PARTICIPANT_MODES = frozenset({"agent", "executor", "bridge", "observer"})
 
 # ── Win32 structures for process identity binding ─────────────────────────────
 
@@ -190,6 +193,7 @@ class BirthTag:
     pid:           int    = 0    # OS PID — from GetWindowThreadProcessId
     os_create_time: float = 0.0  # OS process creation time — from GetProcessTimes
     session:       str   = ""   # optional session label
+    participant_mode: Literal["agent", "executor", "bridge", "observer"] = "agent"
 
     def age_seconds(self) -> float:
         return time.time() - self.born
@@ -252,6 +256,7 @@ def stamp_birth_tag(
     model: str,
     parent_hwnd: int = 0,
     session: str = "",
+    participant_mode: Literal["agent", "executor", "bridge", "observer"] = "agent",
 ) -> BirthTag:
     """Stamp a birth tag on the given window handle.
 
@@ -260,12 +265,14 @@ def stamp_birth_tag(
     cross-check HWND → PID → OS creation time before trusting any message.
 
     Args:
-        hwnd:       The agent's own window handle.
-        agent_id:   Unique agent identifier string e.g. "agent-b-local-qwen3".
-        agent_type: Role classification ("claude_code", "local_model", "observer").
-        model:      Model name/version e.g. "qwen3.6:27b".
-        parent_hwnd: HWND of the process that spawned this agent (0 if unknown).
-        session:    Optional session label e.g. "session-16".
+        hwnd:             The agent's own window handle.
+        agent_id:         Unique agent identifier string e.g. "agent-b-local-qwen3".
+        agent_type:       Role classification ("claude_code", "local_model", "observer").
+        model:            Model name/version e.g. "qwen3.6:27b".
+        parent_hwnd:      HWND of the process that spawned this agent (0 if unknown).
+        session:          Optional session label e.g. "session-16".
+        participant_mode: Node role for policy gating — "agent" (default), "executor",
+                          "bridge", or "observer".
 
     Returns:
         BirthTag dataclass representing the stamped certificate.
@@ -274,14 +281,15 @@ def stamp_birth_tag(
     now   = time.time()
     pid   = _os.getpid()
     ctime = get_process_creation_time(pid)
-    set_agent_prop(hwnd, PROP_ID,     agent_id)
-    set_agent_prop(hwnd, PROP_TYPE,   agent_type)
-    set_agent_prop(hwnd, PROP_BORN,   str(now))
-    set_agent_prop(hwnd, PROP_PARENT, str(parent_hwnd))
-    set_agent_prop(hwnd, PROP_MODEL,  model)
-    set_agent_prop(hwnd, PROP_HB,     str(now))
-    set_agent_prop(hwnd, PROP_PID,    str(pid))
-    set_agent_prop(hwnd, PROP_CTIME,  str(ctime))
+    set_agent_prop(hwnd, PROP_ID,       agent_id)
+    set_agent_prop(hwnd, PROP_TYPE,     agent_type)
+    set_agent_prop(hwnd, PROP_BORN,     str(now))
+    set_agent_prop(hwnd, PROP_PARENT,   str(parent_hwnd))
+    set_agent_prop(hwnd, PROP_MODEL,    model)
+    set_agent_prop(hwnd, PROP_HB,       str(now))
+    set_agent_prop(hwnd, PROP_PID,      str(pid))
+    set_agent_prop(hwnd, PROP_CTIME,    str(ctime))
+    set_agent_prop(hwnd, PROP_PARTMODE, participant_mode)
     if session:
         set_agent_prop(hwnd, PROP_SESSION, session)
     return BirthTag(
@@ -295,6 +303,7 @@ def stamp_birth_tag(
         pid=pid,
         os_create_time=ctime,
         session=session,
+        participant_mode=participant_mode,
     )
 
 
@@ -318,11 +327,13 @@ def read_birth_tag(hwnd: int) -> Optional[BirthTag]:
     agent_id = get_agent_prop(hwnd, PROP_ID)
     if not agent_id:
         return None
-    born_str   = get_agent_prop(hwnd, PROP_BORN)
-    hb_str     = get_agent_prop(hwnd, PROP_HB)
-    parent_str = get_agent_prop(hwnd, PROP_PARENT)
-    pid_str    = get_agent_prop(hwnd, PROP_PID)
-    ctime_str  = get_agent_prop(hwnd, PROP_CTIME)
+    born_str      = get_agent_prop(hwnd, PROP_BORN)
+    hb_str        = get_agent_prop(hwnd, PROP_HB)
+    parent_str    = get_agent_prop(hwnd, PROP_PARENT)
+    pid_str       = get_agent_prop(hwnd, PROP_PID)
+    ctime_str     = get_agent_prop(hwnd, PROP_CTIME)
+    raw_mode      = get_agent_prop(hwnd, PROP_PARTMODE) or "agent"
+    participant_mode = raw_mode if raw_mode in _VALID_PARTICIPANT_MODES else "agent"
     return BirthTag(
         hwnd=hwnd,
         agent_id=agent_id,
@@ -334,6 +345,7 @@ def read_birth_tag(hwnd: int) -> Optional[BirthTag]:
         pid=int(pid_str) if pid_str else 0,
         os_create_time=float(ctime_str) if ctime_str else 0.0,
         session=get_agent_prop(hwnd, PROP_SESSION) or "",
+        participant_mode=participant_mode,
     )
 
 

@@ -14,6 +14,7 @@ from enterprise.registry import (
     PROP_ID,
     PROP_MODEL,
     PROP_PARENT,
+    PROP_PARTMODE,
     PROP_PID,
     PROP_SESSION,
     PROP_TYPE,
@@ -48,11 +49,13 @@ def _make_tag(
     pid: int = 1234,
     os_create_time: float = 999.0,
     session: str = "s16",
+    participant_mode: str = "agent",
 ) -> BirthTag:
     return BirthTag(
         hwnd=hwnd, agent_id=agent_id, agent_type=agent_type,
         model=model, born=born, parent=parent, heartbeat=heartbeat,
         pid=pid, os_create_time=os_create_time, session=session,
+        participant_mode=participant_mode,
     )
 
 
@@ -371,3 +374,108 @@ class TestHeartbeatDaemon:
             hb.stop()
         assert len(calls) >= 2
         assert all(c == FAKE_HWND for c in calls)
+
+
+# ── participant_mode ───────────────────────────────────────────────────────────
+
+class TestParticipantMode:
+    def test_default_is_agent(self):
+        tag = _make_tag()
+        assert tag.participant_mode == "agent"
+
+    def test_explicit_executor(self):
+        tag = _make_tag(participant_mode="executor")
+        assert tag.participant_mode == "executor"
+
+    def test_explicit_bridge(self):
+        tag = _make_tag(participant_mode="bridge")
+        assert tag.participant_mode == "bridge"
+
+    def test_explicit_observer(self):
+        tag = _make_tag(participant_mode="observer")
+        assert tag.participant_mode == "observer"
+
+    def test_to_dict_includes_participant_mode(self):
+        tag = _make_tag(participant_mode="executor")
+        d = tag.to_dict()
+        assert "participant_mode" in d
+        assert d["participant_mode"] == "executor"
+
+    def test_stamp_birth_tag_stamps_partmode_prop(self):
+        calls_made: dict[str, str] = {}
+        def fake_set(hwnd, key, val):
+            calls_made[key] = val
+            return True
+        with patch("enterprise.registry.set_agent_prop", side_effect=fake_set), \
+             patch("enterprise.registry.get_process_creation_time", return_value=0.0):
+            stamp_birth_tag(FAKE_HWND, "x", "claude_code", "m", participant_mode="executor")
+        assert PROP_PARTMODE in calls_made
+        assert calls_made[PROP_PARTMODE] == "executor"
+
+    def test_stamp_birth_tag_default_mode_is_agent(self):
+        calls_made: dict[str, str] = {}
+        def fake_set(hwnd, key, val):
+            calls_made[key] = val
+            return True
+        with patch("enterprise.registry.set_agent_prop", side_effect=fake_set), \
+             patch("enterprise.registry.get_process_creation_time", return_value=0.0):
+            tag = stamp_birth_tag(FAKE_HWND, "x", "claude_code", "m")
+        assert calls_made.get(PROP_PARTMODE) == "agent"
+
+    def test_read_birth_tag_roundtrip_executor(self):
+        prop_values = {
+            PROP_ID:       "agent-exec",
+            PROP_TYPE:     "claude_code",
+            PROP_BORN:     "1000.0",
+            PROP_PARENT:   "0",
+            PROP_MODEL:    "m",
+            PROP_HB:       "1000.0",
+            PROP_SESSION:  "",
+            PROP_PID:      "1234",
+            PROP_CTIME:    "999.0",
+            PROP_PARTMODE: "executor",
+        }
+        def fake_get(hwnd, key):
+            return prop_values.get(key, "")
+        with patch("enterprise.registry.get_agent_prop", side_effect=fake_get):
+            tag = read_birth_tag(FAKE_HWND)
+        assert tag is not None
+        assert tag.participant_mode == "executor"
+
+    def test_read_birth_tag_missing_prop_defaults_to_agent(self):
+        prop_values = {
+            PROP_ID:    "agent-old",
+            PROP_TYPE:  "local_model",
+            PROP_BORN:  "1000.0",
+            PROP_PARENT: "0",
+            PROP_MODEL: "m",
+            PROP_HB:    "1000.0",
+            PROP_PID:   "1",
+            PROP_CTIME: "0.0",
+            # PROP_PARTMODE intentionally absent — simulates window stamped by older code
+        }
+        def fake_get(hwnd, key):
+            return prop_values.get(key, "")
+        with patch("enterprise.registry.get_agent_prop", side_effect=fake_get):
+            tag = read_birth_tag(FAKE_HWND)
+        assert tag is not None
+        assert tag.participant_mode == "agent"
+
+    def test_read_birth_tag_invalid_value_coerces_to_agent(self):
+        prop_values = {
+            PROP_ID:       "agent-bad",
+            PROP_TYPE:     "local_model",
+            PROP_BORN:     "1000.0",
+            PROP_PARENT:   "0",
+            PROP_MODEL:    "m",
+            PROP_HB:       "1000.0",
+            PROP_PID:      "1",
+            PROP_CTIME:    "0.0",
+            PROP_PARTMODE: "superadmin",  # not a valid mode
+        }
+        def fake_get(hwnd, key):
+            return prop_values.get(key, "")
+        with patch("enterprise.registry.get_agent_prop", side_effect=fake_get):
+            tag = read_birth_tag(FAKE_HWND)
+        assert tag is not None
+        assert tag.participant_mode == "agent"

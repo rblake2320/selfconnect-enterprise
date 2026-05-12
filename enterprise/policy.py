@@ -66,6 +66,41 @@ from enterprise.labels import (
     rank as _rank,
 )
 
+# ── Participant mode action sets ───────────────────────────────────────────────
+# Executor/bridge/observer have a fixed action whitelist enforced at Step 0.6
+# of the policy pipeline (before per-agent AgentPolicy checks).  The action
+# strings here are the locked-in contract for the Win32 executor module.
+# "agent" is the empty-sentinel — no participant-mode restriction; falls through
+# to the existing 9-step AgentPolicy evaluation.
+PARTICIPANT_MODE_ACTION_SETS: dict[str, frozenset[str]] = {
+    "agent": frozenset(),
+    "executor": frozenset({
+        "read_window_text",
+        "read_named_element",
+        "focus_window",
+        "click_named_element",
+        "set_text",
+        "type_string",
+        "write_file_allowed_path",
+        "read_file_allowed_path",
+        "run_signed_script",
+        "capture_window_screenshot",
+        "list_open_windows",
+    }),
+    "bridge": frozenset({
+        "propose_action",
+        "relay_message",
+        "translate",
+        "read_file_allowed_path",
+    }),
+    "observer": frozenset({
+        "read_file_allowed_path",
+        "registry_read",
+        "ledger_read",
+        "list_open_windows",
+    }),
+}
+
 # ── AgentPolicy ────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -121,7 +156,7 @@ class PolicyDecision:
     requires_approval: bool  = False
     policy_id:        str   = ""
     classification:   str   = "UNCLASSIFIED"
-    approval_mode:    str   = "autonomous"     # "autonomous"|"human_approved"|"denied"|"quarantined"
+    approval_mode:    str   = "autonomous"     # "autonomous"|"human_approved"|"denied"|"quarantined"|"paused"|"revoked"|"participant_mode_denied"
     agent_id:         str   = ""
     action:           str   = ""
 
@@ -279,6 +314,7 @@ class PolicyEnforcer:
         classification: str = "UNCLASSIFIED",
         label: Optional[LabelEnvelope] = None,
         identity_type: str = "",
+        participant_mode: str = "agent",
     ) -> PolicyDecision:
         """Evaluate whether agent_id may perform action.
 
@@ -347,6 +383,15 @@ class PolicyEnforcer:
                         f"profile {self._profile.profile_id!r} requires CNG identity; "
                         f"DPAPI identity rejected for agent {agent_id!r}"
                     )
+
+        # 0.6. Participant mode gate (early hard gate — executor/bridge/observer
+        #      have a fixed action whitelist regardless of AgentPolicy contents)
+        mode_actions = PARTICIPANT_MODE_ACTION_SETS.get(participant_mode, frozenset())
+        if mode_actions and action not in mode_actions:
+            return _deny(
+                f"action {action!r} not permitted for participant_mode={participant_mode!r}",
+                mode="participant_mode_denied",
+            )
 
         # 1. Agent registered
         agent = self._policy.get_agent(agent_id)
@@ -469,4 +514,5 @@ __all__ = [
     "PolicyEnforcer",
     "make_bundle",
     "CLASSIFICATION_LEVELS",
+    "PARTICIPANT_MODE_ACTION_SETS",
 ]

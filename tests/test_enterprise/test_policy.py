@@ -9,11 +9,14 @@ import json
 import time
 
 from enterprise.operator import OperatorQueue
+from enterprise.classified_mode import ClassifiedModeProfile
+from enterprise.labels import Classification
 from enterprise.policy import (
     AgentPolicy,
     PolicyBundle,
     PolicyDecision,
     PolicyEnforcer,
+    PARTICIPANT_MODE_ACTION_SETS,
     make_bundle,
 )
 
@@ -435,3 +438,112 @@ class TestFullWorkflow:
         assert meta["approval_mode"] == "human_approved"
         assert meta["operator_id"] == "CAC:OPERATOR123"
         assert meta["decision"] == "allow"
+
+
+# ── participant_mode gate (Step 0.6) ───────────────────────────────────────────
+
+class TestParticipantModeGate:
+    def test_action_set_constants(self):
+        assert "executor" in PARTICIPANT_MODE_ACTION_SETS
+        assert "bridge" in PARTICIPANT_MODE_ACTION_SETS
+        assert "observer" in PARTICIPANT_MODE_ACTION_SETS
+        assert "agent" in PARTICIPANT_MODE_ACTION_SETS
+        assert PARTICIPANT_MODE_ACTION_SETS["agent"] == frozenset()
+        assert "click_named_element" in PARTICIPANT_MODE_ACTION_SETS["executor"]
+        assert "run_signed_script" in PARTICIPANT_MODE_ACTION_SETS["executor"]
+        assert "propose_action" not in PARTICIPANT_MODE_ACTION_SETS["executor"]
+        assert "propose_action" in PARTICIPANT_MODE_ACTION_SETS["bridge"]
+        assert "click_named_element" not in PARTICIPANT_MODE_ACTION_SETS["bridge"]
+
+    def test_default_participant_mode_is_agent(self):
+        e = _enforcer()
+        d = e.check(AGENT_A, "assign_task")
+        assert d.allowed is True
+        assert d.approval_mode == "autonomous"
+
+    def test_agent_mode_no_restriction(self):
+        e = _enforcer()
+        d = e.check(AGENT_A, "assign_task", participant_mode="agent")
+        assert d.allowed is True
+
+    def test_executor_allows_click_named_element(self):
+        e = _enforcer(_bundle(allowed_actions=["click_named_element"]))
+        d = e.check(AGENT_A, "click_named_element", participant_mode="executor")
+        assert d.allowed is True
+
+    def test_executor_allows_run_signed_script(self):
+        e = _enforcer(_bundle(allowed_actions=["run_signed_script"]))
+        d = e.check(AGENT_A, "run_signed_script", participant_mode="executor")
+        assert d.allowed is True
+
+    def test_executor_denies_propose_action(self):
+        e = _enforcer()
+        d = e.check(AGENT_A, "propose_action", participant_mode="executor")
+        assert d.allowed is False
+        assert d.approval_mode == "participant_mode_denied"
+        assert "executor" in d.reason
+        assert "propose_action" in d.reason
+
+    def test_bridge_allows_propose_action(self):
+        e = _enforcer(_bundle(allowed_actions=["propose_action"]))
+        d = e.check(AGENT_A, "propose_action", participant_mode="bridge")
+        assert d.allowed is True
+
+    def test_bridge_denies_click_named_element(self):
+        e = _enforcer()
+        d = e.check(AGENT_A, "click_named_element", participant_mode="bridge")
+        assert d.allowed is False
+        assert d.approval_mode == "participant_mode_denied"
+        assert "bridge" in d.reason
+
+    def test_observer_allows_read_file_allowed_path(self):
+        e = _enforcer(_bundle(allowed_actions=["read_file_allowed_path"]))
+        d = e.check(AGENT_A, "read_file_allowed_path", participant_mode="observer")
+        assert d.allowed is True
+
+    def test_observer_denies_write_file_allowed_path(self):
+        e = _enforcer()
+        d = e.check(AGENT_A, "write_file_allowed_path", participant_mode="observer")
+        assert d.allowed is False
+        assert d.approval_mode == "participant_mode_denied"
+        assert "observer" in d.reason
+
+    def test_unknown_participant_mode_falls_through(self):
+        # Unknown mode → empty action set → gate is no-op → Step 1+ run normally
+        e = _enforcer()
+        d = e.check(AGENT_A, "assign_task", participant_mode="unknown_future_mode")
+        assert d.allowed is True  # gate passed; AgentPolicy permits assign_task
+
+    def test_gate_runs_before_step1_registered(self):
+        e = _enforcer()
+        # Unregistered agent + executor mode + action not in executor whitelist →
+        # Step 0.6 fires first; reason is participant_mode denial, not "not registered"
+        d = e.check("SC-UNREGISTERED", "propose_action", participant_mode="executor")
+        assert d.allowed is False
+        assert d.approval_mode == "participant_mode_denied"
+        assert "executor" in d.reason
+
+    def test_registered_agent_step1_not_bypassed(self):
+        # Executor mode, action in whitelist → gate passes, but Step 1+ still runs
+        # If agent is NOT registered, Step 1 fires and denies
+        e = _enforcer()
+        d = e.check("SC-UNREGISTERED", "click_named_element", participant_mode="executor")
+        assert d.allowed is False
+        assert d.approval_mode != "participant_mode_denied"  # Step 1 reason, not Step 0.6
+        assert "not registered" in d.reason
+
+    def test_gate_runs_after_classified_mode(self):
+        # Step 0.5 (classification ceiling) should win over Step 0.6 (participant mode)
+        profile = ClassifiedModeProfile(max_classification=Classification.CUI)
+        e = _enforcer(profile=profile)
+        # classification=SECRET exceeds CUI ceiling → Step 0.5 fires
+        # participant_mode=executor + action=propose_action → Step 0.6 would also fire
+        # Step 0.5 must win (runs first)
+        d = e.check(
+            AGENT_A, "propose_action",
+            classification="SECRET",
+            participant_mode="executor",
+        )
+        assert d.allowed is False
+        assert d.approval_mode != "participant_mode_denied"  # Step 0.5 fired first
+        assert "ceiling" in d.reason or "SECRET" in d.reason
