@@ -40,6 +40,30 @@ from datetime import date
 from pathlib import Path
 from typing import NamedTuple
 
+# ── Input sanitization ────────────────────────────────────────────────────────
+
+_CONTROL_CHARS = {"\n", "\r", "\t", "\x00", "\x0b", "\x0c"}
+
+
+def _sanitize_ps_string(value: str, field_name: str = "value") -> str:
+    """Strip control characters that could inject newlines into a PowerShell script.
+
+    Raises ValueError if the value contains any character from _CONTROL_CHARS.
+    This is a hard reject — callers must provide clean values.
+
+    Addresses FINDING-1 (CWE-93): newline injection via process name in
+    generated PowerShell.  Applied at WfpProfile construction time so that
+    generate_powershell() always receives sanitized input.
+    """
+    for ch in _CONTROL_CHARS:
+        if ch in value:
+            raise ValueError(
+                f"Invalid control character {ch!r} in {field_name!r}: "
+                f"control characters are not permitted in PowerShell script fields"
+            )
+    return value
+
+
 # ── Data model ────────────────────────────────────────────────────────────────
 
 class AllowEntry(NamedTuple):
@@ -130,6 +154,11 @@ class WfpProfile:
     allow: list[AllowEntry] = field(default_factory=list)
     description: str = ""
     wfp_native: bool = False                # True = BFE commands; False = advfirewall
+
+    def __post_init__(self) -> None:
+        """Sanitize all string fields on construction (FINDING-1 fix)."""
+        self.name    = _sanitize_ps_string(self.name,    "name")
+        self.process = _sanitize_ps_string(self.process, "process")
 
     @classmethod
     def from_dict(cls, d: dict) -> "WfpProfile":
