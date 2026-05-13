@@ -5,7 +5,7 @@
 Built on the [SelfConnect SDK](https://github.com/rblake2320/selfconnect) — the OS-native bridge
 between AI agents and Windows desktop applications using Win32 IPC primitives.
 
-**v1.0.0 — 528 tests passing — 88% coverage — Signed SBOM committed**
+**v1.2.0 — 714 tests passing — 0 failures — Continuously audited posture release**
 
 ---
 
@@ -174,4 +174,44 @@ pip install -e .
 python -m pytest tests/ -q
 ```
 
-SDK submodule pinned to: `v1.0.0-session15`
+SDK submodule pinned to commit hash: `8cf151dbc5f312ce888e51aa429f62960e1a2ee6`
+
+---
+
+## Security & Testing Overview
+
+The security posture is verified continuously — not claimed. Every guarantee
+listed in [SECURITY.md](SECURITY.md) has a named test that proves it.
+
+### Test pyramid (714 tests, 0 failures)
+
+| Layer | File(s) | What it covers |
+|-------|---------|----------------|
+| Logic / unit | `test_policy.py`, `test_observer.py`, `test_ledger.py`, … | Core invariants, decision paths, edge cases |
+| Red team (adversarial) | `test_redteam.py` (RT-01–RT-20, 59 tests) | 20 attack categories: policy bypass, sig tamper, classification spoof, training poisoning, control plane bypass, hash chain forgery, race conditions |
+| Adversarial AI | `test_adversarial_ai.py` (17 tests) | AI-specific attacks: training data poisoning via LedgerObserver, classification ceiling bypass via signed policy escalation, ControlPlane race conditions, approval token replay, agent self-revival |
+| Dependency integrity | `test_dependency_integrity.py` (21 tests) | Axios-style supply chain (IOC registry, install hooks), module shadow attack, MCP tool metadata injection scanner, git dep commit-hash pinning |
+| Supply chain / zero-day | `test_supply_chain.py` (10 tests) | LiteLLM backdoor gate, `cryptography>=46.0.6` floor, SECT curve static scan, `x509.verification` static scan, WFP script determinism + tamper detection, pip-audit hard gate on direct deps |
+| Property-based fuzz | `test_fuzz.py` (15 tests, Hypothesis) | 200+ examples per boundary across `AllowEntry.parse()`, `PolicyBundle.from_dict()`, `WfpProfile._sanitize_ps_string()` |
+| Concurrency stress | `test_stress_concurrent.py` (8 tests) | 50–100 thread stress on ControlPlane, OperatorQueue, AgentLedger; documents single-writer contract |
+| Resource exhaustion | `test_resource_exhaustion.py` (10 tests) | 10k ledger entries, 1k queue, 500-agent bundles, 200 WFP rules — timing budgets enforced |
+
+### Compliance documentation
+
+| Document | What it contains |
+|----------|-----------------|
+| [`docs/compliance/gap-analysis.md`](docs/compliance/gap-analysis.md) | POA&M: 7 gaps identified, G-2/G-5/G-7/G-8 closed, G-1/G-3/G-4/G-6 scheduled for v1.3.0 |
+| [`SECURITY.md`](SECURITY.md) | Guarantees, explicit non-guarantees, test citations |
+| [`CHANGELOG.md`](CHANGELOG.md) | Per-version security deliverables and gap status |
+
+### Key invariants (each proved by a named test)
+
+| Guarantee | Proved by |
+|-----------|-----------|
+| Training data isolation — denied decisions never reach training pipeline | `test_only_allow_decisions_reach_training_data` |
+| Classification ceiling — entries above max never reach EvidenceExporter | `test_observer_never_passes_above_max_classification` |
+| Hash chain integrity — retroactive modification detected | RT-11, RT-12 |
+| Control plane thread safety — exactly one revoke wins under contention | RT-09 |
+| Classification ceiling bypass via signed policy blocked | `TestClassificationCeilingBypass` |
+| LedgerObserver gap documented — injected entries leak without verify() | `test_observer_reads_without_verify_documents_gap` |
+| allowed_policy_ids allowlist blocks injected training entries | `test_policy_id_allowlist_blocks_injected_training_entry` |
