@@ -61,11 +61,12 @@ class TestAgentPolicy:
         assert ap.agent_id == "SC-X"
         assert ap.role == "unknown"
         assert ap.clearance == "UNCLASSIFIED"
-        assert ap.allowed_targets == []
-        assert ap.allowed_apps == []
-        assert ap.blocked_apps == []
-        assert ap.allowed_actions == []
-        assert ap.requires_operator_approval == []
+        # Fields are frozenset for O(1) lookup — empty frozenset == frozenset()
+        assert len(ap.allowed_targets) == 0
+        assert len(ap.allowed_apps) == 0
+        assert len(ap.blocked_apps) == 0
+        assert len(ap.allowed_actions) == 0
+        assert len(ap.requires_operator_approval) == 0
         assert ap.max_classification == "UNCLASSIFIED"
         assert ap.revoked is False
 

@@ -136,7 +136,14 @@ class TestRT02SignatureBypass:
         assert e.check(AGENT_A, "assign_task").allowed is False
 
     def test_tampered_bundle_after_load_is_permanently_denied(self):
-        """Mutate bundle after PolicyEnforcer is constructed — sig cache must catch it."""
+        """AgentPolicy.allowed_actions is a frozenset — in-memory mutation is impossible.
+
+        Since v0.10.0 AgentPolicy fields are frozenset (immutable). An attacker
+        attempting to inject new actions after bundle load now gets AttributeError,
+        so the mutation vector that this test previously documented is structurally
+        closed. The signed policy bundle + frozenset fields together make post-load
+        tampering both signature-detectable AND structurally prevented.
+        """
         import uuid
 
         from enterprise.identity_cng import CngIdentity
@@ -152,14 +159,13 @@ class TestRT02SignatureBypass:
                                    require_signature=True)
                 # Confirm it works before tamper
                 assert e.check(AGENT_A, "assign_task").allowed is True
-                # Tamper: add a new action after signing
-                b._agents[AGENT_A].allowed_actions.append("INJECT_EVIL")
-                # Enforcer's cached sig_ok should have been True from prior check
-                # but the sig covers the original bytes — if we re-verify it will fail
-                # The cache holds True from before tamper — this exposes a real limit:
-                # in-memory mutation after verified load is not re-detected.
-                # The correct mitigation is immutability of loaded bundles.
-                # We document this as known-acceptable: bundles are loaded once at startup.
+                # Tamper: attempt to inject a new action — must fail because
+                # allowed_actions is a frozenset (no .append, no .add)
+                with pytest.raises(AttributeError):
+                    b._agents[AGENT_A].allowed_actions.append("INJECT_EVIL")  # type: ignore[attr-defined]
+                # Original policy unchanged — enforcer still holds correct state
+                assert e.check(AGENT_A, "assign_task").allowed is True
+                assert e.check(AGENT_A, "INJECT_EVIL").allowed is False
         finally:
             cng_delete_key(f"SelfConnect.{name}")
 

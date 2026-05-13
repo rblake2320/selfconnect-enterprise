@@ -83,11 +83,11 @@ class AgentPolicy:
     agent_id:                   str
     role:                       str
     clearance:                  str
-    allowed_targets:            list[str]
-    allowed_apps:               list[str]
-    blocked_apps:               list[str]
-    allowed_actions:            list[str]
-    requires_operator_approval: list[str]
+    allowed_targets:            frozenset
+    allowed_apps:               frozenset
+    blocked_apps:               frozenset
+    allowed_actions:            frozenset
+    requires_operator_approval: frozenset
     max_classification:         str
     revoked:                    bool = False
 
@@ -97,11 +97,11 @@ class AgentPolicy:
             agent_id                   = agent_id,
             role                       = d.get("role", "unknown"),
             clearance                  = d.get("clearance", "UNCLASSIFIED"),
-            allowed_targets            = list(d.get("allowed_targets", [])),
-            allowed_apps               = list(d.get("allowed_apps", [])),
-            blocked_apps               = list(d.get("blocked_apps", [])),
-            allowed_actions            = list(d.get("allowed_actions", [])),
-            requires_operator_approval = list(d.get("requires_operator_approval", [])),
+            allowed_targets            = frozenset(d.get("allowed_targets", [])),
+            allowed_apps               = frozenset(d.get("allowed_apps", [])),
+            blocked_apps               = frozenset(d.get("blocked_apps", [])),
+            allowed_actions            = frozenset(d.get("allowed_actions", [])),
+            requires_operator_approval = frozenset(d.get("requires_operator_approval", [])),
             max_classification         = d.get("max_classification", "UNCLASSIFIED"),
             revoked                    = bool(d.get("revoked", False)),
         )

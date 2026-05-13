@@ -63,15 +63,23 @@ class ObserverFilter:
                                 caveats are not a subset of this list are
                                 excluded from training data.
     """
-    allowed_decisions:      list[str] = field(default_factory=lambda: ["allow"])
-    allowed_policy_ids:     list[str] = field(default_factory=list)
+    allowed_decisions:      frozenset = field(default_factory=lambda: frozenset(["allow"]))
+    allowed_policy_ids:     frozenset = field(default_factory=frozenset)
     max_classification:     str       = "SECRET"
-    allowed_actions:        list[str] = field(default_factory=list)
-    allowed_approval_modes: list[str] = field(
-        default_factory=lambda: ["autonomous", "human_approved"]
+    allowed_actions:        frozenset = field(default_factory=frozenset)
+    allowed_approval_modes: frozenset = field(
+        default_factory=lambda: frozenset(["autonomous", "human_approved"])
     )
     min_seq:         int       = 0
-    allowed_caveats: list[str] = field(default_factory=list)
+    allowed_caveats: frozenset = field(default_factory=frozenset)
+
+    def __post_init__(self) -> None:
+        """Coerce any list/set/tuple fields to frozenset for O(1) lookups."""
+        self.allowed_decisions      = frozenset(self.allowed_decisions)
+        self.allowed_policy_ids     = frozenset(self.allowed_policy_ids)
+        self.allowed_actions        = frozenset(self.allowed_actions)
+        self.allowed_approval_modes = frozenset(self.allowed_approval_modes)
+        self.allowed_caveats        = frozenset(self.allowed_caveats)
 
     def matches(self, entry: dict) -> bool:
         """Return True if the entry satisfies all filter criteria."""
@@ -94,8 +102,8 @@ class ObserverFilter:
 
         # Caveat filter (only when a restriction is configured)
         if self.allowed_caveats:
-            entry_caveats = set(entry.get("caveats", []))
-            if not entry_caveats <= set(self.allowed_caveats):
+            entry_caveats = frozenset(entry.get("caveats", []))
+            if not entry_caveats <= self.allowed_caveats:
                 return False
 
         # Action whitelist
