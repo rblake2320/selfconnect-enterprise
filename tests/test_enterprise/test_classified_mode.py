@@ -335,6 +335,7 @@ class TestPolicyEnforcerWithProfile:
         profile = ClassifiedModeProfile(
             max_classification=Classification.SECRET,
             require_cng_identity=True,
+            require_signed_policy=False,  # unsigned test bundle — isolating CNG check
         )
         enforcer = _make_enforcer("SECRET", profile=profile)
         d = enforcer.check(
@@ -364,7 +365,13 @@ class TestClassifiedModeEndToEnd:
         - Export of CUI evidence denied (profile.allow_export=False)
         - DPAPI identity rejected
         """
-        profile = ClassifiedModeProfile.secret_baseline()
+        # Use secret_baseline but disable signature enforcement for this test
+        # (unsigned test bundle). Signature enforcement is separately tested in
+        # TestPolicyEnforcerWithProfile::test_profile_require_signed_policy_enforced.
+        base = ClassifiedModeProfile.secret_baseline()
+        profile = ClassifiedModeProfile.from_dict(
+            {**base.to_dict(), "require_signed_policy": False}
+        )
         ledger = _mock_ledger()
         enforcer = _make_enforcer("SECRET", profile=profile)
         egress = EgressGuard(profile, ledger=ledger)
@@ -398,7 +405,10 @@ class TestClassifiedModeEndToEnd:
         """
         CUI baseline: egress allowed, export allowed, CNG not required.
         """
-        profile = ClassifiedModeProfile.cui_baseline()
+        base = ClassifiedModeProfile.cui_baseline()
+        profile = ClassifiedModeProfile.from_dict(
+            {**base.to_dict(), "require_signed_policy": False}
+        )
         ledger = _mock_ledger()
         enforcer = _make_enforcer("SECRET", profile=profile)
         egress = EgressGuard(profile, ledger=ledger)

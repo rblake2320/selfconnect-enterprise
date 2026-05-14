@@ -403,6 +403,11 @@ SCDATA_TASK    = 0x5C02   # structured task assignment
 SCDATA_RESULT  = 0x5C03   # task result / tool output
 SCDATA_PING    = 0x5C04   # liveness probe
 
+# WM_COPYDATA hard ceiling — enforced on send AND receive.
+# WM_COPYDATA is delivered synchronously; oversized messages create OOM and
+# denial-of-service exposure on the listener thread.
+MAX_COPYDATA_BYTES: int = 64 * 1024   # 64 KB
+
 
 def send_data(
     target_hwnd: int,
@@ -427,6 +432,12 @@ def send_data(
         True if SendMessage returned non-zero (message delivered).
     """
     raw = json.dumps(payload).encode("utf-8")
+    if len(raw) > MAX_COPYDATA_BYTES:
+        raise ValueError(
+            f"WM_COPYDATA payload is {len(raw)} bytes; "
+            f"exceeds the {MAX_COPYDATA_BYTES}-byte ceiling. "
+            "Split the payload or reduce field size."
+        )
     buf = ctypes.create_string_buffer(raw)
     cds = COPYDATASTRUCT(
         dwData=data_type,

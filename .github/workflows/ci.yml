@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    name: Lint + Test
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[full]
+          pip install ruff pytest
+
+      - name: Lint (ruff — enterprise + tests + tools)
+        run: python -m ruff check enterprise tests tools
+
+      - name: Unit tests
+        run: python -m pytest -q --tb=short
+
+      - name: Verify test count
+        shell: python
+        run: |
+          import subprocess, sys
+          result = subprocess.run(
+              ["python", "-m", "pytest", "-q", "--tb=no"],
+              capture_output=True, text=True
+          )
+          # Extract passed count from summary line
+          for line in result.stdout.splitlines():
+              if "passed" in line:
+                  parts = line.split()
+                  passed = int(parts[0])
+                  if passed < 714:
+                      print(f"FAIL: only {passed} tests passed (expected >= 714)")
+                      sys.exit(1)
+                  print(f"OK: {passed} tests passed")
+                  sys.exit(0)
+          print("WARN: could not parse test count")

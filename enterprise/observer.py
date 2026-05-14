@@ -239,22 +239,33 @@ class LedgerObserver:
         redaction: Optional[RedactionConfig] = None,
         context_window: int = 3,
         observer_ledger: Any = None,
+        verifier: Any = None,
+        unsafe_unverified: bool = False,
     ) -> None:
         """
         Args:
-            ledger_path:      Path to the source JSONL ledger file.
-            observer_filter:  Filter criteria.  Defaults to allow-only.
-            redaction:        Redaction rules.  Defaults to no redaction.
-            context_window:   Number of entries before each qualifying entry
-                              to include as context.
-            observer_ledger:  Optional AgentLedger / CngLedger — if provided,
-                              the observer logs its own extraction events there.
+            ledger_path:       Path to the source JSONL ledger file.
+            observer_filter:   Filter criteria.  Defaults to allow-only.
+            redaction:         Redaction rules.  Defaults to no redaction.
+            context_window:    Number of entries before each qualifying entry
+                               to include as context.
+            observer_ledger:   Optional AgentLedger / CngLedger — if provided,
+                               the observer logs its own extraction events there.
+            verifier:          Optional ledger object with a .verify() method.
+                               When provided, extract() calls verify() and raises
+                               if the ledger fails integrity checks.  This is the
+                               production-safe path.
+            unsafe_unverified: Set True only in controlled offline analysis.
+                               Bypasses signature/hash-chain verification.
+                               MUST NOT be used in classified deployments.
         """
-        self._path            = Path(ledger_path)
-        self._filter          = observer_filter or ObserverFilter()
-        self._redaction       = redaction or RedactionConfig()
-        self._context_window  = context_window
-        self._observer_ledger = observer_ledger
+        self._path              = Path(ledger_path)
+        self._filter            = observer_filter or ObserverFilter()
+        self._redaction         = redaction or RedactionConfig()
+        self._context_window    = context_window
+        self._observer_ledger   = observer_ledger
+        self._verifier          = verifier
+        self._unsafe_unverified = unsafe_unverified
 
     def extract(self, since_seq: int = 0) -> list[EvidenceRecord]:
         """Read all entries, filter, and return qualifying EvidenceRecords.
@@ -267,6 +278,22 @@ class LedgerObserver:
         """
         if not self._path.exists():
             return []
+
+        # Verified path (production default): call verifier.verify() before
+        # touching any entries.  A tampered or injected ledger is caught here.
+        if not self._unsafe_unverified:
+            if self._verifier is None:
+                raise ValueError(
+                    "LedgerObserver.extract() requires a verifier in production mode. "
+                    "Pass verifier=<ledger> to verify hash-chain integrity before "
+                    "extracting, or set unsafe_unverified=True for offline raw access."
+                )
+            ok, count, msg = self._verifier.verify()
+            if not ok:
+                raise RuntimeError(
+                    f"Ledger integrity check failed before extract ({count} entries "
+                    f"verified): {msg}"
+                )
 
         all_entries = self._load_entries()
         effective_min_seq = max(self._filter.min_seq, since_seq)
@@ -367,17 +394,27 @@ class EvidenceExporter:
         redaction: Optional[RedactionConfig] = None,
         context_window: int = 3,
         since_seq: int = 0,
+        verifier: Any = None,
+        unsafe_unverified: bool = False,
     ) -> int:
         """Extract from ledger_path and append to the output file.
+
+        Args:
+            verifier:          Ledger object with .verify() for hash-chain
+                               integrity checking before export.  Recommended
+                               for all production calls.
+            unsafe_unverified: Set True only for offline/research use.
 
         Returns:
             Number of records written.
         """
         obs = LedgerObserver(
             ledger_path,
-            observer_filter = observer_filter,
-            redaction       = redaction,
-            context_window  = context_window,
+            observer_filter    = observer_filter,
+            redaction          = redaction,
+            context_window     = context_window,
+            verifier           = verifier,
+            unsafe_unverified  = unsafe_unverified,
         )
         records = obs.extract(since_seq=since_seq)
         if not records:

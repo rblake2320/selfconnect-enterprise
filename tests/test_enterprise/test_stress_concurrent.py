@@ -17,8 +17,6 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from enterprise.control import ControlPlane
 from enterprise.identity import AgentIdentity
 from enterprise.ledger import AgentLedger
@@ -144,7 +142,7 @@ class TestControlPlaneConcurrency:
             t.start()
 
         # Fire kill_all while registrations are in flight
-        records = cp.kill_all("CAC:KILL-OP", reason="kill-during-register")
+        cp.kill_all("CAC:KILL-OP", reason="kill-during-register")
 
         for t in threads:
             t.join(timeout=10)
@@ -315,7 +313,7 @@ class TestAgentLedgerConcurrency:
         def writer(thread_id: int):
             for i in range(50):
                 try:
-                    ledger.log(f"t{thread_id}-action-{i}", result=f"ok")
+                    ledger.log(f"t{thread_id}-action-{i}", result="ok")
                 except Exception as exc:
                     errors.append(f"t{thread_id}-{i}: {exc!r}")
 
@@ -336,7 +334,7 @@ class TestAgentLedgerConcurrency:
         assert entry_count > 0, "No entries written"
 
         # The chain is almost certainly corrupted due to race conditions
-        valid, count, msg = ledger.verify()
+        valid, _count, msg = ledger.verify()
         if not valid:
             # EXPECTED: concurrent writes corrupted the chain.  Document it.
             assert "chain broken" in msg or "signature invalid" in msg, (

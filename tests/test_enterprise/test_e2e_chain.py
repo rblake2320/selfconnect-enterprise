@@ -8,7 +8,6 @@ unique names and deleted in teardown.
 """
 from __future__ import annotations
 
-import json
 import time
 import uuid
 
@@ -17,13 +16,11 @@ import pytest
 from enterprise.crypto import (
     CngSigner,
     cng_delete_key,
-    cng_sha384,
 )
 from enterprise.identity_cng import CngIdentity, CngLedger
 from enterprise.observer import LedgerObserver, ObserverFilter
 from enterprise.policy import PolicyBundle, PolicyEnforcer, make_bundle
 from enterprise.policy_sign import sign_policy
-
 
 AGENT_NAME_PREFIX = "sc-e2e-"
 
@@ -137,11 +134,13 @@ class TestEndToEndChain:
             assert count == 2, f"Expected 2 entries, got {count}"
 
             # ── Step 8: Run LedgerObserver — only allow appears ──────────
+            # Pass the verified ledger as verifier (production path).
             observer = LedgerObserver(
                 ledger_path=ledger_path,
                 observer_filter=ObserverFilter(
                     allowed_decisions=["allow"],
                 ),
+                verifier=ledger,
             )
             records = observer.extract()
 

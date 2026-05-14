@@ -1,0 +1,17 @@
+# ruff.toml — SelfConnect Enterprise lint configuration
+
+# Exclude the sdk/ submodule — it has its own lint configuration.
+exclude = ["sdk/**"]
+
+line-length = 120
+
+[lint]
+# Rules that are intentionally suppressed in test files:
+#   RUF012 — mutable class defaults in test classes are idiomatic pytest patterns,
+#             not production code. The ClassVar annotation adds noise without
+#             improving correctness in test-only classes.
+#   E402   — mid-file imports in test files are intentional: test sections import
+#             only what their GAP tests need, keeping dependency failures isolated.
+[lint.per-file-ignores]
+"tests/**" = ["RUF012", "E402"]
+"enterprise/transport.py" = ["PLC0415"]

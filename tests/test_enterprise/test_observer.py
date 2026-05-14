@@ -300,19 +300,19 @@ class TestEvidenceRecord:
 
 class TestLedgerObserver:
     def test_nonexistent_ledger_returns_empty(self, tmp_path):
-        obs = LedgerObserver(tmp_path / "missing.jsonl")
+        obs = LedgerObserver(tmp_path / "missing.jsonl", unsafe_unverified=True)
         assert obs.extract() == []
 
     def test_empty_ledger_returns_empty(self, tmp_path):
         p = tmp_path / "ledger.jsonl"
         p.write_text("")
-        obs = LedgerObserver(p)
+        obs = LedgerObserver(p, unsafe_unverified=True)
         assert obs.extract() == []
 
     def test_single_allow_entry_extracted(self, tmp_path):
         p = tmp_path / "ledger.jsonl"
         _write_ledger(p, [_entry(1)])
-        obs = LedgerObserver(p)
+        obs = LedgerObserver(p, unsafe_unverified=True)
         records = obs.extract()
         assert len(records) == 1
         assert records[0].seq == 1
@@ -325,7 +325,7 @@ class TestLedgerObserver:
             _entry(2, decision="deny"),
             _entry(3, decision="allow"),
         ])
-        obs = LedgerObserver(p)
+        obs = LedgerObserver(p, unsafe_unverified=True)
         records = obs.extract()
         assert len(records) == 2
         assert {r.seq for r in records} == {1, 3}
@@ -333,7 +333,7 @@ class TestLedgerObserver:
     def test_since_seq_skips_old_entries(self, tmp_path):
         p = tmp_path / "ledger.jsonl"
         _write_ledger(p, [_entry(i) for i in range(1, 6)])
-        obs = LedgerObserver(p)
+        obs = LedgerObserver(p, unsafe_unverified=True)
         records = obs.extract(since_seq=3)
         assert all(r.seq > 3 for r in records)
         assert len(records) == 2  # seq 4 and 5
@@ -342,7 +342,7 @@ class TestLedgerObserver:
         p = tmp_path / "ledger.jsonl"
         entries = [_entry(i) for i in range(1, 6)]
         _write_ledger(p, entries)
-        obs = LedgerObserver(p, context_window=2)
+        obs = LedgerObserver(p, context_window=2, unsafe_unverified=True)
         records = obs.extract()
         # First record has no prior entries
         assert records[0].context_before == []
@@ -353,7 +353,7 @@ class TestLedgerObserver:
     def test_context_window_zero(self, tmp_path):
         p = tmp_path / "ledger.jsonl"
         _write_ledger(p, [_entry(i) for i in range(1, 4)])
-        obs = LedgerObserver(p, context_window=0)
+        obs = LedgerObserver(p, context_window=0, unsafe_unverified=True)
         records = obs.extract()
         for r in records:
             assert r.context_before == []
@@ -362,7 +362,7 @@ class TestLedgerObserver:
         p = tmp_path / "ledger.jsonl"
         _write_ledger(p, [_entry(1, operator_id="CAC:SECRET")])
         redact = RedactionConfig(remove_fields=["operator_id"])
-        obs = LedgerObserver(p, redaction=redact)
+        obs = LedgerObserver(p, redaction=redact, unsafe_unverified=True)
         records = obs.extract()
         # raw dict has redaction applied
         assert "operator_id" not in records[0].raw
@@ -374,7 +374,7 @@ class TestLedgerObserver:
         entries = [_entry(i, result=f"result-{i}") for i in range(1, 4)]
         _write_ledger(p, entries)
         redact = RedactionConfig(mask_fields={"result": "[R]"})
-        obs = LedgerObserver(p, context_window=2, redaction=redact)
+        obs = LedgerObserver(p, context_window=2, redaction=redact, unsafe_unverified=True)
         records = obs.extract()
         # Check context entries are redacted
         r3 = next(r for r in records if r.seq == 3)
@@ -384,17 +384,17 @@ class TestLedgerObserver:
     def test_max_seq_empty_file(self, tmp_path):
         p = tmp_path / "ledger.jsonl"
         p.write_text("")
-        obs = LedgerObserver(p)
+        obs = LedgerObserver(p, unsafe_unverified=True)
         assert obs.max_seq() == 0
 
     def test_max_seq_nonexistent_file(self, tmp_path):
-        obs = LedgerObserver(tmp_path / "missing.jsonl")
+        obs = LedgerObserver(tmp_path / "missing.jsonl", unsafe_unverified=True)
         assert obs.max_seq() == 0
 
     def test_max_seq_returns_highest(self, tmp_path):
         p = tmp_path / "ledger.jsonl"
         _write_ledger(p, [_entry(3), _entry(1), _entry(7), _entry(2)])
-        obs = LedgerObserver(p)
+        obs = LedgerObserver(p, unsafe_unverified=True)
         assert obs.max_seq() == 7
 
     def test_malformed_json_lines_skipped(self, tmp_path):
@@ -403,7 +403,7 @@ class TestLedgerObserver:
             fh.write(json.dumps(_entry(1)) + "\n")
             fh.write("NOT_JSON\n")
             fh.write(json.dumps(_entry(2)) + "\n")
-        obs = LedgerObserver(p)
+        obs = LedgerObserver(p, unsafe_unverified=True)
         records = obs.extract()
         assert len(records) == 2
 
@@ -413,7 +413,7 @@ class TestLedgerObserver:
             fh.write("\n")
             fh.write(json.dumps(_entry(1)) + "\n")
             fh.write("\n")
-        obs = LedgerObserver(p)
+        obs = LedgerObserver(p, unsafe_unverified=True)
         assert len(obs.extract()) == 1
 
     def test_filter_by_policy_id(self, tmp_path):
@@ -423,7 +423,7 @@ class TestLedgerObserver:
             _entry(2, policy_id=POLICY_2),
         ])
         f = ObserverFilter(allowed_policy_ids=[POLICY_1])
-        obs = LedgerObserver(p, observer_filter=f)
+        obs = LedgerObserver(p, observer_filter=f, unsafe_unverified=True)
         records = obs.extract()
         assert len(records) == 1
         assert records[0].policy_id == POLICY_1
@@ -432,7 +432,7 @@ class TestLedgerObserver:
         p = tmp_path / "ledger.jsonl"
         _write_ledger(p, [_entry(1)])
         mock_ledger = MagicMock()
-        obs = LedgerObserver(p, observer_ledger=mock_ledger)
+        obs = LedgerObserver(p, observer_ledger=mock_ledger, unsafe_unverified=True)
         obs.extract()
         mock_ledger.log.assert_called_once()
         call_args = mock_ledger.log.call_args
@@ -442,7 +442,7 @@ class TestLedgerObserver:
         p = tmp_path / "ledger.jsonl"
         _write_ledger(p, [_entry(1, decision="deny")])
         mock_ledger = MagicMock()
-        obs = LedgerObserver(p, observer_ledger=mock_ledger)
+        obs = LedgerObserver(p, observer_ledger=mock_ledger, unsafe_unverified=True)
         obs.extract()
         mock_ledger.log.assert_not_called()
 
@@ -452,7 +452,7 @@ class TestLedgerObserver:
         e = _entry(1)
         e["ts"] = ts
         _write_ledger(p, [e])
-        obs = LedgerObserver(p)
+        obs = LedgerObserver(p, unsafe_unverified=True)
         rec = obs.extract()[0]
         assert rec.seq == 1
         assert rec.agent_id == AGENT_A
@@ -473,7 +473,7 @@ class TestEvidenceExporter:
         _write_ledger(ledger_path, [_entry(1), _entry(2)])
         out = tmp_path / "training.jsonl"
         exp = EvidenceExporter(out, fmt="alpaca")
-        count = exp.export_from_ledger(ledger_path)
+        count = exp.export_from_ledger(ledger_path, unsafe_unverified=True)
         assert count == 2
         lines = [ln for ln in out.read_text().splitlines() if ln.strip()]
         assert len(lines) == 2
@@ -483,7 +483,7 @@ class TestEvidenceExporter:
         _write_ledger(ledger_path, [_entry(1, decision="deny")])
         out = tmp_path / "training.jsonl"
         exp = EvidenceExporter(out, fmt="alpaca")
-        count = exp.export_from_ledger(ledger_path)
+        count = exp.export_from_ledger(ledger_path, unsafe_unverified=True)
         assert count == 0
         assert not out.exists()
 
@@ -492,7 +492,7 @@ class TestEvidenceExporter:
         _write_ledger(ledger_path, [_entry(1)])
         out = tmp_path / "training.jsonl"
         exp = EvidenceExporter(out, fmt="alpaca")
-        exp.export_from_ledger(ledger_path)
+        exp.export_from_ledger(ledger_path, unsafe_unverified=True)
         record = json.loads(out.read_text().strip())
         assert "instruction" in record
         assert "input" in record
@@ -503,7 +503,7 @@ class TestEvidenceExporter:
         _write_ledger(ledger_path, [_entry(1)])
         out = tmp_path / "training.jsonl"
         exp = EvidenceExporter(out, fmt="chat")
-        exp.export_from_ledger(ledger_path)
+        exp.export_from_ledger(ledger_path, unsafe_unverified=True)
         record = json.loads(out.read_text().strip())
         assert "messages" in record
 
@@ -512,7 +512,7 @@ class TestEvidenceExporter:
         _write_ledger(ledger_path, [_entry(1)])
         out = tmp_path / "training.jsonl"
         exp = EvidenceExporter(out, fmt="raw")
-        exp.export_from_ledger(ledger_path)
+        exp.export_from_ledger(ledger_path, unsafe_unverified=True)
         record = json.loads(out.read_text().strip())
         assert "seq" in record
         assert "action" in record
@@ -522,8 +522,8 @@ class TestEvidenceExporter:
         _write_ledger(ledger_path, [_entry(1), _entry(2), _entry(3)])
         out = tmp_path / "training.jsonl"
         exp = EvidenceExporter(out, fmt="alpaca")
-        exp.export_from_ledger(ledger_path, since_seq=0)
-        exp.export_from_ledger(ledger_path, since_seq=2)  # only seq 3
+        exp.export_from_ledger(ledger_path, since_seq=0, unsafe_unverified=True)
+        exp.export_from_ledger(ledger_path, since_seq=2, unsafe_unverified=True)  # only seq 3
         lines = [ln for ln in out.read_text().splitlines() if ln.strip()]
         assert len(lines) == 4  # 3 from first run + 1 from second
 
@@ -532,7 +532,7 @@ class TestEvidenceExporter:
         _write_ledger(ledger_path, [_entry(1)])
         out = tmp_path / "deep" / "nested" / "training.jsonl"
         exp = EvidenceExporter(out, fmt="raw")
-        exp.export_from_ledger(ledger_path)
+        exp.export_from_ledger(ledger_path, unsafe_unverified=True)
         assert out.exists()
 
     def test_record_count_zero_when_no_file(self, tmp_path):
@@ -544,7 +544,7 @@ class TestEvidenceExporter:
         _write_ledger(ledger_path, [_entry(i) for i in range(1, 6)])
         out = tmp_path / "training.jsonl"
         exp = EvidenceExporter(out, fmt="raw")
-        exp.export_from_ledger(ledger_path)
+        exp.export_from_ledger(ledger_path, unsafe_unverified=True)
         assert exp.record_count() == 5
 
     def test_observer_ledger_logged_on_export(self, tmp_path):
@@ -553,7 +553,7 @@ class TestEvidenceExporter:
         out = tmp_path / "training.jsonl"
         mock_ledger = MagicMock()
         exp = EvidenceExporter(out, observer_ledger=mock_ledger)
-        exp.export_from_ledger(ledger_path)
+        exp.export_from_ledger(ledger_path, unsafe_unverified=True)
         mock_ledger.log.assert_called_once()
         assert mock_ledger.log.call_args[0][0] == "evidence_exported"
 
@@ -562,7 +562,7 @@ class TestEvidenceExporter:
         _write_ledger(ledger_path, [_entry(i) for i in range(1, 6)])
         out = tmp_path / "training.jsonl"
         exp = EvidenceExporter(out, fmt="raw")
-        count = exp.export_from_ledger(ledger_path, since_seq=3)
+        count = exp.export_from_ledger(ledger_path, since_seq=3, unsafe_unverified=True)
         assert count == 2  # seq 4 and 5
 
 
@@ -697,7 +697,7 @@ class TestObserverIntegration:
         ])
         out = tmp_path / "training.jsonl"
         exp = EvidenceExporter(out, fmt="raw")
-        count = exp.export_from_ledger(ledger_path)
+        count = exp.export_from_ledger(ledger_path, unsafe_unverified=True)
         assert count == 2
         lines = [json.loads(ln) for ln in out.read_text().splitlines() if ln.strip()]
         assert all(ln.get("decision") == "allow" for ln in lines)
@@ -709,11 +709,11 @@ class TestObserverIntegration:
         exp = EvidenceExporter(out, fmt="raw")
 
         # First run: entries 1-5
-        count1 = exp.export_from_ledger(ledger_path, since_seq=0)
+        count1 = exp.export_from_ledger(ledger_path, since_seq=0, unsafe_unverified=True)
         assert count1 == 10
 
         # Second run: entries 6-10 only
-        count2 = exp.export_from_ledger(ledger_path, since_seq=5)
+        count2 = exp.export_from_ledger(ledger_path, since_seq=5, unsafe_unverified=True)
         assert count2 == 5
 
         # Total lines: 15 (no duplicates for seq 1-5)
@@ -727,7 +727,7 @@ class TestObserverIntegration:
             _entry(1, decision="deny"),
             _entry(2, decision="allow"),
         ])
-        obs = LedgerObserver(ledger_path, context_window=3)
+        obs = LedgerObserver(ledger_path, context_window=3, unsafe_unverified=True)
         records = obs.extract()
         assert len(records) == 1  # only seq=2 is a training record
         # Context may include the denied entry (it's just context, not training output)
@@ -741,6 +741,6 @@ class TestObserverIntegration:
         exp = EvidenceExporter(out, fmt="raw")
 
         with patch("subprocess.Popen") as mock_popen:
-            count = exp.export_from_ledger(ledger_path)
+            count = exp.export_from_ledger(ledger_path, unsafe_unverified=True)
             trigger.on_records(count)
             mock_popen.assert_called_once_with(["ollama", "fine-tune"])

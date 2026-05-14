@@ -25,7 +25,6 @@ import importlib
 import importlib.metadata
 import importlib.util
 import re
-import sys
 from pathlib import Path
 
 import pytest
@@ -384,9 +383,12 @@ class TestMcpToolMetadataInjection:
         (r'\bforget\s+(?:your|the|all|previous)\b', "forget directive"),
         (r'\byou\s+(?:must|should|shall|will)\s+now\b', "behavioral override"),
         (r'\bnew\s+(?:instructions?|rules?|directives?)\b', "new instructions claim"),
-        (r'\bact\s+as\b.{0,50}\b(?:admin|root|system|operator|unrestricted)\b', "role override"),
+        (r'\bact\s+as\b.{0,50}\b(?:admin|root|system|operator|unrestricted)\b',
+         "role override"),
         # Exfiltration patterns
-        (r'(?:cat|read|output|send|pass|include|attach)\s+.{0,30}(?:~\/\.ssh|\.env|CLAUDE|MEMORY|owner)', "credential path reference"),
+        (r'(?:cat|read|output|send|pass|include|attach)\s+.{0,30}'
+         r'(?:~\/\.ssh|\.env|CLAUDE|MEMORY|owner)',
+         "credential path reference"),
         (r'(?:logs?|debug|diagnostic|verify)\s+tool', "shadow tool reference"),
         (r'(?:api[_\s]?key|token|secret|credential|password)\b.{0,30}(?:pass|send|include|output)', "credential exfiltration attempt"),
         # Command execution
@@ -516,7 +518,7 @@ class TestFutureProofIocRegistry:
                     hits.append(f"  VERSION IOC: {ioc['name']} (source: {ioc['source']})")
 
         assert not hits, (
-            f"CRITICAL: IOC registry matches found in environment:\n"
+            "CRITICAL: IOC registry matches found in environment:\n"
             + "\n".join(hits)
             + "\n\nTreat this environment as potentially compromised. "
             "Rotate all credentials and investigate install history."

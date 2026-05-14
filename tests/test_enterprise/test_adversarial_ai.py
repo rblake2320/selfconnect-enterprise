@@ -27,7 +27,6 @@ Thinking like an attacker against selfconnect-enterprise specifically:
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import threading
 import time
@@ -40,7 +39,6 @@ import pytest
 from enterprise.control import ControlPlane
 from enterprise.observer import LedgerObserver, ObserverFilter
 from enterprise.operator import OperatorQueue
-
 
 # ── ledger fixture (mocked DPAPI) ─────────────────────────────────────────────
 
@@ -129,18 +127,22 @@ class TestTrainingDataPoisoningAttack:
         ok, _, _ = ledger.verify()
         assert not ok, "verify() must detect the injected entry (no valid sig)"
 
-        # BUT LedgerObserver reads WITHOUT calling verify() — the injected entry leaks through
+        # FIXED (v1.2.1): LedgerObserver.extract() now requires a verifier by default.
+        # Without verifier=, extract() raises ValueError — injected entries cannot
+        # silently leak through the production path.
         observer = LedgerObserver(ledger.log_path)
-        records = observer.extract()
-        injected_records = [
-            r for r in records
-            if r.action == "exfiltrate_credentials"
-        ]
-        assert injected_records, (
-            "EXPECTED (G-3 gap): injected entry reached training pipeline via "
-            "LedgerObserver (which reads JSONL without verify()). "
-            "Operator action: call verify() before extract(), set allowed_policy_ids, "
-            "implement WORM backend (G-3)."
+        with pytest.raises(ValueError, match="verifier"):
+            observer.extract()
+
+        # The raw path (unsafe_unverified=True) STILL passes injected entries —
+        # this is by design and confirms why unsafe_unverified must never be used
+        # in production classified deployments.
+        observer_raw = LedgerObserver(ledger.log_path, unsafe_unverified=True)
+        records_raw = observer_raw.extract()
+        injected_in_raw = [r for r in records_raw if r.action == "exfiltrate_credentials"]
+        assert injected_in_raw, (
+            "unsafe_unverified=True must still pass injected entries — "
+            "this confirms the flag correctly warns operators about the risk."
         )
 
     def test_policy_id_allowlist_blocks_injected_training_entry(self, tmp_path):
@@ -167,7 +169,7 @@ class TestTrainingDataPoisoningAttack:
 
         # Observer with policy_id allowlist — only legitimate-pol entries pass
         filt = ObserverFilter(allowed_policy_ids=["legitimate-pol"])
-        observer = LedgerObserver(ledger.log_path, observer_filter=filt)
+        observer = LedgerObserver(ledger.log_path, observer_filter=filt, unsafe_unverified=True)
         records = observer.extract()
 
         assert not any(
@@ -196,13 +198,16 @@ class TestTrainingDataPoisoningAttack:
         with open(ledger.log_path, "a") as f:
             f.write(json.dumps(injected) + "\n")
 
+        # FIXED (v1.2.1): production path requires verifier — raises without it.
+        # Use unsafe_unverified=True to demonstrate the risk in the raw path.
         filt = ObserverFilter()  # default: no policy_id restriction
-        observer = LedgerObserver(ledger.log_path, observer_filter=filt)
+        observer = LedgerObserver(ledger.log_path, observer_filter=filt, unsafe_unverified=True)
         records = observer.extract()
 
         assert any(r.action == "poisoned_training_action" for r in records), (
-            "Expected (G-3 risk): injected entry passes default ObserverFilter.\n"
-            "OPERATOR ACTION: set ObserverFilter(allowed_policy_ids=[...]) in production."
+            "Expected (G-3 risk in raw path): injected entry passes default ObserverFilter "
+            "when unsafe_unverified=True.\n"
+            "OPERATOR ACTION: use verifier= (production path) + ObserverFilter(allowed_policy_ids=[...])."
         )
 
 
@@ -344,7 +349,7 @@ class TestLabelEnvelopeImmutability:
             f.write(json.dumps(entry) + "\n")
 
         filt = ObserverFilter(max_classification="UNCLASSIFIED")
-        observer = LedgerObserver(ledger.log_path, observer_filter=filt)
+        observer = LedgerObserver(ledger.log_path, observer_filter=filt, unsafe_unverified=True)
         records = observer.extract()
         assert not records, "SECRET entry must not pass UNCLASSIFIED-ceiling filter"
 

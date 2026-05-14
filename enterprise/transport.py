@@ -33,7 +33,7 @@ Transport contract:
     wParam  — sender HWND (OS-filled; peers MUST NOT spoof this)
 
 Limitations:
-    - Max payload: 64 KB (OS limit for WM_COPYDATA)
+    - Max payload: 64 KB (enforced by SelfConnect; inbound messages above this ceiling are dropped)
     - Same-machine only (WM_COPYDATA does not cross network; use Named Pipes for that)
     - Callbacks run on the listener thread — keep them fast; offload heavy work
 
@@ -275,6 +275,15 @@ class CopyDataListener:
         """Decode COPYDATASTRUCT, deserialise JSON, dispatch to callbacks."""
         try:
             cds = ctypes.cast(lparam, ctypes.POINTER(COPYDATASTRUCT)).contents
+            # Enforce receive-side ceiling before any allocation.
+            # Accepts the constant from registry to keep both sides in sync.
+            from enterprise.registry import MAX_COPYDATA_BYTES
+            if cds.cbData > MAX_COPYDATA_BYTES:
+                log.warning(
+                    "WM_COPYDATA from %#x rejected: cbData=%d exceeds %d-byte ceiling",
+                    sender_hwnd, cds.cbData, MAX_COPYDATA_BYTES,
+                )
+                return
             raw = ctypes.string_at(cds.lpData, cds.cbData)
             payload = json.loads(raw.decode("utf-8"))
             data_type = int(cds.dwData)

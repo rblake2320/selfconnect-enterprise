@@ -262,10 +262,17 @@ class PolicyEnforcer:
     ) -> None:
         self._policy          = policy
         self._trust_root_pub  = trust_root_pub
-        self._require_sig     = require_signature
-        self._sig_ok: Optional[bool] = None   # lazily cached
         self._control_plane   = control_plane  # Optional[ControlPlane]
         self._profile         = profile        # Optional[ClassifiedModeProfile]
+
+        # Profile is authoritative: if it demands signature verification, force
+        # it on regardless of what the caller passed as require_signature.
+        if profile is not None and profile.require_signed_policy:
+            self._require_sig = True
+        else:
+            self._require_sig = require_signature
+
+        self._sig_ok: Optional[bool] = None   # lazily cached
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -348,6 +355,22 @@ class PolicyEnforcer:
                         f"DPAPI identity rejected for agent {agent_id!r}"
                     )
 
+            # Profile app blocklist overlay — enforced before agent lookup.
+            if app is not None and app in self._profile.blocked_apps:
+                return _deny(
+                    f"app {app!r} is blocked by classified profile "
+                    f"{self._profile.profile_id!r}"
+                )
+
+            # Profile app allowlist overlay — if the profile defines one,
+            # the app must appear in it even if the per-agent list is absent.
+            if app is not None and self._profile.allowed_apps:
+                if app not in self._profile.allowed_apps:
+                    return _deny(
+                        f"app {app!r} is not in allowed_apps for profile "
+                        f"{self._profile.profile_id!r}"
+                    )
+
         # 1. Agent registered
         agent = self._policy.get_agent(agent_id)
         if agent is None:
@@ -399,7 +422,16 @@ class PolicyEnforcer:
             )
 
         # Step 9 — approval gate (flagged, not blocked — caller drives queue)
-        requires_approval = action in agent.requires_operator_approval
+        # Profile-level requirements are ORed with per-agent requirements.
+        profile_approval = (
+            self._profile.require_operator_approval_for
+            if self._profile is not None
+            else frozenset()
+        )
+        requires_approval = (
+            action in agent.requires_operator_approval
+            or action in profile_approval
+        )
         return _allow(
             f"action {action!r} permitted for agent {agent_id!r}",
             requires_approval=requires_approval,

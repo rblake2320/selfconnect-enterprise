@@ -250,7 +250,7 @@ class TestRT05ObserverPoisoning:
         ])
         out = tmp_path / "training.jsonl"
         exp = EvidenceExporter(out, fmt="raw")
-        count = exp.export_from_ledger(p)
+        count = exp.export_from_ledger(p, unsafe_unverified=True)
         assert count == 0
         assert not out.exists()
 
@@ -265,7 +265,7 @@ class TestRT05ObserverPoisoning:
         # it trusts the ledger because the ledger is policy-signed at runtime.
         # The attack surface here is ledger integrity (covered by hash chain),
         # not the observer filter.
-        obs = LedgerObserver(p)
+        obs = LedgerObserver(p, unsafe_unverified=True)
         records = obs.extract()
         assert len(records) == 1  # observer trusts a signed ledger
 
@@ -278,7 +278,7 @@ class TestRT05ObserverPoisoning:
         _write_ledger(p, entries)
         out = tmp_path / "training.jsonl"
         exp = EvidenceExporter(out, fmt="raw")
-        count = exp.export_from_ledger(p)
+        count = exp.export_from_ledger(p, unsafe_unverified=True)
         assert count == 5  # exactly the 5 allow entries
         lines = [json.loads(ln) for ln in out.read_text().splitlines() if ln.strip()]
         assert all(ln["decision"] == "allow" for ln in lines)
@@ -286,7 +286,7 @@ class TestRT05ObserverPoisoning:
     def test_quarantined_decision_excluded(self, tmp_path):
         p = tmp_path / "ledger.jsonl"
         _write_ledger(p, [_entry(1, decision="quarantined")])
-        obs = LedgerObserver(p)
+        obs = LedgerObserver(p, unsafe_unverified=True)
         assert obs.extract() == []
 
     def test_observer_filter_with_forged_approval_mode(self, tmp_path):
@@ -297,7 +297,7 @@ class TestRT05ObserverPoisoning:
         e["operator_id"] = ""  # missing — inconsistent but filter doesn't enforce this
         _write_ledger(p, [e])
         f = ObserverFilter(allowed_approval_modes=["human_approved"])
-        obs = LedgerObserver(p, observer_filter=f)
+        obs = LedgerObserver(p, observer_filter=f, unsafe_unverified=True)
         records = obs.extract()
         # The observer accepts it — ledger integrity (hash chain) is the correct
         # defense against forged entries, not re-validation in the observer.
@@ -559,14 +559,14 @@ class TestRT12SeqReplay:
         p = tmp_path / "ledger.jsonl"
         e = _entry(0, decision="allow")
         _write_ledger(p, [e])
-        obs = LedgerObserver(p)
+        obs = LedgerObserver(p, unsafe_unverified=True)
         assert obs.extract() == []
 
     def test_old_seq_skipped_by_since_seq(self, tmp_path):
         """since_seq=10 must skip all entries with seq <= 10."""
         p = tmp_path / "ledger.jsonl"
         _write_ledger(p, [_entry(i) for i in range(1, 15)])
-        obs = LedgerObserver(p)
+        obs = LedgerObserver(p, unsafe_unverified=True)
         records = obs.extract(since_seq=10)
         assert all(r.seq > 10 for r in records)
         assert len(records) == 4  # 11, 12, 13, 14
@@ -654,7 +654,7 @@ class TestRT16RedactionCompleteness:
         _write_ledger(p, entries)
 
         redact = RedactionConfig(remove_fields=["secret_key"])
-        obs = LedgerObserver(p, context_window=3, redaction=redact)
+        obs = LedgerObserver(p, context_window=3, redaction=redact, unsafe_unverified=True)
         records = obs.extract()
 
         for rec in records:
@@ -669,7 +669,7 @@ class TestRT16RedactionCompleteness:
         _write_ledger(p, [e])
 
         redact = RedactionConfig(mask_fields={"operator_id": "[REDACTED]"})
-        obs = LedgerObserver(p, redaction=redact)
+        obs = LedgerObserver(p, redaction=redact, unsafe_unverified=True)
         records = obs.extract()
 
         assert records[0].raw["operator_id"] == "[REDACTED]"

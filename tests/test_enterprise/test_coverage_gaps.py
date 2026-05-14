@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import uuid
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -240,7 +239,7 @@ class TestExportGuardProperties:
 
 # ── GAP-6: ClassifiedModeProfile.from_file() signature verification ──────────
 
-from enterprise.crypto import CngSigner, cng_delete_key, cng_verify
+from enterprise.crypto import CngSigner, cng_delete_key  # noqa: E402
 
 
 class TestProfileFromFileSignature:

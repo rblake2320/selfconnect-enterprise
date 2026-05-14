@@ -26,7 +26,6 @@ import sys
 
 import pytest
 
-
 # ── LiteLLM backdoored version check ─────────────────────────────────────────
 
 LITELLM_BACKDOORED_VERSIONS = {"1.82.7", "1.82.8"}
@@ -124,7 +123,6 @@ class TestCryptographyVersion:
 
         This test statically scans source imports to confirm no SECT curve is referenced.
         """
-        import ast
         from pathlib import Path
 
         sect_pattern = "SECT"
@@ -142,8 +140,8 @@ class TestCryptographyVersion:
                             violations.append(f"{py_file}:{i}: {line.strip()}")
 
         assert not violations, (
-            f"CVE-2026-26007 scope: SECT curve references found in source — "
-            f"verify these are not used in ECDH operations:\n" + "\n".join(violations)
+            "CVE-2026-26007 scope: SECT curve references found in source — "
+            "verify these are not used in ECDH operations:\n" + "\n".join(violations)
         )
 
     def test_x509_verification_path_not_used(self):
@@ -166,15 +164,16 @@ class TestCryptographyVersion:
                     violations.append(f"{py_file}:{i}: {line.strip()}")
 
         assert not violations, (
-            f"CVE-2026-34073 scope: x509.verification usage found — "
-            f"review these for name constraint bypass exposure:\n" + "\n".join(violations)
+            "CVE-2026-34073 scope: x509.verification usage found — "
+            "review these for name constraint bypass exposure:\n" + "\n".join(violations)
         )
 
 
 # ── WFP script integrity ──────────────────────────────────────────────────────
 
-from tools.wfp_policy import AllowEntry, WfpProfile, generate_powershell
-import hashlib
+import hashlib  # noqa: E402
+
+from tools.wfp_policy import AllowEntry, WfpProfile, generate_powershell  # noqa: E402
 
 
 class TestWfpScriptIntegrity:

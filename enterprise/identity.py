@@ -46,6 +46,7 @@ import ctypes
 import ctypes.wintypes
 import hashlib
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -59,6 +60,10 @@ from cryptography.hazmat.primitives.serialization import (
     PrivateFormat,
     PublicFormat,
 )
+
+# Only slug-style names are safe for filesystem identity directories.
+# Rejects: path separators, null bytes, dotdot components, UNC paths.
+_SAFE_AGENT_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$')
 
 # ── DPAPI ctypes interface ─────────────────────────────────────────────────────
 
@@ -284,7 +289,17 @@ class AgentIdentity:
 
     @staticmethod
     def _storage_paths(agent_name: str, data_dir: Optional[Path]) -> dict:
-        base = (data_dir or _default_data_dir()) / agent_name
+        if not _SAFE_AGENT_NAME_RE.match(agent_name):
+            raise ValueError(
+                f"agent_name {agent_name!r} is invalid: must match "
+                r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+            )
+        root = (data_dir or _default_data_dir()).resolve()
+        base = (root / agent_name).resolve()
+        if not base.is_relative_to(root):
+            raise ValueError(
+                f"agent_name {agent_name!r} escapes the identity root directory"
+            )
         return {
             "dir":   base,
             "dpapi": base / "identity.dpapi",
