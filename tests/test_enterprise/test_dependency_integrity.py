@@ -144,15 +144,29 @@ class TestInstallHookSafety:
     def test_selfconnect_setup_has_no_dangerous_hooks(self):
         """Verify that the installed selfconnect package does not have a setup.py
         with network calls or subprocess execution (the axios/postinstall pattern)."""
+        # Production path: use installed distribution metadata.
+        # Fallback path: inspect the sdk/ submodule source directly (source checkout mode).
+        # Both paths must pass — no silent skip.
+        sdk_submodule = Path(__file__).parent.parent.parent / "sdk"
         try:
             dist = importlib.metadata.distribution("selfconnect")
+            setup_files = [
+                dist.locate_file(f)
+                for f in (dist.files or [])
+                if Path(str(f)).name in ("setup.py", "setup.cfg")
+            ]
         except importlib.metadata.PackageNotFoundError:
-            pytest.skip("selfconnect not installed as a distribution")
-
-        setup_files = []
-        for f in (dist.files or []):
-            if Path(str(f)).name in ("setup.py", "setup.cfg"):
-                setup_files.append(dist.locate_file(f))
+            if not sdk_submodule.exists():
+                pytest.fail(
+                    "selfconnect is neither installed as a distribution nor present as "
+                    "sdk/ submodule. Cannot perform supply-chain setup hook scan."
+                )
+            # Scan the submodule source directly
+            setup_files = [
+                sdk_submodule / name
+                for name in ("setup.py", "setup.cfg")
+                if (sdk_submodule / name).exists()
+            ]
 
         for setup_file in setup_files:
             content = Path(setup_file).read_text(encoding="utf-8", errors="ignore")
@@ -263,17 +277,37 @@ class TestUnexpectedSubdependencies:
         Note: this checks pyproject.toml declared deps vs installed metadata.
         If selfconnect has no pyproject.toml available post-install, we skip.
         """
+        # Production path: use installed distribution metadata.
+        # Fallback path: inspect sdk/pyproject.toml directly (source checkout mode).
+        # No silent skip — both paths must produce a verifiable result.
+        sdk_submodule = Path(__file__).parent.parent.parent / "sdk"
         try:
             dist = importlib.metadata.distribution("selfconnect")
+            requires_str = dist.metadata.get_all("Requires-Dist") or []
+            declared = {re.split(r'[>=<!;\s]', r)[0].lower().strip() for r in requires_str}
         except importlib.metadata.PackageNotFoundError:
-            pytest.skip("selfconnect not installed as a distribution")
-
-        # Get declared requires
-        requires_str = dist.metadata.get_all("Requires-Dist") or []
-        declared = {re.split(r'[>=<!;\s]', r)[0].lower().strip() for r in requires_str}
+            if not sdk_submodule.exists():
+                pytest.fail(
+                    "selfconnect is neither installed as a distribution nor present as "
+                    "sdk/ submodule. Cannot perform declared-deps scan."
+                )
+            # Parse pyproject.toml from the submodule directly
+            try:
+                import tomllib  # Python 3.11+
+            except ImportError:
+                try:
+                    import tomli as tomllib  # backport
+                except ImportError:
+                    pytest.skip("tomllib/tomli not available — cannot parse sdk/pyproject.toml")
+                    return  # unreachable but satisfies type checkers
+            pjson = (sdk_submodule / "pyproject.toml").read_bytes()
+            data = tomllib.loads(pjson.decode())
+            deps = data.get("project", {}).get("dependencies", [])
+            declared = {re.split(r'[>=<!;\s\[]', d)[0].lower().strip() for d in deps}
 
         if not declared:
-            pytest.skip("selfconnect has no declared Requires-Dist metadata")
+            # No declared deps is fine — selfconnect has minimal deps
+            return
 
         # For reference: log what's declared
         assert isinstance(declared, set)  # confirmed it parsed

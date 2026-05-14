@@ -345,14 +345,16 @@ class PolicyEnforcer:
                     f"classification {effective_classification!r} exceeds profile "
                     f"ceiling {self._profile.max_classification.name!r}"
                 )
-            # Require CNG identity: if identity_type is supplied as a kwarg it
-            # must equal "cng".  Callers signal DPAPI identity via identity_type="dpapi".
-            # When identity_type is absent, no enforcement (unknown = pass-through).
+            # Require CNG identity: when the profile demands CNG, ONLY identity_type=="cng"
+            # is accepted. Empty string, "dpapi", "unknown", and any other value are all
+            # denied. Pass-through for unknown identity types is not safe in a classified
+            # profile — callers must explicitly signal identity type.
             if self._profile.require_cng_identity:
-                if identity_type == "dpapi":
+                if identity_type != "cng":
                     return _deny(
                         f"profile {self._profile.profile_id!r} requires CNG identity; "
-                        f"DPAPI identity rejected for agent {agent_id!r}"
+                        f"identity_type {identity_type!r} rejected for agent {agent_id!r} "
+                        f"(only 'cng' is accepted)"
                     )
 
             # Profile app blocklist overlay — enforced before agent lookup.

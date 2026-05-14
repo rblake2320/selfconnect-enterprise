@@ -312,6 +312,7 @@ class TestClassificationCeilingBypass:
             agent_id="legit-agent",
             action="read_secret_file",
             classification="SECRET",
+            identity_type="cng",  # profile requires CNG; test is about ceiling, not identity
         )
         assert result.allowed, (
             f"Legitimate within-ceiling action was incorrectly denied: {result.reason!r}"

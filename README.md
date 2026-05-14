@@ -5,7 +5,7 @@
 Built on the [SelfConnect SDK](https://github.com/rblake2320/selfconnect) — the OS-native bridge
 between AI agents and Windows desktop applications using Win32 IPC primitives.
 
-**v1.2.0 — 714 tests passing — 0 failures — Continuously audited posture release**
+**v1.2.1 — 716 tests passing — 0 failures — Continuously audited posture release**
 
 ---
 
@@ -118,7 +118,7 @@ can_exp  = export.check_and_log(label, "SC-AGENT1")
 ## Test Suite
 
 ```
-528 tests   0 failures   88% coverage   ruff clean
+716 tests   0 failures   0 skipped   ruff clean
 ```
 
 | Test file | Count | What it covers |
@@ -183,7 +183,7 @@ SDK submodule pinned to commit hash: `8cf151dbc5f312ce888e51aa429f62960e1a2ee6`
 The security posture is verified continuously — not claimed. Every guarantee
 listed in [SECURITY.md](SECURITY.md) has a named test that proves it.
 
-### Test pyramid (714 tests, 0 failures)
+### Test pyramid (716 tests, 0 failures)
 
 | Layer | File(s) | What it covers |
 |-------|---------|----------------|

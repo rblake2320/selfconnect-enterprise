@@ -329,7 +329,7 @@ class TestPolicyEnforcerWithProfile:
             identity_type="dpapi",
         )
         assert d.allowed is False
-        assert "DPAPI" in d.reason
+        assert "dpapi" in d.reason
 
     def test_profile_cng_identity_accepted(self):
         profile = ClassifiedModeProfile(
@@ -377,14 +377,14 @@ class TestClassifiedModeEndToEnd:
         egress = EgressGuard(profile, ledger=ledger)
         export = ExportGuard(profile, ledger=ledger)
 
-        # CUI label (below SECRET ceiling) → allowed
+        # CUI label (below SECRET ceiling) → allowed (CNG identity provided)
         cui_label = LabelEnvelope(classification=Classification.CUI)
-        d_cui = enforcer.check("SC-AGENT1", "read_text", label=cui_label)
+        d_cui = enforcer.check("SC-AGENT1", "read_text", label=cui_label, identity_type="cng")
         assert d_cui.allowed is True
 
         # TOP_SECRET label (above SECRET profile ceiling) → denied
         ts_label = LabelEnvelope(classification=Classification.TOP_SECRET)
-        d_ts = enforcer.check("SC-AGENT1", "read_text", label=ts_label)
+        d_ts = enforcer.check("SC-AGENT1", "read_text", label=ts_label, identity_type="cng")
         assert d_ts.allowed is False
 
         # Cloud egress → denied (allow_cloud_egress=False)

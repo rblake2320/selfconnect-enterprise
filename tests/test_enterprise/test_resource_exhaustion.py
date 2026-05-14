@@ -15,13 +15,9 @@ from __future__ import annotations
 
 import sys
 import time
-import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
-from enterprise.control import ControlPlane
 from enterprise.identity import AgentIdentity
 from enterprise.ledger import AgentLedger
 from enterprise.operator import OperatorQueue

@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from hypothesis import given, settings, HealthCheck
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 # ── Import WFP tools (not on sys.path by default) ────────────────────────────
@@ -25,7 +25,8 @@ _TOOLS = Path(__file__).parent.parent.parent / "tools"
 if str(_TOOLS) not in sys.path:
     sys.path.insert(0, str(_TOOLS))
 
-from wfp_policy import AllowEntry, WfpProfile, _sanitize_ps_string, generate_powershell  # noqa: E402
+from wfp_policy import AllowEntry, WfpProfile, _sanitize_ps_string  # noqa: E402
+
 from enterprise.policy import PolicyBundle  # noqa: E402
 
 # ── Shared settings ──────────────────────────────────────────────────────────

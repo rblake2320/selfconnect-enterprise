@@ -1,5 +1,49 @@
 # Changelog
 
+## v1.2.1 — Production Hardening: SENTINEL Blockers Closed (2026-05-14)
+
+Closes all five SENTINEL review blockers from the v1.2.0 HOLD verdict. No new features —
+this release makes existing claims true at runtime and makes CI authoritative.
+
+### P0: ClassifiedModeProfile enforcement is authoritative
+- `require_signed_policy=True` forces signature verification regardless of caller's `require_signature=` arg
+- `blocked_apps` / `allowed_apps` enforced before agent lookup
+- `require_operator_approval_for` merged with per-agent requirements
+
+### P1: LedgerObserver verified extraction path (G-3 CLOSED)
+- `extract()` requires `verifier=<ledger>` (must be bound to same ledger path) in production
+- `unsafe_unverified=True` required for offline/research raw access
+- `verifier` path binding check prevents cross-ledger misuse
+
+### P1: CNG identity — exact-match enforcement
+- `require_cng_identity=True` now requires `identity_type == "cng"` exactly
+- Empty string, `"dpapi"`, `"unknown"` all rejected — no pass-through for unrecognized types
+
+### P1: Identity path traversal blocked
+- `_SAFE_AGENT_NAME_RE` validates `agent_name` before filesystem use
+- Containment check confirms resolved path stays under `data_dir`
+
+### P1: WM_COPYDATA 64 KB ceiling enforced
+- `MAX_COPYDATA_BYTES = 64 * 1024` enforced on send (ValueError) and receive (drop + log)
+
+### P2: Lint clean + CI authoritative
+- `ruff check enterprise tests tools` passes with 0 errors
+- `.github/workflows/ci.yml` runs lint + pytest + test-count gate on every push
+- Supply-chain tests: submodule fallback path — works from both source checkout and installed distribution
+
+### Summary
+
+| Metric | v1.2.0 | v1.2.1 |
+|--------|--------|--------|
+| Tests | 714 | 716 |
+| Failures | 0 | 0 |
+| Skipped | 2 | 0 |
+| Ruff errors | 53 | 0 |
+| Open gaps | G-1, G-3, G-4, G-6 | G-1, G-4, G-6 |
+| Closed this version | — | G-3 (verified observer) |
+
+---
+
 ## v1.2.0 — Hardened Posture: Zero-Day Audit, Fuzz/Stress/Exhaustion Test Suite (2026-05-12)
 
 This release establishes v1.2.0 as the **first continuously-audited posture release**

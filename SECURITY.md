@@ -190,12 +190,12 @@ at the wrong layer would produce coverage numbers that lie.
 
 ---
 
-## Test Coverage Summary (v1.2.0)
+## Test Coverage Summary (v1.2.1)
 
 | Metric | Value |
 |--------|-------|
-| Total tests | 714 |
-| Passing | 714 |
+| Total tests | 716 |
+| Passing | 716 |
 | Failures | 0 |
 | Coverage (overall) | ~90% |
 | `enterprise/observer.py` | 100% |
@@ -207,7 +207,7 @@ at the wrong layer would produce coverage numbers that lie.
 
 | Layer | File | Count | What it covers |
 |-------|------|-------|----------------|
-| Logic / unit | `test_policy.py`, `test_observer.py`, `test_ledger.py`, … | ~528 | Core invariants, decision paths, edge cases |
+| Logic / unit | `test_policy.py`, `test_observer.py`, `test_ledger.py`, … | ~591 | Core invariants, decision paths, edge cases |
 | Red team | `test_redteam.py` | 59 | RT-01–RT-20: policy bypass, sig tamper, hash chain forgery, race conditions |
 | Adversarial AI | `test_adversarial_ai.py` | 17 | Training data poisoning, ceiling bypass via signed policy, ControlPlane races, approval replay, self-revival |
 | Dependency integrity | `test_dependency_integrity.py` | 21 | Axios-style supply chain IOCs, module shadow attack, MCP tool metadata injection scanner, git dep pinning |
@@ -228,7 +228,7 @@ at the wrong layer would produce coverage numbers that lie.
 | `test_classified_mode_full_scenario` | test_classified_mode.py | End-to-end classified mode |
 | `test_cui_baseline_full_scenario` | test_classified_mode.py | End-to-end CUI mode |
 | `TestClassificationCeilingBypass` | test_adversarial_ai.py | Ceiling survives attacker-signed policy escalation |
-| `test_observer_reads_without_verify_documents_gap` | test_adversarial_ai.py | G-3 gap documented: LedgerObserver reads without verify() |
+| `test_observer_reads_without_verify_documents_gap` | test_adversarial_ai.py | G-3 CLOSED: asserts ValueError when verifier absent; raw path requires `unsafe_unverified=True` |
 | `test_policy_id_allowlist_blocks_injected_training_entry` | test_adversarial_ai.py | allowed_policy_ids blocks injected training entries |
 | `test_litellm_not_backdoored_version` | test_supply_chain.py | LiteLLM supply chain hard gate |
 | `test_cryptography_at_minimum_safe_version` | test_supply_chain.py | cryptography CVE floor ≥46.0.6 |

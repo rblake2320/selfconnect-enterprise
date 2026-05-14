@@ -288,6 +288,18 @@ class LedgerObserver:
                     "Pass verifier=<ledger> to verify hash-chain integrity before "
                     "extracting, or set unsafe_unverified=True for offline raw access."
                 )
+            # Path binding: confirm the verifier is for the exact ledger being read.
+            # Passing a verifier for a different ledger would give a false integrity
+            # signal — the wrong chain would be verified while a tampered one is read.
+            verifier_path = getattr(self._verifier, "log_path", None) or \
+                            getattr(self._verifier, "_log_path", None)
+            if verifier_path is not None:
+                if Path(verifier_path).resolve() != self._path.resolve():
+                    raise ValueError(
+                        f"Verifier is bound to {str(verifier_path)!r} but LedgerObserver "
+                        f"is reading from {str(self._path)!r}. "
+                        "Pass a verifier bound to the same ledger path."
+                    )
             ok, count, msg = self._verifier.verify()
             if not ok:
                 raise RuntimeError(
