@@ -224,8 +224,7 @@ class TestUnexpectedSubdependencies:
         "reqeusts",             # typosquat of requests
         "cyptography",          # typosquat of cryptography
         "crytography",          # typosquat of cryptography
-        "selfconnect-enterprise-sdk",  # potential squatter on our name
-        "selfconnect_enterprise",
+        "selfconnect-enterprise-sdk",  # potential squatter on our name (different package, not us)
         "agentwire",            # potential squatter on agent-wire
         "agent_wire",
     }
