@@ -200,7 +200,7 @@ listed in [SECURITY.md](SECURITY.md) has a named test that proves it.
 
 | Document | What it contains |
 |----------|-----------------|
-| [`docs/compliance/gap-analysis.md`](docs/compliance/gap-analysis.md) | POA&M: 7 gaps identified, G-2/G-5/G-7/G-8 closed, G-1/G-3/G-4/G-6 scheduled for v1.3.0 |
+| [`docs/compliance/gap-analysis.md`](docs/compliance/gap-analysis.md) | POA&M: 7 gaps identified, G-2/G-3/G-5/G-7/G-8 closed, G-1/G-4/G-6 scheduled for v1.3.0 |
 | [`SECURITY.md`](SECURITY.md) | Guarantees, explicit non-guarantees, test citations |
 | [`CHANGELOG.md`](CHANGELOG.md) | Per-version security deliverables and gap status |
 
@@ -213,5 +213,5 @@ listed in [SECURITY.md](SECURITY.md) has a named test that proves it.
 | Hash chain integrity — retroactive modification detected | RT-11, RT-12 |
 | Control plane thread safety — exactly one revoke wins under contention | RT-09 |
 | Classification ceiling bypass via signed policy blocked | `TestClassificationCeilingBypass` |
-| LedgerObserver gap documented — injected entries leak without verify() | `test_observer_reads_without_verify_documents_gap` |
+| LedgerObserver G-3 closed — extract() requires verifier bound to ledger | `test_observer_reads_without_verify_documents_gap` |
 | allowed_policy_ids allowlist blocks injected training entries | `test_policy_id_allowlist_blocks_injected_training_entry` |
