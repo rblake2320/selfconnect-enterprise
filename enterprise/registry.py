@@ -257,6 +257,7 @@ def stamp_birth_tag(
     model: str,
     parent_hwnd: int = 0,
     session: str = "",
+    identity=None,
 ) -> BirthTag:
     """Stamp a birth tag on the given window handle.
 
@@ -271,6 +272,9 @@ def stamp_birth_tag(
         model:      Model name/version e.g. "qwen3.6:27b".
         parent_hwnd: HWND of the process that spawned this agent (0 if unknown).
         session:    Optional session label e.g. "session-16".
+        identity:   Optional AgentIdentity.  When provided, also stamps SCID_SIG
+                    and SCID_STS via enterprise.birth_tag_v2.  When absent, only
+                    the unsigned properties are stamped (v1 behavior, backward compat).
 
     Returns:
         BirthTag dataclass representing the stamped certificate.
@@ -289,6 +293,20 @@ def stamp_birth_tag(
     set_agent_prop(hwnd, PROP_CTIME,  str(ctime))
     if session:
         set_agent_prop(hwnd, PROP_SESSION, session)
+
+    # Tier 1 additive: stamp cryptographic signature if identity provided.
+    # Peers that don't understand SCID_SIG ignore the extra property.
+    # Verifier lives in Tier 2 (enterprise.version_gate, SC_SUNSET_V1 flag).
+    if identity is not None:
+        from enterprise.birth_tag_v2 import stamp_signed_birth_tag
+        try:
+            stamp_signed_birth_tag(hwnd, identity, agent_id, pid, str(ctime), now)
+        except Exception:
+            _log.exception(
+                "stamp_birth_tag: SCID_SIG stamping failed for hwnd=%#010x — "
+                "unsigned tag still stamped (v1 fallback)", hwnd
+            )
+
     return BirthTag(
         hwnd=hwnd,
         agent_id=agent_id,

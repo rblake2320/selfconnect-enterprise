@@ -229,3 +229,48 @@ def test_verify_fails_on_missing_sts(tmp_path):
     ok, reason = _run_verify(store, identity.public_key_bytes)
     assert ok is False
     assert "SCID_STS" in reason
+
+
+# ── Integration test: real DPAPI (no mocks) ────────────────────────────────────
+
+def test_sign_verify_real_dpapi(tmp_path):
+    """Integration: stamp + verify using real Windows DPAPI — no key storage mocks.
+
+    This test exercises the full stack end-to-end:
+      - AgentIdentity.init() calls real CryptProtectData to store the private key
+      - sign() decrypts the key with CryptUnprotectData and runs real ed25519
+      - verify() runs real ed25519 public-key verification
+
+    Win32 SetPropW / GetPropW are still mocked (no live window needed).
+
+    Skipped automatically on non-Windows platforms where DPAPI is unavailable.
+    """
+    import sys
+    if sys.platform != "win32":
+        pytest.skip("Windows DPAPI not available on this platform")
+
+    # Real identity — no DPAPI mock
+    identity = AgentIdentity.init("btagv2-integration-real", data_dir=tmp_path)
+
+    store = FakePropStore()
+    store.props["SCID"]    = FAKE_AGENT
+    store.props["SCPID"]   = str(FAKE_PID)
+    store.props["SCCTIME"] = FAKE_CTIME
+    store.props["SCBORN"]  = str(FAKE_BORN)
+
+    ts = time.time()
+    with patch("enterprise.registry.set_agent_prop", side_effect=store.set), \
+         patch("enterprise.registry.get_agent_prop", side_effect=store.get):
+        sig = stamp_signed_birth_tag(
+            FAKE_HWND, identity, FAKE_AGENT, FAKE_PID, FAKE_CTIME, FAKE_BORN, ts=ts
+        )
+
+    assert len(sig) == 128, "ed25519 signature must be 128 hex chars (64 bytes)"
+
+    with patch("enterprise.registry.get_agent_prop", side_effect=store.get), \
+         patch("enterprise.registry.set_agent_prop", side_effect=store.set):
+        ok, reason = verify_signed_birth_tag(
+            FAKE_HWND, identity.public_key_bytes, max_age_seconds=0.0
+        )
+
+    assert ok is True, f"verify failed with real DPAPI: {reason}"
