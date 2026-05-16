@@ -37,10 +37,15 @@ from __future__ import annotations
 
 import ctypes
 import json
+import logging
 import threading
 import time
 from dataclasses import asdict, dataclass
 from typing import Optional
+
+from enterprise.discovery_config import MAX_CANDIDATES_PER_CYCLE, MAX_STAMPS_PER_PID
+
+_log = logging.getLogger(__name__)
 
 # ── Win32 handles ─────────────────────────────────────────────────────────────
 user32   = ctypes.windll.user32
@@ -363,11 +368,36 @@ def discover_mesh(
                            a live window. Recommended: 60-120 seconds.
     """
     results: list[BirthTag] = []
+    pid_stamp_count: dict[int, int] = {}
 
     @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
     def _cb(hwnd: int, _: int) -> bool:
+        # Hard cap: stop processing once limit reached (DoS protection).
+        # An attacker can stamp thousands of fake SCID properties cheaply;
+        # without a cap, EnumWindows becomes a free denial-of-service vector.
+        if len(results) >= MAX_CANDIDATES_PER_CYCLE:
+            _log.warning(
+                "discover_mesh: candidate cap reached (%d). "
+                "Increase SC_DISCOVERY_CAP env var if mesh is legitimately larger. "
+                "Event: discovery_candidate_capped",
+                MAX_CANDIDATES_PER_CYCLE,
+            )
+            return False  # stop enumeration
+
         tag = read_birth_tag(hwnd)
         if tag:
+            # Per-PID stamp volume check: a single PID stamping many SCID
+            # properties is suspicious (attacker creating multiple fake identities).
+            pid = tag.pid
+            pid_stamp_count[pid] = pid_stamp_count.get(pid, 0) + 1
+            if pid_stamp_count[pid] > MAX_STAMPS_PER_PID:
+                _log.warning(
+                    "discover_mesh: pid=%d has stamped %d SCID properties (limit=%d). "
+                    "Ignoring excess. Event: suspicious_pid_stamp_volume",
+                    pid, pid_stamp_count[pid], MAX_STAMPS_PER_PID,
+                )
+                return True  # skip this candidate, continue enumeration
+
             if verified_only and not verify_tag(tag):
                 return True
             if max_heartbeat_age is not None and tag.seconds_since_heartbeat() > max_heartbeat_age:

@@ -37,7 +37,24 @@ Tamper evidence:
     - prev_hash creates a hash chain — modifying entry N invalidates entry N+1..end
     - verify() checks both signature validity AND chain integrity for every entry
 
-Version: 1.0.0-enterprise  Session 16
+Version: 1.1.0-enterprise  Tier 1 identity hardening
+
+Schema note (v1.1.0): New event types added to `action` field vocabulary.
+All new types use the existing JSONL structure — no schema version bump needed
+(confirmed: all consumers use lenient dict.get() access with no strict validation).
+
+New action strings (Tier 1+):
+    "discovery_candidate_capped"    — discover_mesh hit MAX_CANDIDATES_PER_CYCLE
+    "suspicious_pid_stamp_volume"   — single PID stamped more SCID props than MAX_STAMPS_PER_PID
+    "handshake_initiated"           — challenge-response started (Tier 2)
+    "handshake_succeeded"           — challenge-response completed successfully (Tier 2)
+    "handshake_rejected:{reason}"   — challenge-response failed (Tier 2)
+    "v1_peer_accepted_during_grace" — unsigned peer accepted while sunset not yet reached (Tier 2)
+    "v1_peer_rejected_at_sunset"    — unsigned peer rejected after sunset date (Tier 2)
+    "key_rotation"                  — TPM key rotation transaction (Tier 2 + Tier 3)
+    "mitigation_policy_applied"     — process hardening flags enabled (Tier 2)
+    "birth_time_mismatch"           — per-message birth time validation failed (Tier 2)
+    "emergency_override_activated"  — a rollback override flag was set (any tier)
 """
 from __future__ import annotations
 
