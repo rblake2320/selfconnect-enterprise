@@ -13,8 +13,11 @@ What the signature covers:
 
 Signing key:
     Uses the agent's ed25519 signing key via enterprise.identity.AgentIdentity.
-    The identity holds keys loaded from the Platform KSP (TPM-bound, non-
-    exportable) when available, or DPAPI-wrapped Software KSP as fallback.
+    AgentIdentity stores a DPAPI-wrapped ed25519 keypair — it does NOT use
+    Platform KSP or NCrypt.  The Platform KSP (TPM-bound P-384) is a separate
+    system in enterprise.identity_cng.CngIdentity, used only by the Tier 2
+    handshake.  The two key systems are INDEPENDENT (Gap C) — binding them is
+    an explicit required deliverable before SC_HANDSHAKE=v2 flag flip.
     Call AgentIdentity.load() once at startup to get the identity object.
 
 Why Tier 1 (no flag, no verifier):
