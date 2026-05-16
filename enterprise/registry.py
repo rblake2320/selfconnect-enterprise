@@ -388,7 +388,7 @@ def discover_mesh(
     results: list[BirthTag] = []
     pid_stamp_count: dict[int, int] = {}
 
-    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_ssize_t, ctypes.c_ssize_t)
     def _cb(hwnd: int, _: int) -> bool:
         # Hard cap: stop processing once limit reached (DoS protection).
         # An attacker can stamp thousands of fake SCID properties cheaply;

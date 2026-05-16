@@ -54,8 +54,8 @@ def _fake_enum_windows_factory(tags_by_hwnd: dict[int, BirthTag]):
 def _build_tags(count: int, pid: int = 99999) -> dict[int, BirthTag]:
     """Build `count` unique tags with sequential fake HWNDs.
 
-    Use small positive HWNDs (1001+) to avoid ctypes.c_int sign-extension.
-    WINFUNCTYPE typed args as c_int, so HWNDs must fit in signed 32-bit range.
+    WINFUNCTYPE uses c_ssize_t (pointer-width) so any positive HWND is safe.
+    Using small values keeps dict lookups simple and avoids overflow in tests.
     """
     return {
         1001 + i: _make_tag(1001 + i, pid=pid + i)
@@ -112,6 +112,30 @@ class TestDiscoveryCap:
             result = discover_mesh()
 
         assert len(result) == count
+
+    def test_high_hwnd_values_not_sign_extended(self):
+        """HWNDs above 0x7FFFFFFF must NOT be sign-extended to negative values.
+
+        WINFUNCTYPE was c_int (32-bit signed); now c_ssize_t (pointer-width).
+        c_int(0x80001234) = -2147479036 on 64-bit -- the old code would call
+        read_birth_tag(-2147479036) which returns None, silently dropping tags.
+        With c_ssize_t the value is preserved as 0x80001234 (positive) and the
+        tag is found correctly.
+        """
+        high_hwnd = 0x80001234  # above 0x7FFFFFFF — would overflow c_int
+        tags = {high_hwnd: _make_tag(high_hwnd, pid=12345)}
+
+        def fake_read(hwnd):
+            return tags.get(hwnd)
+
+        with patch("enterprise.registry.user32") as mock_u32, \
+             patch("enterprise.registry.read_birth_tag", side_effect=fake_read):
+            mock_u32.EnumWindows.side_effect = _fake_enum_windows_factory(tags)
+            result = discover_mesh()
+
+        assert len(result) == 1, (
+            f"High HWND 0x{high_hwnd:x} was silently dropped (sign-extension bug)"
+        )
 
     def test_exactly_at_cap_no_warning(self, caplog):
         """Exactly MAX_CANDIDATES_PER_CYCLE windows: no cap warning emitted."""
