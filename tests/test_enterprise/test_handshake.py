@@ -160,8 +160,8 @@ class TestHandshakeResponder:
         resp = sent_to.get("payload", {})
         assert resp.get("type") == "response"
         assert resp.get("nonce") == "deadbeef12345678"
-        assert len(resp.get("signature", "")) == 128  # ed25519 = 64 bytes = 128 hex
-        assert len(resp.get("public_key", "")) == 64  # ed25519 pubkey = 32 bytes
+        assert len(resp.get("ed25519_sig", "")) == 128  # ed25519 = 64 bytes = 128 hex
+        assert len(resp.get("ed25519_pubkey", "")) == 64  # ed25519 pubkey = 32 bytes
 
     def test_handle_challenge_verifiable_signature(self, tmp_path):
         """Signature in response must verify with the included public key."""
@@ -187,8 +187,8 @@ class TestHandshakeResponder:
             responder.handle_challenge(initiator_hwnd, challenge)
 
         resp = sent_to["payload"]
-        sig_bytes = bytes.fromhex(resp["signature"])
-        pub_bytes = bytes.fromhex(resp["public_key"])
+        sig_bytes = bytes.fromhex(resp["ed25519_sig"])
+        pub_bytes = bytes.fromhex(resp["ed25519_pubkey"])
         signed_data = _signed_bytes(nonce, initiator_hwnd)
 
         assert AgentIdentity.verify(signed_data, sig_bytes, pub_bytes) is True
@@ -237,8 +237,8 @@ class TestHandshakeInitiator:
                 response = {
                     "type":       "response",
                     "nonce":      "WRONG_NONCE" if wrong_nonce else nonce,
-                    "signature":  sig_bytes.hex(),
-                    "public_key": peer_identity.public_key_bytes.hex(),
+                    "ed25519_sig":  sig_bytes.hex(),
+                    "ed25519_pubkey": peer_identity.public_key_bytes.hex(),
                     "agent_id":   peer_identity.agent_id,
                 }
                 initiator.handle_response(FAKE_PEER_HWND, response)
@@ -331,8 +331,8 @@ class TestHandshakeInitiator:
                 initiator.handle_response(FAKE_PEER_HWND, {
                     "type":       "response",
                     "nonce":      nonce,
-                    "signature":  sig.hex(),
-                    "public_key": peer_identity.public_key_bytes.hex(),
+                    "ed25519_sig":  sig.hex(),
+                    "ed25519_pubkey": peer_identity.public_key_bytes.hex(),
                     "agent_id":   "agent-peer",
                 })
             return True
@@ -381,8 +381,8 @@ class TestHandshakeInitiator:
                 initiator.handle_response(FAKE_PEER_HWND, {
                     "type":       "response",
                     "nonce":      nonce,
-                    "signature":  sig.hex(),
-                    "public_key": peer_identity.public_key_bytes.hex(),
+                    "ed25519_sig":  sig.hex(),
+                    "ed25519_pubkey": peer_identity.public_key_bytes.hex(),
                     "agent_id":   "agent-peer",
                 })
             return True

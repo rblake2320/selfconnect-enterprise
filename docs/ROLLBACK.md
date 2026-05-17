@@ -127,6 +127,49 @@ SC_HARDENING=on python -m enterprise.agent_runner
 
 ---
 
+## Option B Identity Packet Fields (Gap C Closure — `SC_HANDSHAKE=v2`)
+
+Introduced 2026-05-16. When `SC_HANDSHAKE=v2`, the responder emits an extended
+identity packet with two additional fields beyond the original `ed25519_sig` /
+`ed25519_pubkey` pair:
+
+| Field | Type | Contents |
+|-------|------|----------|
+| `ed25519_pubkey` | hex str | 32-byte ed25519 public key |
+| `ed25519_sig` | hex str | 64-byte ed25519 signature over `nonce:initiator_hwnd` |
+| `platform_ksp_pubkey` | hex str | 97-byte P-384 public key (uncompressed point) |
+| `platform_ksp_sig` | hex str | ECDSA P-384 / SHA-384 signature over `nonce ‖ ed25519_pubkey` |
+
+Provider: **Microsoft Software Key Storage Provider** (NCrypt, user-bound).
+NOT TPM-backed (Platform Crypto Provider is a separate future upgrade).
+
+**What these fields prove:**
+- `platform_ksp_sig` over `(nonce || ed25519_pubkey)` proves:
+  1. **Liveness** — nonce ties the signature to this specific handshake exchange
+  2. **Key binding** — ed25519_pubkey is inside the signed payload, so
+     both keys must be held by the same agent to produce a valid response
+
+**`verify_peer()` enforcement steps:**
+1. `agent_id == "SC-" + SHA384(platform_ksp_pubkey)[:8].upper()` — ID fingerprint check
+2. `cng_verify(nonce ‖ ed25519_pubkey, platform_ksp_sig, platform_ksp_pubkey)` — Gap C closure
+3. `ed25519_verify(nonce:initiator_hwnd, ed25519_sig, ed25519_pubkey)` — liveness check
+
+**Rollback if `platform_ksp_*` fields cause peer rejection:**
+```bash
+# Disable v2 handshake entirely — falls back to v1 (trust-the-tag)
+SC_HANDSHAKE=v1 python -m enterprise.agent_runner
+```
+v1 peers do not send `platform_ksp_*` fields; `verify_peer()` is only invoked
+under `SC_HANDSHAKE=v2`. Downgrading to v1 fully bypasses Gap C verification.
+
+**Root-cause checklist before re-enabling:**
+- [ ] Confirm responder is a v2-capable agent (has `CngIdentity` initialized)
+- [ ] Verify the P-384 key exists in KSP: `certutil -csp "Microsoft Software Key Storage Provider" -key`
+- [ ] Check agent_id derivation matches: `SC-` + SHA384(p384_pubkey).hex()[:8].upper()
+- [ ] Re-run `TestGapCBinding` integration tests on the affected machine
+
+---
+
 ## Flag: `SC_VALIDATE_BIRTH=1` (Tier 2b — Per-Message Birth Time Validation)
 
 **Symptom requiring rollback:** False rejections on messages from legitimate agents

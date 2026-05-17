@@ -123,8 +123,8 @@ class TestRealCryptoRoundTrip:
                 response = {
                     "type":       "response",
                     "nonce":      cn,
-                    "signature":  sig_bytes.hex(),
-                    "public_key": peer_identity.public_key_bytes.hex(),
+                    "ed25519_sig":  sig_bytes.hex(),
+                    "ed25519_pubkey": peer_identity.public_key_bytes.hex(),
                     "agent_id":   peer_identity.agent_id,
                 }
                 initiator.handle_response(FAKE_PEER_HWND, response)
@@ -154,6 +154,165 @@ class TestRealCryptoRoundTrip:
         assert result.ok is True, f"Handshake failed: {result.reason}"
         assert result.peer is not None
         assert result.peer.public_key_hex == peer_identity.public_key_bytes.hex()
+
+
+# ── Gap C binding tests — real Software KSP (ECDSA P-384 / SHA-384) ──────────
+
+class TestGapCBinding:
+    """Verify the nonce-bound key binding that closes Gap C.
+
+    Provider used: Microsoft Software Key Storage Provider (NCrypt, ECDSA P-384).
+    No crypto mocks.  All signatures are real.
+    """
+
+    def test_verify_peer_passes_with_valid_binding(self, tmp_path):
+        """verify_peer() accepts a packet with correct P-384 binding and ed25519 sig."""
+        from enterprise.identity_cng import CngIdentity
+        from enterprise.handshake import verify_peer, _cng_binding_bytes, _signed_bytes
+
+        ed_identity  = AgentIdentity.init("gap-c-ed25519", data_dir=tmp_path / "ed")
+        cng_identity = CngIdentity.init("gap-c-cng", data_dir=tmp_path / "cng", overwrite=True)
+
+        nonce          = "aabbccddeeff00112233445566778899"
+        initiator_hwnd = FAKE_MY_HWND
+
+        ed25519_pub = ed_identity.public_key_bytes
+        ed_sig      = ed_identity.sign(_signed_bytes(nonce, initiator_hwnd))
+        cng_sig     = cng_identity.sign(_cng_binding_bytes(nonce, ed25519_pub))
+
+        from enterprise.crypto import cng_sha384
+        packet = {
+            "agent_id":            "SC-" + cng_sha384(cng_identity.public_key_bytes).hex()[:8].upper(),
+            "ed25519_pubkey":      ed25519_pub.hex(),
+            "ed25519_sig":         ed_sig.hex(),
+            "platform_ksp_pubkey": cng_identity.public_key_bytes.hex(),
+            "platform_ksp_sig":    cng_sig.hex(),
+        }
+
+        gap_c_closed = verify_peer(packet, nonce, initiator_hwnd)
+        assert gap_c_closed is True
+
+    def test_attacker_with_stolen_ed25519_and_own_cng_rejected(self, tmp_path):
+        """Attacker has victim's ed25519 key but their own P-384 key.
+
+        They claim victim's agent_id but provide their own platform_ksp_pubkey.
+        verify_peer() must reject: agent_id fingerprint does not match
+        the attacker's platform_ksp_pubkey.
+        """
+        from enterprise.identity_cng import CngIdentity
+        from enterprise.handshake import verify_peer, _cng_binding_bytes, _signed_bytes, PeerVerificationError
+
+        victim_ed      = AgentIdentity.init("victim-ed25519", data_dir=tmp_path / "v-ed")
+        victim_cng     = CngIdentity.init("victim-cng",      data_dir=tmp_path / "v-cng", overwrite=True)
+        attacker_cng   = CngIdentity.init("attacker-cng",    data_dir=tmp_path / "a-cng", overwrite=True)
+
+        nonce          = "deadbeef12345678cafebabe90abcdef"
+        initiator_hwnd = FAKE_MY_HWND
+
+        from enterprise.crypto import cng_sha384
+        # Attacker claims victim's agent_id (derived from victim's P-384 pubkey)
+        victim_agent_id = "SC-" + cng_sha384(victim_cng.public_key_bytes).hex()[:8].upper()
+
+        # But provides their own platform_ksp_pubkey
+        victim_ed_pub = victim_ed.public_key_bytes
+        ed_sig        = victim_ed.sign(_signed_bytes(nonce, initiator_hwnd))
+        # Attacker signs with their own CNG key
+        cng_sig       = attacker_cng.sign(_cng_binding_bytes(nonce, victim_ed_pub))
+
+        fake_packet = {
+            "agent_id":            victim_agent_id,               # claims victim
+            "ed25519_pubkey":      victim_ed_pub.hex(),           # stolen key
+            "ed25519_sig":         ed_sig.hex(),                   # valid ed25519 sig
+            "platform_ksp_pubkey": attacker_cng.public_key_bytes.hex(),  # attacker's key
+            "platform_ksp_sig":    cng_sig.hex(),                  # attacker's sig
+        }
+
+        with pytest.raises(PeerVerificationError) as exc_info:
+            verify_peer(fake_packet, nonce, initiator_hwnd)
+
+        assert "agent_id" in str(exc_info.value).lower() or "mismatch" in str(exc_info.value).lower()
+
+    def test_attacker_cannot_forge_cng_sig_for_victim_pubkey(self, tmp_path):
+        """Attacker knows victim's P-384 pubkey but not the private key.
+
+        They provide victim's platform_ksp_pubkey and correct agent_id,
+        but must forge platform_ksp_sig — which requires the P-384 private key.
+        verify_peer() must reject at step 2 (cng_verify fails).
+        """
+        from enterprise.identity_cng import CngIdentity
+        from enterprise.handshake import verify_peer, _cng_binding_bytes, _signed_bytes, PeerVerificationError
+        from enterprise.crypto import cng_sha384
+
+        victim_cng = CngIdentity.init("victim-cng-forge", data_dir=tmp_path / "v-cng", overwrite=True)
+        victim_ed  = AgentIdentity.init("victim-ed-forge",  data_dir=tmp_path / "v-ed")
+
+        nonce          = "1122334455667788aabbccddeeff0011"
+        initiator_hwnd = FAKE_MY_HWND
+
+        victim_ed_pub = victim_ed.public_key_bytes
+        victim_agent_id = "SC-" + cng_sha384(victim_cng.public_key_bytes).hex()[:8].upper()
+
+        ed_sig = victim_ed.sign(_signed_bytes(nonce, initiator_hwnd))
+
+        # Attacker forges a random P-384 sig (garbage bytes)
+        forged_cng_sig = bytes(96)  # 96 zero bytes — invalid ECDSA P-384
+
+        fake_packet = {
+            "agent_id":            victim_agent_id,
+            "ed25519_pubkey":      victim_ed_pub.hex(),
+            "ed25519_sig":         ed_sig.hex(),
+            "platform_ksp_pubkey": victim_cng.public_key_bytes.hex(),
+            "platform_ksp_sig":    forged_cng_sig.hex(),
+        }
+
+        with pytest.raises(PeerVerificationError) as exc_info:
+            verify_peer(fake_packet, nonce, initiator_hwnd)
+
+        assert "platform_ksp_sig" in str(exc_info.value) or "binding" in str(exc_info.value).lower()
+
+    def test_responder_produces_verifiable_binding(self, tmp_path):
+        """HandshakeResponder with real CngIdentity produces a packet verify_peer accepts."""
+        from enterprise.identity_cng import CngIdentity
+        from enterprise.handshake import HandshakeResponder, verify_peer, DTYPE_RESPONSE
+
+        ed_identity  = AgentIdentity.init("resp-binding-ed",  data_dir=tmp_path / "ed")
+        cng_identity = CngIdentity.init("resp-binding-cng", data_dir=tmp_path / "cng", overwrite=True)
+
+        captured = {}
+
+        def fake_send_data(hwnd, payload, data_type=0):
+            captured["payload"] = payload
+            return True
+
+        responder = HandshakeResponder(
+            my_hwnd=FAKE_MY_HWND,
+            identity=ed_identity,
+            cng_identity=cng_identity,
+        )
+
+        nonce          = "fedcba0987654321fedcba0987654321"
+        initiator_hwnd = FAKE_PEER_HWND
+
+        challenge = {
+            "type":           "challenge",
+            "nonce":          nonce,
+            "initiator_hwnd": initiator_hwnd,
+            "initiator_id":   "agent-initiator",
+        }
+
+        with patch("enterprise.registry.send_data", side_effect=fake_send_data):
+            responder.handle_challenge(initiator_hwnd, challenge)
+
+        assert "payload" in captured, "Responder should have sent a response"
+        packet = captured["payload"]
+
+        # platform_ksp fields must be present
+        assert "platform_ksp_pubkey" in packet
+        assert "platform_ksp_sig" in packet
+
+        # verify_peer must accept it — real crypto, no mocks
+        gap_c_closed = verify_peer(packet, nonce, initiator_hwnd)
+        assert gap_c_closed is True, "verify_peer must confirm Gap C closed"
 
 
 # ── PeerBackoff with real time ────────────────────────────────────────────────

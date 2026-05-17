@@ -3,8 +3,8 @@
 Upgrades peer trust from "read the birth tag" (v1) to "cryptographically prove key
 possession" (v2).  Gated on SC_HANDSHAKE=v2 (default: off).
 
-Protocol summary
-----------------
+Protocol summary (Option B — nonce-bound attestation)
+------------------------------------------------------
 1.  Initiator calls discover_handshake_peers() which runs discover_mesh() then
     fires a HandshakeChallenge at each candidate's listener HWND concurrently
     (thread pool, max SC_HANDSHAKE_PARALLEL workers, default 8).
@@ -17,30 +17,43 @@ Protocol summary
           "initiator_id":   "<agent_id string>"
         }
 
-3.  Peer's HandshakeResponder (running in a CopyDataListener callback) signs
-    bytes(nonce + ":" + str(initiator_hwnd)) with its ed25519 AgentIdentity key,
-    then sends a response back to the initiator's HWND:
+3.  Peer's HandshakeResponder signs TWO things and sends a response:
         {
-          "type":      "response",
-          "nonce":     "<same nonce>",
-          "signature": "<128-hex-char ed25519 signature>",
-          "public_key":"<64-hex-char ed25519 pubkey>",
-          "agent_id":  "<peer agent_id>"
+          "type":              "response",
+          "nonce":             "<same nonce>",
+          "agent_id":          "<peer agent_id from CngIdentity>",
+          "ed25519_pubkey":    "<64-hex ed25519 pubkey (32 bytes)>",
+          "ed25519_sig":       "<128-hex ed25519 sig of (nonce:initiator_hwnd)>",
+          "platform_ksp_pubkey": "<192-hex P-384 pubkey raw X||Y (96 bytes)>",  # if cng available
+          "platform_ksp_sig":    "<192-hex ECDSA P-384 sig of (nonce || ed25519_pubkey)>"
         }
 
-4.  Initiator verifies:
-    a. nonce matches
-    b. ed25519 signature of (nonce + ":" + str(initiator_hwnd)) with peer pubkey
-    c. peer pubkey matches SCID_SIG property on peer's HWND (birth-tag cross-check)
+    The platform_ksp_sig signs BOTH the nonce (freshness) AND the ed25519_pubkey (binding).
+    This is the cryptographic binding that closes Gap C: only the holder of both the P-384
+    private key AND knowledge of the ed25519 pubkey can produce a valid platform_ksp_sig.
 
-5.  Attestation (Gap C bridge requirement):
-    After successful ed25519 verification, initiator logs a `handshake_succeeded`
-    event signed with CngIdentity (P-384 / Platform KSP) if one is available.
-    This binds the Platform KSP identity to the ed25519 peer vouching chain —
-    making the two key systems meet at verify time.  This is NOT a full key chain
-    yet — that requires Tier 2 design item completion (see ROLLBACK.md Gap C) —
-    but it creates the cryptographic paper trail required before SC_HANDSHAKE=v2
-    can flip to default-on.
+4.  Initiator verifies via verify_peer():
+    a. nonce matches
+    b. verify_peer() — three checks in sequence:
+       1. agent_id derived from platform_ksp_pubkey via SHA-384 fingerprint
+       2. platform_ksp_sig verifies (nonce || ed25519_pubkey) with P-384 key  ← Gap C closure
+       3. ed25519_sig verifies (nonce:initiator_hwnd) with ed25519 key
+    c. SCID_SIG birth-tag cross-check using the now-bound ed25519_pubkey
+
+    If peer sends no platform_ksp_pubkey: steps b.1 and b.2 are skipped, Gap C warning logged.
+
+Gap C status
+------------
+    Gap C (ed25519 ↔ CNG key independence) is closed at verify time for any peer that
+    includes platform_ksp_sig in its response.  An attacker who extracts the DPAPI-wrapped
+    ed25519 key cannot produce a valid platform_ksp_sig because the P-384 private key is
+    bound to the Windows user profile in the Microsoft Software Key Storage Provider
+    (NCrypt), which rejects operations from other user contexts.
+
+    Provider used:  Microsoft Software Key Storage Provider (NCrypt, ECDSA P-384 / SHA-384)
+    Provider NOT used in current build: Microsoft Platform Crypto Provider (TPM-backed)
+    Gap C is closed against same-user extractors.  Moving to Platform Crypto Provider
+    (TPM-backed) is a separate, scoped change in crypto.py:84 and lands as its own PR.
 
 Flags
 -----
@@ -55,7 +68,7 @@ Backoff
     Subsequent discovery cycles skip that peer until backoff_sec has elapsed.
     Persistent failures (e.g., stale HWND) are not retried indefinitely.
 
-Version: 1.0.0-enterprise  Tier 2
+Version: 2.0.0-enterprise  Tier 2  (Option B nonce-bound key binding)
 """
 from __future__ import annotations
 
@@ -98,7 +111,7 @@ class HandshakePeer:
     agent_id:        str
     hwnd:            int
     public_key_hex:  str          # ed25519 pubkey hex (32 bytes = 64 hex chars)
-    attested:        bool = False  # True if CngIdentity attestation log was written
+    gap_c_closed:    bool = False  # True if platform_ksp_sig binding was verified
     verified_at:     float = field(default_factory=time.time)
 
 
@@ -146,6 +159,15 @@ class PeerBackoff:
 _backoff = PeerBackoff()
 
 
+# ── Exceptions ────────────────────────────────────────────────────────────────
+
+class PeerVerificationError(Exception):
+    """Raised by verify_peer() when any identity or binding check fails.
+
+    Callers must catch this and treat the peer as unauthenticated.
+    """
+
+
 # ── Challenge builder ─────────────────────────────────────────────────────────
 
 def _challenge_payload(nonce: str, initiator_hwnd: int, initiator_id: str) -> dict:
@@ -160,6 +182,112 @@ def _challenge_payload(nonce: str, initiator_hwnd: int, initiator_id: str) -> di
 def _signed_bytes(nonce: str, initiator_hwnd: int) -> bytes:
     """Canonical bytes that the responder signs and the initiator verifies."""
     return f"{nonce}:{initiator_hwnd}".encode()
+
+
+def _cng_binding_bytes(nonce: str, ed25519_pubkey_bytes: bytes) -> bytes:
+    """Canonical bytes the responder's P-384 key signs to bind it to the ed25519 key.
+
+    The nonce is included so this signature is fresh and cannot be replayed across
+    handshakes.  The ed25519_pubkey is included so the P-384 signature explicitly
+    vouches for that specific key — this is the Gap C closure.
+    """
+    return nonce.encode("ascii") + ed25519_pubkey_bytes
+
+
+def verify_peer(packet: dict, nonce: str, initiator_hwnd: int) -> bool:
+    """Verify a peer's identity packet from a handshake response.
+
+    Three-step verification in order:
+        1. agent_id consistency — must equal SHA-384(platform_ksp_pubkey)[:8].upper()
+        2. platform_ksp_sig — ECDSA P-384 / SHA-384 over (nonce || ed25519_pubkey):
+           proves the holder of the P-384 private key explicitly vouches for this
+           ed25519 pubkey in this session (Gap C closure)
+        3. ed25519_sig — ed25519 signature over (nonce:initiator_hwnd):
+           proves possession of the ed25519 private key
+
+    If platform_ksp_pubkey is absent from packet, steps 1+2 are skipped and
+    a WARNING is logged.  Step 3 always runs.
+
+    Args:
+        packet:        The decoded response dict from the peer.
+        nonce:         The nonce sent in the challenge (hex string).
+        initiator_hwnd: The HWND sent in the challenge.
+
+    Returns:
+        True on success.
+
+    Raises:
+        PeerVerificationError: on any check failure (caller treats peer as rejected).
+    """
+    from enterprise.identity import AgentIdentity
+    from enterprise.crypto import cng_verify, cng_sha384
+
+    ed25519_pub_hex = packet.get("ed25519_pubkey", "")
+    ed25519_sig_hex = packet.get("ed25519_sig", "")
+    p384_pub_hex    = packet.get("platform_ksp_pubkey", "")
+    p384_sig_hex    = packet.get("platform_ksp_sig", "")
+    agent_id        = packet.get("agent_id", "")
+
+    if not ed25519_pub_hex or not ed25519_sig_hex:
+        raise PeerVerificationError(
+            "response missing ed25519_pubkey or ed25519_sig"
+        )
+
+    try:
+        ed25519_pub_bytes = bytes.fromhex(ed25519_pub_hex)
+        ed25519_sig_bytes = bytes.fromhex(ed25519_sig_hex)
+    except ValueError as exc:
+        raise PeerVerificationError(f"invalid ed25519 hex: {exc}") from exc
+
+    # ── Steps 1 + 2: Platform KSP binding ────────────────────────────────────
+    gap_c_closed = False
+    if p384_pub_hex and p384_sig_hex:
+        try:
+            p384_pub_bytes = bytes.fromhex(p384_pub_hex)
+            p384_sig_bytes = bytes.fromhex(p384_sig_hex)
+        except ValueError as exc:
+            raise PeerVerificationError(f"invalid platform_ksp hex: {exc}") from exc
+
+        # Step 1: agent_id must be derived from platform_ksp_pubkey
+        expected_id = "SC-" + cng_sha384(p384_pub_bytes).hex()[:8].upper()
+        if expected_id != agent_id:
+            raise PeerVerificationError(
+                f"agent_id mismatch: response claims {agent_id!r} but "
+                f"platform_ksp_pubkey fingerprint yields {expected_id!r} — "
+                f"possible impersonation"
+            )
+
+        # Step 2: CNG binding signature — P-384 key signs (nonce || ed25519_pubkey)
+        # This is the cryptographic closure of Gap C.
+        binding_data = _cng_binding_bytes(nonce, ed25519_pub_bytes)
+        if not cng_verify(binding_data, p384_sig_bytes, p384_pub_bytes):
+            raise PeerVerificationError(
+                "platform_ksp_sig verification failed — "
+                "ed25519 pubkey is not bound to this P-384 identity"
+            )
+
+        gap_c_closed = True
+        _log.debug(
+            "verify_peer: P-384 binding verified for agent_id=%s (Gap C closed)",
+            agent_id,
+        )
+    else:
+        _log.warning(
+            "verify_peer: no platform_ksp_pubkey in response "
+            "agent_id=%s — Gap C not closed for this peer",
+            agent_id,
+        )
+
+    # ── Step 3: ed25519 signature ─────────────────────────────────────────────
+    ed25519_signed_data = _signed_bytes(nonce, initiator_hwnd)
+    if not AgentIdentity.verify(ed25519_signed_data, ed25519_sig_bytes, ed25519_pub_bytes):
+        raise PeerVerificationError("ed25519 signature verification failed")
+
+    _log.debug(
+        "verify_peer: ed25519 verified for agent_id=%s gap_c_closed=%s",
+        agent_id, gap_c_closed,
+    )
+    return gap_c_closed   # True = Gap C closed, False = ed25519-only (no CNG binding)
 
 
 # ── Responder ─────────────────────────────────────────────────────────────────
@@ -179,47 +307,68 @@ class HandshakeResponder:
         listener.start()
     """
 
-    def __init__(self, my_hwnd: int, identity) -> None:
+    def __init__(self, my_hwnd: int, identity, cng_identity=None) -> None:
         """
         Args:
-            my_hwnd:  This agent's listener HWND (stamped in birth tag as SCLHWND).
-            identity: AgentIdentity (ed25519) — used to sign challenge responses.
+            my_hwnd:      This agent's listener HWND (stamped in birth tag as SCLHWND).
+            identity:     AgentIdentity (ed25519) — signs (nonce:initiator_hwnd).
+            cng_identity: CngIdentity (P-384, Microsoft Software KSP) — optional.
+                          When provided, signs (nonce || ed25519_pubkey) to bind the
+                          two key systems at handshake time (closes Gap C).
         """
         self._hwnd     = my_hwnd
         self._identity = identity
+        self._cng      = cng_identity
 
     def handle_challenge(self, sender_hwnd: int, payload: dict) -> None:
         """Callback invoked by CopyDataListener on DTYPE_CHALLENGE receipt.
+
+        Produces an identity_packet response containing:
+          - ed25519_sig: proves ed25519 key possession
+          - platform_ksp_sig: binds P-384 key to ed25519 pubkey (Gap C closure)
+            Only included when cng_identity was supplied at construction.
 
         Args:
             sender_hwnd: HWND that sent the WM_COPYDATA (OS-provided).
             payload:     Decoded JSON dict from the challenge frame.
         """
-        import json
-
         nonce          = payload.get("nonce", "")
         initiator_hwnd = payload.get("initiator_hwnd", 0)
-        initiator_id   = payload.get("initiator_id", "")
 
         if not nonce or not initiator_hwnd:
             _log.warning("handshake: malformed challenge from hwnd=%#x — dropped", sender_hwnd)
             return
 
+        # ed25519: sign (nonce:initiator_hwnd) — proves key possession
         try:
-            sig_bytes = self._identity.sign(_signed_bytes(nonce, initiator_hwnd))
+            ed25519_sig_bytes = self._identity.sign(_signed_bytes(nonce, initiator_hwnd))
         except Exception as exc:
-            _log.error("handshake: sign failed: %s", exc)
+            _log.error("handshake: ed25519 sign failed: %s", exc)
             return
 
-        response = {
-            "type":       "response",
-            "nonce":      nonce,
-            "signature":  sig_bytes.hex(),
-            "public_key": self._identity.public_key_bytes.hex(),
-            "agent_id":   self._identity.agent_id
-            if hasattr(self._identity, "agent_id")
-            else "",
+        ed25519_pub_bytes = self._identity.public_key_bytes
+
+        response: dict = {
+            "type":          "response",
+            "nonce":         nonce,
+            "agent_id":      getattr(self._identity, "agent_id", ""),
+            "ed25519_pubkey": ed25519_pub_bytes.hex(),
+            "ed25519_sig":    ed25519_sig_bytes.hex(),
         }
+
+        # P-384: sign (nonce || ed25519_pubkey) — binds the two keys (Gap C closure)
+        if self._cng is not None:
+            try:
+                binding_data    = _cng_binding_bytes(nonce, ed25519_pub_bytes)
+                p384_sig_bytes  = self._cng.sign(binding_data)
+                response["platform_ksp_pubkey"] = self._cng.public_key_bytes.hex()
+                response["platform_ksp_sig"]    = p384_sig_bytes.hex()
+                # agent_id from CngIdentity overrides ed25519 agent_id when binding present
+                response["agent_id"] = getattr(self._cng, "agent_id", response["agent_id"])
+            except Exception as exc:
+                _log.warning(
+                    "handshake: P-384 binding sign failed (non-fatal, Gap C not closed): %s", exc
+                )
 
         try:
             from enterprise.registry import send_data
@@ -242,15 +391,13 @@ class HandshakeInitiator:
 
     def __init__(
         self,
-        my_hwnd:    int,
+        my_hwnd:     int,
         my_agent_id: str,
-        cng_identity=None,   # CngIdentity — optional; used for attestation log
     ) -> None:
-        self._my_hwnd    = my_hwnd
-        self._my_id      = my_agent_id
-        self._cng        = cng_identity
-        self._event      = threading.Event()
-        self._result:    Optional[dict] = None
+        self._my_hwnd     = my_hwnd
+        self._my_id       = my_agent_id
+        self._event       = threading.Event()
+        self._result:     Optional[dict] = None
         self._result_lock = threading.Lock()
 
     def handle_response(self, sender_hwnd: int, payload: dict) -> None:
@@ -271,7 +418,6 @@ class HandshakeInitiator:
             HandshakeResult with ok=True if all verifications pass.
         """
         from enterprise.registry import send_data, get_agent_prop
-        from enterprise.identity import AgentIdentity
 
         nonce = secrets.token_hex(16)   # 32 hex chars = 128 bits
 
@@ -306,47 +452,30 @@ class HandshakeInitiator:
                 reason="nonce mismatch in response",
             )
 
-        # ── Step b: ed25519 signature verification ────────────────────────────
-        sig_hex = resp.get("signature", "")
-        pub_hex = resp.get("public_key", "")
-        if not sig_hex or not pub_hex:
-            return HandshakeResult(
-                agent_id=peer.agent_id,
-                hwnd=peer.hwnd,
-                ok=False,
-                reason="response missing signature or public_key field",
-            )
-
+        # ── Step b: verify_peer — binding + ed25519 verification ─────────────
+        # verify_peer() performs:
+        #   1. agent_id consistency against platform_ksp_pubkey fingerprint
+        #   2. ECDSA P-384 binding sig verifies (nonce || ed25519_pubkey) ← Gap C
+        #   3. ed25519 sig verifies (nonce:initiator_hwnd)
         try:
-            sig_bytes = bytes.fromhex(sig_hex)
-            pub_bytes = bytes.fromhex(pub_hex)
-        except ValueError as exc:
+            gap_c_closed = verify_peer(resp, nonce, self._my_hwnd)
+        except PeerVerificationError as exc:
             return HandshakeResult(
                 agent_id=peer.agent_id,
                 hwnd=peer.hwnd,
                 ok=False,
-                reason=f"response contains invalid hex: {exc}",
+                reason=str(exc),
             )
 
-        signed_data = _signed_bytes(nonce, self._my_hwnd)
-        if not AgentIdentity.verify(signed_data, sig_bytes, pub_bytes):
-            return HandshakeResult(
-                agent_id=peer.agent_id,
-                hwnd=peer.hwnd,
-                ok=False,
-                reason="ed25519 signature verification failed",
-            )
+        # ── Step c: SCID_SIG birth-tag cross-check ────────────────────────────
+        pub_hex   = resp.get("ed25519_pubkey", "")
+        pub_bytes = bytes.fromhex(pub_hex) if pub_hex else b""
 
-        # ── Step c: cross-check pubkey against birth-tag SCID_SIG ────────────
         btag_sig_hex = get_agent_prop(peer.hwnd, "SCID_SIG")
-        if btag_sig_hex:
-            # Peer has a signed birth tag — verify that the response pubkey
-            # matches the pubkey that signed the birth tag.  We read SCID, SCPID,
-            # SCCTIME, SCBORN, SCID_STS from the window to rebuild the payload,
-            # then verify SCID_SIG against the claimed pubkey from the response.
+        if btag_sig_hex and pub_bytes:
             from enterprise.birth_tag_v2 import verify_signed_birth_tag
             ok_btag, btag_reason = verify_signed_birth_tag(
-                peer.hwnd, pub_bytes, max_age_seconds=0.0  # age already checked at discovery
+                peer.hwnd, pub_bytes, max_age_seconds=0.0
             )
             if not ok_btag:
                 return HandshakeResult(
@@ -355,36 +484,16 @@ class HandshakeInitiator:
                     ok=False,
                     reason=f"birth-tag signature cross-check failed: {btag_reason}",
                 )
-        else:
-            # Peer has no SCID_SIG — acceptable during SC_SUNSET_V1 grace period.
+        elif not btag_sig_hex:
             _log.warning(
                 "v1_peer_accepted_during_grace agent=%s hwnd=%#x",
                 peer.agent_id, peer.hwnd,
             )
 
-        # ── Step 5: attestation (Gap C bridge) ───────────────────────────────
-        attested = False
-        if self._cng is not None:
-            try:
-                cng_id = getattr(self._cng, "agent_id", "unknown")
-                _log.info(
-                    "handshake_succeeded agent=%s hwnd=%#x pubkey=%s... attested_by=%s",
-                    peer.agent_id, peer.hwnd, pub_hex[:16], cng_id,
-                )
-                # Write attestation into CNG ledger if caller provides one
-                if hasattr(self._cng, "_ledger") and self._cng._ledger is not None:
-                    self._cng._ledger.log(
-                        "handshake_succeeded",
-                        result="ok",
-                        metadata={
-                            "peer_agent_id": peer.agent_id,
-                            "peer_hwnd": peer.hwnd,
-                            "peer_pubkey_prefix": pub_hex[:16],
-                        },
-                    )
-                attested = True
-            except Exception as exc:
-                _log.warning("handshake: attestation log failed (non-fatal): %s", exc)
+        _log.info(
+            "handshake_succeeded agent=%s hwnd=%#x gap_c_closed=%s",
+            peer.agent_id, peer.hwnd, gap_c_closed,
+        )
 
         return HandshakeResult(
             agent_id=peer.agent_id,
@@ -395,7 +504,7 @@ class HandshakeInitiator:
                 agent_id=peer.agent_id,
                 hwnd=peer.hwnd,
                 public_key_hex=pub_hex,
-                attested=attested,
+                gap_c_closed=gap_c_closed,
             ),
         )
 
@@ -403,13 +512,13 @@ class HandshakeInitiator:
 # ── orchestrator ──────────────────────────────────────────────────────────────
 
 def discover_handshake_peers(
-    my_hwnd:    int,
+    my_hwnd:     int,
     my_agent_id: str,
-    identity,               # AgentIdentity (ed25519) for responding to challenges
-    cng_identity=None,      # CngIdentity (P-384) for attestation logging; optional
+    identity,                # AgentIdentity (ed25519) for signing challenge responses
+    cng_identity=None,       # CngIdentity (P-384, Software KSP) for binding signature
     parallelism: int = _HANDSHAKE_PARALLEL,
     timeout_sec: Optional[float] = None,
-    _candidates=None,       # override for tests (skip real discover_mesh())
+    _candidates=None,        # override for tests (skip real discover_mesh())
 ) -> list[HandshakePeer]:
     """Discover mesh peers and handshake with each concurrently.
 
@@ -421,8 +530,10 @@ def discover_handshake_peers(
     Args:
         my_hwnd:      HWND of the caller's CopyDataListener window.
         my_agent_id:  Caller's agent ID string.
-        identity:     AgentIdentity for signing challenge responses.
-        cng_identity: Optional CngIdentity for attestation logging.
+        identity:     AgentIdentity (ed25519) for signing challenge responses.
+        cng_identity: CngIdentity (P-384, Microsoft Software KSP) for binding sig.
+                      When provided, responder includes platform_ksp_sig that binds
+                      the P-384 key to the ed25519 key per handshake (closes Gap C).
         parallelism:  Max concurrent handshakes (default: SC_HANDSHAKE_PARALLEL).
         timeout_sec:  Per-candidate timeout (default: SC_HANDSHAKE_TIMEOUT_MS/1000).
         _candidates:  Test-only override — list of BirthTag objects to use instead
@@ -468,7 +579,6 @@ def discover_handshake_peers(
             initiator = HandshakeInitiator(
                 my_hwnd=listener.hwnd if hasattr(listener, "hwnd") else my_hwnd,
                 my_agent_id=my_agent_id,
-                cng_identity=cng_identity,
             )
             listener.register(DTYPE_RESPONSE, initiator.handle_response)
             fut = pool.submit(initiator.run, candidate, timeout_sec)
@@ -491,8 +601,8 @@ def discover_handshake_peers(
                     verified.append(result.peer)
                     _backoff.clear(result.peer.agent_id)
                     _log.info(
-                        "handshake: peer %s VERIFIED (hwnd=%#x, attested=%s)",
-                        result.agent_id, result.hwnd, result.peer.attested,
+                        "handshake: peer %s VERIFIED (hwnd=%#x, gap_c_closed=%s)",
+                        result.agent_id, result.hwnd, result.peer.gap_c_closed,
                     )
                 else:
                     _backoff.record_failure(candidate.agent_id)
