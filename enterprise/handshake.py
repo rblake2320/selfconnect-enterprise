@@ -79,7 +79,10 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:  # pragma: no cover
+    from enterprise.birth_tag_v2 import BirthTag
 
 _log = logging.getLogger(__name__)
 
@@ -407,7 +410,7 @@ class HandshakeInitiator:
                 self._result = payload
         self._event.set()
 
-    def run(self, peer: "BirthTag", timeout_sec: float) -> HandshakeResult:  # type: ignore[name-defined]
+    def run(self, peer: "BirthTag", timeout_sec: float) -> HandshakeResult:
         """Execute a full challenge-response cycle against one peer.
 
         Args:

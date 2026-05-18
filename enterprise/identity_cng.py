@@ -36,6 +36,7 @@ Version: 1.0.0-enterprise  Session 16
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -43,6 +44,7 @@ from typing import Optional
 from enterprise.crypto import (
     ALGO_ID,
     CngSigner,
+    cng_delete_key,
     cng_key_exists,
     cng_sha384,
     cng_verify,
@@ -188,6 +190,44 @@ class CngIdentity:
         Returns True if valid; False otherwise (never raises).
         """
         return cng_verify(data, signature, public_key_bytes)
+
+    # ── Key rotation (G-4 fix) ────────────────────────────────────────────────
+
+    def rotate(self, data_dir=None) -> "CngIdentity":
+        """Rotate the agent's P-384 NCrypt key pair in-place (closes Gap G-4).
+
+        Deletes the existing NCrypt persisted key, generates a new one, finalises
+        it, and overwrites the public key file.  The current instance is updated
+        in-place to use the new signer.
+
+        The agent_id WILL change after rotation because it is derived from the
+        SHA-384 fingerprint of the public key.  Callers must re-stamp the new
+        agent_id on any peer registries after calling rotate().
+
+        Returns:
+            self -- updated in-place with the new key pair.
+
+        Raises:
+            OSError: If NCrypt key operations fail.
+        """
+        key_name = self._ncrypt_key_name(self._agent_name)
+        storage  = self._storage_paths(self._agent_name, data_dir)
+        # Close the old signer handles before deleting the key
+        try:
+            self._signer.close()
+        except Exception:
+            pass
+        # Delete the old key from NCrypt KSP using the module-level helper
+        cng_delete_key(key_name)  # no-op if key does not exist
+        # Create a fresh key
+        new_signer = CngSigner.create(key_name)
+        storage["dir"].mkdir(parents=True, exist_ok=True)
+        storage["pub"].write_text(new_signer.public_key_bytes.hex(), encoding="ascii")
+        storage["algo"].write_text(ALGO_ID, encoding="ascii")
+        # Update in-place
+        self._signer   = new_signer
+        self._agent_id = "SC-" + cng_sha384(new_signer.public_key_bytes).hex()[:8].upper()
+        return self
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -419,3 +459,33 @@ class CngLedger:
     @staticmethod
     def _default_path(agent_name: str) -> Path:
         return _default_data_dir() / agent_name / "ledger_cng.jsonl"
+
+
+# ── ThreadSafeCngLedger (G-6 fix) ─────────────────────────────────────────
+
+class ThreadSafeCngLedger(CngLedger):
+    """Thread-safe wrapper around CngLedger (closes Gap G-6 for CNSA 2.0 chains).
+
+    Adds a ``threading.Lock`` around the mutable state (_seq, _prev_hash) and
+    the JSONL file write so that concurrent callers cannot corrupt the SHA-384
+    hash chain.  All other behaviour is identical to CngLedger.
+
+    Use this class whenever an agent may call log() from multiple threads or
+    from an asyncio event loop with concurrent tasks.
+
+    Usage::
+
+        from enterprise.identity_cng import ThreadSafeCngLedger
+        ledger = ThreadSafeCngLedger(cng_identity)
+        # safe to call from multiple threads
+        ledger.log("action", result="ok")
+    """
+
+    def __init__(self, identity: CngIdentity, log_path=None) -> None:
+        super().__init__(identity, log_path)
+        self._write_lock: threading.Lock = threading.Lock()
+
+    def log(self, action: str, result: str = "", metadata=None, label=None) -> dict:
+        """Thread-safe log() — serialises all writes through a threading.Lock."""
+        with self._write_lock:
+            return super().log(action, result=result, metadata=metadata, label=label)

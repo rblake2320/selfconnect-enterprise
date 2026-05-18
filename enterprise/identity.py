@@ -282,6 +282,38 @@ class AgentIdentity:
         except Exception:
             return False
 
+    def rotate(self, data_dir: Optional[Path] = None) -> "AgentIdentity":
+        """Rotate the agent's ed25519 key pair in-place (closes Gap G-4).
+
+        Generates a new ed25519 key pair, re-encrypts it under DPAPI, and
+        overwrites the stored private key and public key files.  The current
+        instance is updated in-place to use the new keys.
+
+        The agent_id WILL change after rotation because it is derived from the
+        public key fingerprint.  Callers must re-stamp the new agent_id on any
+        peer registries after calling rotate().
+
+        Returns:
+            self — updated in-place with the new key pair.
+
+        Raises:
+            OSError: If DPAPI encryption or file write fails.
+        """
+        storage = self._storage_paths(self._agent_name, data_dir)
+        new_private_key = Ed25519PrivateKey.generate()
+        new_public_key  = new_private_key.public_key()
+        priv_raw        = new_private_key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+        encrypted       = _dpapi_encrypt(priv_raw)
+        storage["dpapi"].write_bytes(encrypted)
+        pub_raw = new_public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
+        storage["pub"].write_text(pub_raw.hex(), encoding="ascii")
+        # Update in-place
+        self._private_key = new_private_key
+        self._public_key  = new_public_key
+        self._pub_raw     = pub_raw
+        self._agent_id    = "SC-" + hashlib.sha256(pub_raw).hexdigest()[:8].upper()
+        return self
+
     def __repr__(self) -> str:
         return f"AgentIdentity(agent_id={self._agent_id!r}, name={self._agent_name!r})"
 

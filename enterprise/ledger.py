@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -276,3 +277,34 @@ class AgentLedger:
     @staticmethod
     def _default_path(agent_name: str) -> Path:
         return _default_data_dir() / agent_name / "ledger.jsonl"
+
+
+# ── ThreadSafeAgentLedger (G-6 fix) ───────────────────────────────────────────
+
+class ThreadSafeAgentLedger(AgentLedger):
+    """Thread-safe wrapper around AgentLedger (closes Gap G-6).
+
+    Adds a ``threading.Lock`` around the mutable state (_seq, _prev_hash) and
+    the JSONL file write so that concurrent callers cannot corrupt the hash
+    chain.  All other behaviour is identical to AgentLedger.
+
+    Use this class whenever an agent may call log() from multiple threads or
+    from an asyncio event loop with concurrent tasks.  For single-threaded,
+    sequential agents the base AgentLedger is sufficient.
+
+    Usage::
+
+        from enterprise.ledger import ThreadSafeAgentLedger
+        ledger = ThreadSafeAgentLedger(identity)
+        # safe to call from multiple threads
+        ledger.log("action", result="ok")
+    """
+
+    def __init__(self, identity: AgentIdentity, log_path=None) -> None:
+        super().__init__(identity, log_path)
+        self._write_lock: threading.Lock = threading.Lock()
+
+    def log(self, action: str, result: str = "", metadata=None, label=None) -> dict:
+        """Thread-safe log() — serialises all writes through a threading.Lock."""
+        with self._write_lock:
+            return super().log(action, result=result, metadata=metadata, label=label)
