@@ -236,6 +236,24 @@ at the wrong layer would produce coverage numbers that lie.
 
 ---
 
+## Forward Compliance — NIST 800-53 Rev 6 Readiness
+
+NIST 800-53 Rev 6 is currently in draft and incremental update status (via CPRT). SelfConnect Enterprise is architecturally aligned with the explicit forward direction of Rev 6, specifically regarding AI agent governance, machine identity, and continuous authorization.
+
+The architecture predates the published standard but implements its expected requirements:
+
+| Expected Rev 6 Direction | SelfConnect Enterprise Implementation | Status |
+|--------------------------|---------------------------------------|--------|
+| **AI-specific control overlays** | `PolicyEnforcer` and `ControlPlane` provide deny-by-default runtime governance for all agent actions. | ✅ Built |
+| **Supply chain integrity for AI** | `CngIdentity` and hardware-bound keys provide cryptographically verifiable agent identity provenance. | ✅ Partial (training lineage not in scope) |
+| **Automated evidence collection** | `CngLedger` produces signed CBOR records matching SA-15 logging syntax for continuous evidence export. | ✅ Built |
+| **Non-Human Identity (NHI) controls** | Full lifecycle management for machine identities via `SCID` and per-agent `ed25519` / `P-384` keys. | ✅ Built |
+| **Post-Quantum Cryptography (PQC)** | ECDSA P-384 is NIST-approved through 2030. PQC migration roadmap targets ML-DSA adoption ahead of the 2030 deprecation deadline. | ✅ Compliant through 2030 |
+
+SelfConnect provides complete, cryptographically signed, machine-verifiable evidence for every control in the AI agent authorization layer (AC, AU, IA, SI, SA, SC). It reduces the AI agent portion of an 800-53 assessment from months of manual evidence collection to a single verified export. The rest of the ATO package (facility, personnel, infrastructure) remains unchanged and is managed by the organization.
+
+---
+
 ## Reporting Security Issues
 
 This is a private research and patent-portfolio repository. Security issues
