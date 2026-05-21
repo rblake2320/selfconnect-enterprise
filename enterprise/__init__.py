@@ -46,6 +46,29 @@ from enterprise.discovery_config import (  # noqa: F401
     MAX_CANDIDATES_PER_CYCLE,
     MAX_STAMPS_PER_PID,
 )
+# Ultra identity gate — cross-platform (available on all OS)
+from enterprise.identity_gate import (  # noqa: F401
+    IdentityGate,
+    IdentityGateDecision,
+    MODE_AUDIT,
+    MODE_BYPASS,
+    MODE_ENFORCE,
+    DEGRADATION_DESCRIPTIONS,
+    emergency_bypass,
+    get_identity_mode,
+    guarded_send_string,
+)
+from enterprise.ultra_gate import (  # noqa: F401
+    GateResult,
+    InjectionDeniedError,
+    UltraGate,
+    UltraGateBootstrapError,
+)
+from enterprise.key_recovery import (  # noqa: F401
+    KeyRecovery,
+    PeerRecoveryDetector,
+    recovery_pub_path,
+)
 
 # Windows-only modules — skip on non-Windows
 if sys.platform == "win32":

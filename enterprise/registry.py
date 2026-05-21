@@ -68,6 +68,10 @@ PROP_HB      = "SCHB"       # float str — last heartbeat time.time()
 PROP_SESSION = "SCSESS"     # optional session label e.g. "session-16"
 PROP_PID     = "SCPID"      # str(os.getpid()) — for cross-checking via GetWindowThreadProcessId
 PROP_CTIME   = "SCCTIME"    # str — OS process creation time (GetProcessTimes FILETIME epoch)
+# Ultra identity gate properties — stamped at bootstrap, readable by peers for mesh verification
+PROP_BPC      = "SCBPC"      # BPC pair_id (UUID hex) — set at Ultra bootstrap
+PROP_TSK      = "SCTSK"      # TSK client_id (UUID hex) — set at Ultra bootstrap
+PROP_RECOVERY = "SCRECOVERY" # "1" when agent is in key-recovery mode, "0" otherwise
 
 # ── Win32 structures for process identity binding ─────────────────────────────
 

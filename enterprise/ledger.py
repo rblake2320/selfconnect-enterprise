@@ -55,6 +55,16 @@ New action strings (Tier 1+):
     "mitigation_policy_applied"     — process hardening flags enabled (Tier 2)
     "birth_time_mismatch"           — per-message birth time validation failed (Tier 2)
     "emergency_override_activated"  — a rollback override flag was set (any tier)
+
+New action strings (Tier 1 Ultra identity gate — v1.2.0):
+    "ultra_gate_bootstrap"          — UltraGate bootstrap completed (BPC + TSK registered)
+    "ultra_gate_bootstrap_degraded" — UltraGate bootstrap completed in degraded mode (level N)
+    "ultra_gate_pass"               — injection request passed all identity layers
+    "ultra_gate_deny"               — injection request denied by identity gate
+    "ultra_gate_audit"              — injection would be denied but audit mode allowed it
+    "key_recovery_initiated"        — agent initiated key recovery (new keypair generated)
+    "key_recovery_completed"        — agent completed key recovery (re-registered with Ultra Server)
+    "emergency_bypass_activated"    — emergency bypass mutex activated (all gates forced to audit)
 """
 from __future__ import annotations
 
