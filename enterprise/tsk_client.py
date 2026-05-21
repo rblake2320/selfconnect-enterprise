@@ -184,15 +184,33 @@ def generate_tsk_key(state: TSKClientState, now_ms: int | None = None) -> str:
     return key_body + checksum
 
 
+# TSK Protocol Constants (must match protocol-constants.ts)
+# CHECKSUM_LENGTH: Python originally used 10 — TypeScript uses 12 (IL4 hardening).
+# CHECKSUM_PREFIX: Python originally used "cksum:" — TypeScript uses "checksum:".
+# Both mismatches were documented in protocol-constants.ts and caused KEY_LENGTH_MISMATCH
+# and CHECKSUM_INVALID errors when the Python client talked to the TypeScript server.
+CHECKSUM_LENGTH = 12
+CHECKSUM_DERIVATION_PREFIX = "checksum"
+
+
 def compute_checksum(shared_secret: str, key_body: str) -> str:
-    """Compute 10-char checksum over the key body using the shared secret.
+    """Compute 12-char checksum over the key body using the shared secret.
+
+    PROTOCOL FIX: Changed from 10-char / \"cksum:\" to 12-char / \"checksum:\" to
+    match the TypeScript server (protocol-constants.ts CHECKSUM_LENGTH=12,
+    CHECKSUM_DERIVATION_PREFIX=\"checksum\"). The old values caused KEY_LENGTH_MISMATCH
+    and CHECKSUM_INVALID on every cross-language verification.
 
     Used by server to reject malformed keys quickly (99.99% of forgeries caught
     with one HMAC operation before running full TSK segment verification).
     """
     validate_hex_secret(shared_secret)
     secret_bytes = bytes.fromhex(shared_secret)
-    return _pad_or_truncate(secret_bytes, _hmac_raw(secret_bytes, f"cksum:{key_body}"), 10)
+    return _pad_or_truncate(
+        secret_bytes,
+        _hmac_raw(secret_bytes, f"{CHECKSUM_DERIVATION_PREFIX}:{key_body}"),
+        CHECKSUM_LENGTH,
+    )
 
 
 def commit_hotp_counter(state: TSKClientState, segment_id: str) -> None:
@@ -225,12 +243,20 @@ def parse_provision_payload(
     """
     segments: list[SegmentConfig] = []
     for raw in provision_payload.get("clientSegments", []):
+        # The server uses 'segmentLength' in provisionPayload.clientSegments
+        # (not 'length') — this matches the TypeScript protocol-constants.ts spec.
+        seg_len = raw.get("segmentLength") or raw.get("length")
+        if seg_len is None:
+            raise ValueError(
+                f"parse_provision_payload: segment {raw.get('segmentId', '?')} "
+                f"has no segmentLength or length field"
+            )
         seg = SegmentConfig(
             segment_id=raw["segmentId"],
             type=raw["type"],
-            seg_len=raw["length"],
+            seg_len=int(seg_len),
             window_sec=raw.get("windowSec", 60),
-            counter=raw.get("counter", 0),
+            counter=raw.get("initialCounter", raw.get("counter", 0)),
         )
         segments.append(seg)
     return TSKClientState(

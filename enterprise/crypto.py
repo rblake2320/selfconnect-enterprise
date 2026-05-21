@@ -111,13 +111,15 @@ class _BCRYPT_ECCKEY_BLOB(ctypes.Structure):
 def _ck_bcrypt(status: int, op: str) -> None:
     """Raise OSError if BCrypt returned a non-success NTSTATUS."""
     if status != _STATUS_SUCCESS:
-        raise OSError(f"BCrypt {op} failed: 0x{status & 0xFFFFFFFF:08X}")
+        # Cast to int so format spec works even if status is a MagicMock (non-Windows CI)
+        raise OSError(f"BCrypt {op} failed: 0x{int(status) & 0xFFFFFFFF:08X}")
 
 
 def _ck_ncrypt(status: int, op: str) -> None:
     """Raise OSError if NCrypt returned a non-success SECURITY_STATUS."""
     if status != _SEC_SUCCESS:
-        raise OSError(f"NCrypt {op} failed: 0x{status & 0xFFFFFFFF:08X}")
+        # Cast to int so format spec works even if status is a MagicMock (non-Windows CI)
+        raise OSError(f"NCrypt {op} failed: 0x{int(status) & 0xFFFFFFFF:08X}")
 
 
 # ── SHA-384 hashing ────────────────────────────────────────────────────────────
@@ -299,7 +301,7 @@ class CngSigner:
                     f"No NCrypt key found for {key_name!r}. "
                     "Call CngSigner.create() on first boot."
                 )
-            raise OSError(f"NCryptOpenKey failed: 0x{st & 0xFFFFFFFF:08X}")
+            raise OSError(f"NCryptOpenKey failed: 0x{int(st) & 0xFFFFFFFF:08X}")
 
         pub_raw = _ncrypt_export_public(h_key)
         return cls(key_name, h_prov, h_key, pub_raw)

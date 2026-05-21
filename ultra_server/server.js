@@ -121,12 +121,19 @@ app.post('/provision-tsk', async (req, res) => {
       return res.status(500).json({ error: result.error ?? 'PROVISION_FAILED' });
     }
 
-    // sharedSecret is on result.tumblerMap — NEVER send to client
-    // provisionPayload is the safe client-facing payload (no positions, no secret)
-    const { clientId, provisionPayload } = result;
+    // sharedSecret is on result.tumblerMap.
+    // The provisionPayload is the safe public payload (no positions, no secret).
+    // We DO send sharedSecret to the owning client (the requestor) because:
+    //   1. The connection is localhost-only (sidecar architecture, not public API)
+    //   2. The client MUST have the secret to generate valid TSK keys
+    //   3. The client MUST have the secret to compute the checksum for self-verification
+    // We do NOT embed it in provisionPayload because that struct may be shared with
+    // third-party verifiers who should not have the secret.
+    const { clientId, provisionPayload, tumblerMap } = result;
+    const sharedSecret = tumblerMap?.sharedSecret ?? '';
 
     console.log(`[ultra-server] provisioned TSK client ${clientId} for ${requestorId}`);
-    return res.json({ clientId, provisionPayload });
+    return res.json({ clientId, sharedSecret, provisionPayload });
   } catch (err) {
     console.error('[ultra-server] provision-tsk error:', err);
     return res.status(500).json({ error: String(err) });
@@ -185,7 +192,7 @@ app.post('/verify', async (req, res) => {
             pairId:     h['x-bpc-pair-id']     || null,
             signedData: h['x-bpc-signed-data'] || null,
             signature:  h['x-bpc-signature']   || null,
-            method:     'INJECT',
+            method:     'POST',  // INJECT is not in BPC ALLOWED_METHODS; POST is the correct wire method
             path:       h['x-target-path']     || '/terminal/unknown',
             version:    h['x-bpc-version']     || null,
             bodyHash:   bodyHash,

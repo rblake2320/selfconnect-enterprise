@@ -29,12 +29,19 @@ Invariants under attack:
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+# Convenience marker for tests that require Windows CNG (BCrypt/NCrypt)
+_win32_only = pytest.mark.skipif(
+    sys.platform != 'win32',
+    reason='Windows CNG (BCrypt/NCrypt) required — skip on non-Windows'
+)
 
 from enterprise.control import ControlPlane
 from enterprise.observer import (
@@ -46,12 +53,7 @@ from enterprise.observer import (
 )
 from enterprise.operator import OperatorQueue
 from enterprise.policy import PolicyBundle, PolicyEnforcer, make_bundle
-import sys
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != 'win32',
-    reason='Windows CNG (BCrypt/NCrypt) required — skip on non-Windows'
-)
 
 
 # ── Shared fixtures ────────────────────────────────────────────────────────────
@@ -142,7 +144,7 @@ class TestRT02SignatureBypass:
         e = PolicyEnforcer(b, trust_root_pub=None, require_signature=True)
         assert e.check(AGENT_A, "assign_task").allowed is False
 
-    def test_tampered_bundle_after_load_is_permanently_denied(self):
+    def test_tampered_bundle_after_load_is_permanently_denied(self, tmp_path):
         """AgentPolicy.allowed_actions is a frozenset — in-memory mutation is impossible.
 
         Since v0.10.0 AgentPolicy fields are frozenset (immutable). An attacker
@@ -150,31 +152,28 @@ class TestRT02SignatureBypass:
         so the mutation vector that this test previously documented is structurally
         closed. The signed policy bundle + frozenset fields together make post-load
         tampering both signature-detectable AND structurally prevented.
-        """
-        import uuid
 
-        from enterprise.identity_cng import CngIdentity
-        name = f"sc-rt-{uuid.uuid4().hex[:8]}"
-        from enterprise.crypto import cng_delete_key
-        try:
-            with CngIdentity.init(name) as admin:
-                from enterprise.policy_sign import sign_policy
-                d = _bundle().to_dict()
-                signed = sign_policy(d, admin._signer)
-                b = PolicyBundle.from_dict(signed)
-                e = PolicyEnforcer(b, trust_root_pub=admin.public_key_bytes,
-                                   require_signature=True)
-                # Confirm it works before tamper
-                assert e.check(AGENT_A, "assign_task").allowed is True
-                # Tamper: attempt to inject a new action — must fail because
-                # allowed_actions is a frozenset (no .append, no .add)
-                with pytest.raises(AttributeError):
-                    b._agents[AGENT_A].allowed_actions.append("INJECT_EVIL")  # type: ignore[attr-defined]
-                # Original policy unchanged — enforcer still holds correct state
-                assert e.check(AGENT_A, "assign_task").allowed is True
-                assert e.check(AGENT_A, "INJECT_EVIL").allowed is False
-        finally:
-            cng_delete_key(f"SelfConnect.{name}")
+        Uses AgentIdentity (Ed25519, pure Python) so this test runs on all platforms.
+        The security invariant under test is the frozenset immutability, not CNG signing.
+        """
+        from enterprise.identity import AgentIdentity
+        from enterprise.policy_sign import sign_policy
+
+        admin = AgentIdentity.init("rt02-admin", data_dir=tmp_path)
+        d = _bundle().to_dict()
+        signed = sign_policy(d, admin)
+        b = PolicyBundle.from_dict(signed)
+        e = PolicyEnforcer(b, trust_root_pub=admin.public_key_bytes,
+                           require_signature=True)
+        # Confirm it works before tamper
+        assert e.check(AGENT_A, "assign_task").allowed is True
+        # Tamper: attempt to inject a new action — must fail because
+        # allowed_actions is a frozenset (no .append, no .add)
+        with pytest.raises(AttributeError):
+            b._agents[AGENT_A].allowed_actions.append("INJECT_EVIL")  # type: ignore[attr-defined]
+        # Original policy unchanged — enforcer still holds correct state
+        assert e.check(AGENT_A, "assign_task").allowed is True
+        assert e.check(AGENT_A, "INJECT_EVIL").allowed is False
 
     def test_sig_field_set_to_empty_string_is_denied(self):
         d = _bundle().to_dict()
@@ -191,25 +190,30 @@ class TestRT02SignatureBypass:
         e = PolicyEnforcer(b, trust_root_pub=None, require_signature=True)
         assert e.check(AGENT_A, "assign_task").allowed is False
 
-    def test_wrong_public_key_denies_valid_sig(self):
-        """Use a different key to verify → must fail."""
-        import uuid
+    def test_wrong_public_key_denies_valid_sig(self, tmp_path):
+        """Use a different key to verify → must fail.
 
-        from enterprise.crypto import cng_delete_key
-        from enterprise.identity_cng import CngIdentity
+        Uses AgentIdentity (Ed25519, pure Python) so this test runs on all platforms.
+        The security invariant: a bundle signed by key A must be rejected when
+        verified against key B (wrong trust root).
+        """
+        from enterprise.identity import AgentIdentity
         from enterprise.policy_sign import sign_policy
-        name1 = f"sc-rt-{uuid.uuid4().hex[:8]}"
-        name2 = f"sc-rt-{uuid.uuid4().hex[:8]}"
-        try:
-            with CngIdentity.init(name1) as signer, CngIdentity.init(name2) as verifier:
-                signed = sign_policy(_bundle().to_dict(), signer._signer)
-                b = PolicyBundle.from_dict(signed)
-                e = PolicyEnforcer(b, trust_root_pub=verifier.public_key_bytes,
-                                   require_signature=True)
-                assert e.check(AGENT_A, "assign_task").allowed is False
-        finally:
-            cng_delete_key(f"SelfConnect.{name1}")
-            cng_delete_key(f"SelfConnect.{name2}")
+        import pathlib
+
+        signer_dir   = tmp_path / "signer"
+        verifier_dir = tmp_path / "verifier"
+        signer_dir.mkdir()
+        verifier_dir.mkdir()
+
+        signer   = AgentIdentity.init("rt02-signer", data_dir=signer_dir)
+        verifier = AgentIdentity.init("rt02-verifier", data_dir=verifier_dir)
+        signed = sign_policy(_bundle().to_dict(), signer)
+        b = PolicyBundle.from_dict(signed)
+        # Verify with the WRONG key — must be denied
+        e = PolicyEnforcer(b, trust_root_pub=verifier.public_key_bytes,
+                           require_signature=True)
+        assert e.check(AGENT_A, "assign_task").allowed is False
 
 
 # ── RT-04: Classification spoofing ────────────────────────────────────────────
@@ -516,8 +520,9 @@ class TestRT11HashChainForgery:
         assert ok is False
         assert len(msg) > 0  # failure message must describe the problem
 
+    @_win32_only
     def test_cng_ledger_tampered_entry_detected(self, tmp_path):
-        """Same attack on CngLedger (SHA-384 chain)."""
+        """Same attack on CngLedger (SHA-384 chain). Windows CNG required."""
         import uuid
 
         from enterprise.crypto import cng_delete_key
@@ -731,11 +736,13 @@ class TestRT18TrainingTriggerIntegrity:
 # ── RT-19 / RT-20: CNG key non-existence ─────────────────────────────────────
 
 class TestRT20CngKeyNonExistence:
+    @_win32_only
     def test_load_nonexistent_key_raises(self):
         from enterprise.crypto import CngSigner
         with pytest.raises(FileNotFoundError):
             CngSigner.load("sc-key-that-definitely-does-not-exist-redteam")
 
+    @_win32_only
     def test_cng_key_exists_returns_false_for_missing(self):
         from enterprise.crypto import cng_key_exists
         assert cng_key_exists("sc-key-that-definitely-does-not-exist-redteam") is False

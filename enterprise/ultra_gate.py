@@ -42,6 +42,7 @@ from enterprise.bpc_crypto import (
     verify_payload_with_jwk,
 )
 from enterprise.tsk_client import (
+    CHECKSUM_LENGTH,
     TSKClientState,
     commit_hotp_counter,
     compute_checksum,
@@ -235,7 +236,7 @@ class UltraGate:
 
         canonical = {
             "body_hash": bh,
-            "method": "INJECT",
+            "method": "POST",  # INJECT is not in BPC ALLOWED_METHODS; POST is the correct wire method
             "nonce": nonce,
             "pair_id": self.pair_id,
             "path": path,
@@ -254,6 +255,10 @@ class UltraGate:
             "X-TSK-Client-ID": self.tsk_state.client_id,
             "X-TSK-Key": tsk_key,
             "X-TSK-Version": TSK_VERSION,
+            # X-Target-Path must match the path in the signed canonical payload.
+            # The Ultra Server extracts this header and passes it as req.path to
+            # verifyBPCRequest, which then checks payload['path'] == req.path.
+            "X-Target-Path": path,
         }
 
     # ── Local fast-path verification ──────────────────────────────────────────
@@ -371,6 +376,14 @@ class UltraGate:
             with urllib.request.urlopen(req, timeout=0.5) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             if data.get("ok"):
+                # RFC 4226 commit-after-success: advance HOTP counters only when
+                # the server has confirmed the key was valid. This keeps the Python
+                # client's counter in sync with the server's stored counter, preventing
+                # counter drift that causes INVALID_KEY after N sequential requests.
+                if self.tsk_state:
+                    for seg in self.tsk_state.segments:
+                        if seg.type == "hotp":
+                            commit_hotp_counter(self.tsk_state, seg.segment_id)
                 return True, ""
             return False, data.get("error", "server verification failed")
         except Exception as exc:
@@ -421,12 +434,12 @@ class UltraGate:
             if not constant_time_equal(payload.get("body_hash", ""), expected_bh):
                 return False, "body_hash self-check failed"
 
-            # Verify TSK checksum
-            if self.tsk_state and len(tsk_key) > 10:
+            # Verify TSK checksum (CHECKSUM_LENGTH=12 per protocol-constants.ts)
+            if self.tsk_state and len(tsk_key) > CHECKSUM_LENGTH:
                 expected_cksum = compute_checksum(
-                    self.tsk_state.shared_secret, tsk_key[:-10]
+                    self.tsk_state.shared_secret, tsk_key[:-CHECKSUM_LENGTH]
                 )
-                if not constant_time_equal(tsk_key[-10:], expected_cksum):
+                if not constant_time_equal(tsk_key[-CHECKSUM_LENGTH:], expected_cksum):
                     return False, "TSK checksum self-check failed"
 
             return True, ""

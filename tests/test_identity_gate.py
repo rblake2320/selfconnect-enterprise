@@ -23,12 +23,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-import sys
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != 'win32',
-    reason='Windows CNG (BCrypt/NCrypt) required — skip on non-Windows'
-)
 
 
 
@@ -209,13 +204,13 @@ class TestTSKClient:
             assert len(val) == length, f"Expected length {length}, got {len(val)}"
 
     def test_generate_tsk_key_has_checksum(self):
-        from enterprise.tsk_client import generate_tsk_key, compute_checksum
+        from enterprise.tsk_client import generate_tsk_key, compute_checksum, CHECKSUM_LENGTH
         state = self._make_state()
         key = generate_tsk_key(state)
-        assert len(key) > 10
-        body = key[:-10]
+        assert len(key) > CHECKSUM_LENGTH
+        body = key[:-CHECKSUM_LENGTH]
         expected_cksum = compute_checksum(_TEST_SECRET, body)
-        assert key[-10:] == expected_cksum
+        assert key[-CHECKSUM_LENGTH:] == expected_cksum
 
     def test_generate_tsk_key_deterministic_same_window(self):
         """Same time window → same key (static + TOTP stay constant within window)."""
@@ -425,19 +420,78 @@ class TestDegradationCascade:
 
 class TestKeyRecovery:
     def test_recovery_pub_write_read(self, tmp_path, monkeypatch):
-        """RecoveryManager writes recovery.pub and check_peer_recovery reads it."""
+        """RecoveryManager writes recovery.pub + recovery.token and check_peer_recovery reads it.
+
+        Gap 2 fix: check_peer_recovery now requires a server-signed recovery.token alongside
+        recovery.pub. This test uses the live Ultra Server on localhost:7777 to obtain a real
+        HMAC-signed token, then verifies that check_peer_recovery returns the correct key.
+
+        If the Ultra Server is not available, the test is skipped.
+        """
+        import json
+        import urllib.request
+        import urllib.error
         monkeypatch.setenv("APPDATA", str(tmp_path))
         from enterprise.key_recovery import check_peer_recovery, RECOVERY_WINDOW_SEC
 
-        agent_name = "test-agent"
+        # Skip if Ultra Server is not running
+        server_url = "http://localhost:7777"
+        try:
+            urllib.request.urlopen(f"{server_url}/status", timeout=2)
+        except Exception:
+            pytest.skip("Ultra Server not available on localhost:7777")
+
+        agent_name = "test-agent-gap2"
+        fake_pubkey_hex = "ab" * 32  # 32 bytes = 64 hex chars
+
+        # Get a real server-signed token from the Ultra Server
+        payload = json.dumps({
+            "agentName": agent_name,
+            "newPubHex": fake_pubkey_hex,
+            "challengeHash": "deadbeef",
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"{server_url}/confirm-recovery",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            token_data = json.loads(resp.read().decode("utf-8"))
+        assert token_data.get("ok") is True, f"confirm-recovery failed: {token_data}"
+        token = token_data["token"]
+
+        # Write recovery.pub and recovery.token
         pub_path = tmp_path / "SelfConnect" / agent_name
         pub_path.mkdir(parents=True, exist_ok=True)
-        fake_pubkey_hex = "ab" * 32  # 32 bytes = 64 hex chars
         (pub_path / "recovery.pub").write_text(fake_pubkey_hex + "\n", encoding="utf-8")
+        (pub_path / "recovery.token").write_text(
+            json.dumps(token), encoding="utf-8"
+        )
+
+        result = check_peer_recovery(0x1234, agent_name, server_url=server_url)
+        assert result is not None, "check_peer_recovery returned None despite valid token"
+        assert result.hex() == fake_pubkey_hex
+
+    def test_recovery_pub_without_token_is_rejected(self, tmp_path, monkeypatch):
+        """Gap 2: recovery.pub without recovery.token MUST be rejected.
+
+        An attacker who can write recovery.pub (e.g., via a compromised file system)
+        cannot cause peers to accept their rogue key without also obtaining a
+        server-signed token from the Ultra Server.
+        """
+        monkeypatch.setenv("APPDATA", str(tmp_path))
+        from enterprise.key_recovery import check_peer_recovery
+
+        agent_name = "test-agent-no-token"
+        pub_path = tmp_path / "SelfConnect" / agent_name
+        pub_path.mkdir(parents=True, exist_ok=True)
+        fake_pubkey_hex = "cd" * 32
+        (pub_path / "recovery.pub").write_text(fake_pubkey_hex + "\n", encoding="utf-8")
+        # Deliberately do NOT write recovery.token
 
         result = check_peer_recovery(0x1234, agent_name)
-        assert result is not None
-        assert result.hex() == fake_pubkey_hex
+        assert result is None, "Gap 2 VIOLATED: key accepted without server token"
 
     def test_recovery_pub_expired(self, tmp_path, monkeypatch):
         """Expired recovery files (> RECOVERY_WINDOW_SEC old) are ignored."""
