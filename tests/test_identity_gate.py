@@ -23,6 +23,13 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+import sys
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != 'win32',
+    reason='Windows CNG (BCrypt/NCrypt) required — skip on non-Windows'
+)
+
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

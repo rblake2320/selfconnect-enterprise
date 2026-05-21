@@ -14,6 +14,14 @@ from enterprise.crypto import cng_delete_key
 from enterprise.identity_cng import CngIdentity
 from enterprise.policy import PolicyEnforcer, make_bundle
 from enterprise.policy_sign import sign_policy, verify_policy_signature
+import sys
+
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != 'win32',
+    reason='Windows CNG (BCrypt/NCrypt) required — skip on non-Windows'
+)
+
 
 AGENT_A = "SC-AAAA0001"
 AGENT_B = "SC-BBBB0002"

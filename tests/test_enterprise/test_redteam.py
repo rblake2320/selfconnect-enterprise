@@ -46,6 +46,13 @@ from enterprise.observer import (
 )
 from enterprise.operator import OperatorQueue
 from enterprise.policy import PolicyBundle, PolicyEnforcer, make_bundle
+import sys
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != 'win32',
+    reason='Windows CNG (BCrypt/NCrypt) required — skip on non-Windows'
+)
+
 
 # ── Shared fixtures ────────────────────────────────────────────────────────────
 

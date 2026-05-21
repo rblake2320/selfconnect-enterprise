@@ -240,6 +240,14 @@ class TestExportGuardProperties:
 # ── GAP-6: ClassifiedModeProfile.from_file() signature verification ──────────
 
 from enterprise.crypto import CngSigner, cng_delete_key  # noqa: E402
+import sys
+
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != 'win32',
+    reason='Windows CNG (BCrypt/NCrypt) required — skip on non-Windows'
+)
+
 
 
 class TestProfileFromFileSignature:

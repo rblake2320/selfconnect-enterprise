@@ -57,9 +57,13 @@ import ctypes
 import ctypes.wintypes
 
 # ── Windows CNG DLL handles ────────────────────────────────────────────────────
+# On non-Windows platforms ctypes.windll is stubbed by conftest.py so this
+# module imports cleanly.  CNG functions will raise at call-time on non-Windows.
+# Tests that call CNG must be marked:
+#   @pytest.mark.skipif(sys.platform != 'win32', reason='Windows CNG only')
 
-_bcrypt  = ctypes.windll.bcrypt
-_ncrypt  = ctypes.windll.ncrypt
+_bcrypt = ctypes.windll.bcrypt  # type: ignore[attr-defined]
+_ncrypt = ctypes.windll.ncrypt  # type: ignore[attr-defined]
 
 # ── Algorithm identifiers ──────────────────────────────────────────────────────
 # TO MIGRATE: update only these constants (plus coord/sig byte sizes below).

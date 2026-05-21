@@ -14,6 +14,8 @@ import uuid
 import pytest
 
 from enterprise.crypto import (
+
+
     ALGO_ID,
     P384_COORD_BYTES,
     P384_SIG_BYTES,
@@ -24,6 +26,13 @@ from enterprise.crypto import (
     cng_sha384,
     cng_verify,
 )
+import sys
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != 'win32',
+    reason='Windows CNG (BCrypt/NCrypt) required — skip on non-Windows'
+)
+
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 

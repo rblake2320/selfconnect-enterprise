@@ -7,7 +7,7 @@
  *
  * Routes:
  *   POST /register-pair     — register BPC pair (auto-approved for local mesh)
- *   POST /provision-tsk     — provision TSK client, return shared secret + payload
+ *   POST /provision-tsk     — provision TSK client, return clientId + provisionPayload
  *   POST /bind-identity     — bind BPC pairId to TSK clientId
  *   POST /verify            — full 7-layer verification via verifyUltraRequest()
  *   GET  /status            — health check + pair count + anomaly state
@@ -15,38 +15,62 @@
  *
  * Security: binds to 127.0.0.1 only. Not exposed to LAN/WAN.
  *
- * Version: 1.0.0  BPC+TSK integration
+ * Version: 1.1.0  BPC+TSK integration — API-correct rewrite
  */
-
 import express from 'express';
-import { randomBytes } from 'node:crypto';
-import { PairRegistry, ServerNonceStore, AnomalyEngine, verifyBPCRequest } from '@bpc/server';
-import { MemoryTumblerMapStore, TSKProvisioner, verifyTSKRequest } from '@tsk/server';
+import { createHmac, randomBytes } from 'node:crypto';
+
+// ── BPC imports ───────────────────────────────────────────────────────────────
+import {
+  PairRegistry,
+  ServerNonceStore,
+  AnomalyEngine,
+  MemoryPairStore,
+  MemoryNonceBackend,
+  MemoryAnomalyStore,
+  verifyBPCRequest,
+} from '@bpc/server';
+
+// ── TSK imports ───────────────────────────────────────────────────────────────
+import {
+  MemoryTumblerStore,
+  TSKProvisioner,
+} from '@tsk/server';
+
+// ── Bridge import ─────────────────────────────────────────────────────────────
 import { verifyUltraRequest } from '@tsk/bpc-bridge';
 
 const PORT = parseInt(process.env.ULTRA_SERVER_PORT ?? '7777', 10);
 const SIG_WINDOW_MS = 60_000;
 
 // ── In-memory stores (replace with Redis/PostgreSQL for multi-machine mesh) ──
+const pairStore    = new MemoryPairStore();
+const nonceBackend = new MemoryNonceBackend();
+const anomalyStore = new MemoryAnomalyStore();
 
-const registry    = new PairRegistry();
-const nonceStore  = new ServerNonceStore({ windowMs: 120_000 });
-const anomaly     = new AnomalyEngine();
-const tskStore    = new MemoryTumblerMapStore();
+const registry   = new PairRegistry(pairStore);
+const nonceStore = new ServerNonceStore(nonceBackend, SIG_WINDOW_MS * 2 + 10_000);
+const anomaly    = new AnomalyEngine(anomalyStore);
+const tskStore   = new MemoryTumblerStore();
 const provisioner = new TSKProvisioner(tskStore);
 
 // Identity binding: pairId → tskClientId
 const identityBinding = new Map();
 
+// ── Recovery HMAC key (Gap 2 fix) ────────────────────────────────────────────
+// Generated fresh at startup. Never written to disk. Rotated on restart.
+// Only this server process can sign or verify recovery tokens.
+const RECOVERY_HMAC_KEY = randomBytes(32);
+const RECOVERY_TOKEN_TTL_SEC = parseInt(process.env.SC_RECOVERY_WINDOW_SEC ?? '60', 10);
+
 const bpcConfig = {
-  sigWindowMs:    SIG_WINDOW_MS,
-  lockoutCount:   10,
+  sigWindowMs:      SIG_WINDOW_MS,
+  lockoutCount:     10,
   enableShadowMode: true,
-  enableTarpit:   true,
+  enableTarpit:     true,
 };
 
 // ── Express app ───────────────────────────────────────────────────────────────
-
 const app = express();
 app.use(express.json({ limit: '64kb' }));
 
@@ -57,26 +81,17 @@ app.post('/register-pair', async (req, res) => {
     if (!name || !pubJwk || !secretHash) {
       return res.status(400).json({ error: 'missing name, pubJwk, or secretHash' });
     }
-    const pairId = `pair_${randomBytes(8).toString('hex')}`;
 
-    // Register directly (auto-approved for local machine mesh).
-    // In production, this would trigger owner approval before status = 'active'.
-    await registry.registerDirect({
-      id: pairId,
+    // registerDirect(PairRegistration) — returns the assigned pairId
+    const pairId = await registry.registerDirect({
       name,
       scope: scope ?? 'read-write',
-      mode: 'development',
+      mode:  'development',
       secretHash,
       pubJwk,
-      fingerprint: fingerprint ?? '',
-      status: 'active',
-      created: Date.now(),
-      lastActive: null,
-      requests: 0,
-      failedSigs: 0,
     });
 
-    console.log(`[ultra-server] registered pair ${pairId} for agent ${name}`);
+    console.log(`[ultra-server] registered pair ${pairId} (${name})`);
     return res.json({ pairId });
   } catch (err) {
     console.error('[ultra-server] register-pair error:', err);
@@ -87,27 +102,31 @@ app.post('/register-pair', async (req, res) => {
 // ── Route: POST /provision-tsk ────────────────────────────────────────────────
 app.post('/provision-tsk', async (req, res) => {
   try {
-    const { requestorId } = req.body;
+    const { requestorId, minTumblers, maxTumblers, keyLength } = req.body;
     if (!requestorId) {
       return res.status(400).json({ error: 'missing requestorId' });
     }
 
-    // Provision a new TSK client. TSKProvisioner generates:
-    // - A 256-bit hex shared secret
-    // - A tumbler map with 3 segments (static + totp + hotp) by default
-    // - The provision payload (segment configs without positional map)
-    const result = await provisioner.provision({
+    // provision(TumblerMapOptions, requestorId?) — options has no segmentCount/totpWindowSec
+    const result = await provisioner.provision(
+      {
+        ...(keyLength   ? { keyLength }   : {}),
+        ...(minTumblers ? { minTumblers } : {}),
+        ...(maxTumblers ? { maxTumblers } : {}),
+      },
       requestorId,
-      segmentCount: 3,
-      totpWindowSec: 60,
-    });
+    );
 
-    const clientId = result.clientId;
-    const sharedSecret = result.sharedSecret;
-    const provisionPayload = result.provisionPayload;
+    if (!result.ok) {
+      return res.status(500).json({ error: result.error ?? 'PROVISION_FAILED' });
+    }
+
+    // sharedSecret is on result.tumblerMap — NEVER send to client
+    // provisionPayload is the safe client-facing payload (no positions, no secret)
+    const { clientId, provisionPayload } = result;
 
     console.log(`[ultra-server] provisioned TSK client ${clientId} for ${requestorId}`);
-    return res.json({ clientId, sharedSecret, provisionPayload });
+    return res.json({ clientId, provisionPayload });
   } catch (err) {
     console.error('[ultra-server] provision-tsk error:', err);
     return res.status(500).json({ error: String(err) });
@@ -137,44 +156,56 @@ app.post('/verify', async (req, res) => {
       return res.status(400).json({ error: 'missing headers or bodyHash' });
     }
 
-    // Build the request data shape expected by BPC + TSK middlewares
-    const pairId    = reqHeaders['X-BPC-Pair-ID'] ?? null;
-    const signedData = reqHeaders['X-BPC-Signed-Data'] ?? null;
-    const signature  = reqHeaders['X-BPC-Signature'] ?? null;
-    const version    = reqHeaders['X-BPC-Version'] ?? null;
-    const tskClientId = reqHeaders['X-TSK-Client-ID'] ?? null;
-    const tskKey     = reqHeaders['X-TSK-Key'] ?? null;
-    const tskVersion = reqHeaders['X-TSK-Version'] ?? null;
-
-    const reqData = {
-      pairId,
-      signedData,
-      signature,
-      method: 'INJECT',
-      path: reqHeaders['X-Target-Path'] ?? '/terminal/unknown',
-      version,
-      bodyHash,
-      // TSK fields
-      clientId: tskClientId,
-      key: tskKey,
-      tskVersion,
+    // verifyUltraRequest expects TSKRequestData: { headers: Record<string, string> }
+    // The bridge passes this to verifyTSKRequest AND to the bpcVerify callback.
+    // The bpcVerify callback must extract BPC fields from the headers map.
+    const tskReqData = {
+      headers: {
+        // BPC headers (normalise to lowercase)
+        'x-bpc-pair-id':     String(reqHeaders['X-BPC-Pair-ID']     ?? reqHeaders['x-bpc-pair-id']     ?? ''),
+        'x-bpc-signed-data': String(reqHeaders['X-BPC-Signed-Data'] ?? reqHeaders['x-bpc-signed-data'] ?? ''),
+        'x-bpc-signature':   String(reqHeaders['X-BPC-Signature']   ?? reqHeaders['x-bpc-signature']   ?? ''),
+        'x-bpc-version':     String(reqHeaders['X-BPC-Version']     ?? reqHeaders['x-bpc-version']     ?? '1.0'),
+        // TSK headers
+        'x-tsk-client-id':   String(reqHeaders['X-TSK-Client-ID']   ?? reqHeaders['x-tsk-client-id']   ?? ''),
+        'x-tsk-key':         String(reqHeaders['X-TSK-Key']         ?? reqHeaders['x-tsk-key']         ?? ''),
+        'x-tsk-version':     String(reqHeaders['X-TSK-Version']     ?? reqHeaders['x-tsk-version']     ?? '1'),
+        // Target path
+        'x-target-path':     String(reqHeaders['X-Target-Path']     ?? reqHeaders['x-target-path']     ?? '/terminal/unknown'),
+      },
     };
 
-    // Resolve identity binding: BPC pairId → expected TSK clientId
-    const binding = identityBinding.get(pairId);
-
     const result = await verifyUltraRequest(
-      reqData,
-      (r) => verifyBPCRequest(r, registry, nonceStore, anomaly, bpcConfig),
+      tskReqData,
+      // bpcVerify callback: extract BPC fields from the headers map → BPCRequestData
+      (r) => {
+        const h = r.headers;
+        return verifyBPCRequest(
+          {
+            pairId:     h['x-bpc-pair-id']     || null,
+            signedData: h['x-bpc-signed-data'] || null,
+            signature:  h['x-bpc-signature']   || null,
+            method:     'INJECT',
+            path:       h['x-target-path']     || '/terminal/unknown',
+            version:    h['x-bpc-version']     || null,
+            bodyHash:   bodyHash,
+            ip:         req.ip ?? 'unknown',
+          },
+          registry,
+          nonceStore,
+          anomaly,
+          bpcConfig,
+        );
+      },
       {
         tskStore,
         identityBinding: {
-          resolve: async (pid) => {
-            const b = identityBinding.get(pid);
+          resolve: async (pairId) => {
+            const b = identityBinding.get(pairId);
             return b ? b.tskClientId : null;
           },
         },
-      }
+      },
     );
 
     return res.json(result);
@@ -197,16 +228,76 @@ app.get('/pubkeys/:pairId', async (req, res) => {
   }
 });
 
+// ── Route: POST /confirm-recovery (Gap 2 fix) ───────────────────────────────
+// Called by RecoveryManager after generating a new keypair.
+// Returns a server-signed HMAC token that peers must verify before accepting.
+app.post('/confirm-recovery', (req, res) => {
+  try {
+    const { agentName, newPubHex, challengeHash } = req.body ?? {};
+    if (!agentName || !newPubHex || !challengeHash) {
+      return res.status(400).json({ error: 'missing required fields' });
+    }
+    if (typeof agentName !== 'string' || agentName.length > 128) {
+      return res.status(400).json({ error: 'invalid agentName' });
+    }
+    if (typeof newPubHex !== 'string' || !/^[0-9a-f]{64,132}$/i.test(newPubHex)) {
+      return res.status(400).json({ error: 'invalid newPubHex' });
+    }
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const sigData  = `${agentName}:${newPubHex}:${issuedAt}`;
+    const sig = createHmac('sha256', RECOVERY_HMAC_KEY).update(sigData).digest('hex');
+    const token = { agentName, newPubHex, issuedAt, sig };
+    console.log(`[ultra-server] recovery confirmed for agent '${agentName}' (pubkey: ${newPubHex.slice(0,16)}...)`);
+    return res.json({ ok: true, token });
+  } catch (err) {
+    return res.status(500).json({ error: String(err) });
+  }
+});
+
+// ── Route: POST /verify-recovery-token (Gap 2 fix) ───────────────────────────
+// Called by peers when they detect SCRECOVERY=1 on a peer's HWND.
+// Verifies the HMAC signature and TTL of a recovery token.
+app.post('/verify-recovery-token', (req, res) => {
+  try {
+    const { token } = req.body ?? {};
+    if (!token || typeof token !== 'object') {
+      return res.status(400).json({ valid: false, error: 'missing token' });
+    }
+    const { agentName, newPubHex, issuedAt, sig } = token;
+    if (!agentName || !newPubHex || !issuedAt || !sig) {
+      return res.status(400).json({ valid: false, error: 'incomplete token' });
+    }
+    const age = Math.floor(Date.now() / 1000) - issuedAt;
+    if (age > RECOVERY_TOKEN_TTL_SEC) {
+      return res.json({ valid: false, error: 'token expired' });
+    }
+    const sigData  = `${agentName}:${newPubHex}:${issuedAt}`;
+    const expected = createHmac('sha256', RECOVERY_HMAC_KEY).update(sigData).digest('hex');
+    const eBuf = Buffer.from(expected, 'hex');
+    const aBuf = Buffer.from(sig,      'hex');
+    if (eBuf.length !== aBuf.length) return res.json({ valid: false, error: 'sig length mismatch' });
+    let diff = 0;
+    for (let i = 0; i < eBuf.length; i++) diff |= eBuf[i] ^ aBuf[i];
+    return res.json({ valid: diff === 0 });
+  } catch (err) {
+    return res.status(500).json({ valid: false, error: String(err) });
+  }
+});
+
 // ── Route: GET /status ────────────────────────────────────────────────────────
 app.get('/status', async (req, res) => {
   try {
-    const pairCount = await registry.count();
+    const pairs = await registry.list();
     return res.json({
-      ok: true,
-      version: '1.0.0',
-      pairs: pairCount,
+      ok:       true,
+      version:  '1.1.0',
+      pairs:    pairs.length,
       bindings: identityBinding.size,
       sigWindowMs: SIG_WINDOW_MS,
+      layer8: {
+        shadowMode: bpcConfig.enableShadowMode,
+        tarpit:     bpcConfig.enableTarpit,
+      },
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: String(err) });
@@ -217,4 +308,5 @@ app.get('/status', async (req, res) => {
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`[ultra-server] listening on http://127.0.0.1:${PORT}`);
   console.log('[ultra-server] BPC + TSK + ultra-bridge loaded. 7-layer verification ready.');
+  console.log('[ultra-server] Layer 8 Active Defense: Shadow Mode ON, Tarpit ON');
 });

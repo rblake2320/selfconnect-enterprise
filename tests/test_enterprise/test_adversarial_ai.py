@@ -39,6 +39,14 @@ import pytest
 from enterprise.control import ControlPlane
 from enterprise.observer import LedgerObserver, ObserverFilter
 from enterprise.operator import OperatorQueue
+import sys
+
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != 'win32',
+    reason='Windows CNG (BCrypt/NCrypt) required — skip on non-Windows'
+)
+
 
 # ── ledger fixture (mocked DPAPI) ─────────────────────────────────────────────
 

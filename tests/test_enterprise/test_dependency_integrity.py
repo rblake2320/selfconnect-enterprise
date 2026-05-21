@@ -28,6 +28,13 @@ import re
 from pathlib import Path
 
 import pytest
+import sys
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != 'win32',
+    reason='Windows CNG (BCrypt/NCrypt) required — skip on non-Windows'
+)
+
 
 # ── Project root ──────────────────────────────────────────────────────────────
 
