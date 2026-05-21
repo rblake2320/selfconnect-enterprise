@@ -13,3 +13,5 @@ observer_logs/
 *.jpg
 .pytest_tmp/
 .coverage
+.hypothesis/
+ultra_server/node_modules/
