@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.2.2 — BPC+TSK Contract Fixes (2026-05-21)
+
+Patch release capturing the BPC+TSK interoperability and release-build fixes.
+
+### Fixed
+- **TSK-01:** Corrected checksum contract from 10 to 12 characters and normalized the prefix from `cksum` to `checksum`.
+- **TSK-02:** HOTP counters are now committed only after server confirmation, preventing client/server counter drift on failed requests.
+- **BPC-07:** Removed the anomaly score `* 100` multiplier that could trigger denial-of-service lockouts from inflated scores.
+- **BPC-08:** Replaced `INJECT` with `POST` and added the `X-Target-Path` header for explicit target routing.
+- **Build:** Fixed `tsconfig` `rootDirs` output behavior so the server builds to flat `dist/index.js`.
+
+---
+
 ## v1.2.1 — Production Hardening: SENTINEL Blockers Closed (2026-05-14)
 
 Closes all five SENTINEL review blockers from the v1.2.0 HOLD verdict. No new features —
