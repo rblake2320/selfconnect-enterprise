@@ -37,3 +37,20 @@ MAX_STAMPS_PER_PID: int = int(os.environ.get("SC_MAX_STAMPS_PER_PID", "4"))
 
 # Seconds a failed handshake result is cached (Tier 2 backoff).
 HANDSHAKE_BACKOFF_SEC: int = int(os.environ.get("SC_HANDSHAKE_BACKOFF_SEC", "60"))
+
+# ── BPC+TSK identity gate constants (Tier 3 — ultra-gate) ────────────────────
+# SC_IDENTITY_MODE: "bypass" (default) | "audit" | "enforce"
+IDENTITY_MODE_DEFAULT: str = os.environ.get("SC_IDENTITY_MODE", "bypass")
+
+# Maximum time to wait for Ultra Server to respond (milliseconds).
+IDENTITY_BRIDGE_TIMEOUT_MS: int = int(os.environ.get("SC_IDENTITY_BRIDGE_TIMEOUT_MS", "500"))
+
+# Minimum degradation level in enforce mode.
+# Level 2 = enterprise-only (ed25519 + birth tag). Never go below in enforce.
+ENFORCE_MIN_DEGRADATION_LEVEL: int = int(os.environ.get("SC_ENFORCE_MIN_LEVEL", "2"))
+
+# Key recovery window in seconds. Recovery.pub files older than this are ignored.
+RECOVERY_WINDOW_SEC: int = int(os.environ.get("SC_RECOVERY_WINDOW_SEC", "60"))
+
+# URL of the Ultra Server sidecar.
+ULTRA_SERVER_URL: str = os.environ.get("ULTRA_SERVER_URL", "http://127.0.0.1:7777")

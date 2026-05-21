@@ -1,0 +1,19 @@
+{
+  "name": "@selfconnect/ultra-server",
+  "version": "1.0.0",
+  "description": "BPC+TSK 7-layer identity verification sidecar for SelfConnect mesh",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "install-deps": "npm install"
+  },
+  "dependencies": {
+    "@bpc/core": "file:../../bpc-protocol/packages/core",
+    "@bpc/server": "file:../../bpc-protocol/packages/server",
+    "@tsk/core": "file:../../tsk-protocol/packages/core",
+    "@tsk/server": "file:../../tsk-protocol/packages/server",
+    "@tsk/bpc-bridge": "file:../../tsk-protocol/packages/bpc-bridge",
+    "express": "^4.18.2"
+  }
+}

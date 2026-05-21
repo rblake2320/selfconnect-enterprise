@@ -55,6 +55,15 @@ New action strings (Tier 1+):
     "mitigation_policy_applied"     — process hardening flags enabled (Tier 2)
     "birth_time_mismatch"           — per-message birth time validation failed (Tier 2)
     "emergency_override_activated"  — a rollback override flag was set (any tier)
+
+New action strings (Tier 3 — BPC+TSK ultra-gate):
+    "ultra_gate_pass"               — injection authorized (full 7-layer or degraded level N)
+    "ultra_gate_deny:{reason}"      — injection blocked in enforce mode; reason describes failure
+    "bpc_pair_registered"           — BPC pair registered with Ultra Server at bootstrap
+    "tsk_provisioned"               — TSK client provisioned with Ultra Server at bootstrap
+    "tsk_key_rotated"               — HOTP counter advanced after successful server verification
+    "peer_key_rotation_recovery"    — peer agent key recovered; new pubkey accepted
+    "emergency_bypass_activated"    — emergency bypass Named Mutex created (pid logged in result)
 """
 from __future__ import annotations
 

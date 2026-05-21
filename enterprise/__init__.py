@@ -76,3 +76,54 @@ from enterprise.discovery_config import (  # noqa: F401
     MAX_STAMPS_PER_PID,
 )
 from enterprise.transport import CopyDataListener  # noqa: F401
+from enterprise.bpc_crypto import (  # noqa: F401
+    b64url,
+    b64url_decode,
+    body_hash,
+    canonicalize,
+    compute_fingerprint,
+    constant_time_equal,
+    derive_p256_from_ed25519,
+    generate_nonce,
+    hash_secret,
+    hmac_derive,
+    p256_public_key_to_jwk,
+    sign_payload,
+    verify_payload_with_jwk,
+)
+from enterprise.tsk_client import (  # noqa: F401
+    TSKClientState,
+    SegmentConfig,
+    commit_hotp_counter,
+    compute_checksum,
+    derive_segment_value,
+    generate_tsk_key,
+    parse_provision_payload,
+    validate_hex_secret,
+)
+from enterprise.ultra_gate import (  # noqa: F401
+    UltraGate,
+    InjectionDeniedError,
+    UltraGateNotBootstrappedError,
+)
+from enterprise.identity_gate import (  # noqa: F401
+    get_current_mode,
+    gated_send_string,
+    emergency_bypass,
+    release_bypass,
+    DegradationCascade,
+    MODE_BYPASS,
+    MODE_AUDIT,
+    MODE_ENFORCE,
+)
+from enterprise.key_recovery import (  # noqa: F401
+    RecoveryManager,
+    check_peer_recovery,
+    update_peer_registry_from_recovery,
+    RECOVERY_WINDOW_SEC,
+)
+from enterprise.discovery_config import (  # noqa: F401
+    IDENTITY_BRIDGE_TIMEOUT_MS,
+    IDENTITY_MODE_DEFAULT,
+    ULTRA_SERVER_URL,
+)

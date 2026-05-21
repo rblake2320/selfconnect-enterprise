@@ -69,6 +69,11 @@ PROP_SESSION = "SCSESS"     # optional session label e.g. "session-16"
 PROP_PID     = "SCPID"      # str(os.getpid()) — for cross-checking via GetWindowThreadProcessId
 PROP_CTIME   = "SCCTIME"    # str — OS process creation time (GetProcessTimes FILETIME epoch)
 
+# ── BPC+TSK identity properties (stamped by UltraGate.bootstrap()) ────────────
+PROP_BPC_PAIR  = "SCBPC"    # BPC pair ID assigned by Ultra Server e.g. "pair_a1b2c3d4e5f6g7h8"
+PROP_TSK_CLIENT = "SCTSK"   # TSK client ID assigned by Ultra Server e.g. "tsk_a1b2c3d4e5f6g7h8"
+PROP_RECOVERY  = "SCRECOVERY"  # "1" during key recovery window (see key_recovery.py)
+
 # ── Win32 structures for process identity binding ─────────────────────────────
 
 class FILETIME(ctypes.Structure):
