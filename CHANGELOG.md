@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.2.3 — Protocol Checksum Correctness (2026-05-22)
+
+Patch release fixing a stale checksum-length assumption in local verification.
+
+### Fixed
+- `verify_local()` now uses `CHECKSUM_LENGTH` (12) consistently; stale 10-char
+  slice assumption removed from the fast-path local check. Regression test added:
+  `test_verify_local_uses_protocol_checksum_length`.
+
+---
+
 ## v1.2.2 — BPC+TSK Contract Fixes (2026-05-21)
 
 Patch release capturing the BPC+TSK interoperability and release-build fixes.
