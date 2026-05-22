@@ -332,9 +332,9 @@ class UltraGate:
                 # For same-client verification (loopback test)
                 expected_cksum = compute_checksum(
                     self.tsk_state.shared_secret,
-                    tsk_key[:-10] if len(tsk_key) > 10 else tsk_key,
+                    tsk_key[:-CHECKSUM_LENGTH] if len(tsk_key) > CHECKSUM_LENGTH else tsk_key,
                 )
-                if not constant_time_equal(tsk_key[-10:], expected_cksum):
+                if not constant_time_equal(tsk_key[-CHECKSUM_LENGTH:], expected_cksum):
                     return False, "TSK checksum mismatch"
 
             return True, ""

@@ -274,6 +274,20 @@ class TestUltraGate:
         ok, reason = gate._self_verify(headers, text)
         assert ok, f"Self-verify failed: {reason}"
 
+    def test_verify_local_uses_protocol_checksum_length(self):
+        """Local fast path must use the 12-char protocol checksum, not stale 10-char slicing."""
+        from enterprise.tsk_client import CHECKSUM_LENGTH
+
+        assert CHECKSUM_LENGTH == 12
+        gate = self._make_gate()
+        text = "hello local verify\r"
+        headers = gate.build_injection_request(0x1234, text)
+        gate.register_peer(gate.pair_id, gate._pub_jwk)
+
+        ok, reason = gate.verify_local(headers, text, gate.pair_id)
+
+        assert ok, f"Local verify failed with valid {CHECKSUM_LENGTH}-char checksum: {reason}"
+
     def test_self_verify_fails_on_tampered_text(self):
         gate = self._make_gate()
         text = "original text\r"
