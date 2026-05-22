@@ -4,10 +4,8 @@ get_process_birth_time() is mocked so no live processes are needed.
 """
 from __future__ import annotations
 
-import time
 from unittest.mock import patch
 
-import pytest
 
 from enterprise.msg_validator import ValidatorCache, validate_sender
 

@@ -18,9 +18,7 @@ Skipped automatically on non-Windows (DPAPI unavailable).
 from __future__ import annotations
 
 import sys
-import threading
 import time
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -31,7 +29,6 @@ if sys.platform != "win32":
 from enterprise.identity import AgentIdentity
 from enterprise.handshake import (
     DTYPE_CHALLENGE,
-    DTYPE_RESPONSE,
     HandshakeInitiator,
     HandshakeResponder,
     PeerBackoff,
@@ -107,7 +104,6 @@ class TestRealCryptoRoundTrip:
         Win32 send_data is mocked (transport layer); crypto is entirely real.
         """
         peer_identity = AgentIdentity.init("hs-integ-peer-full", data_dir=tmp_path)
-        nonce = "deadbeef1234567890abcdef12345678"
 
         initiator = HandshakeInitiator(
             my_hwnd=FAKE_MY_HWND,
@@ -240,7 +236,7 @@ class TestGapCBinding:
         verify_peer() must reject at step 2 (cng_verify fails).
         """
         from enterprise.identity_cng import CngIdentity
-        from enterprise.handshake import verify_peer, _cng_binding_bytes, _signed_bytes, PeerVerificationError
+        from enterprise.handshake import verify_peer, _signed_bytes, PeerVerificationError
         from enterprise.crypto import cng_sha384
 
         victim_cng = CngIdentity.init("victim-cng-forge", data_dir=tmp_path / "v-cng", overwrite=True)
@@ -273,7 +269,7 @@ class TestGapCBinding:
     def test_responder_produces_verifiable_binding(self, tmp_path):
         """HandshakeResponder with real CngIdentity produces a packet verify_peer accepts."""
         from enterprise.identity_cng import CngIdentity
-        from enterprise.handshake import HandshakeResponder, verify_peer, DTYPE_RESPONSE
+        from enterprise.handshake import verify_peer
 
         ed_identity  = AgentIdentity.init("resp-binding-ed",  data_dir=tmp_path / "ed")
         cng_identity = CngIdentity.init("resp-binding-cng", data_dir=tmp_path / "cng", overwrite=True)

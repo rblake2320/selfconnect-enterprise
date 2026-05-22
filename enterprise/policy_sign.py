@@ -116,7 +116,6 @@ def _verify_ed25519(data: bytes, signature: bytes, public_key_raw: bytes) -> boo
     """Verify an Ed25519 signature using the pure-Python ``cryptography`` library."""
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-        from cryptography.exceptions import InvalidSignature
         pub = Ed25519PublicKey.from_public_bytes(public_key_raw)
         pub.verify(signature, data)
         return True

@@ -35,7 +35,6 @@ Version: 1.1.0  BPC+TSK integration — Gap 2 server-confirmation hardening
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import logging
 import os
@@ -176,8 +175,7 @@ class RecoveryManager:
 
         Returns the token dict: { agent_name, new_pub_hex, issued_at, sig }
         """
-        from enterprise.bpc_crypto import sign_payload, b64url
-        import hashlib
+        from enterprise.bpc_crypto import sign_payload
 
         # Proof of possession: sign a challenge with the new private key
         challenge = f"recovery:{self.agent_name}:{self._new_pub_hex}:{int(time.time())}"

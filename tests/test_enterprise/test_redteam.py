@@ -199,7 +199,6 @@ class TestRT02SignatureBypass:
         """
         from enterprise.identity import AgentIdentity
         from enterprise.policy_sign import sign_policy
-        import pathlib
 
         signer_dir   = tmp_path / "signer"
         verifier_dir = tmp_path / "verifier"

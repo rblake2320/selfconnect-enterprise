@@ -11,7 +11,6 @@ import logging
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from enterprise.birth_tag_v2 import PROP_SIG, PROP_STS
 from enterprise.discovery_config import MAX_CANDIDATES_PER_CYCLE, MAX_STAMPS_PER_PID

@@ -23,7 +23,6 @@ import base64
 import hashlib
 import hmac as _hmac
 import json
-import os
 from typing import Any
 
 from cryptography.hazmat.primitives import hashes, serialization

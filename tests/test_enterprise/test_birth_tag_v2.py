@@ -13,7 +13,6 @@ from unittest.mock import patch
 import pytest
 
 from enterprise.identity import AgentIdentity
-from enterprise import birth_tag_v2
 from enterprise.birth_tag_v2 import (
     PROP_SIG,
     PROP_STS,

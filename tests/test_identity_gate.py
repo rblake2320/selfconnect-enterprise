@@ -19,7 +19,6 @@ from __future__ import annotations
 import json
 import os
 import time
-from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -146,7 +145,7 @@ class TestBPCCrypto:
 _TEST_SECRET = "a" * 64  # 64 hex chars = 256 bits
 
 class TestTSKClient:
-    def _make_state(self) -> "TSKClientState":
+    def _make_state(self):  # -> TSKClientState (imported lazily inside)
         from enterprise.tsk_client import TSKClientState, SegmentConfig
         segs = [
             SegmentConfig(segment_id="seg_001", type="static", seg_len=8),
@@ -241,7 +240,7 @@ class TestTSKClient:
 # ═════════════════════════════════════════════════════════════════════════════
 
 class TestUltraGate:
-    def _make_gate(self) -> "UltraGate":
+    def _make_gate(self):  # -> UltraGate (imported lazily inside)
         from enterprise.ultra_gate import UltraGate
         from enterprise.tsk_client import TSKClientState, SegmentConfig
         identity = _make_fake_identity()
@@ -352,7 +351,6 @@ class TestIdentityGateMode:
     def test_enforce_mode_blocks_when_gate_fails(self, monkeypatch):
         monkeypatch.setenv("SC_IDENTITY_MODE", "enforce")
         from enterprise.identity_gate import gated_send_string, InjectionDeniedError
-        from enterprise.ultra_gate import InjectionDeniedError as GateDenied
         with mock.patch("enterprise.identity_gate._emergency_mutex_active", return_value=False):
             with mock.patch("enterprise.identity_gate.DegradationCascade.verify",
                             return_value=(False, "all verification failed", 2)):
@@ -432,7 +430,7 @@ class TestKeyRecovery:
         import urllib.request
         import urllib.error
         monkeypatch.setenv("APPDATA", str(tmp_path))
-        from enterprise.key_recovery import check_peer_recovery, RECOVERY_WINDOW_SEC
+        from enterprise.key_recovery import check_peer_recovery
 
         # Skip if Ultra Server is not running
         server_url = "http://localhost:7777"
@@ -496,7 +494,7 @@ class TestKeyRecovery:
     def test_recovery_pub_expired(self, tmp_path, monkeypatch):
         """Expired recovery files (> RECOVERY_WINDOW_SEC old) are ignored."""
         monkeypatch.setenv("APPDATA", str(tmp_path))
-        from enterprise.key_recovery import check_peer_recovery, _appdata_dir
+        from enterprise.key_recovery import check_peer_recovery
 
         agent_name = "test-agent"
         pub_path = tmp_path / "SelfConnect" / agent_name

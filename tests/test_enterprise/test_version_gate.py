@@ -5,13 +5,12 @@ All Win32 calls are mocked.  Time is controlled via the `now` parameter.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
-from enterprise.version_gate import VersionGate, GateResult
+from enterprise.version_gate import VersionGate
 
 
 FAKE_HWND  = 0xDEAD0001

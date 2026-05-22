@@ -19,7 +19,6 @@ Version: 1.0.0  BPC+TSK integration
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os

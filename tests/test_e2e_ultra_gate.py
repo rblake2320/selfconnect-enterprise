@@ -23,11 +23,8 @@ Version: 1.0.0-enterprise  Session 17
 from __future__ import annotations
 
 import json
-import os
-import time
 import urllib.request
 import urllib.error
-from pathlib import Path
 
 import pytest
 
@@ -289,4 +286,4 @@ class TestFullE2EFlow:
                     failures.append(f"request {i}: {reason}")
             except Exception as exc:
                 failures.append(f"request {i} exception: {exc}")
-        assert not failures, f"High-frequency test failures:\n" + "\n".join(failures)
+        assert not failures, "High-frequency test failures:\n" + "\n".join(failures)

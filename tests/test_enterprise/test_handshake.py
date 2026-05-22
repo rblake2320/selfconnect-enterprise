@@ -5,17 +5,13 @@ SC_HANDSHAKE env var is set/unset in each test class via monkeypatch.
 """
 from __future__ import annotations
 
-import os
 import time
-import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from enterprise.handshake import (
     DTYPE_CHALLENGE,
-    DTYPE_RESPONSE,
     HandshakeInitiator,
     HandshakeResponder,
     PeerBackoff,
@@ -298,7 +294,6 @@ class TestHandshakeInitiator:
 
     def test_birth_tag_cross_check_passes_with_valid_sig(self, tmp_path):
         """If SCID_SIG is present and verifies, handshake succeeds."""
-        from enterprise.birth_tag_v2 import PROP_SIG, PROP_STS
         peer_identity = self._make_responder_identity(tmp_path)
         peer = _make_birth_tag(FAKE_PEER_HWND, agent_id="agent-peer")
 
@@ -306,7 +301,6 @@ class TestHandshakeInitiator:
 
         # Build a valid SCID_SIG for the peer
         from enterprise.birth_tag_v2 import _build_payload
-        import json
         ts = time.time()
         payload_bytes = _build_payload(
             "agent-peer", peer.pid, str(peer.os_create_time), peer.born, ts
@@ -445,7 +439,6 @@ class TestDiscoverHandshakePeers:
         monkeypatch.setenv("SC_HANDSHAKE", "v2")
         monkeypatch.setenv("SC_HANDSHAKE_BACKOFF_SEC", "60")
 
-        peer_identity = _make_identity(tmp_path, "peer-agent-disc")
         peer = _make_birth_tag(FAKE_PEER_HWND, agent_id="agent-peer-disc")
 
         # Simulate the peer's response
@@ -463,8 +456,6 @@ class TestDiscoverHandshakePeers:
             return fut
 
         # Full integration: patch send_data to auto-respond
-        discovered_initiators = []
-
         def capturing_send_data(hwnd, payload, data_type=0):
             # We need to call handle_response on the correct initiator
             # Since we can't easily inject responses here, test via

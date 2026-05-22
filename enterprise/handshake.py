@@ -407,7 +407,7 @@ class HandshakeInitiator:
                 self._result = payload
         self._event.set()
 
-    def run(self, peer: "BirthTag", timeout_sec: float) -> HandshakeResult:  # type: ignore[name-defined]
+    def run(self, peer: "BirthTag", timeout_sec: float) -> HandshakeResult:  # type: ignore[name-defined]  # noqa: F821
         """Execute a full challenge-response cycle against one peer.
 
         Args:
