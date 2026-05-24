@@ -291,6 +291,97 @@ app.post('/verify-recovery-token', (req, res) => {
   }
 });
 
+// ── Route: GET /health ────────────────────────────────────────────────────────
+// Simple liveness probe for load balancers and monitoring systems.
+app.get('/health', (_req, res) => {
+  res.json({ ok: true, service: 'ultra-server', version: '1.1.0', ts: Date.now() });
+});
+
+// ── Route: GET /tsk/keys ─────────────────────────────────────────────────────
+// List all provisioned TSK keys with lifecycle metadata. No secrets returned.
+app.get('/tsk/keys', async (_req, res) => {
+  try {
+    const keys = await provisioner.listKeys();
+    return res.json({ ok: true, count: keys.length, keys });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// ── Route: GET /tsk/keys/:clientId ───────────────────────────────────────────
+// Get a single TSK key's lifecycle metadata.
+app.get('/tsk/keys/:clientId', async (req, res) => {
+  try {
+    const key = await provisioner.getKey(req.params.clientId);
+    if (!key) return res.status(404).json({ ok: false, error: 'KEY_NOT_FOUND' });
+    return res.json({ ok: true, key });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// ── Route: PATCH /tsk/keys/:clientId ─────────────────────────────────────────
+// Update TSK key lifecycle: label, expiresAt, maxRequests, status.
+// Does NOT modify cryptographic material — re-provision to change keys.
+app.patch('/tsk/keys/:clientId', async (req, res) => {
+  try {
+    const { label, expiresAt, maxRequests, status } = req.body ?? {};
+    const updates = {};
+    if (label !== undefined) updates.label = label;
+    if (expiresAt !== undefined) updates.expiresAt = expiresAt;
+    if (maxRequests !== undefined) updates.maxRequests = maxRequests;
+    if (status !== undefined) {
+      if (!['active', 'revoked', 'expired'].includes(status)) {
+        return res.status(400).json({ ok: false, error: 'INVALID_STATUS' });
+      }
+      updates.status = status;
+    }
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ ok: false, error: 'NO_UPDATES_PROVIDED' });
+    }
+    const found = await provisioner.updateKey(req.params.clientId, updates);
+    if (!found) return res.status(404).json({ ok: false, error: 'KEY_NOT_FOUND' });
+    const updated = await provisioner.getKey(req.params.clientId);
+    console.log(`[ultra-server] TSK key ${req.params.clientId} updated: ${JSON.stringify(updates)}`);
+    return res.json({ ok: true, key: updated });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// ── Route: GET /bpc/pairs ─────────────────────────────────────────────────────
+// List all BPC pairs with redacted lifecycle metadata (no secrets, no keys).
+app.get('/bpc/pairs', async (_req, res) => {
+  try {
+    const pairs = await registry.listRedacted();
+    return res.json({ ok: true, count: pairs.length, pairs });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// ── Route: PATCH /bpc/pairs/:pairId ──────────────────────────────────────────
+// Update BPC pair lifecycle: scope, expiresAt, maxRequests, name.
+app.patch('/bpc/pairs/:pairId', async (req, res) => {
+  try {
+    const { scope, expiresAt, maxRequests, name } = req.body ?? {};
+    const updates = {};
+    if (scope !== undefined) updates.scope = scope;
+    if (expiresAt !== undefined) updates.expiresAt = expiresAt;
+    if (maxRequests !== undefined) updates.maxRequests = maxRequests;
+    if (name !== undefined) updates.name = name;
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ ok: false, error: 'NO_UPDATES_PROVIDED' });
+    }
+    const found = await registry.updatePair(req.params.pairId, updates);
+    if (!found) return res.status(404).json({ ok: false, error: 'PAIR_NOT_FOUND' });
+    console.log(`[ultra-server] BPC pair ${req.params.pairId} updated: ${JSON.stringify(updates)}`);
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
 // ── Route: GET /status ────────────────────────────────────────────────────────
 app.get('/status', async (req, res) => {
   try {

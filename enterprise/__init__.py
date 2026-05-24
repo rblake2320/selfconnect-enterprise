@@ -44,7 +44,7 @@ from enterprise.labels import (
 )
 from enterprise.labels import le as classification_le  # noqa: F401
 from enterprise.labels import rank as classification_rank  # noqa: F401
-from enterprise.ledger import AgentLedger  # noqa: F401
+from enterprise.ledger import AgentLedger, ThreadSafeAgentLedger  # noqa: F401
 from enterprise.observer import (  # noqa: F401
     EvidenceExporter,
     EvidenceRecord,

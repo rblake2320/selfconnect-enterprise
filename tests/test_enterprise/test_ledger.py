@@ -244,3 +244,92 @@ class TestTailCount:
         for _ in range(6):
             ledger.log("x")
         assert ledger.entry_count() == 6
+
+# ── ThreadSafeAgentLedger tests (G-6 fix) ─────────────────────────────────────
+
+import threading as _threading
+from enterprise.ledger import ThreadSafeAgentLedger
+
+
+def _make_ts_ledger(tmp_path: Path) -> ThreadSafeAgentLedger:
+    """Helper: create a ThreadSafeAgentLedger with mocked DPAPI."""
+    identity = make_identity(tmp_path)
+    return ThreadSafeAgentLedger(identity, log_path=tmp_path / "ts_ledger.jsonl")
+
+
+class TestThreadSafeAgentLedger:
+    """Tests for ThreadSafeAgentLedger (G-6 / MED-05 fix).
+
+    Verifies that the RLock wrapper correctly serialises concurrent writes
+    and that the hash chain remains intact after concurrent access.
+    """
+
+    def test_is_subclass_of_agent_ledger(self, tmp_path):
+        ledger = _make_ts_ledger(tmp_path)
+        assert isinstance(ledger, AgentLedger)
+
+    def test_single_write(self, tmp_path):
+        ledger = _make_ts_ledger(tmp_path)
+        entry = ledger.log("single-action", result="ok")
+        assert entry["seq"] == 1
+        assert entry["action"] == "single-action"
+
+    def test_concurrent_writes_chain_intact(self, tmp_path):
+        """20 threads write concurrently; chain must remain valid."""
+        ledger = _make_ts_ledger(tmp_path)
+        errors = []
+
+        def write(i):
+            try:
+                ledger.log(f"action-{i}", result=f"result-{i}")
+            except Exception as exc:
+                errors.append(str(exc))
+
+        threads = [_threading.Thread(target=write, args=(i,)) for i in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Concurrent write errors: {errors}"
+        valid, count, msg = ledger.verify()
+        assert valid, msg
+        assert count == 20
+
+    def test_concurrent_writes_seq_unique(self, tmp_path):
+        """Sequence numbers must be unique after concurrent writes."""
+        ledger = _make_ts_ledger(tmp_path)
+
+        def write(i):
+            ledger.log(f"action-{i}")
+
+        threads = [_threading.Thread(target=write, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        entries = ledger.tail(10)
+        seqs = [e["seq"] for e in entries]
+        assert len(set(seqs)) == 10, f"Duplicate seq numbers: {seqs}"
+
+    def test_thread_safe_verify(self, tmp_path):
+        ledger = _make_ts_ledger(tmp_path)
+        for i in range(5):
+            ledger.log(f"a-{i}")
+        valid, count, _ = ledger.verify()
+        assert valid
+        assert count == 5
+
+    def test_thread_safe_tail(self, tmp_path):
+        ledger = _make_ts_ledger(tmp_path)
+        for i in range(5):
+            ledger.log(f"a-{i}")
+        result = ledger.tail(3)
+        assert len(result) == 3
+
+    def test_thread_safe_entry_count(self, tmp_path):
+        ledger = _make_ts_ledger(tmp_path)
+        for _ in range(7):
+            ledger.log("x")
+        assert ledger.entry_count() == 7

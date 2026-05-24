@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -95,17 +96,25 @@ class AgentLedger:
         self,
         identity: AgentIdentity,
         log_path: Optional[Path] = None,
+        redact_denied: bool = False,
     ) -> None:
         """
         Args:
-            identity: The AgentIdentity that owns this ledger (signs every entry).
-            log_path: Override the default log file path.
-                      Default: %APPDATA%\\SelfConnect\\{agent_name}\\ledger.jsonl
+            identity:      The AgentIdentity that owns this ledger (signs every entry).
+            log_path:      Override the default log file path.
+                           Default: %APPDATA%\\SelfConnect\\{agent_name}\\ledger.jsonl
+            redact_denied: When True, entries where result=="denied" or
+                           metadata["decision"]=="deny" are written with their
+                           metadata replaced by {"decision": "deny", "redacted": True}.
+                           This prevents policy configuration details from being
+                           inferred from denial patterns in the raw ledger file.
+                           (G-1 fix: NIST AC-4, SI-12)
         """
-        self._identity  = identity
-        self._log_path  = log_path or self._default_path(identity.agent_name)
-        self._seq       = self._load_last_seq()
-        self._prev_hash = self._load_last_hash()
+        self._identity     = identity
+        self._log_path     = log_path or self._default_path(identity.agent_name)
+        self._redact_denied = redact_denied
+        self._seq          = self._load_last_seq()
+        self._prev_hash    = self._load_last_hash()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -143,6 +152,12 @@ class AgentLedger:
         """
         self._seq += 1
 
+        # Determine if this is a deny entry that should be redacted (G-1 fix)
+        _is_deny = (
+            result == "denied"
+            or (metadata is not None and metadata.get("decision") == "deny")
+        )
+
         entry: dict = {
             "seq":       self._seq,
             "agent_id":  self._identity.agent_id,
@@ -151,10 +166,16 @@ class AgentLedger:
             "ts":        time.time(),
             "prev_hash": self._prev_hash,
         }
-        if metadata:
-            entry.update(metadata)
-        if label is not None:
-            entry.update(label.to_dict())
+        if self._redact_denied and _is_deny:
+            # Replace metadata with a redacted stub — preserves the fact of denial
+            # without exposing policy configuration details (NIST AC-4, SI-12).
+            entry["decision"] = "deny"
+            entry["redacted"] = True
+        else:
+            if metadata:
+                entry.update(metadata)
+            if label is not None:
+                entry.update(label.to_dict())
 
         # Sign the entry (canonical JSON, sorted keys, no sig field yet)
         entry_bytes = json.dumps(entry, sort_keys=True, separators=(",", ":")).encode()
@@ -285,3 +306,66 @@ class AgentLedger:
     @staticmethod
     def _default_path(agent_name: str) -> Path:
         return _default_data_dir() / agent_name / "ledger.jsonl"
+
+
+# -- ThreadSafeAgentLedger (G-6 fix: NIST AU-9, AU-10) -----------------------
+
+class ThreadSafeAgentLedger(AgentLedger):
+    """Thread-safe wrapper around AgentLedger.
+
+    AgentLedger documents a single-writer contract: callers must ensure that
+    only one thread calls log() at a time.  ThreadSafeAgentLedger enforces
+    that contract automatically via a reentrant lock, making it safe to share
+    a single ledger instance across multiple threads.
+
+    All public methods (log, verify, tail, entry_count) are serialised through
+    the same lock.  The lock is reentrant so that verify() can call internal
+    helpers without deadlocking.
+
+    Usage::
+
+        from enterprise.ledger import ThreadSafeAgentLedger
+        ledger = ThreadSafeAgentLedger(identity)
+        # Safe to call from multiple threads:
+        threading.Thread(target=ledger.log, args=("action-a",)).start()
+        threading.Thread(target=ledger.log, args=("action-b",)).start()
+
+    Compliance: NIST AU-9 (audit log protection), AU-10 (non-repudiation).
+    Gap closed: G-6 / MED-05 (AgentLedger single-writer contract not enforced).
+    """
+
+    def __init__(
+        self,
+        identity: AgentIdentity,
+        log_path: Optional[Path] = None,
+        redact_denied: bool = False,
+    ) -> None:
+        self._lock = threading.RLock()
+        super().__init__(identity, log_path, redact_denied=redact_denied)
+
+    def log(
+        self,
+        action: str,
+        result: str = "",
+        metadata: Optional[dict] = None,
+        label: Optional[LabelEnvelope] = None,
+    ) -> dict:
+        """Thread-safe log() — serialised through an RLock."""
+        with self._lock:
+            return super().log(action, result=result, metadata=metadata, label=label)
+
+    def verify(self) -> tuple[bool, int, str]:
+        """Thread-safe verify() — serialised through an RLock."""
+        with self._lock:
+            return super().verify()
+
+    def tail(self, n: int = 10) -> list[dict]:
+        """Thread-safe tail() — serialised through an RLock."""
+        with self._lock:
+            return super().tail(n)
+
+    def entry_count(self) -> int:
+        """Thread-safe entry_count() — serialised through an RLock."""
+        with self._lock:
+            return super().entry_count()
+
