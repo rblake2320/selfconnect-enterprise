@@ -20,7 +20,6 @@ include = ["enterprise*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "strict"
 tmp_path_retention_count = 0
 tmp_path_retention_policy = "none"
 
