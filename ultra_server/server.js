@@ -91,10 +91,10 @@ app.post('/register-pair', async (req, res) => {
       pubJwk,
     });
 
-    console.log(`[ultra-server] registered pair ${pairId} (${name})`);
+    console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'pair_registered', pairId, name }));
     return res.json({ pairId });
   } catch (err) {
-    console.error('[ultra-server] register-pair error:', err);
+    console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'ERROR', event: 'register_pair_error', error: String(err) }));
     return res.status(500).json({ error: String(err) });
   }
 });
@@ -132,10 +132,10 @@ app.post('/provision-tsk', async (req, res) => {
     const { clientId, provisionPayload, tumblerMap } = result;
     const sharedSecret = tumblerMap?.sharedSecret ?? '';
 
-    console.log(`[ultra-server] provisioned TSK client ${clientId} for ${requestorId}`);
+    console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'tsk_provisioned', clientId, requestorId }));
     return res.json({ clientId, sharedSecret, provisionPayload });
   } catch (err) {
-    console.error('[ultra-server] provision-tsk error:', err);
+    console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'ERROR', event: 'provision_tsk_error', error: String(err) }));
     return res.status(500).json({ error: String(err) });
   }
 });
@@ -148,7 +148,7 @@ app.post('/bind-identity', (req, res) => {
       return res.status(400).json({ error: 'missing pairId or tskClientId' });
     }
     identityBinding.set(pairId, { tskClientId, agentId: agentId ?? '' });
-    console.log(`[ultra-server] bound pairId=${pairId} → tskClientId=${tskClientId}`);
+    console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'identity_bound', pairId, clientId: tskClientId }));
     return res.json({ ok: true });
   } catch (err) {
     return res.status(500).json({ error: String(err) });
@@ -217,7 +217,7 @@ app.post('/verify', async (req, res) => {
 
     return res.json(result);
   } catch (err) {
-    console.error('[ultra-server] verify error:', err);
+    console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'ERROR', event: 'verify_exception', error: String(err) }));
     return res.status(500).json({ ok: false, error: String(err), layers: [] });
   }
 });
@@ -254,7 +254,7 @@ app.post('/confirm-recovery', (req, res) => {
     const sigData  = `${agentName}:${newPubHex}:${issuedAt}`;
     const sig = createHmac('sha256', RECOVERY_HMAC_KEY).update(sigData).digest('hex');
     const token = { agentName, newPubHex, issuedAt, sig };
-    console.log(`[ultra-server] recovery confirmed for agent '${agentName}' (pubkey: ${newPubHex.slice(0,16)}...)`);
+    console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'recovery_confirmed', agentName, pubkeyPrefix: newPubHex.slice(0,16) }));
     return res.json({ ok: true, token });
   } catch (err) {
     return res.status(500).json({ error: String(err) });
@@ -404,7 +404,11 @@ app.get('/status', async (req, res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(`[ultra-server] listening on http://127.0.0.1:${PORT}`);
-  console.log('[ultra-server] BPC + TSK + ultra-bridge loaded. 7-layer verification ready.');
-  console.log('[ultra-server] Layer 8 Active Defense: Shadow Mode ON, Tarpit ON');
+  console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'server_start', port: PORT }));
+  console.warn(JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level: 'WARN',
+    event: 'production_warning',
+    message: 'Using MemoryPairStore, MemoryTumblerStore, and MemoryNonceBackend. Data will be lost on restart. Use PostgreSQL and Redis for production deployments.'
+  }));
 });
