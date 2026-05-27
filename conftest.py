@@ -13,7 +13,68 @@ Platform shim (non-Windows):
 from __future__ import annotations
 import sys
 import ctypes
+import pathlib
+import shutil
+import subprocess
+import time
+import urllib.request
 from unittest.mock import MagicMock
+
+# ── Ultra Server auto-start ───────────────────────────────────────────────────
+_ultra_server_proc: subprocess.Popen | None = None
+_ULTRA_SERVER_URL = "http://localhost:7777"
+_ULTRA_SERVER_DIR = pathlib.Path(__file__).parent / "ultra_server"
+
+
+def _server_reachable(timeout: float = 1.0) -> bool:
+    try:
+        urllib.request.urlopen(f"{_ULTRA_SERVER_URL}/status", timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
+def _wait_for_server(timeout: float = 12.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _server_reachable(timeout=1.0):
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def pytest_sessionstart(session) -> None:  # noqa: ANN001
+    """Start Ultra Server before test collection so pytestmark skip checks see it."""
+    global _ultra_server_proc
+    if not shutil.which("node"):
+        return
+    # Need the built @bpc/server dist to be present
+    bpc_dist = _ULTRA_SERVER_DIR / "node_modules" / "@bpc" / "server" / "dist" / "index.js"
+    if not bpc_dist.exists():
+        return
+    if _server_reachable():
+        return  # already running (e.g. developer has it open manually)
+    _ultra_server_proc = subprocess.Popen(
+        ["node", "server.js"],
+        cwd=str(_ULTRA_SERVER_DIR),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if not _wait_for_server():
+        _ultra_server_proc.kill()
+        _ultra_server_proc = None
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:  # noqa: ANN001
+    """Shut down the Ultra Server process we started, if any."""
+    global _ultra_server_proc
+    if _ultra_server_proc is not None:
+        _ultra_server_proc.terminate()
+        try:
+            _ultra_server_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _ultra_server_proc.kill()
+        _ultra_server_proc = None
 
 
 def pytest_configure(config):

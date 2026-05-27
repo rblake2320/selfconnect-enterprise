@@ -12,6 +12,7 @@
  *   POST /verify            — full 7-layer verification via verifyUltraRequest()
  *   GET  /status            — health check + pair count + anomaly state
  *   GET  /pubkeys/:pairId   — return public key JWK for a registered pair
+ *   GET  /metrics           — Prometheus metrics (prom-client)
  *
  * Security: binds to 127.0.0.1 only. Not exposed to LAN/WAN.
  *
@@ -28,8 +29,32 @@ import {
   MemoryPairStore,
   MemoryNonceBackend,
   MemoryAnomalyStore,
+  RedisNonceStore,
   verifyBPCRequest,
 } from '@bpc/server';
+
+// ── Prometheus metrics ────────────────────────────────────────────────────────
+import { register, Counter, collectDefaultMetrics } from 'prom-client';
+collectDefaultMetrics({ prefix: 'ultra_node_' });
+
+const cHttpRequests = new Counter({
+  name: 'ultra_http_requests_total',
+  help: 'Total HTTP requests by method, route, and status code',
+  labelNames: ['method', 'route', 'status'],
+});
+const cAuthFailures = new Counter({
+  name: 'ultra_auth_failures_total',
+  help: 'Total authentication failures from /verify',
+  labelNames: ['reason'],
+});
+const cTskProvisions = new Counter({
+  name: 'ultra_tsk_provisions_total',
+  help: 'Total successful TSK provisioning events',
+});
+const cBpcRegistrations = new Counter({
+  name: 'ultra_bpc_registrations_total',
+  help: 'Total successful BPC pair registrations',
+});
 
 // ── TSK imports ───────────────────────────────────────────────────────────────
 import {
@@ -43,10 +68,27 @@ import { verifyUltraRequest } from '@tsk/bpc-bridge';
 const PORT = parseInt(process.env.ULTRA_SERVER_PORT ?? '7777', 10);
 const SIG_WINDOW_MS = 60_000;
 
-// ── In-memory stores (replace with Redis/PostgreSQL for multi-machine mesh) ──
+// ── Stores — Redis nonce backend when REDIS_URL is set ───────────────────────
 const pairStore    = new MemoryPairStore();
-const nonceBackend = new MemoryNonceBackend();
 const anomalyStore = new MemoryAnomalyStore();
+
+let nonceBackend;
+let nonceBackendType = 'memory';
+if (process.env.REDIS_URL) {
+  try {
+    const { default: Redis } = await import('ioredis');
+    const redisClient = new Redis(process.env.REDIS_URL, { lazyConnect: true });
+    await redisClient.connect();
+    nonceBackend = new RedisNonceStore(redisClient);
+    nonceBackendType = 'redis';
+    console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'redis_nonce_backend', url: process.env.REDIS_URL }));
+  } catch (err) {
+    console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'ERROR', event: 'redis_connect_failed', error: String(err), fallback: 'memory' }));
+    nonceBackend = new MemoryNonceBackend();
+  }
+} else {
+  nonceBackend = new MemoryNonceBackend();
+}
 
 const registry   = new PairRegistry(pairStore);
 const nonceStore = new ServerNonceStore(nonceBackend, SIG_WINDOW_MS * 2 + 10_000);
@@ -74,6 +116,15 @@ const bpcConfig = {
 const app = express();
 app.use(express.json({ limit: '64kb' }));
 
+// Count every request after response is sent
+app.use((req, res, next) => {
+  res.on('finish', () => {
+    const route = req.route?.path ?? req.path;
+    cHttpRequests.inc({ method: req.method, route, status: String(res.statusCode) });
+  });
+  next();
+});
+
 // ── Route: POST /register-pair ────────────────────────────────────────────────
 app.post('/register-pair', async (req, res) => {
   try {
@@ -92,6 +143,7 @@ app.post('/register-pair', async (req, res) => {
     });
 
     console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'pair_registered', pairId, name }));
+    cBpcRegistrations.inc();
     return res.json({ pairId });
   } catch (err) {
     console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'ERROR', event: 'register_pair_error', error: String(err) }));
@@ -133,6 +185,7 @@ app.post('/provision-tsk', async (req, res) => {
     const sharedSecret = tumblerMap?.sharedSecret ?? '';
 
     console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'tsk_provisioned', clientId, requestorId }));
+    cTskProvisions.inc();
     return res.json({ clientId, sharedSecret, provisionPayload });
   } catch (err) {
     console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'ERROR', event: 'provision_tsk_error', error: String(err) }));
@@ -215,8 +268,13 @@ app.post('/verify', async (req, res) => {
       },
     );
 
+    if (!result.ok) {
+      const failedLayer = result.layers?.find(l => !l.ok);
+      cAuthFailures.inc({ reason: failedLayer?.layer ?? 'unknown' });
+    }
     return res.json(result);
   } catch (err) {
+    cAuthFailures.inc({ reason: 'exception' });
     console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'ERROR', event: 'verify_exception', error: String(err) }));
     return res.status(500).json({ ok: false, error: String(err), layers: [] });
   }
@@ -382,16 +440,23 @@ app.patch('/bpc/pairs/:pairId', async (req, res) => {
   }
 });
 
+// ── Route: GET /metrics ───────────────────────────────────────────────────────
+app.get('/metrics', async (_req, res) => {
+  res.set('Content-Type', register.contentType);
+  res.end(await register.metrics());
+});
+
 // ── Route: GET /status ────────────────────────────────────────────────────────
 app.get('/status', async (req, res) => {
   try {
     const pairs = await registry.list();
     return res.json({
-      ok:       true,
-      version:  '1.1.0',
-      pairs:    pairs.length,
-      bindings: identityBinding.size,
-      sigWindowMs: SIG_WINDOW_MS,
+      ok:           true,
+      version:      '1.2.0',
+      pairs:        pairs.length,
+      bindings:     identityBinding.size,
+      sigWindowMs:  SIG_WINDOW_MS,
+      nonceBackend: nonceBackendType,
       layer8: {
         shadowMode: bpcConfig.enableShadowMode,
         tarpit:     bpcConfig.enableTarpit,
@@ -409,6 +474,6 @@ app.listen(PORT, '127.0.0.1', () => {
     timestamp: new Date().toISOString(),
     level: 'WARN',
     event: 'production_warning',
-    message: 'Using MemoryPairStore, MemoryTumblerStore, and MemoryNonceBackend. Data will be lost on restart. Use PostgreSQL and Redis for production deployments.'
+    message: `Using MemoryPairStore, MemoryTumblerStore, and ${nonceBackendType === 'redis' ? 'RedisNonceStore (nonce dedup shared across instances)' : 'MemoryNonceBackend (set REDIS_URL for HA deployments)'}. Pair/TSK data will be lost on restart without PostgreSQL.`
   }));
 });
