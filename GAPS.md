@@ -1,0 +1,95 @@
+# SelfConnect Enterprise — Complete Gap & Limitation Registry
+
+Last updated: 2026-05-27  
+Scope: all known limitations across the full stack, regardless of severity or prior tracking status.  
+Rule: if a limitation is known, it is in this file the first time it is asked about, not when it becomes relevant to something else.
+
+---
+
+## Ultra Server
+
+| # | Gap | Impact | Effort | Status |
+|---|-----|--------|--------|--------|
+| US-1 | No automatic rate limiting / lockout policy | Anomaly data collected but nothing acts on it. Brute-force attacker is slowed by HOTP/TOTP but not hard-blocked. | 1 day | Open |
+| US-2 | No PostgreSQL persistence for pairs and TSK keys | Restart = all registered agents must re-register. Memory-only. | 2–3 days | Open |
+| US-3 | No authentication on lifecycle API endpoints | `/tsk/keys/:id`, `/bpc/pairs/:id`, `/bind-identity` have no auth guard. Any process that can reach the server can modify or revoke keys. | Half day | Open |
+| US-4 | Redis nonce store wired but not tested under load | `RedisNonceStore` code is in `@bpc/server` and wired in `server.js`, but E2E tests run against memory backend only. Redis path has no integration test in CI. | 1 day | Open |
+| US-5 | No TLS | Binds to `127.0.0.1` only, so LAN exposure is not the risk — but any process on the same machine can reach it. Matters for multi-tenant or shared machines. | Config only | Open |
+
+---
+
+## BPC Protocol
+
+| # | Gap | Impact | Effort | Status |
+|---|-----|--------|--------|--------|
+| BPC-1 | Standalone BPC server middleware has no Redis nonce path | Already addressed in Ultra Server via `RedisNonceStore`, but the standalone `@bpc/server` middleware does not wire a Redis nonce path independently. | 1 day | Open |
+| BPC-2 | No scope hierarchy | Scopes are exact-match strings. No wildcard or parent/child scope (`read:*` covering `read:quotes`). | Design decision required | Open |
+
+---
+
+## TSK Protocol
+
+| # | Gap | Impact | Effort | Status |
+|---|-----|--------|--------|--------|
+| TSK-1 | HOTP counter exhaustion is a denial-of-service vector | If `maxRequests` is reached, the key expires and the client is locked out until a new key is provisioned. No auto-renewal. | Design decision required | Open |
+| TSK-2 | No key rotation ceremony | When a TSK key expires, client must call `/provision-tsk` again. No automatic re-key handshake. | 1–2 days | Open |
+
+---
+
+## AgentLedger
+
+| # | Gap | Impact | Effort | Status |
+|---|-----|--------|--------|--------|
+| AL-1 | JSONL file grows unbounded | No rotation, no archival, no size cap. Long-running agent accumulates an unbounded ledger file. | 1 day | Open |
+| AL-2 | No remote / centralized ledger backend | Each agent writes its own local file. No aggregated audit store. | Architectural — weeks | Open |
+
+---
+
+## SelfConnect Win32 SDK
+
+| # | Gap | Impact | Effort | Status |
+|---|-----|--------|--------|--------|
+| SDK-1 | 6 display-dependent tests skip in headless CI | Requires virtual display or interactive session. | Known, accepted | Open |
+| SDK-2 | No code signing on the SDK | Windows Defender and enterprise AV may flag unsigned Python scripts. | Certificate + signing pipeline | Open |
+
+---
+
+## Cross-cutting
+
+| # | Gap | Impact | Effort | Status |
+|---|-----|--------|--------|--------|
+| CC-1 | No secrets rotation procedure | Ultra Server generates recovery token HMAC key at startup. No documented procedure for rotating it in a running deployment. | Docs only | Open |
+| CC-2 | No structured runbook for disaster recovery | If server crashes and memory store is lost, recovery path is undocumented. | Docs only | Open |
+| CC-3 | CI does not test the Redis nonce path | GitHub Actions CI runs against memory backend only. Redis path untested in CI. | 1 day (add Redis service container to workflow) | Open |
+
+---
+
+## Performance Baseline (measured 2026-05-27, Windows 11, this machine)
+
+Pending retest on DGX Spark and RTX 5090.
+
+| Operation | Median | p95 | Throughput |
+|-----------|--------|-----|------------|
+| Policy check (allow/deny) | 0.008ms | 0.009ms | 115,000/sec |
+| Ledger write (hash + sign + append) | — | — | 586/sec |
+| CNG sign (ECDSA P-384, NCrypt) | 1.05ms | 2.32ms | 582/sec |
+| CNG verify (BCrypt) | 0.60ms | 1.37ms | 1,350/sec |
+| Full 7-layer HTTP verify (127.0.0.1) | 11.5ms | 13.8ms | 125 req/sec |
+
+**Note on localhost vs 127.0.0.1:** On Windows, connecting to `localhost` adds ~200ms due to IPv6 fallback (server is IPv4-only). All production code should use `127.0.0.1` explicitly. The E2E tests use `localhost` — this is the source of the 57-second test run time for 20 tests.
+
+**Single-machine ceiling estimate:** ~10–15 agents each doing 5–10 verified actions/second before CNG signing (582/sec shared) becomes the bottleneck. Policy enforcer and Ultra Server have headroom well beyond that.
+
+---
+
+## What Was Closed (as of 2026-05-27)
+
+All 19 items from the original gap registry are closed. Specific recent closures:
+
+- US-asyncio: `asyncio_mode = "strict"` removed from `pyproject.toml` — 0 warnings
+- CI floor updated to 880 (verified 884-passed baseline)
+- Docstring `\S` escapes fixed in `ultra_gate.py`, `identity_gate.py`, `key_recovery.py`
+- Redis nonce backend wired in `server.js` (item US-4 partially closed — code wired, CI test still open)
+- Prometheus `/metrics` endpoint live with 4 counters
+- E2E tests now run automatically via `pytest_sessionstart` Ultra Server auto-start
+- Test suite: **905 passed, 0 skipped, 0 failed** (local Windows, 2026-05-27)
