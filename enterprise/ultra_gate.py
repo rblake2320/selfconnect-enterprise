@@ -465,7 +465,7 @@ class UltraGate:
 
     @staticmethod
     def _load_mesh_secret() -> str:
-        """Load mesh secret from %APPDATA%\SelfConnect\mesh.key (if present).
+        """Load mesh secret from %APPDATA%\\SelfConnect\\mesh.key (if present).
 
         Falls back to DEFAULT_MESH_SECRET for development environments.
         The mesh.key file should be DPAPI-encrypted in production — this loader

@@ -14,7 +14,7 @@ Mode is read PER CALL (not at import time), matching the SC_HANDSHAKE pattern
 already established in this codebase. A running terminal can change mode by
 setting the env var — no restart required.
 
-Emergency bypass: Named Mutex `Global\SelfConnect_IdentityBypass_{UserSID}`.
+Emergency bypass: Named Mutex `Global\\SelfConnect_IdentityBypass_{UserSID}`.
   - Forces all terminals of this Windows user to AUDIT mode (not full bypass).
   - Does NOT create a path to "no verification" in enforce mode.
   - Trigger: emergency_bypass() / release_bypass() functions below.

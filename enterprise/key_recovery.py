@@ -7,7 +7,7 @@ identity. This module breaks that deadlock via an out-of-band filesystem path.
 Recovery flow:
   1. AgentIdentity.load() fails → RecoveryManager detects corruption.
   2. RecoveryManager generates a new keypair via AgentIdentity.init(overwrite=True).
-  3. Writes the new public key to %APPDATA%\SelfConnect\{name}\recovery.pub.
+  3. Writes the new public key to %APPDATA%\\SelfConnect\\{name}\\recovery.pub.
   4. POSTs /confirm-recovery to the Ultra Server, signed with the new private key
      and counter-signed by the server. Receives a server confirmation token.
      (Gap 2 fix: server confirmation prevents an attacker with session access from
@@ -66,7 +66,7 @@ DEFAULT_SERVER_URL = "http://localhost:7777"
 
 
 def _appdata_dir() -> Path:
-    """Return %APPDATA%\SelfConnect, creating it if needed."""
+    """Return %APPDATA%\\SelfConnect, creating it if needed."""
     base = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
     d = Path(base) / "SelfConnect"
     d.mkdir(parents=True, exist_ok=True)
