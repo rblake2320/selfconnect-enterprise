@@ -9,6 +9,7 @@ import time
 import uuid
 
 import pytest
+from enterprise.crypto import CNG_BACKEND_AVAILABLE
 
 from enterprise.crypto import cng_delete_key
 from enterprise.identity_cng import CngIdentity
@@ -18,8 +19,8 @@ import sys
 
 
 pytestmark = pytest.mark.skipif(
-    sys.platform != 'win32',
-    reason='Windows CNG (BCrypt/NCrypt) required — skip on non-Windows'
+    not CNG_BACKEND_AVAILABLE,
+    reason='No ECDSA-P384 signing backend available (CNG or portable)'
 )
 
 

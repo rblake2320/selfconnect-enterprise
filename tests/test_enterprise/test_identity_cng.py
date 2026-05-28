@@ -9,6 +9,7 @@ import json
 import uuid
 
 import pytest
+from enterprise.crypto import CNG_BACKEND_AVAILABLE
 
 from enterprise.crypto import ALGO_ID, P384_SIG_BYTES, SHA384_BYTES, cng_delete_key, cng_sha384
 from enterprise.identity_cng import GENESIS_HASH_CNG, CngIdentity, CngLedger
@@ -16,8 +17,8 @@ import sys
 
 
 pytestmark = pytest.mark.skipif(
-    sys.platform != 'win32',
-    reason='Windows CNG (BCrypt/NCrypt) required — skip on non-Windows'
+    not CNG_BACKEND_AVAILABLE,
+    reason='No ECDSA-P384 signing backend available (CNG or portable)'
 )
 
 

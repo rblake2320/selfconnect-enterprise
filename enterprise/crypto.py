@@ -62,8 +62,23 @@ import ctypes.wintypes
 # Tests that call CNG must be marked:
 #   @pytest.mark.skipif(sys.platform != 'win32', reason='Windows CNG only')
 
-_bcrypt = ctypes.windll.bcrypt  # type: ignore[attr-defined]
-_ncrypt = ctypes.windll.ncrypt  # type: ignore[attr-defined]
+import sys as _sys
+import os as _os
+# TEST-ONLY backend selection. Windows production path is unchanged; off-Windows
+# (or with SELFCONNECT_CRYPTO_BACKEND=portable) the public API is served by a
+# cryptography-backed implementation at the end of this module so the CNG suite
+# runs cross-platform. The portable backend is NOT FIPS-validated.
+_USE_PORTABLE_CRYPTO = _sys.platform != 'win32' or _os.environ.get('SELFCONNECT_CRYPTO_BACKEND') == 'portable'
+# True when a usable ECDSA-P384/SHA-384 signing backend is present:
+# Windows CNG natively, or the cryptography-backed portable backend off-Windows.
+# CNG crypto tests gate on this instead of sys.platform so they run cross-platform.
+CNG_BACKEND_AVAILABLE = True
+if _USE_PORTABLE_CRYPTO:
+    _bcrypt = None  # type: ignore[assignment]
+    _ncrypt = None  # type: ignore[assignment]
+else:
+    _bcrypt = ctypes.windll.bcrypt  # type: ignore[attr-defined]
+    _ncrypt = ctypes.windll.ncrypt  # type: ignore[attr-defined]
 
 # ── Algorithm identifiers ──────────────────────────────────────────────────────
 # TO MIGRATE: update only these constants (plus coord/sig byte sizes below).
@@ -491,4 +506,18 @@ __all__ = [
     "P384_SIG_BYTES",
     "P384_COORD_BYTES",
     "SHA384_BYTES",
+    "CNG_BACKEND_AVAILABLE",
 ]
+
+
+# ── TEST-ONLY portable backend override (non-Windows) ─────────────────────────
+# Production Windows CNG path above is unchanged. When the portable backend is
+# selected, replace the public API with the cryptography-backed implementation.
+if _USE_PORTABLE_CRYPTO:
+    from enterprise._portable_crypto import (  # noqa: E402
+        CngSigner,
+        cng_sha384,
+        cng_verify,
+        cng_key_exists,
+        cng_delete_key,
+    )
