@@ -14,13 +14,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
 import threading
 import time
 import uuid
-from pathlib import Path
-from typing import Optional
 
 import pytest
 
@@ -34,7 +30,6 @@ from enterprise.provenance import (
     ReplicationSink,
     SessionEventType,
     SessionState,
-    VerificationResult,
     canonical_bytes,
     canonical_hash,
     verify_log,
@@ -42,8 +37,6 @@ from enterprise.provenance import (
 )
 from enterprise.session_index import (
     SessionIndex,
-    SessionIndexError,
-    SessionManifestEntry,
 )
 
 
@@ -612,8 +605,8 @@ class TestFix7OrchestratorToken:
         # Verify a POLICY_VIOLATION was logged
         lines = r.log_path.read_text(encoding="utf-8").splitlines()
         violations = [
-            l for l in lines
-            if '"policy_violation"' in l and '"unauthorized_close_attempt"' in l
+            line for line in lines
+            if '"policy_violation"' in line and '"unauthorized_close_attempt"' in line
         ]
         assert len(violations) >= 1
 
@@ -653,8 +646,8 @@ class TestFix8EventTypeAuthority:
             pass
         lines = r.log_path.read_text(encoding="utf-8").splitlines()
         violations = [
-            l for l in lines
-            if '"policy_violation"' in l and '"unauthorized_privileged_event"' in l
+            ln for ln in lines
+            if '"policy_violation"' in ln and '"unauthorized_privileged_event"' in ln
         ]
         assert len(violations) >= 1
 
@@ -820,8 +813,8 @@ class TestFix11PolicyDowngrade:
             pass
         lines = r.log_path.read_text(encoding="utf-8").splitlines()
         violations = [
-            l for l in lines
-            if '"policy_violation"' in l and '"unauthorized_audit_mode_downgrade"' in l
+            ln for ln in lines
+            if '"policy_violation"' in ln and '"unauthorized_audit_mode_downgrade"' in ln
         ]
         assert len(violations) >= 1
 
@@ -834,8 +827,8 @@ class TestFix11PolicyDowngrade:
         )
         lines = r.log_path.read_text(encoding="utf-8").splitlines()
         changes = [
-            l for l in lines
-            if '"audit_mode_change"' in l
+            ln for ln in lines
+            if '"audit_mode_change"' in ln
         ]
         assert len(changes) >= 1
 
@@ -854,7 +847,7 @@ class TestFix12TelemetryGap:
     def test_telemetry_gap_recorded(self, recorder):
         recorder.report_telemetry_gap(sensor="sysmon", detail="service stopped")
         lines = recorder.log_path.read_text(encoding="utf-8").splitlines()
-        gaps = [l for l in lines if '"telemetry_gap"' in l]
+        gaps = [ln for ln in lines if '"telemetry_gap"' in ln]
         assert len(gaps) == 1
         rec = json.loads(gaps[0])
         assert rec["payload"]["sensor"] == "sysmon"
@@ -950,7 +943,7 @@ class TestMerkleSeal:
             r.record(SessionEventType.TOOL_CALL)
         r.close()
         lines = r.log_path.read_text(encoding="utf-8").splitlines()
-        seals = [l for l in lines if '"merkle_seal"' in l]
+        seals = [ln for ln in lines if '"merkle_seal"' in ln]
         assert len(seals) >= 1
 
     def test_merkle_root_is_deterministic(self):
@@ -983,8 +976,8 @@ class TestMerkleSeal:
         r.close()
         lines = r.log_path.read_text(encoding="utf-8").splitlines()
         final_seals = [
-            l for l in lines
-            if '"merkle_seal"' in l and '"final":true' in l
+            ln for ln in lines
+            if '"merkle_seal"' in ln and '"final":true' in ln
         ]
         assert len(final_seals) >= 1
 

@@ -68,7 +68,6 @@ import os
 import platform
 import secrets
 import threading
-import time
 import uuid
 import warnings
 from abc import ABC, abstractmethod
@@ -1214,7 +1213,6 @@ def _try_set_append_only_windows(path: Path) -> None:
     """
     try:
         import ctypes
-        import ctypes.wintypes as wt
 
         FILE_APPEND_DATA = 0x0004
         SYNCHRONIZE = 0x00100000

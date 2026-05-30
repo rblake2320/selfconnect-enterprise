@@ -24,12 +24,10 @@ Rollback detection (Fix 2, Fix 10):
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import threading
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -40,7 +38,6 @@ from enterprise.provenance import (
     ReplicationSink,
     SessionState,
     VerificationResult,
-    canonical_bytes,
     canonical_hash,
     verify_log,
 )
