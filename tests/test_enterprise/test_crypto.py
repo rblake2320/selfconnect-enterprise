@@ -27,7 +27,6 @@ from enterprise.crypto import (
     cng_sha384,
     cng_verify,
 )
-import sys
 
 pytestmark = pytest.mark.skipif(
     not CNG_BACKEND_AVAILABLE,

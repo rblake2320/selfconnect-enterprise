@@ -22,7 +22,6 @@ from enterprise.identity_cng import CngIdentity, CngLedger
 from enterprise.observer import LedgerObserver, ObserverFilter
 from enterprise.policy import PolicyBundle, PolicyEnforcer, make_bundle
 from enterprise.policy_sign import sign_policy
-import sys
 
 
 pytestmark = pytest.mark.skipif(
