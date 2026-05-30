@@ -13,7 +13,6 @@ from enterprise.crypto import CNG_BACKEND_AVAILABLE
 
 from enterprise.crypto import ALGO_ID, P384_SIG_BYTES, SHA384_BYTES, cng_delete_key, cng_sha384
 from enterprise.identity_cng import GENESIS_HASH_CNG, CngIdentity, CngLedger
-import sys
 
 
 pytestmark = pytest.mark.skipif(
