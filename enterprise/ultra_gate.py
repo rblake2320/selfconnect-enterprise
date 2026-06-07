@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from enterprise.bpc_crypto import (
@@ -143,19 +144,33 @@ class UltraGate:
             raise
 
     def _register_bpc_pair(self) -> str:
-        """POST /register-pair → returns pairId."""
+        """POST /register-pair → returns pairId.
+
+        Idempotency: includes X-Idempotency-Key so a crash-and-retry during
+        bootstrap does not create a duplicate BPC pair on the server.
+        The key is deterministic from agent_id + fingerprint, so retrying
+        with the same identity is always safe.
+        """
         import urllib.request
+        idem_key = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"register-pair:{self.agent_id}:{self._fingerprint}",
+        ))
         payload = json.dumps({
             "name": self.agent_id,
             "pubJwk": self._pub_jwk,
             "secretHash": self._secret_hash,
             "scope": "read-write",
             "fingerprint": self._fingerprint,
+            "idempotencyKey": idem_key,
         }).encode("utf-8")
         req = urllib.request.Request(
             f"{self.server_url}/register-pair",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "X-Idempotency-Key": idem_key,
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -167,13 +182,27 @@ class UltraGate:
         return pair_id
 
     def _provision_tsk(self) -> TSKClientState:
-        """POST /provision-tsk → returns TSKClientState."""
+        """POST /provision-tsk → returns TSKClientState.
+
+        Idempotency: includes X-Idempotency-Key so a crash-and-retry during
+        bootstrap does not provision a second TSK client for the same agent.
+        """
         import urllib.request
-        payload = json.dumps({"requestorId": self.agent_id}).encode("utf-8")
+        idem_key = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"provision-tsk:{self.agent_id}",
+        ))
+        payload = json.dumps({
+            "requestorId": self.agent_id,
+            "idempotencyKey": idem_key,
+        }).encode("utf-8")
         req = urllib.request.Request(
             f"{self.server_url}/provision-tsk",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "X-Idempotency-Key": idem_key,
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -189,17 +218,30 @@ class UltraGate:
         return state
 
     def _bind_identity(self, pair_id: str, tsk_client_id: str) -> None:
-        """POST /bind-identity — links BPC pair to TSK client on server."""
+        """POST /bind-identity — links BPC pair to TSK client on server.
+
+        Idempotency: includes X-Idempotency-Key so a crash-and-retry does not
+        create a duplicate binding.  The key is deterministic from pair_id +
+        tsk_client_id, so retrying with the same inputs is always safe.
+        """
         import urllib.request
+        idem_key = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"bind-identity:{pair_id}:{tsk_client_id}",
+        ))
         payload = json.dumps({
             "pairId": pair_id,
             "tskClientId": tsk_client_id,
             "agentId": self.agent_id,
+            "idempotencyKey": idem_key,
         }).encode("utf-8")
         req = urllib.request.Request(
             f"{self.server_url}/bind-identity",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "X-Idempotency-Key": idem_key,
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
