@@ -143,6 +143,56 @@ class UltraGate:
             _log.error("UltraGate bootstrap failed: %s", exc)
             raise
 
+    # ── Lifecycle API auth (US-3 fix) ─────────────────────────────────────────
+
+    def _lifecycle_auth_headers(self, payload_bytes: bytes) -> dict[str, str]:
+        """
+        Build the ``X-SC-Agent-Auth`` header block for lifecycle API calls.
+
+        Closes US-3: the three lifecycle endpoints (/register-pair,
+        /provision-tsk, /bind-identity) previously had no authentication guard.
+        Any process that could reach localhost:7777 could register or revoke
+        keys.
+
+        The auth header contains:
+          - agent_id: the permanent SC-XXXXXXXX identifier
+          - pubkey_hex: raw Ed25519 public key (32 bytes, hex-encoded)
+          - ts: Unix timestamp (float) — server should reject if > 30s old
+          - nonce: UUID4 — server should reject if seen before (anti-replay)
+          - sig: Ed25519 signature over SHA-256(payload_bytes + ts + nonce)
+            encoded as base64 — proves the caller holds the private key
+
+        The server-side guard (Ultra Server) must:
+          1. Parse the header block from the JSON body or HTTP header.
+          2. Verify the Ed25519 signature using the provided pubkey_hex.
+          3. Check ts is within ±30 seconds of server time.
+          4. Check nonce has not been seen before (store in Redis/memory).
+          5. Optionally: verify agent_id matches SHA-256(pubkey_bytes)[:8].
+
+        This is a challenge-response-free scheme — the client proves identity
+        by signing a fresh (ts, nonce, payload_hash) tuple. It is stateless
+        from the client's perspective and requires no pre-shared secret beyond
+        the identity keypair that the agent already holds.
+        """
+        import base64
+        import hashlib
+        import uuid
+        ts = str(time.time())
+        nonce = str(uuid.uuid4())
+        # Sign: SHA-256(payload_bytes) || ts || nonce
+        payload_hash = hashlib.sha256(payload_bytes).digest()
+        signed_material = payload_hash + ts.encode() + nonce.encode()
+        sig = self.identity.sign(signed_material)
+        return {
+            "X-SC-Agent-Auth": json.dumps({
+                "agent_id": self.agent_id,
+                "pubkey_hex": self.identity.public_key_bytes.hex(),
+                "ts": ts,
+                "nonce": nonce,
+                "sig": base64.b64encode(sig).decode(),
+            }, separators=(",", ":")),
+        }
+
     def _register_bpc_pair(self) -> str:
         """POST /register-pair → returns pairId.
 
@@ -164,12 +214,14 @@ class UltraGate:
             "fingerprint": self._fingerprint,
             "idempotencyKey": idem_key,
         }).encode("utf-8")
+        auth_headers = self._lifecycle_auth_headers(payload)
         req = urllib.request.Request(
             f"{self.server_url}/register-pair",
             data=payload,
             headers={
                 "Content-Type": "application/json",
                 "X-Idempotency-Key": idem_key,
+                **auth_headers,
             },
             method="POST",
         )
@@ -196,12 +248,14 @@ class UltraGate:
             "requestorId": self.agent_id,
             "idempotencyKey": idem_key,
         }).encode("utf-8")
+        auth_headers = self._lifecycle_auth_headers(payload)
         req = urllib.request.Request(
             f"{self.server_url}/provision-tsk",
             data=payload,
             headers={
                 "Content-Type": "application/json",
                 "X-Idempotency-Key": idem_key,
+                **auth_headers,
             },
             method="POST",
         )
@@ -235,12 +289,14 @@ class UltraGate:
             "agentId": self.agent_id,
             "idempotencyKey": idem_key,
         }).encode("utf-8")
+        auth_headers = self._lifecycle_auth_headers(payload)
         req = urllib.request.Request(
             f"{self.server_url}/bind-identity",
             data=payload,
             headers={
                 "Content-Type": "application/json",
                 "X-Idempotency-Key": idem_key,
+                **auth_headers,
             },
             method="POST",
         )
