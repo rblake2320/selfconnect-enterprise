@@ -240,3 +240,115 @@ at the wrong layer would produce coverage numbers that lie.
 
 This is a private research and patent-portfolio repository. Security issues
 should be reported directly to the repository owner.
+
+---
+
+## Known Vulnerabilities & Remediation Record
+
+This section documents every CVE and supply-chain advisory identified as relevant to this codebase, the scope assessment, and the remediation or mitigation applied. Each entry is backed by an automated test that acts as a permanent regression gate.
+
+---
+
+### sonatype-2026-001357 — LiteLLM TeamPCP Supply Chain Backdoor
+
+| Field | Value |
+|---|---|
+| **Advisory** | sonatype-2026-001357 |
+| **Affected package** | `litellm` versions 1.82.7 and 1.82.8 |
+| **Severity** | Critical |
+| **Discovered** | 2026-03-24 (Datadog Security Labs) |
+| **Type** | Supply chain — credential stealer + persistent backdoor injected via PyPI |
+
+**Description.** The TeamPCP threat actor (tracked as Sapphire Sleet / UNC1069) published backdoored versions of `litellm` to PyPI. The backdoor injected a new dependency (`plain-crypto-js`) that exfiltrated credentials from the host environment on import. Any environment that ran `pip install litellm` between 2026-03-24 and 2026-03-26 may have installed the backdoored version.
+
+**Scope assessment.** `litellm` is not a direct dependency of this package. If present in the environment (e.g., installed by a co-located agent framework), the backdoored versions are blocked.
+
+**Remediation.** `test_litellm_not_backdoored_version` in `tests/test_enterprise/test_supply_chain.py` is a hard gate: it fails the test suite if `litellm==1.82.7` or `litellm==1.82.8` is installed. Any CI run on a compromised environment will fail immediately.
+
+**Reference.** https://securitylabs.datadoghq.com/articles/litellm-compromised-pypi-teampcp-supply-chain-campaign/
+
+---
+
+### CVE-2026-26007 — cryptography < 46.0.5: SECT Curve ECDH Small-Subgroup Attack
+
+| Field | Value |
+|---|---|
+| **CVE** | CVE-2026-26007 |
+| **Affected package** | `cryptography` < 46.0.5 |
+| **Severity** | High (CVSS 7.4) |
+| **Fixed in** | `cryptography` 46.0.5 |
+| **Type** | Cryptographic — small-subgroup ECDH attack on SECT (binary) curves |
+
+**Description.** A small-subgroup attack on SECT elliptic curves (SECT163k1, SECT233k1, SECT283k1, etc.) allowed an attacker to recover private key material from ECDH key exchange operations using a low-order point.
+
+**Scope assessment.** This codebase uses P-384 and Ed25519 exclusively — not SECT curves. The gate is defense-in-depth against a future dependency silently introducing a SECT curve operation.
+
+**Remediation.** Two gates in `tests/test_enterprise/test_supply_chain.py`: (1) `test_cryptography_at_minimum_safe_version` — hard fails if `cryptography < 46.0.6`; (2) `test_cryptography_not_using_sect_curves` — scans all Python source files for SECT curve references.
+
+---
+
+### CVE-2026-34073 — cryptography < 46.0.6: X.509 Name Constraint Bypass
+
+| Field | Value |
+|---|---|
+| **CVE** | CVE-2026-34073 |
+| **Affected package** | `cryptography` < 46.0.6 |
+| **Severity** | High (CVSS 7.5) |
+| **Fixed in** | `cryptography` 46.0.6 |
+| **Type** | Cryptographic — X.509 name constraint bypass in `x509.verification` module |
+
+**Description.** A name constraint bypass in the `x509.verification` module allowed a certificate violating the issuer's name constraints to pass verification, enabling a sub-CA to issue certificates for domains outside its permitted subtree.
+
+**Scope assessment.** This codebase does not use `x509.verification` for TLS/cert validation — that is delegated to the OS TLS stack. The gate prevents a future code change from introducing this path.
+
+**Remediation.** Two gates: (1) `test_cryptography_at_minimum_safe_version` — requires `cryptography >= 46.0.6`; (2) `test_x509_verification_path_not_used` — scans all Python source files for `x509.verification` usage.
+
+---
+
+### CVE-2026-23744 — MCP Tool Metadata Prompt Injection
+
+| Field | Value |
+|---|---|
+| **CVE** | CVE-2026-23744 |
+| **Affected surface** | MCP clients that do not validate server-provided tool metadata |
+| **Severity** | High |
+| **Reported by** | OX Security; Elastic Security Labs (2026) |
+| **Type** | Prompt injection — malicious instructions embedded in MCP tool names/descriptions/schemas |
+
+**Description.** 5 of 7 evaluated MCP clients performed zero static validation of server-provided tool metadata. A malicious MCP server could embed prompt injection payloads in tool names, descriptions, or input schemas that the LLM obeys as system-level directives, enabling credential exfiltration, command execution, and behavioral override.
+
+**Remediation.** `TestMcpToolPoisoningScanner` in `tests/test_enterprise/test_dependency_integrity.py` provides a reusable scanner checking tool description strings against 12 injection pattern categories: authority directives, system instruction claims, ignore-previous injections, forget directives, behavioral overrides, new-instructions claims, role overrides, credential path references, shadow tool references, credential exfiltration attempts, backtick command execution, and Unicode homoglyph attacks.
+
+**Reference.** OX Security CVE-2026-23744; Elastic Security Labs "MCP Tools: Attack Vectors and Defense Recommendations" (2026).
+
+---
+
+### CVE-2026-33825 — BlueHammer: Windows Defender Temp Path TOCTOU
+
+| Field | Value |
+|---|---|
+| **CVE** | CVE-2026-33825 |
+| **Affected surface** | Windows Defender internal temp/staging paths |
+| **Severity** | Medium (CVSS 5.9) |
+| **Type** | TOCTOU — file substitution between script generation and execution |
+
+**Description.** BlueHammer targets Windows Defender's internal temp/staging paths via a TOCTOU race. A malicious process can substitute a script file between when Defender stages it and when it executes it.
+
+**Scope assessment.** This CVE targets Defender's internal paths, **not** operator-controlled `.ps1` paths generated by this codebase. The mitigation is defense-in-depth for general file substitution scenarios.
+
+**Remediation.** `generate_powershell()` in `enterprise/wfp.py` is deterministic — identical inputs always produce identical output bytes. Operators verify the SHA-256 hash of the generated script before executing it. `TestWfpScriptIntegrity` in `tests/test_enterprise/test_supply_chain.py` verifies determinism and hash stability.
+
+---
+
+## Automated Supply Chain Gate Summary
+
+| Advisory | Test file | Test name | Gate type |
+|---|---|---|---|
+| sonatype-2026-001357 (LiteLLM) | `test_supply_chain.py` | `test_litellm_not_backdoored_version` | Hard fail if backdoored version installed |
+| CVE-2026-26007 | `test_supply_chain.py` | `test_cryptography_at_minimum_safe_version` | Hard fail if `cryptography < 46.0.6` |
+| CVE-2026-26007 (scope) | `test_supply_chain.py` | `test_cryptography_not_using_sect_curves` | Hard fail if SECT curve reference found in source |
+| CVE-2026-34073 | `test_supply_chain.py` | `test_cryptography_at_minimum_safe_version` | Hard fail if `cryptography < 46.0.6` |
+| CVE-2026-34073 (scope) | `test_supply_chain.py` | `test_x509_verification_path_not_used` | Hard fail if `x509.verification` found in source |
+| CVE-2026-23744 | `test_dependency_integrity.py` | `TestMcpToolPoisoningScanner` | Reusable scanner on all MCP tool metadata |
+| CVE-2026-33825 | `test_supply_chain.py` | `TestWfpScriptIntegrity` | Determinism + hash stability verification |
+| pip-audit (all direct deps) | `test_supply_chain.py` | `test_direct_deps_no_known_cves` | Hard fail if pip-audit reports any CVE |
