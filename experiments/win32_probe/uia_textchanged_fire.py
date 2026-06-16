@@ -76,6 +76,13 @@ def main() -> int:
         print("REFUSED: no new console/terminal window appeared to pin.")
         return 3
 
+    # Optional: minimize the spawned console to prove TextChanged fires with NO focus
+    # and NO visibility (UIA/ConPTY are process-level, not tied to the input/visual chain).
+    background = "background" in sys.argv[1:]
+    if background:
+        win32gui.ShowWindow(mine, 6)  # SW_MINIMIZE
+        time.sleep(0.5)
+
     uia, UIA = get_uia()
     el = text_element(uia, UIA, mine)
     if el is None:
@@ -107,12 +114,12 @@ def main() -> int:
     except Exception:  # noqa: BLE001
         pass
 
+    where = "MINIMIZED/background" if background else "foreground"
     if fired["n"] > 0:
-        print(f"PASS: TextChanged FIRED {fired['n']}x on live terminal output; "
-              f"last_delta={str(fired['last'])[:80]!r}")
+        print(f"PASS: TextChanged FIRED {fired['n']}x on live terminal output "
+              f"({where}); last_delta={str(fired['last'])[:80]!r}")
         return 0
-    print("PARTIAL: TextChanged did not fire within 8s on the spawned console "
-          "(conhost UIA may not raise it; Windows Terminal TermControl is the next target).")
+    print(f"PARTIAL: TextChanged did not fire within 8s ({where}) on the spawned console.")
     return 1
 
 

@@ -37,9 +37,11 @@ refuse to write to any window it didn't create; refuse if more than one candidat
    diff to the single new HWND → pin → write/read **only** that handle; verified.
 2. **UIA upgrade**: ✅ live `TextChanged` delivery **PROVEN** (`uia_textchanged_fire.py` —
    fired 2× on streamed terminal output, delta returned the real new line; reusable path
-   in `uia_textpattern.py`). Remaining: read the terminal **Text Area scrollback** by
-   ControlType rather than longest-text heuristic; add **echo filtering** (the TermControl
-   is one surface, so it fires on input echo too); confirm on Windows Terminal TermControl
+   in `uia_textpattern.py`). ✅ **background/no-focus PROVEN** — fires 2× even with the
+   console MINIMIZED (focus- and visibility-independent; ConPTY buffer is process-level).
+   Remaining: select the scrollback by **ControlType=Text(50020)** rather than the
+   longest-text heuristic; add **echo filtering** (PROBE-token: inject `SC_PROBE_xxxx`,
+   ignore delta if it starts with the token); confirm on Windows Terminal TermControl
    (proven on conhost).
 3. **TPM attestation**: `NCryptCreateClaim` (`NCRYPT_CLAIM_PLATFORM`) for a
    remote-verifiable hardware-residency proof; persist algo id for P-256/P-384 agility.
