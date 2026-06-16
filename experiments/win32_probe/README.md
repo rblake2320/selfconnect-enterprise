@@ -32,7 +32,10 @@ Requires: Windows, `pywin32`, `comtypes` (all already installed under Python 3.1
 | `tpm_identity.py` | **PASS** | ECDSA **P-256** key created in the **Microsoft Platform Crypto Provider (TPM)**, signed an audit-style payload, verified OK. Hardware-backing inferred from the provider (`Impl Type` query returned `NTE_NOT_SUPPORTED` on this TPM — best-effort). |
 | `named_pipe_identity.py` | **PASS** | DACL-guarded named pipe; server called `ImpersonateNamedPipeClient` and read the **OS-verified caller SID** (`S-1-5-21-…-1001`). The client's spoofed `identity=I-AM-ROOT` payload was **ignored** — identity came from the OS token, not the application. |
 | `uia_read.py` | **PASS** | Enumerated **40 top-level windows** structurally (incl. 16 terminals — the live Claude sessions), read **text as strings via TextPattern (no pixels)** from 5 targets, and registered/removed a UIA event handler (push-based reply detection path). |
-| `uia_write.py` | **⛔ QUARANTINED** | Write/inject worked via UIA `ValuePattern.SetValue`, but its **title-substring targeting overwrote unrelated Notepad windows** (in-memory only; nothing saved). Disabled at `__main__` until rewritten to pin a single spawned window by PID/HWND. See `NEXT_STEPS.md`. |
+| `uia_write.py` | **PASS (safe)** | Rewritten after the 2026-06-16 overwrite incident: spawns Notepad, pins the single NEW window by HWND set-diff, verifies the UIA element handle matches, writes **only** that window, read-back verified. Never touches a window it didn't create. |
+| `uia_textpattern.py` | **helper** | Reusable read path for `chained_channel.py`: `get_uia / text_element / read_text / register_textchanged / compute_delta`. Descend to the TermControl (longest-text TextPattern descendant), v1 `IUIAutomationTextPattern`. |
+| `uia_textchanged_fire.py` | **PASS** | Live-fire proof: spawns a console (conhost), registers TextChanged on its text element, pumps the COM loop — event **fired 2× on streamed output**, delta read returned the real new line. Push-based read validated (Notepad RichEditD2DPT does NOT raise it; terminals do). |
+| `mesh_talk.py` | **tool** | Peer comms (`list` / `send` / `read`) via the SelfConnect SDK; explicit-hwnd targeting only. |
 
 ## Patent mapping
 
