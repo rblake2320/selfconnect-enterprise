@@ -18,6 +18,7 @@ Exit: 0 = PASS (server read OS-verified client SID), 3 = FAIL
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes
 import sys
 import threading
 import time
@@ -29,7 +30,15 @@ import win32pipe
 import win32security
 
 PIPE = r"\\.\pipe\selfconnect-idprobe"
-_advapi32 = ctypes.windll.advapi32
+
+# Prototype the advapi32 calls explicitly: HANDLE is pointer-sized (8 bytes on x64).
+# Letting ctypes default the handle arg to c_int (4 bytes) is the same class of ABI
+# bug Codex flagged in self_connect.py — fix it at the source here too.
+_advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+_advapi32.ImpersonateNamedPipeClient.argtypes = [ctypes.wintypes.HANDLE]
+_advapi32.ImpersonateNamedPipeClient.restype = ctypes.wintypes.BOOL
+_advapi32.RevertToSelf.argtypes = []
+_advapi32.RevertToSelf.restype = ctypes.wintypes.BOOL
 
 
 def _build_sa_with_dacl() -> win32security.SECURITY_ATTRIBUTES:

@@ -32,6 +32,7 @@ Requires: Windows, `pywin32`, `comtypes` (all already installed under Python 3.1
 | `tpm_identity.py` | **PASS** | ECDSA **P-256** key created in the **Microsoft Platform Crypto Provider (TPM)**, signed an audit-style payload, verified OK. Hardware-backing inferred from the provider (`Impl Type` query returned `NTE_NOT_SUPPORTED` on this TPM — best-effort). |
 | `named_pipe_identity.py` | **PASS** | DACL-guarded named pipe; server called `ImpersonateNamedPipeClient` and read the **OS-verified caller SID** (`S-1-5-21-…-1001`). The client's spoofed `identity=I-AM-ROOT` payload was **ignored** — identity came from the OS token, not the application. |
 | `uia_read.py` | **PASS** | Enumerated **40 top-level windows** structurally (incl. 16 terminals — the live Claude sessions), read **text as strings via TextPattern (no pixels)** from 5 targets, and registered/removed a UIA event handler (push-based reply detection path). |
+| `uia_write.py` | **⛔ QUARANTINED** | Write/inject worked via UIA `ValuePattern.SetValue`, but its **title-substring targeting overwrote unrelated Notepad windows** (in-memory only; nothing saved). Disabled at `__main__` until rewritten to pin a single spawned window by PID/HWND. See `NEXT_STEPS.md`. |
 
 ## Patent mapping
 
