@@ -21,6 +21,9 @@ and cannot affect the shipping `enterprise/` package or the CI test-count gate.
 | `uia_textchanged_fire.py` | PASS | TextChanged **fires** on live terminal output — incl. **minimized/no-focus** (focus- and visibility-independent) |
 | `chained_channel.py` | **CHAIN COMPLETE** | The composed loop, verified end-to-end (below) |
 | `mesh_talk.py` | tool | Peer comms over the SelfConnect SDK (explicit-hwnd targeting only) |
+| `target_guard.py` | PASS | Safe injection gate — terminal class check blocks Notepad/non-ConPTY; stale-hwnd expect_* checks |
+| `tpm_attestation.py` | NA (diagnosed) | `NCryptCreateClaim(PLATFORM)` → E_INVALIDARG; malformed call (not hardware limit); needs `NCryptBufferDesc` |
+| `job_sandbox.py` | **PASS** | OS Job Object: ACTIVE_PROCESS=1 + 256MB + KILL_ON_JOB_CLOSE — child dead on handle close, no app cooperation |
 
 ## The chain — `chained_channel.py` (CHAIN COMPLETE, 02:44 CDT)
 One governed loop, all three legs cryptographically bound, verified end-to-end:
@@ -55,9 +58,18 @@ pin by HWND-diff, write only that window). The lesson is baked in across the pro
 - `master` is unchanged (still v1.4.0) — this branch is purely additive.
 - Run it all: `python experiments/win32_probe/run_all.py` then `python experiments/win32_probe/chained_channel.py`
 
+## Session 2 additions (2026-06-16, resumed after sleep)
+- **`target_guard.py`** (PASS, commit `8251221`) — injection safety gate, proven on Codex CASCADIA and Notepad. Schema handed to Codex 1; they patched it into `send_text` as commit `95b1f45`.
+- **`tpm_attestation.py`** (NA/diagnosed, commit `48c5d94`) — honest E_INVALIDARG diagnosis; deferred attestation to a doc-grounded build with proper `NCryptBufferDesc`.
+- **`job_sandbox.py`** (PASS, commit `48c5d94`) — OS-backed containment via Job Object. `ActiveProcesses=1` live; child killed by OS on `CloseHandle(job)`. The containment ExecGuard (SCFH NO-GO) could not provide.
+- All three committed and pushed to `experiment/win32-probe` in commit `48c5d94`.
+- Notified Codex 1 over WM_CHAR mesh.
+
 ## Next (queued in `NEXT_STEPS.md`)
-1. TPM **attestation** (`NCryptCreateClaim`) — remote-verifiable hardware-residency proof.
-2. **Peer registry** (JSON over the DACL pipe), additive — schema agreed; hand to Codex to wire into migration.
-3. UIA: select scrollback by `ControlType=Text(50020)`; add PROBE-token **echo filter**; confirm on the Windows Terminal TermControl (proven on conhost).
-4. **Promote** the TPM probe into `enterprise/` behind a feature flag (disabled by default) after attestation lands.
-5. Codex: land the central prototypes + packaging patch.
+1. TPM **attestation proper build** — `NCryptCreateClaim(PLATFORM)` with correct `NCryptBufferDesc` (nonce + PCR mask). Doc-grounded only.
+2. **Peer registry** (JSON over the DACL pipe, additive) — schema agreed (`role, session, prev_hwnd, status`); hand to Codex to wire into migration.
+3. UIA **echo filter** — inject SC_PROBE token, filter echoed input from new output delta.
+4. UIA **TermControl proof** — confirm TextChanged on Windows Terminal CASCADIA (proven on conhost, not yet on WT TermControl directly).
+5. **Promote** TPM probe into `enterprise/` behind feature flag after attestation lands.
+6. Codex lane: ETW provider + Service-SID daemon mode.
+7. LEGAL review of 6 patent families — route before any public disclosure.
