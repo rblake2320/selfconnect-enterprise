@@ -1,0 +1,25 @@
+{
+  "verdict": "NA",
+  "claim_type": "NCRYPT_CLAIM_PLATFORM",
+  "return_codes": {
+    "size_call": "0x80070057",
+    "size_cb": 0
+  },
+  "layout": {
+    "ncryptBufferDesc": {
+      "ulVersion": 0,
+      "cBuffers": 1
+    },
+    "buffers": [
+      {
+        "BufferType": 49,
+        "cbBuffer": 32,
+        "name": "NCRYPTBUFFER_CLAIM_KEYATTESTATION_NONCE"
+      }
+    ],
+    "claimType": "NCRYPT_CLAIM_PLATFORM (0x00010000)",
+    "nonce_b64": "oKxUudUQrggWVLFql+VIcVeqx9U/N9ZK/t4E5iC6AQE="
+  },
+  "note": "NCryptCreateClaim(PLATFORM, +nonce) STILL -> 0x80070057 (E_INVALIDARG). A well-formed nonce-only param list is not accepted: PLATFORM/PCR attestation is NOT a supported NCryptCreateClaim path (no PCR-mask buffer exists in the API). Use NCRYPT_CLAIM_AUTHORITY_AND_SUBJECT (key attestation, no params) for remote-verifiable TPM-residency, or TBS/TPM2_Quote for true PCR attestation.",
+  "recorded_at": "2026-06-16T19:27:23"
+}
