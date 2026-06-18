@@ -10,7 +10,7 @@ audit receipt. Identity is OS-verified, not API-key-asserted.
 Security properties enforced in this schema layer:
   - All string inputs that reach OS/crypto/audit sinks carry maxLength and/or pattern.
   - All integer inputs that bound queries or timeouts carry maximum.
-  - sc_pipe_ping.pipe_name is restricted to local named pipes (\\\\.\pipe\\...) only.
+  - sc_pipe_ping.pipe_name is restricted to local named pipes (\\\\.\\pipe\\...) only.
   - sc_receipt_verify.expected_agent_pub_b64 is required — absent key = no sig check = fail-open.
   - sc_request_lease.agent_id is required — leases without identity are unauditable.
   - sc_audit_search.limit carries a maximum to prevent unbounded audit dumps.

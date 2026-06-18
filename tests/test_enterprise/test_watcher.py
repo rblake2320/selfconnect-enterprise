@@ -281,11 +281,16 @@ class TestSecurityInputBounds:
     def test_load_leases_negative_ttl_clamped(self):
         state = WatcherState()
 
-        class FakeRegistry:
+        class _FakeReg:
             def list_agents(self):
                 return [{"agent_id": "bad", "hwnd": 1001, "role": "r", "ttl": -99999}]
 
-        with umock.patch("enterprise.registry.AgentRegistry", FakeRegistry):
+        # _load_leases imports AgentRegistry locally inside a try/except.
+        # Inject a fake module so the import resolves to our stub.
+        import sys
+        fake_mod = umock.MagicMock()
+        fake_mod.AgentRegistry = _FakeReg
+        with umock.patch.dict(sys.modules, {"enterprise.registry": fake_mod}):
             leases = state._load_leases()
         assert all(lease.expires_at >= 0 for lease in leases)
 
@@ -293,11 +298,14 @@ class TestSecurityInputBounds:
     def test_load_leases_negative_hwnd_clamped(self):
         state = WatcherState()
 
-        class FakeRegistry:
+        class _FakeReg:
             def list_agents(self):
                 return [{"agent_id": "x", "hwnd": -12345, "role": "r", "ttl": 300}]
 
-        with umock.patch("enterprise.registry.AgentRegistry", FakeRegistry):
+        import sys
+        fake_mod = umock.MagicMock()
+        fake_mod.AgentRegistry = _FakeReg
+        with umock.patch.dict(sys.modules, {"enterprise.registry": fake_mod}):
             leases = state._load_leases()
         assert all(lease.hwnd >= 0 for lease in leases)
 
@@ -358,7 +366,10 @@ class TestSecurityInputBounds:
                     }
                 ]
 
-        with umock.patch("enterprise.ledger.AuditLedger", FakeLedger):
+        import sys
+        fake_ledger_mod = umock.MagicMock()
+        fake_ledger_mod.AuditLedger = FakeLedger
+        with umock.patch.dict(sys.modules, {"enterprise.ledger": fake_ledger_mod}):
             events = state._load_events()
 
         assert len(events) == 1
