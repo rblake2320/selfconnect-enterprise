@@ -57,9 +57,7 @@ jobs:
           skipped = int(skipped_m.group(1)) if skipped_m else 0
 
           # 21 skips: test_e2e_ultra_gate.py — require a live Ultra Server process
-          # 1 skip:  test_selfconnect_declared_deps_match_installed — sdk/ submodule
-          #          not checked out in CI (private repo, --no-deps install)
-          WIN32_SESSION_SKIPS = 22  # 21 Ultra Server E2E + 1 SDK submodule
+          WIN32_SESSION_SKIPS = 21  # 21 Ultra Server E2E skips
 
           print(f"Results: {passed} passed, {failed} failed, {skipped} skipped")
 

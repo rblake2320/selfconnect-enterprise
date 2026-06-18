@@ -348,7 +348,6 @@ def run_all() -> dict:
         kstatus = "PASS" if kr.passed else "FAIL"
         print(f"  [{kstatus}] {kr.notes}")
 
-    kill_all_fired = all(kr.passed for kr in kill_results)
     section_summaries.append(
         f"KILL_ON_JOB_CLOSE: immediate={'PASS' if kill_results[0].passed else 'FAIL'}, "
         f"delayed={'PASS' if kill_results[1].passed else 'FAIL'}"
