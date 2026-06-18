@@ -35,6 +35,8 @@
 | 23 | `msg_validator.py` — message validation | Code | `enterprise/msg_validator.py` | All inbound messages are validated before processing; malformed payloads rejected | SI-3, AC-3 | 2026-06 |
 | 24 | `version_gate.py` — minimum version enforcement | Code | `enterprise/version_gate.py` | System refuses to operate below a minimum version, preventing downgrade attacks | SI-7, CM-9 | 2026-06 |
 | 25 | `ledger.py` — tamper-evident audit ledger | Code + design | `enterprise/ledger.py` | Audit records written to tamper-evident store; supports post-incident review | AU-9, AU-10, IR-4 | 2026-06 |
+| 26 | MCP runtime dispatch | Code + tests | `enterprise/mcp_dispatch.py`, `tests/test_enterprise/test_mcp_dispatch.py` | The 20 MCP schemas have executable, schema-validated handlers; actuating calls are lease-gated, audited, and routed through the governed channel router | AC-3, AU-2, AU-12, SI-10 | 2026-06 |
+| 27 | Governance profile split | Design + tests | `docs/GOVERNANCE_PROFILES.md`, `enterprise/mcp_dispatch.py`, `tests/test_enterprise/test_mcp_dispatch.py` | Normal, enterprise, and government postures are explicit. Normal SelfConnect remains free-flowing; enterprise defaults to lease/audit controls; government denies software-only identity/session paths until TPM is wired | AC-3, AC-6, IA-2, IA-5, CM-7 | 2026-06 |
 
 ---
 
@@ -42,12 +44,12 @@
 
 | Family | Evidence Entries | Key Artifacts |
 |--------|-----------------|---------------|
-| AC | 1, 7, 8, 9, 15, 18, 21, 22 | identity_gate.py, target_guard.py, egress_guard.py |
-| AU | 7, 12, 17, 19, 22, 25 | ledger.py, identity_gate.py, observer.py |
-| IA | 7, 8, 10, 14, 16, 17 | identity.py, chained_channel.py |
+| AC | 1, 7, 8, 9, 15, 18, 21, 22, 26, 27 | identity_gate.py, target_guard.py, egress_guard.py, mcp_dispatch.py |
+| AU | 7, 12, 17, 19, 22, 25, 26 | ledger.py, identity_gate.py, observer.py, mcp_dispatch.py |
+| IA | 7, 8, 10, 14, 16, 17, 27 | identity.py, chained_channel.py, governance profiles |
 | SC | 9, 11, 12, 13, 19, 21 | bpc_crypto.py, chained_channel.py |
-| SI | 1, 2, 3, 4, 5, 6, 18, 19, 20, 24 | test_dependency_integrity.py, version_gate.py |
-| CM | 1, 3, 9, 15, 20, 24 | test_dependency_integrity.py, version_gate.py |
+| SI | 1, 2, 3, 4, 5, 6, 18, 19, 20, 24, 26 | test_dependency_integrity.py, version_gate.py, mcp_dispatch.py |
+| CM | 1, 3, 9, 15, 20, 24, 27 | test_dependency_integrity.py, version_gate.py, governance profiles |
 | CA | 7, 8, 9, 10, 17, 20 | identity_gate.py (inline WRAITH references) |
 | IR | 8, 25 | identity_gate.py:emergency_bypass(), ledger.py |
 

@@ -45,7 +45,7 @@ _HWND_MAX       = 0xFFFFFFFE
 
 # Pattern for local named pipes only: \\.\pipe\<name>
 # Blocks: UNC remote paths (\\server\pipe\), path traversal (..), and bare names.
-_PIPE_NAME_PATTERN = r"^\\\\\\\\.\\\\pipe\\\\[A-Za-z0-9_\\-\\.]{1,200}$"
+_PIPE_NAME_PATTERN = r"^\\\\\.\\pipe\\[A-Za-z0-9_\-\.]{1,200}$"
 
 # Pattern for lease IDs: UUID or SC-hex forms.
 _LEASE_ID_PATTERN = r"^[A-Za-z0-9_\-]{1,128}$"

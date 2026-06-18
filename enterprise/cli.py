@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 
@@ -126,6 +127,22 @@ def cmd_version(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mcp_call(args: argparse.Namespace) -> int:
+    from enterprise.mcp_dispatch import dispatch_tool
+
+    try:
+        payload = json.loads(args.args_json)
+    except json.JSONDecodeError as exc:
+        print(json.dumps({"ok": False, "error": f"--args-json is invalid JSON: {exc}"}))
+        return 2
+    if not isinstance(payload, dict):
+        print(json.dumps({"ok": False, "error": "--args-json must decode to an object"}))
+        return 2
+    result = dispatch_tool(args.tool, payload)
+    print(json.dumps(result, sort_keys=True))
+    return 0 if result.get("ok") else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="scent",
@@ -151,6 +168,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="HZ",
         help=f"Refresh rate in Hz ({_MIN_HZ}–{_MAX_HZ}, default 2)",
     )
+    mcp_p = sub.add_parser("mcp-call", help="Call one registered MCP tool and print JSON")
+    mcp_p.add_argument("tool", help="MCP tool name, e.g. sc_request_lease")
+    mcp_p.add_argument(
+        "--args-json",
+        default="{}",
+        metavar="JSON",
+        help="Tool arguments as a JSON object",
+    )
     sub.add_parser("version", help="Print version and exit")
 
     return parser
@@ -164,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         "leases": cmd_leases,
         "audit": cmd_audit,
         "watch": cmd_watch,
+        "mcp-call": cmd_mcp_call,
         "version": cmd_version,
         None: lambda a: (parser.print_help(), 0)[1],
     }

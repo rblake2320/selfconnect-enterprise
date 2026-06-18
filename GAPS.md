@@ -93,3 +93,20 @@ All 19 items from the original gap registry are closed. Specific recent closures
 - Prometheus `/metrics` endpoint live with 4 counters
 - E2E tests now run automatically via `pytest_sessionstart` Ultra Server auto-start
 - Test suite: **905 passed, 0 skipped, 0 failed** (local Windows, 2026-05-27)
+
+---
+
+## What Was Closed (as of 2026-06-18)
+
+- MCP runtime dispatch: `enterprise/mcp_tools.py` is no longer schema-only.
+  `enterprise/mcp_dispatch.py` provides executable handlers for all 20 MCP
+  tools with schema validation, lease gating, audit events, channel-router
+  delegation, software identity sign/verify, receipt verification, and a
+  `scent mcp-call` CLI path. Covered by
+  `tests/test_enterprise/test_mcp_dispatch.py`.
+- Governance profile separation: normal, enterprise, and government postures
+  are documented in `docs/GOVERNANCE_PROFILES.md` and represented in
+  `MCPDispatcher(profile=...)`. Normal SelfConnect remains the free-flowing
+  day-to-day path; enterprise MCP remains lease/audit governed; government
+  profile fails closed for software-only identity/session paths until TPM is
+  wired.

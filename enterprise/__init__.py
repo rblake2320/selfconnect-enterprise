@@ -95,6 +95,7 @@ from enterprise.identity_gate import (  # noqa: F401
     MODE_AUDIT,
     MODE_ENFORCE,
 )
+from enterprise.mcp_dispatch import MCPDispatcher, dispatch_tool, get_default_dispatcher  # noqa: F401
 from enterprise.key_recovery import (  # noqa: F401
     RecoveryManager,
     check_peer_recovery,
