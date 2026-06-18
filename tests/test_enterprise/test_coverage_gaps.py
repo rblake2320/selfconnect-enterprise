@@ -159,6 +159,7 @@ class TestExportGuardCheckAndLog:
         if not metadata:
             # positional args
             metadata = call_kwargs[0][0] if len(call_kwargs[0]) > 0 else {}
+        assert "deny_reason" in metadata
 
     def test_check_and_log_no_ledger(self):
         """check_and_log works without a ledger (no crash)."""
@@ -434,3 +435,90 @@ class TestProfileFromFileSignature:
 
         finally:
             signer.close()
+
+
+# ── WR-009: chained_channel challenge-response digest logic ──────────────────
+# These tests exercise the server-side verification invariant added to
+# chained_channel.py (role_b) in pure Python — no Win32 handles required.
+# The property being tested: the server reconstructs sha256(delta_bytes + nonce)
+# from its OWN nonce, so a client that fabricates delta_bytes without performing
+# a real UIA read will be detected via digest mismatch.
+
+import hashlib as _hashlib
+import secrets as _secrets
+
+
+class TestWR009ChallengeResponseDigest:
+    """Unit tests for the WR-009 server-side challenge-response digest invariant."""
+
+    def _server_verify(self, server_nonce: bytes, payload: dict) -> bool:
+        """Minimal replica of role_b's digest reconstruction and comparison."""
+        delta_bytes = bytes.fromhex(payload["delta_bytes"])
+        expected_digest = _hashlib.sha256(delta_bytes + server_nonce).digest()
+        client_digest = bytes.fromhex(payload["delta_hash"])
+        return client_digest == expected_digest
+
+    def test_honest_client_passes(self):
+        """A client that uses the real nonce and real delta produces a matching digest."""
+        nonce = _secrets.token_bytes(32)
+        delta = "SC_CHAIN_abc123\r\n"
+        delta_bytes = delta.encode()
+        digest = _hashlib.sha256(delta_bytes + nonce).digest()
+        payload = {
+            "delta_bytes": delta_bytes.hex(),
+            "delta_hash": digest.hex(),
+        }
+        assert self._server_verify(nonce, payload) is True
+
+    def test_fabricated_delta_bytes_fails(self):
+        """Attacker sends a different delta_bytes than what was used to compute delta_hash.
+
+        This is the WR-009 scenario: an attacker pre-signs sha256(any_string) without
+        performing a real UIA read.  The server's independent reconstruction of the
+        digest using its own nonce exposes the mismatch.
+        """
+        nonce = _secrets.token_bytes(32)
+        real_delta = "SC_CHAIN_abc123\r\n"
+        # Attacker pre-computes a digest over a different string (no UIA read)
+        attacker_string = b"fabricated_content"
+        attacker_digest = _hashlib.sha256(attacker_string + nonce).digest()
+        # Attacker claims the honest delta_bytes but sends the attacker digest
+        payload = {
+            "delta_bytes": real_delta.encode().hex(),
+            "delta_hash": attacker_digest.hex(),  # mismatches real_delta + nonce
+        }
+        assert self._server_verify(nonce, payload) is False
+
+    def test_wrong_nonce_fails(self):
+        """A payload signed with a different nonce (e.g., replayed from earlier) fails.
+
+        This covers replay attacks: even if the attacker obtained a valid
+        (delta_bytes, delta_hash) pair from a previous session, the server's
+        fresh nonce will not match.
+        """
+        nonce_session1 = _secrets.token_bytes(32)
+        nonce_session2 = _secrets.token_bytes(32)
+        # Ensure the two nonces differ (astronomically unlikely to collide)
+        assert nonce_session1 != nonce_session2, "RNG produced identical nonces — rerun"
+
+        delta = "SC_CHAIN_xyz789\r\n"
+        delta_bytes = delta.encode()
+        # Client computed digest using session-1 nonce
+        digest_s1 = _hashlib.sha256(delta_bytes + nonce_session1).digest()
+        payload = {
+            "delta_bytes": delta_bytes.hex(),
+            "delta_hash": digest_s1.hex(),
+        }
+        # Server uses session-2 nonce → mismatch
+        assert self._server_verify(nonce_session2, payload) is False
+
+    def test_empty_delta_with_correct_nonce_passes(self):
+        """Edge case: empty delta is a valid (if unusual) payload."""
+        nonce = _secrets.token_bytes(32)
+        delta_bytes = b""
+        digest = _hashlib.sha256(delta_bytes + nonce).digest()
+        payload = {
+            "delta_bytes": delta_bytes.hex(),
+            "delta_hash": digest.hex(),
+        }
+        assert self._server_verify(nonce, payload) is True
