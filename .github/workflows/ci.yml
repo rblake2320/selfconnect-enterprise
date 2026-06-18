@@ -56,10 +56,10 @@ jobs:
           skipped_m = re.search(r'(\d+) skipped', output)
           skipped = int(skipped_m.group(1)) if skipped_m else 0
 
-          # The 21 skips are all test_e2e_ultra_gate.py — they require a live Ultra
-          # Server process and skip cleanly on every run (CI and local) without one.
-          # CNG/NCrypt/BCrypt tests run and pass on windows-latest (no display needed).
-          WIN32_SESSION_SKIPS = 21  # Ultra Server E2E only
+          # 21 skips: test_e2e_ultra_gate.py — require a live Ultra Server process
+          # 1 skip:  test_selfconnect_declared_deps_match_installed — sdk/ submodule
+          #          not checked out in CI (private repo, --no-deps install)
+          WIN32_SESSION_SKIPS = 22  # 21 Ultra Server E2E + 1 SDK submodule
 
           print(f"Results: {passed} passed, {failed} failed, {skipped} skipped")
 
