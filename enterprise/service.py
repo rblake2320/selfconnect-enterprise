@@ -127,15 +127,68 @@ class ControlPlaneThread(threading.Thread):
     The *crashed* attribute is set to ``True`` if the thread exits due to an
     unhandled exception.  Callers MUST check this flag and fail the service
     rather than continuing with a dead control plane (silent fail-open).
+
+    Attributes
+    ----------
+    provenance_recorder:
+        The ProvenanceRecorder created for this thread's session.  Set after
+        run() successfully initialises it; None if initialisation failed or
+        WORM setup was skipped (consumer mode).
     """
 
     def __init__(self, stop_event: threading.Event) -> None:
         super().__init__(daemon=True, name="scent-control-plane")
         self._stop_signal = stop_event
         self.crashed: bool = False
+        self.provenance_recorder = None
 
     def run(self) -> None:
         try:
+            import uuid
+            from enterprise.audit_config import AuditMode as CfgAuditMode
+            from enterprise.audit_config import WormSinkType, load_audit_config
+            from enterprise.worm_service import WormServiceError, build_provenance_recorder
+
+            audit_config = load_audit_config()
+            logger.info("Audit config: %s", audit_config.describe())
+
+            # Government mode with no WORM sink — refuse to start (fail-closed).
+            if (
+                audit_config.fail_closed_without_worm()
+                and audit_config.worm_sink == WormSinkType.NONE
+            ):
+                logger.error(
+                    "REFUSING to start ControlPlane: government audit mode requires "
+                    "a WORM replication sink (SCENT_WORM_SINK != none)."
+                )
+                self.crashed = True
+                self._stop_signal.set()
+                return
+
+            # Enterprise mode with memory sink — AU-9 compliance warning.
+            if (
+                audit_config.audit_mode == CfgAuditMode.ENTERPRISE
+                and audit_config.worm_sink == WormSinkType.MEMORY
+            ):
+                logger.warning(
+                    "AU-9 compliance warning: enterprise mode is configured with "
+                    "InMemoryWitnessSink. Configure file, s3, or r2 for AU-9."
+                )
+
+            session_id = str(uuid.uuid4())
+            try:
+                recorder = build_provenance_recorder(audit_config, session_id)
+                self.provenance_recorder = recorder
+                logger.info(
+                    "ProvenanceRecorder initialised: session=%s mode=%s",
+                    session_id, audit_config.audit_mode.value,
+                )
+            except WormServiceError as exc:
+                logger.error("WORM service initialisation failed: %s", exc)
+                self.crashed = True
+                self._stop_signal.set()
+                return
+
             from enterprise.control import ControlPlane
             cp = ControlPlane()
             logger.info("ControlPlane started")

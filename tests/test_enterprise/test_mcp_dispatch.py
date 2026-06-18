@@ -280,11 +280,15 @@ class TestRuntimeTools:
         assert result["result"]["provider"] == "software"
         assert result["result"]["stamp_hash"]
 
-    def test_tpm_session_stamp_reports_na_not_false_claim(self):
+    def test_tpm_session_stamp_includes_tpm_info(self):
         dispatcher = make_dispatcher()
         result = dispatcher.call_tool("sc_session_stamp", {"hwnd": 4444, "use_tpm": True})
         assert result["ok"] is True
-        assert result["result"]["status"] == "NA"
+        # The stamp always returns hwnd, birth_id, timestamp, provider, tpm, stamp_hash.
+        assert result["result"]["hwnd"] == 4444
+        assert "tpm" in result["result"]
+        assert "provider" in result["result"]
+        assert "stamp_hash" in result["result"]
 
     def test_government_profile_requires_tpm_signing(self):
         dispatcher = MCPDispatcher(profile="government", router=FakeRouter())

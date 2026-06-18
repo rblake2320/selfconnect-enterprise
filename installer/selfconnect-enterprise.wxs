@@ -1,0 +1,403 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    selfconnect-enterprise.wxs
+    WiX v4 installer source for SelfConnect Enterprise Control Plane.
+
+    Build with:
+        wix build installer/selfconnect-enterprise.wxs -out dist/selfconnect-enterprise-VERSION.msi
+
+    Or use the provided build script:
+        python installer/build_installer.py
+
+    GUIDs are stable across all versions. Do NOT regenerate them.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <!-- WiX preprocessor variables (resolved at compile time) -->
+  <?define ProductName = "SelfConnect Enterprise" ?>
+  <?define ServiceName = "SelfConnectEnterprise" ?>
+  <?define ServiceDisplayName = "SelfConnect Enterprise Control Plane" ?>
+  <?define ServiceDescription = "Governed OS-native AI peer mesh. Provides TPM-backed identity leases, DACL-guarded pipe transport, fail-closed target verification, and per-action audit receipts." ?>
+  <?define InstallDir = "SelfConnectEnterprise" ?>
+  <?define ProgramDataDir = "SelfConnectEnterprise" ?>
+  <?define WheelPattern = "selfconnect_enterprise-*.whl" ?>
+  <?define CliEntry = "scent" ?>
+
+  <Package
+    Name="SelfConnect Enterprise"
+    Manufacturer="UltraSecure"
+    Version="!(bind.FileVersion.SelfConnectEnterpriseWheel)"
+    UpgradeCode="{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
+    Language="1033"
+    Codepage="1252"
+    InstallerVersion="500"
+    Compressed="yes"
+    Scope="perMachine">
+
+    <!-- === Media / cabinet === -->
+    <Media Id="1" Cabinet="media1.cab" EmbedCab="yes" />
+
+    <!--
+        Upgrade handling: prevent downgrades, allow same-version repair.
+
+        Schedule="afterInstallInitialize" means the old product's uninstall
+        sequence runs FIRST (which fires ServiceControl Stop="both"), then the
+        new product's install sequence runs.  This guarantees the service is
+        fully stopped and deregistered before any new files are laid down.
+
+        Do NOT change this to "afterInstallExecute" — that late-removal schedule
+        leaves the old service running while new files are being copied.
+    -->
+    <MajorUpgrade
+      DowngradeErrorMessage="A newer version of [ProductName] is already installed. Uninstall it first."
+      AllowDowngrades="no"
+      AllowSameVersionUpgrades="yes"
+      Schedule="afterInstallInitialize" />
+
+    <!-- === Directory tree === -->
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLDIR" Name="$(var.InstallDir)">
+        <!-- Wheel staging sub-directory used by pip install custom action -->
+        <Directory Id="INSTALLDIRDIST" Name="dist" />
+        <!-- Scripts directory where pip drops the scent console-script shim -->
+        <Directory Id="SCRIPTSDIR" Name="Scripts" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="PROGRAMDATADIR" Name="$(var.ProgramDataDir)">
+        <Directory Id="LOGSDIR" Name="logs" />
+        <Directory Id="CONFIGDIR" Name="config" />
+      </Directory>
+    </StandardDirectory>
+
+    <!-- === Components === -->
+
+    <!--
+        Component: Wheel file copied to INSTALLDIR\dist\
+        Actual Python installation is handled by the deferred custom action.
+    -->
+    <Component Id="WheelFile"
+               Guid="*"
+               Directory="INSTALLDIRDIST">
+      <File Id="SelfConnectEnterpriseWheel"
+            Name="selfconnect_enterprise.whl"
+            Source="installer\dist\selfconnect_enterprise.whl"
+            KeyPath="yes" />
+    </Component>
+
+    <!--
+        Component: Windows Service
+        ServiceInstall creates the service; ServiceControl starts/stops it
+        on install and uninstall. Recovery policy restarts on first/second/third failure.
+    -->
+    <Component Id="ServiceComponent"
+               Guid="{B2C3D4E5-F6A7-8901-BCDE-F12345678901}"
+               Directory="INSTALLDIR">
+      <!-- Sentinel file: service registration is tracked against this -->
+      <File Id="ServiceSentinel"
+            Name=".service_installed"
+            Source="installer\assets\.service_installed"
+            KeyPath="yes" />
+
+      <ServiceInstall
+        Id="ServiceInstall"
+        Name="$(var.ServiceName)"
+        DisplayName="$(var.ServiceDisplayName)"
+        Description="$(var.ServiceDescription)"
+        Type="ownProcess"
+        Start="auto"
+        ErrorControl="normal"
+        Vital="yes"
+        Interactive="no"
+        Account="NT AUTHORITY\LocalService">
+        <!-- Recovery policy: restart on first, second, and subsequent failures -->
+        <util:ServiceConfig
+          FirstFailureActionType="restart"
+          SecondFailureActionType="restart"
+          ThirdFailureActionType="restart"
+          RestartServiceDelayInSeconds="60"
+          ResetPeriodInDays="1" />
+      </ServiceInstall>
+
+      <!-- Start on install, stop and delete on uninstall -->
+      <ServiceControl
+        Id="ServiceControlStart"
+        Name="$(var.ServiceName)"
+        Start="install"
+        Stop="both"
+        Remove="uninstall"
+        Wait="yes" />
+    </Component>
+
+    <!--
+        Component: PATH registry entry
+        Adds INSTALLDIR\Scripts to the system PATH so 'scent' is accessible
+        from any shell without a full path.
+    -->
+    <Component Id="PathComponent"
+               Guid="{C3D4E5F6-A7B8-9012-CDEF-012345678902}"
+               Directory="INSTALLDIR">
+      <RegistryValue
+        Id="PathRegistryValue"
+        Root="HKLM"
+        Key="SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+        Name="Path"
+        Type="multiString"
+        Value="[INSTALLDIR]Scripts"
+        Action="append"
+        KeyPath="yes" />
+    </Component>
+
+    <!--
+        Component: ProgramData directory creation
+        Creates %ProgramData%\SelfConnectEnterprise with logs\ and config\ subdirs.
+        Marked permanent so config/logs survive uninstall.
+    -->
+    <Component Id="ProgramDataDirComponent"
+               Guid="{D4E5F6A7-B8C9-0123-DEF0-123456789003}"
+               Directory="PROGRAMDATADIR">
+      <CreateFolder>
+        <!--
+            ACL: SYSTEM + Administrators full control only.
+            Users group is explicitly denied Write/Create so that non-admin
+            processes cannot tamper with config or inject log entries.
+            GenericAll on SYSTEM/Admins covers read, write, execute, delete,
+            and change permissions.
+        -->
+        <util:PermissionEx
+          Id="ProgramDataDirPerm"
+          User="SYSTEM"
+          GenericAll="yes" />
+        <util:PermissionEx
+          Id="ProgramDataDirPermAdmins"
+          User="Administrators"
+          GenericAll="yes" />
+        <util:PermissionEx
+          Id="ProgramDataDirPermUsersDeny"
+          User="Users"
+          GenericWrite="no"
+          CreateFile="no"
+          CreateChild="no"
+          Delete="no"
+          WriteAttributes="no"
+          WriteExtendedAttributes="no" />
+      </CreateFolder>
+      <!-- KeyPath is a registry sentinel so the dir is not removed on upgrade -->
+      <RegistryValue
+        Id="ProgramDataDirSentinel"
+        Root="HKLM"
+        Key="SOFTWARE\UltraSecure\SelfConnectEnterprise"
+        Name="ProgramDataDir"
+        Type="string"
+        Value="[PROGRAMDATADIR]"
+        KeyPath="yes" />
+      <!-- Preserve config/logs on uninstall: do NOT set RemoveFile here -->
+    </Component>
+
+    <!-- Component: logs sub-directory creation (permanent) -->
+    <Component Id="LogsDirComponent"
+               Guid="*"
+               Directory="LOGSDIR">
+      <CreateFolder />
+      <RegistryValue
+        Id="LogsDirSentinel"
+        Root="HKLM"
+        Key="SOFTWARE\UltraSecure\SelfConnectEnterprise"
+        Name="LogsDir"
+        Type="string"
+        Value="[LOGSDIR]"
+        KeyPath="yes" />
+    </Component>
+
+    <!-- Component: config sub-directory creation (permanent) -->
+    <Component Id="ConfigDirComponent"
+               Guid="*"
+               Directory="CONFIGDIR">
+      <CreateFolder />
+      <RegistryValue
+        Id="ConfigDirSentinel"
+        Root="HKLM"
+        Key="SOFTWARE\UltraSecure\SelfConnectEnterprise"
+        Name="ConfigDir"
+        Type="string"
+        Value="[CONFIGDIR]"
+        KeyPath="yes" />
+    </Component>
+
+    <!-- Component: EventLog source registration -->
+    <Component Id="EventLogComponent"
+               Guid="*"
+               Directory="INSTALLDIR">
+      <util:EventSource
+        Id="SelfConnectEventSource"
+        Log="Application"
+        Name="$(var.ServiceName)"
+        EventMessageFile="[SystemFolder]EventCreate.exe" />
+      <RegistryValue
+        Id="EventLogSentinel"
+        Root="HKLM"
+        Key="SOFTWARE\UltraSecure\SelfConnectEnterprise"
+        Name="EventLogRegistered"
+        Type="integer"
+        Value="1"
+        KeyPath="yes" />
+    </Component>
+
+    <!-- Component: Product version registry key (used by uninstall/repair) -->
+    <Component Id="ProductRegistryComponent"
+               Guid="*"
+               Directory="INSTALLDIR">
+      <RegistryValue
+        Id="ProductVersion"
+        Root="HKLM"
+        Key="SOFTWARE\UltraSecure\SelfConnectEnterprise"
+        Name="Version"
+        Type="string"
+        Value="[ProductVersion]"
+        KeyPath="yes" />
+      <RegistryValue
+        Id="ProductInstallDir"
+        Root="HKLM"
+        Key="SOFTWARE\UltraSecure\SelfConnectEnterprise"
+        Name="InstallDir"
+        Type="string"
+        Value="[INSTALLDIR]" />
+    </Component>
+
+    <!-- === Feature tree === -->
+    <Feature Id="Complete"
+             Title="SelfConnect Enterprise"
+             Description="Installs all SelfConnect Enterprise components."
+             Level="1"
+             Display="expand"
+             ConfigurableDirectory="INSTALLDIR">
+
+      <ComponentRef Id="WheelFile" />
+      <ComponentRef Id="ServiceComponent" />
+      <ComponentRef Id="PathComponent" />
+      <ComponentRef Id="ProgramDataDirComponent" />
+      <ComponentRef Id="LogsDirComponent" />
+      <ComponentRef Id="ConfigDirComponent" />
+      <ComponentRef Id="EventLogComponent" />
+      <ComponentRef Id="ProductRegistryComponent" />
+    </Feature>
+
+    <!--
+        Custom Actions: pip install/uninstall wheel.
+
+        Python version pin: py.exe -3.11 targets Python 3.11.x specifically.
+        Without the version flag, py.exe resolves to whatever the system default
+        is, which can change when users install new Python versions and break
+        the installed package's import path.  Pin to the minor version that
+        the wheel was built against.
+
+        Rollback: CA_PipRollbackWheel is a rollback-mode CA that runs if any
+        deferred action after CA_PipInstallWheel fails (e.g., service install).
+        It uninstalls the package so the system is left clean rather than
+        having a dangling pip install with no registered service.
+    -->
+
+    <!--
+        CA_SetPipInstall: Set the command line for the deferred CA.
+        Runs immediately before the deferred action so [INSTALLDIR] is resolved.
+    -->
+    <CustomAction
+      Id="CA_SetPipInstall"
+      Property="CA_PipInstallWheel"
+      Value="&quot;[%SYSTEMROOT]\py.exe&quot; -3.11 -m pip install --quiet --no-deps &quot;[INSTALLDIRDIST]selfconnect_enterprise.whl&quot; --target &quot;[INSTALLDIR]Lib&quot;"
+      Execute="immediate" />
+
+    <!--
+        CA_PipInstallWheel: Actually run pip install (deferred, elevated).
+        Runs after InstallFiles, before RegisterProduct.
+    -->
+    <CustomAction
+      Id="CA_PipInstallWheel"
+      BinaryRef="Wix4UtilCA_X86"
+      DllEntry="WixQuietExec"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+
+    <!--
+        CA_SetPipRollback: Set the rollback command line (immediate, runs before
+        the deferred install CA so it is registered in the rollback log first).
+    -->
+    <CustomAction
+      Id="CA_SetPipRollback"
+      Property="CA_PipRollbackWheel"
+      Value="&quot;[%SYSTEMROOT]\py.exe&quot; -3.11 -m pip uninstall --yes selfconnect-enterprise"
+      Execute="immediate" />
+
+    <!--
+        CA_PipRollbackWheel: Undo pip install if a subsequent deferred action
+        fails.  Execute="rollback" means Windows Installer only runs this CA
+        during a rollback pass, not during normal install/uninstall.
+    -->
+    <CustomAction
+      Id="CA_PipRollbackWheel"
+      BinaryRef="Wix4UtilCA_X86"
+      DllEntry="WixQuietExec"
+      Execute="rollback"
+      Impersonate="no"
+      Return="ignore" />
+
+    <!--
+        CA_SetPipUninstall / CA_PipUninstallWheel: Remove the package on uninstall.
+    -->
+    <CustomAction
+      Id="CA_SetPipUninstall"
+      Property="CA_PipUninstallWheel"
+      Value="&quot;[%SYSTEMROOT]\py.exe&quot; -3.11 -m pip uninstall --yes selfconnect-enterprise"
+      Execute="immediate" />
+
+    <CustomAction
+      Id="CA_PipUninstallWheel"
+      BinaryRef="Wix4UtilCA_X86"
+      DllEntry="WixQuietExec"
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
+
+    <!-- === Install / Uninstall sequence === -->
+    <InstallExecuteSequence>
+      <!-- Register rollback CA BEFORE the deferred install CA so it is queued
+           in the rollback log.  Runs only on rollback (Execute="rollback"). -->
+      <Custom Action="CA_SetPipRollback"
+              After="InstallFiles"
+              Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="CA_PipRollbackWheel"
+              After="CA_SetPipRollback"
+              Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <!-- Set pip-install property before the deferred CA fires -->
+      <Custom Action="CA_SetPipInstall"
+              After="CA_PipRollbackWheel"
+              Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <!-- Run pip install after files are laid down -->
+      <Custom Action="CA_PipInstallWheel"
+              After="CA_SetPipInstall"
+              Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <!-- Set pip-uninstall property before remove CA fires -->
+      <Custom Action="CA_SetPipUninstall"
+              Before="RemoveFiles"
+              Condition="REMOVE~=&quot;ALL&quot;" />
+      <!-- Uninstall the package before files are removed -->
+      <Custom Action="CA_PipUninstallWheel"
+              After="CA_SetPipUninstall"
+              Condition="REMOVE~=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
+
+    <!-- === UI: minimal progress dialog via WixUI_Minimal === -->
+    <UIRef Id="WixUI_Minimal" />
+
+    <!--
+        Allow silent install to pass config properties, e.g.:
+            msiexec /i selfconnect-enterprise-1.2.3.msi /quiet SCENT_AUDIT_MODE=enterprise
+    -->
+    <Property Id="SCENT_AUDIT_MODE" Value="standard" Secure="yes" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
+
+  </Package>
+</Wix>

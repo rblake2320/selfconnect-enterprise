@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
 import time
 import uuid
@@ -32,6 +33,14 @@ try:
 except Exception:  # noqa: BLE001
     ChannelRouter = None  # type: ignore[assignment]
     ChannelRoutingError = RuntimeError  # type: ignore[assignment]
+
+try:
+    from enterprise.tpm_attestation import create_tpm_platform_claim, tpm_probe
+    _TPM_ATTESTATION_AVAILABLE = True
+except Exception:  # noqa: BLE001
+    _TPM_ATTESTATION_AVAILABLE = False
+    create_tpm_platform_claim = None  # type: ignore[assignment]
+    tpm_probe = None  # type: ignore[assignment]
 
 
 _AUDIT_LIMIT = 2_000
@@ -479,7 +488,30 @@ class MCPDispatcher:
                 "government profile requires TPM-backed identity for signing"
             )
         if args.get("key_provider", "software") == "tpm":
-            return {"status": "NA", "reason": "TPM attestation/signing not wired in runtime dispatcher"}
+            if not _TPM_ATTESTATION_AVAILABLE or create_tpm_platform_claim is None:
+                raise MCPDispatchError("TPM attestation not available on this machine")
+            nonce = os.urandom(32)
+            tpm_result = create_tpm_platform_claim(nonce)
+            if not tpm_result.supported:
+                raise MCPDispatchError(
+                    f"TPM attestation not available on this machine: {tpm_result.error}"
+                )
+            payload = bytes.fromhex(args["payload_hex"])
+            sig = self._private_key.sign(payload)
+            pub = self._public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
+            return {
+                "algorithm": "Ed25519+TPM",
+                "signature_b64": base64.b64encode(sig).decode("ascii"),
+                "public_key_b64": base64.b64encode(pub).decode("ascii"),
+                "payload_hash": hashlib.sha256(payload).hexdigest(),
+                "tpm_attestation": {
+                    "supported": tpm_result.supported,
+                    "algorithm": tpm_result.algorithm,
+                    "nonce_hex": tpm_result.nonce.hex(),
+                    "pubkey_hex": tpm_result.public_key_blob.hex(),
+                    "claim_size": len(tpm_result.claim_blob),
+                },
+            }
         payload = bytes.fromhex(args["payload_hex"])
         sig = self._private_key.sign(payload)
         pub = self._public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
@@ -507,7 +539,21 @@ class MCPDispatcher:
                 "government profile requires TPM-backed session stamping"
             )
         if bool(args.get("use_tpm", False)):
-            return {"status": "NA", "reason": "TPM stamp not wired; software stamp returned", "hwnd": args["hwnd"]}
+            tpm_info: dict[str, Any] = {"available": False, "error": "TPM probe unavailable"}
+            if _TPM_ATTESTATION_AVAILABLE and tpm_probe is not None:
+                try:
+                    tpm_info = tpm_probe()
+                except Exception as exc:  # noqa: BLE001
+                    tpm_info = {"available": False, "error": str(exc)}
+            stamp = {
+                "hwnd": int(args["hwnd"]),
+                "birth_id": "birth-" + uuid.uuid4().hex[:16],
+                "timestamp": self._now(),
+                "provider": "tpm" if tpm_info.get("supported") else "software",
+                "tpm": tpm_info,
+            }
+            stamp["stamp_hash"] = _hash_text(json.dumps(stamp, sort_keys=True, default=str))
+            return stamp
         stamp = {
             "hwnd": int(args["hwnd"]),
             "birth_id": "birth-" + uuid.uuid4().hex[:16],

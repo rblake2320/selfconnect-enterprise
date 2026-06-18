@@ -37,6 +37,9 @@
 | 25 | `ledger.py` — tamper-evident audit ledger | Code + design | `enterprise/ledger.py` | Audit records written to tamper-evident store; supports post-incident review | AU-9, AU-10, IR-4 | 2026-06 |
 | 26 | MCP runtime dispatch | Code + tests | `enterprise/mcp_dispatch.py`, `tests/test_enterprise/test_mcp_dispatch.py` | The 20 MCP schemas have executable, schema-validated handlers; actuating calls are lease-gated, audited, and routed through the governed channel router | AC-3, AU-2, AU-12, SI-10 | 2026-06 |
 | 27 | Governance profile split | Design + tests | `docs/GOVERNANCE_PROFILES.md`, `enterprise/mcp_dispatch.py`, `tests/test_enterprise/test_mcp_dispatch.py` | Normal, enterprise, and government postures are explicit. Normal SelfConnect remains free-flowing; enterprise defaults to lease/audit controls; government denies software-only identity/session paths until TPM is wired | AC-3, AC-6, IA-2, IA-5, CM-7 | 2026-06 |
+| 28 | WORM audit wiring | Code + tests | `enterprise/audit_config.py`, `enterprise/worm_service.py`, `tests/test_enterprise/test_audit_config.py`, `tests/test_enterprise/test_worm_service.py` | AU-9 off-host replication: AuditConfig maps SCENT_AUDIT_MODE/SCENT_WORM_SINK env vars to ReplicationSink; government mode is fail-closed without a real WORM sink; FileReplicationSink provides append-only NDJSON with atomic segment-seal | AU-9, AU-12, AU-5 | 2026-06 |
+| 29 | TPM platform attestation | Code + tests | `enterprise/tpm_attestation.py`, `tests/test_enterprise/test_tpm_attestation.py` | IA-5 hardware identity: NCryptCreateClaim binds agent key to TPM PCR state; downgrade guards reject empty/small blobs (AIK-absent software fallback); tpm_probe() provides NA-safe runtime detection | IA-5, IA-3, SC-28 | 2026-06 |
+| 30 | MSI installer (WiX v4) | Deployment artifact | `installer/selfconnect-enterprise.wxs`, `installer/build_installer.py`, `installer/INSTALL.md` | Deployment hardening: Windows service registered with auto-start, PATH entry, and ProgramData directory; reproducible signed build via WiX toolset | CM-7, CM-9, SI-7 | 2026-06 |
 
 ---
 
@@ -45,11 +48,11 @@
 | Family | Evidence Entries | Key Artifacts |
 |--------|-----------------|---------------|
 | AC | 1, 7, 8, 9, 15, 18, 21, 22, 26, 27 | identity_gate.py, target_guard.py, egress_guard.py, mcp_dispatch.py |
-| AU | 7, 12, 17, 19, 22, 25, 26 | ledger.py, identity_gate.py, observer.py, mcp_dispatch.py |
-| IA | 7, 8, 10, 14, 16, 17, 27 | identity.py, chained_channel.py, governance profiles |
-| SC | 9, 11, 12, 13, 19, 21 | bpc_crypto.py, chained_channel.py |
-| SI | 1, 2, 3, 4, 5, 6, 18, 19, 20, 24, 26 | test_dependency_integrity.py, version_gate.py, mcp_dispatch.py |
-| CM | 1, 3, 9, 15, 20, 24, 27 | test_dependency_integrity.py, version_gate.py, governance profiles |
+| AU | 7, 12, 17, 19, 22, 25, 26, 28 | ledger.py, identity_gate.py, observer.py, mcp_dispatch.py, worm_service.py |
+| IA | 7, 8, 10, 14, 16, 17, 27, 29 | identity.py, chained_channel.py, governance profiles, tpm_attestation.py |
+| SC | 9, 11, 12, 13, 19, 21, 29 | bpc_crypto.py, chained_channel.py, tpm_attestation.py |
+| SI | 1, 2, 3, 4, 5, 6, 18, 19, 20, 24, 26, 30 | test_dependency_integrity.py, version_gate.py, mcp_dispatch.py, installer/ |
+| CM | 1, 3, 9, 15, 20, 24, 27, 30 | test_dependency_integrity.py, version_gate.py, governance profiles, installer/ |
 | CA | 7, 8, 9, 10, 17, 20 | identity_gate.py (inline WRAITH references) |
 | IR | 8, 25 | identity_gate.py:emergency_bypass(), ledger.py |
 

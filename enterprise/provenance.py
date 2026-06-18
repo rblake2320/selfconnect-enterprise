@@ -940,7 +940,18 @@ class ProvenanceRecorder:
         try:
             with open(self._log_path, encoding="utf-8") as fh:
                 lines = [ln.strip() for ln in fh if ln.strip()]
-        except OSError:
+        except OSError as exc:
+            # Fix: in enterprise/military mode a failed Merkle seal is an AU-5 event,
+            # not a silent no-op.  Consumer mode may continue with best-effort.
+            logger.critical(
+                "AUDIT FAILURE: cannot read log for Merkle seal in session %s: %s",
+                self._session_id, exc,
+            )
+            if self._audit_mode in (AuditMode.ENTERPRISE, AuditMode.MILITARY):
+                raise ProvenanceRecorderError(
+                    f"Merkle seal failed — cannot read provenance log "
+                    f"(fail-closed in {self._audit_mode.value} mode): {exc}"
+                ) from exc
             return
 
         start = max(0, len(lines) - self._event_count_since_seal)

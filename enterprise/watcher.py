@@ -203,6 +203,47 @@ class WatcherState:
         except Exception:  # noqa: BLE001
             return []
 
+    def worm_status(self) -> dict:
+        """Return a dict describing the current WORM replication status.
+
+        Keys:
+            mode    (str)  — audit mode value (consumer/enterprise/government)
+            sink    (str)  — configured WORM sink type (none/memory/file/s3/r2)
+            healthy (bool) — True if the mode/sink combination is compliant:
+                             consumer or memory → always healthy (no external dep)
+                             enterprise/government with file/s3/r2 → healthy
+                             enterprise/government with memory → healthy (but warned)
+                             government with none → NOT healthy
+            warning (str | None) — human-readable warning, or None if healthy
+        """
+        try:
+            from enterprise.audit_config import AuditMode, WormSinkType, load_audit_config
+            cfg = load_audit_config()
+            mode = cfg.audit_mode.value
+            sink = cfg.worm_sink.value
+            warning: str | None = None
+            healthy = True
+
+            if cfg.audit_mode == AuditMode.GOVERNMENT and cfg.worm_sink == WormSinkType.NONE:
+                healthy = False
+                warning = (
+                    "government audit mode requires a WORM sink; "
+                    "set SCENT_WORM_SINK to memory, file, s3, or r2."
+                )
+            elif cfg.requires_worm() and cfg.worm_sink == WormSinkType.MEMORY:
+                warning = (
+                    f"AU-9 compliance warning: {cfg.audit_mode.value} mode is using "
+                    "InMemoryWitnessSink — not suitable for production WORM replication."
+                )
+            return {"mode": mode, "sink": sink, "healthy": healthy, "warning": warning}
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "mode": "unknown",
+                "sink": "unknown",
+                "healthy": False,
+                "warning": f"WORM status check failed: {exc}",
+            }
+
     def _probe_channels(self) -> ChannelHealth:
         health = ChannelHealth()
         try:
@@ -255,6 +296,7 @@ def make_status_table(state: WatcherState) -> Any:
     except ImportError:
         return None
     health = state.channel_health()
+    worm = state.worm_status()
     STATUS_COLOR = {"OK": "green", "WARN": "yellow", "DOWN": "red", "UNKNOWN": "dim"}
     table = Table(title="SelfConnect Enterprise — Channel Status", box=box.ROUNDED, expand=False)
     table.add_column("Channel", style="bold")
@@ -267,6 +309,21 @@ def make_status_table(state: WatcherState) -> Any:
     ]:
         color = STATUS_COLOR.get(status, "dim")
         table.add_row(ch_name, f"[{color}]{status}[/{color}]")
+    # WORM replication row
+    worm_healthy = worm.get("healthy", False)
+    worm_mode = worm.get("mode", "unknown")
+    worm_sink = worm.get("sink", "unknown")
+    worm_warning = worm.get("warning")
+    worm_label = f"{worm_mode}/{worm_sink}"
+    if worm_warning:
+        worm_color = "yellow"
+        worm_label = f"{worm_label} !"
+    elif worm_healthy:
+        worm_color = "green"
+    else:
+        worm_color = "red"
+        worm_label = f"{worm_label} FAIL"
+    table.add_row("WORM Audit", f"[{worm_color}]{worm_label}[/{worm_color}]")
     return table
 
 

@@ -147,3 +147,9 @@ if _sys.platform == "win32":
     )
     from enterprise.transport import CopyDataListener  # noqa: F401
     from enterprise.ledger import AgentLedger, ThreadSafeAgentLedger  # noqa: F401
+    from enterprise.tpm_attestation import (  # noqa: F401
+        TpmAttestationResult,
+        create_tpm_platform_claim,
+        verify_tpm_platform_claim,
+        tpm_probe,
+    )
