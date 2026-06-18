@@ -49,7 +49,7 @@ import json
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 try:
@@ -326,7 +326,7 @@ def run_all() -> dict:
             print(f"  [FAIL] {dr.notes}")
     else:
         section_summaries.append("Stability: 5/5 consistent — no flakiness observed")
-        print(f"  [PASS] All 5 runs consistent: active=1, killed_on_close=True")
+        print("  [PASS] All 5 runs consistent: active=1, killed_on_close=True")
 
     # --- Test 3: Race delay ---
     print(f"\n=== TEST 3: Race variant — {RACE_DELAY_S*1000:.0f}ms delay before AssignProcessToJobObject ===")

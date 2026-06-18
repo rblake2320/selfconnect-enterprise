@@ -8,6 +8,8 @@ transport, birth_tag_v2, policy_sign) are only imported on Windows. Cross-platfo
 modules (ledger, policy, operator, provenance, session_index, bpc_crypto,
 tsk_client, ultra_gate, identity_gate, key_recovery) are always imported.
 """
+
+__version__ = "1.2.3"
 import sys as _sys
 
 # ---------------------------------------------------------------------------

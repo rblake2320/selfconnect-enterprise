@@ -13,10 +13,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.4", "hypothesis>=6.0"]
+dev = ["pytest>=8", "ruff>=0.4", "hypothesis>=6.0", "rich>=13.0"]
+
+[project.scripts]
+scent = "enterprise.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["enterprise*"]
+include = ["enterprise*", "experiments*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
