@@ -9,7 +9,7 @@ description = "Enterprise AI agent infrastructure on Win32 — built on SelfConn
 requires-python = ">=3.10"
 dependencies = [
     "selfconnect @ git+https://github.com/rblake2320/selfconnect.git@8cf151dbc5f312ce888e51aa429f62960e1a2ee6",
-    "cryptography>=46.0.6",
+    "cryptography>=48.0.1",
 ]
 
 [project.optional-dependencies]
