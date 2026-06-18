@@ -31,6 +31,17 @@ TERMINAL_CLASSES = {
     "mintty",
 }
 
+# Kernel-verified exe required for spoofable class names.
+# Any process can call RegisterClassExW with any name, so GetClassNameW alone
+# is NOT a security gate.  QueryFullProcessImageNameW returns the kernel's
+# image path, which cannot be spoofed by the target process.
+# Enforcement: when require_terminal=True and the class appears in this map,
+# the owning exe MUST match (case-insensitive) — no exceptions.
+TERMINAL_CLASS_TO_EXE: dict[str, str] = {
+    "CASCADIA_HOSTING_WINDOW_CLASS": "WindowsTerminal.exe",
+    "ConsoleWindowClass": "conhost.exe",
+}
+
 
 def _class_name(hwnd: int) -> str:
     buf = ctypes.create_unicode_buffer(256)
@@ -73,8 +84,7 @@ def _session(pid: int) -> int:
 
 
 def _own_pid() -> int:
-    hwnd = kernel32.GetConsoleWindow()
-    return _pid(hwnd) if hwnd else 0
+    return kernel32.GetCurrentProcessId()
 
 
 def verify_target(
@@ -125,6 +135,13 @@ def verify_target(
         r.append("target is my own console (refuse self-injection)")
     if require_terminal and not rpt["is_terminal"]:
         r.append(f"class {cls!r} is not a ConPTY terminal (WM_CHAR inject unsafe here)")
+    if require_terminal and rpt["is_terminal"] and cls in TERMINAL_CLASS_TO_EXE:
+        required_exe = TERMINAL_CLASS_TO_EXE[cls]
+        if exe.lower() != required_exe.lower():
+            r.append(
+                f"class {cls!r} requires exe {required_exe!r} but owning process is"
+                f" {exe!r} — possible class-name spoof (WRAITH-001)"
+            )
     if expect_pid is not None and pid != expect_pid:
         r.append(f"pid {pid} != expected {expect_pid} (stale hwnd?)")
     if expect_exe is not None and exe.lower() != expect_exe.lower():

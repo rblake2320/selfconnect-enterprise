@@ -2,11 +2,12 @@
 
 Three operating modes, controlled by SC_IDENTITY_MODE env var:
 
-  bypass  (default) — No verification. send_string() works exactly as before.
-                       Safe starting point. Production enforcement is opt-in.
-  audit            — Full 7-layer verification runs, result is logged.
+  audit   (default) — Full 7-layer verification runs, result is logged.
                        Injection proceeds regardless of result.
                        Use to validate crypto before enforcing.
+  bypass           — No verification. send_string() works exactly as before.
+                       Explicit opt-in ONLY: requires both
+                       SC_IDENTITY_MODE=bypass AND SC_IDENTITY_BYPASS_CONFIRMED=1.
   enforce          — Full 7-layer verification. Failure blocks injection.
                        Production mode.
 
@@ -273,10 +274,33 @@ def get_current_mode() -> str:
       1. Named Mutex present AND valid DPAPI token in Registry → downgrade to
          'audit' regardless of env var. (Gap 1 fix: mutex alone is insufficient.)
       2. SC_IDENTITY_MODE env var (bypass / audit / enforce).
-      3. Default: bypass (safe starting state).
+      3. Default: audit (deny-by-default; all injections are logged).
+
+    WRAITH-003 fix: the default is now MODE_AUDIT, not MODE_BYPASS, so that
+    systems which do not set SC_IDENTITY_MODE still log every injection.
+    bypass must be explicitly opted into AND confirmed with
+    SC_IDENTITY_BYPASS_CONFIRMED=1; otherwise a ConfigurationError is raised.
+    An unrecognised env var value raises ConfigurationError instead of silently
+    falling back to bypass.
     """
-    raw = os.environ.get("SC_IDENTITY_MODE", MODE_BYPASS).strip().lower()
-    mode = raw if raw in _VALID_MODES else MODE_BYPASS
+    raw = os.environ.get("SC_IDENTITY_MODE", MODE_AUDIT).strip().lower()
+
+    if raw not in _VALID_MODES:
+        raise IdentityGateError(
+            f"SC_IDENTITY_MODE={raw!r} is not a recognised mode "
+            f"(valid: {sorted(_VALID_MODES)}). "
+            "Fix the configuration or unset the variable to use the default (audit)."
+        )
+
+    mode = raw
+
+    if mode == MODE_BYPASS:
+        confirmed = os.environ.get("SC_IDENTITY_BYPASS_CONFIRMED", "").strip() == "1"
+        if not confirmed:
+            raise IdentityGateError(
+                "SC_IDENTITY_MODE=bypass requires SC_IDENTITY_BYPASS_CONFIRMED=1. "
+                "Set both env vars to explicitly opt in to unverified injection."
+            )
 
     # Check emergency bypass — requires BOTH mutex AND valid DPAPI token
     if mode == MODE_ENFORCE and _emergency_mutex_active():
@@ -399,9 +423,15 @@ class DegradationCascade:
         self,
         gate: Optional["UltraGate"],
         mode: str,
+        peer_public_keys: Optional[dict[int, bytes]] = None,
     ) -> None:
         self.gate = gate
         self.mode = mode
+        # Trusted ed25519 public keys keyed by peer HWND.  Must be populated from
+        # a completed HandshakePeer.public_key_hex record — never from window
+        # properties (which the target process controls).  Level 2 verification
+        # fails closed when no entry exists for the target HWND.
+        self._peer_public_keys: dict[int, bytes] = peer_public_keys or {}
 
     def verify(self, target_hwnd: int, text: str) -> tuple[bool, str, int]:
         """Run the degradation cascade.
@@ -487,17 +517,27 @@ class DegradationCascade:
             return False, f"BPC-only: {exc}"
 
     def _level2_enterprise(self, target_hwnd: int) -> tuple[bool, str]:
-        """Enterprise ed25519 birth tag verification."""
+        """Enterprise ed25519 birth tag verification.
+
+        The peer's ed25519 public key must be supplied via the peer_public_keys
+        dict passed to __init__ (sourced from a completed HandshakePeer record).
+        Window properties are attacker-controlled and are never used as the key
+        source.  If no trusted key is registered for target_hwnd, this level
+        fails closed rather than silently proceeding.
+        """
         try:
             from enterprise.birth_tag_v2 import verify_signed_birth_tag
             from enterprise.registry import read_birth_tag
             tag = read_birth_tag(target_hwnd)
             if tag is None:
                 return False, "no birth tag on target HWND"
-            ok = verify_signed_birth_tag(target_hwnd)
+            pub_key_bytes = self._peer_public_keys.get(target_hwnd)
+            if not pub_key_bytes:
+                return False, "no trusted public key registered for target HWND"
+            ok, reason = verify_signed_birth_tag(target_hwnd, pub_key_bytes)
             if ok:
                 return True, ""
-            return False, "birth tag signature invalid"
+            return False, reason
         except Exception as exc:
             return False, f"enterprise level error: {exc}"
 

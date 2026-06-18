@@ -321,10 +321,12 @@ class TestUltraGate:
 # ═════════════════════════════════════════════════════════════════════════════
 
 class TestIdentityGateMode:
-    def test_default_mode_is_bypass(self, monkeypatch):
+    def test_default_mode_is_audit(self, monkeypatch):
+        # WRAITH-003: default must be audit, not bypass
         monkeypatch.delenv("SC_IDENTITY_MODE", raising=False)
-        from enterprise.identity_gate import get_current_mode, MODE_BYPASS
-        assert get_current_mode() == MODE_BYPASS
+        monkeypatch.delenv("SC_IDENTITY_BYPASS_CONFIRMED", raising=False)
+        from enterprise.identity_gate import get_current_mode, MODE_AUDIT
+        assert get_current_mode() == MODE_AUDIT
 
     def test_audit_mode(self, monkeypatch):
         monkeypatch.setenv("SC_IDENTITY_MODE", "audit")
@@ -337,8 +339,25 @@ class TestIdentityGateMode:
         with mock.patch("enterprise.identity_gate._emergency_mutex_active", return_value=False):
             assert get_current_mode() == MODE_ENFORCE
 
-    def test_invalid_mode_falls_back_to_bypass(self, monkeypatch):
+    def test_invalid_mode_raises_configuration_error(self, monkeypatch):
+        # WRAITH-003: unrecognised value must raise, not silently fall back to bypass
         monkeypatch.setenv("SC_IDENTITY_MODE", "invalid_mode")
+        from enterprise.identity_gate import get_current_mode, IdentityGateError
+        with pytest.raises(IdentityGateError, match="not a recognised mode"):
+            get_current_mode()
+
+    def test_bypass_without_confirmation_raises(self, monkeypatch):
+        # WRAITH-003: bypass requires SC_IDENTITY_BYPASS_CONFIRMED=1
+        monkeypatch.setenv("SC_IDENTITY_MODE", "bypass")
+        monkeypatch.delenv("SC_IDENTITY_BYPASS_CONFIRMED", raising=False)
+        from enterprise.identity_gate import get_current_mode, IdentityGateError
+        with pytest.raises(IdentityGateError, match="SC_IDENTITY_BYPASS_CONFIRMED"):
+            get_current_mode()
+
+    def test_bypass_with_confirmation_succeeds(self, monkeypatch):
+        # WRAITH-003: bypass is allowed when both env vars are set
+        monkeypatch.setenv("SC_IDENTITY_MODE", "bypass")
+        monkeypatch.setenv("SC_IDENTITY_BYPASS_CONFIRMED", "1")
         from enterprise.identity_gate import get_current_mode, MODE_BYPASS
         assert get_current_mode() == MODE_BYPASS
 
@@ -350,8 +369,9 @@ class TestIdentityGateMode:
         assert mode == identity_gate.MODE_AUDIT
 
     def test_bypass_mode_skips_gate(self, monkeypatch):
-        """In bypass mode, gated_send_string() calls original without gate check."""
+        """In bypass mode (with confirmation), gated_send_string() calls original without gate check."""
         monkeypatch.setenv("SC_IDENTITY_MODE", "bypass")
+        monkeypatch.setenv("SC_IDENTITY_BYPASS_CONFIRMED", "1")
         from enterprise.identity_gate import gated_send_string
         calls = []
         def fake_send(target, text, *args, **kwargs):
@@ -424,6 +444,56 @@ class TestDegradationCascade:
             ok, reason, level = cascade.verify(0x1234, "text")
         assert ok  # audit mode: pass even at Level 4
         assert level == 4
+
+    # ── WRAITH-001 regression tests ───────────────────────────────────────────
+
+    def test_level2_no_trusted_key_fails_closed(self):
+        """WRAITH-001: Level 2 must fail closed when no trusted public key is registered
+        for the target HWND — not raise TypeError or silently pass."""
+        from enterprise.identity_gate import DegradationCascade
+        cascade = DegradationCascade(gate=None, mode="enforce")
+        # No peer_public_keys registered → must fail, not TypeError
+        with mock.patch("enterprise.registry.read_birth_tag") as mock_rbt:
+            mock_rbt.return_value = mock.MagicMock()  # tag present
+            ok, reason = cascade._level2_enterprise(0xDEAD)
+        assert not ok
+        assert "no trusted public key" in reason
+
+    def test_level2_passes_trusted_key_to_verify(self):
+        """WRAITH-001: Level 2 must call verify_signed_birth_tag with (hwnd, pub_key_bytes)
+        — not a single-argument call that always raises TypeError."""
+        from enterprise.identity_gate import DegradationCascade
+        trusted_key = b"\xab" * 32
+        cascade = DegradationCascade(
+            gate=None, mode="enforce",
+            peer_public_keys={0x1234: trusted_key},
+        )
+        with mock.patch("enterprise.registry.read_birth_tag") as mock_rbt, \
+             mock.patch("enterprise.birth_tag_v2.verify_signed_birth_tag",
+                        return_value=(True, "ok")) as mock_vsbt:
+            mock_rbt.return_value = mock.MagicMock()  # tag present
+            ok, reason = cascade._level2_enterprise(0x1234)
+        assert ok
+        # Verify it was called with both required positional args
+        mock_vsbt.assert_called_once_with(0x1234, trusted_key)
+
+    def test_level2_propagates_verify_failure_reason(self):
+        """WRAITH-001: Level 2 must propagate the reason string from
+        verify_signed_birth_tag on failure, not swallow it."""
+        from enterprise.identity_gate import DegradationCascade
+        trusted_key = b"\xcd" * 32
+        cascade = DegradationCascade(
+            gate=None, mode="enforce",
+            peer_public_keys={0xBEEF: trusted_key},
+        )
+        with mock.patch("enterprise.registry.read_birth_tag") as mock_rbt, \
+             mock.patch("enterprise.birth_tag_v2.verify_signed_birth_tag",
+                        return_value=(False, "signature mismatch")) as mock_vsbt:
+            mock_rbt.return_value = mock.MagicMock()
+            ok, reason = cascade._level2_enterprise(0xBEEF)
+        assert not ok
+        assert reason == "signature mismatch"
+        mock_vsbt.assert_called_once_with(0xBEEF, trusted_key)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

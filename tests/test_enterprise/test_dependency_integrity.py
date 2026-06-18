@@ -310,8 +310,23 @@ class TestUnexpectedSubdependencies:
             # No declared deps is fine — selfconnect has minimal deps
             return
 
-        # For reference: log what's declared
-        assert isinstance(declared, set)  # confirmed it parsed
+        # Core security check: none of the declared (transitive) deps must be
+        # a known-malicious package. This is the plain-crypto-js IOC signal.
+        malicious_found = []
+        for dep in declared:
+            normalized = dep.lower().replace("-", "_")
+            for known in self.KNOWN_MALICIOUS_PACKAGES:
+                if normalized == known.lower().replace("-", "_"):
+                    malicious_found.append(dep)
+                    break
+
+        assert not malicious_found, (
+            f"CRITICAL (AXIOS-1): selfconnect declares a known-malicious package as a "
+            f"dependency: {malicious_found}\n"
+            f"This matches the 'plain-crypto-js' IOC pattern — an attacker injected a "
+            f"new dependency into the package manifest. Treat this as a supply-chain "
+            f"compromise and rotate all credentials."
+        )
 
 
 # ── AXIOS-4: Module name shadow attack ────────────────────────────────────────

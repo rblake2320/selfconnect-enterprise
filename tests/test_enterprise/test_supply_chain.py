@@ -313,12 +313,16 @@ class TestDependencyAudit:
             pytest.fail("\n".join(lines))
 
     def test_all_installed_packages_audit_informational(self, capsys):
-        """INFORMATIONAL: scan all installed packages and report CVE findings.
-        Always passes — output is the audit trail.
+        """INFORMATIONAL REPORTING FIXTURE — not a security gate.
 
-        Running this test prints a complete CVE inventory for the environment.
-        Review it before any deployment. Use it to triage which transitive
-        dependencies need attention.
+        Scans all installed packages and prints a CVE inventory to stdout so it
+        appears in the test log for operator review.  This fixture intentionally
+        never fails: hard enforcement of CVEs in *direct* dependencies is done by
+        ``test_direct_dependencies_have_no_known_cves``.  This one exists solely
+        to capture the transitive-dependency picture as an audit trail.
+
+        The assertion below verifies only that the reporting code executed and
+        produced output — it does NOT assert that the environment is CVE-free.
         """
         returncode, deps = self._run_pip_audit()
         if returncode not in (0, 1):
@@ -338,5 +342,10 @@ class TestDependencyAudit:
         else:
             print("\n=== PIP-AUDIT: 0 packages with known CVEs — CLEAN ===")
 
-        # Always passes — informational only
-        assert True
+        # Verify the reporting branch executed and produced output.
+        # This is the only property being asserted: the code ran and wrote something.
+        # CVE enforcement is the responsibility of test_direct_dependencies_have_no_known_cves.
+        captured = capsys.readouterr()
+        assert "PIP-AUDIT" in captured.out, (
+            "Informational audit produced no output — reporting code did not execute"
+        )

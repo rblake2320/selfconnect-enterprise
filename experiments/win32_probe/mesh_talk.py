@@ -25,6 +25,7 @@ from self_connect import (  # noqa: E402
     send_string,
     submit_claude_input,
 )
+from experiments.win32_probe.target_guard import assert_safe_target  # noqa: E402
 
 
 def cmd_list() -> None:
@@ -46,6 +47,11 @@ def cmd_send(hwnd: int, msg: str) -> None:
     own = get_own_terminal_pid()
     if w.pid == own:
         print("REFUSED: that hwnd is my own terminal.")
+        return
+    try:
+        assert_safe_target(hwnd, expect_exe="WindowsTerminal.exe", require_terminal=True)
+    except PermissionError as exc:
+        print(f"REFUSED: {exc}")
         return
     # Type the message (single line, no embedded Enter), then submit.
     send_string(w, msg)
