@@ -1,0 +1,122 @@
+name: Build MSI Release Artifact
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+      - "enterprise-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-msi:
+    name: Build Windows MSI
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Install Python build tooling
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+
+      - name: Install WiX v4
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path .tools\wix | Out-Null
+          dotnet tool install --tool-path .tools\wix wix --version 4.0.6
+          .\.tools\wix\wix.exe extension add -g WixToolset.Util.wixext/4.0.6
+          .\.tools\wix\wix.exe extension add -g WixToolset.UI.wixext/4.0.6
+
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          python installer\build_installer.py --wix-path ".tools\wix" --output-dir dist
+
+      - name: Sign MSI when certificate secrets are configured
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+        run: |
+          $msi = Get-ChildItem dist\selfconnect-enterprise-*.msi | Select-Object -First 1
+          if (-not $env:WINDOWS_SIGNING_CERT_BASE64) {
+            "No WINDOWS_SIGNING_CERT_BASE64 secret configured; uploading unsigned MSI artifact."
+            exit 0
+          }
+
+          $certPath = Join-Path $env:RUNNER_TEMP "selfconnect-signing-cert.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_BASE64))
+
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+            -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match "\\x64\\signtool.exe$" } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $signtool) {
+            throw "signtool.exe not found on runner"
+          }
+
+          & $signtool.FullName sign `
+            /f $certPath `
+            /p $env:WINDOWS_SIGNING_CERT_PASSWORD `
+            /fd SHA256 `
+            /tr http://timestamp.digicert.com `
+            /td SHA256 `
+            $msi.FullName
+
+      - name: Record MSI hash evidence
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+        run: |
+          $msi = Get-ChildItem dist\selfconnect-enterprise-*.msi | Select-Object -First 1
+          $hash = Get-FileHash $msi.FullName -Algorithm SHA256
+          $evidence = [ordered]@{
+            artifact = $msi.Name
+            size_bytes = $msi.Length
+            sha256 = $hash.Hash
+            workflow = $env:GITHUB_WORKFLOW
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            git_sha = $env:GITHUB_SHA
+            ref = $env:GITHUB_REF
+            generated_utc = (Get-Date).ToUniversalTime().ToString("o")
+            signed = [bool]$env:WINDOWS_SIGNING_CERT_BASE64
+          }
+          $evidence | ConvertTo-Json -Depth 4 | Out-File dist\msi-evidence.json -Encoding utf8
+          $hash.Hash | Out-File dist\msi-sha256.txt -Encoding ascii
+
+      - name: Upload MSI artifact bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfconnect-enterprise-msi
+          path: |
+            dist/selfconnect-enterprise-*.msi
+            dist/msi-evidence.json
+            dist/msi-sha256.txt
+          if-no-files-found: error
+
+      - name: Publish GitHub Release assets for tag builds
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/selfconnect-enterprise-*.msi
+            dist/msi-evidence.json
+            dist/msi-sha256.txt
