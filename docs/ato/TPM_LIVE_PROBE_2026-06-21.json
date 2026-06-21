@@ -1,0 +1,26 @@
+{
+  "abi": {
+    "NCRYPTBUFFER_TPM_PLATFORM_CLAIM_NONCE": 81,
+    "NCRYPTBUFFER_TPM_PLATFORM_CLAIM_PCR_MASK": 80,
+    "NCRYPT_CLAIM_PLATFORM": "0x00010000",
+    "create_claim_call_shape": "pbClaimBlob/cbClaimBlob/pcbResult two-call"
+  },
+  "fresh": {
+    "claim_size": 0,
+    "error": "TPM not available or Platform Crypto Provider unsupported (NCryptCreateClaim -> 0x80090026)",
+    "pcr_mask": "0x00FFFFFF",
+    "supported": false,
+    "verify": false
+  },
+  "probe": {
+    "claim_size": 0,
+    "error": "TPM not available or Platform Crypto Provider unsupported (NCryptCreateClaim -> 0x80090026)",
+    "nonce_hex": "02f38f708b3b5199cfd10a68abe9ead332ab3aa8e652649f0f92f1af3361536d",
+    "pubkey_hex": "45435331200000007e07057ac9325d7cef611754763dc4a5387fab2149d89e99b1361ae5ad760536cf513f9e09b22bd27725c4e0eb4fbdac028fa79d460656bfd0d0718090f82aac",
+    "supported": false
+  },
+  "redacted": true,
+  "run_id": "20260621T064908Z",
+  "source": "enterprise.tpm_attestation",
+  "verdict": "NA"
+}

@@ -167,15 +167,12 @@
             and change permissions.
         -->
         <util:PermissionEx
-          Id="ProgramDataDirPerm"
           User="SYSTEM"
           GenericAll="yes" />
         <util:PermissionEx
-          Id="ProgramDataDirPermAdmins"
           User="Administrators"
           GenericAll="yes" />
         <util:PermissionEx
-          Id="ProgramDataDirPermUsersDeny"
           User="Users"
           GenericWrite="no"
           CreateFile="no"
@@ -231,7 +228,6 @@
                Guid="*"
                Directory="INSTALLDIR">
       <util:EventSource
-        Id="SelfConnectEventSource"
         Log="Application"
         Name="$(var.ServiceName)"
         EventMessageFile="[SystemFolder]EventCreate.exe" />
@@ -389,15 +385,11 @@
               Condition="REMOVE~=&quot;ALL&quot;" />
     </InstallExecuteSequence>
 
-    <!-- === UI: minimal progress dialog via WixUI_Minimal === -->
-    <UIRef Id="WixUI_Minimal" />
-
     <!--
         Allow silent install to pass config properties, e.g.:
             msiexec /i selfconnect-enterprise-1.2.3.msi /quiet SCENT_AUDIT_MODE=enterprise
     -->
     <Property Id="SCENT_AUDIT_MODE" Value="standard" Secure="yes" />
-    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
 
   </Package>
 </Wix>

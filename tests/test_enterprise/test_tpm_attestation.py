@@ -298,30 +298,30 @@ def test_ncryptbufferdesc_minimum_size():
 
 
 # ---------------------------------------------------------------------------
-# Test 12 — NCRYPT_CLAIM_PLATFORM == 3
+# Test 12 — NCRYPT_CLAIM_PLATFORM == 0x00010000
 # ---------------------------------------------------------------------------
 
 def test_ncrypt_claim_platform_constant():
-    """NCRYPT_CLAIM_PLATFORM must equal 3 (Windows SDK constant)."""
-    assert NCRYPT_CLAIM_PLATFORM == 3
+    """NCRYPT_CLAIM_PLATFORM must match the Windows SDK constant."""
+    assert NCRYPT_CLAIM_PLATFORM == 0x00010000
 
 
 # ---------------------------------------------------------------------------
-# Test 13 — NCRYPTBUFFER_ATTESTATION_CLAIM_NONCE == 129
+# Test 13 — NCRYPTBUFFER_ATTESTATION_CLAIM_NONCE == 81
 # ---------------------------------------------------------------------------
 
 def test_ncryptbuffer_nonce_constant():
-    """NCRYPTBUFFER_ATTESTATION_CLAIM_NONCE must equal 129 (0x81)."""
-    assert NCRYPTBUFFER_ATTESTATION_CLAIM_NONCE == 129
+    """NCRYPTBUFFER_ATTESTATION_CLAIM_NONCE must match the Windows SDK constant."""
+    assert NCRYPTBUFFER_ATTESTATION_CLAIM_NONCE == 81
 
 
 # ---------------------------------------------------------------------------
-# Test 14 — NCRYPTBUFFER_ATTESTATION_CLAIM_PCR_MASK == 130
+# Test 14 — NCRYPTBUFFER_ATTESTATION_CLAIM_PCR_MASK == 80
 # ---------------------------------------------------------------------------
 
 def test_ncryptbuffer_pcr_mask_constant():
-    """NCRYPTBUFFER_ATTESTATION_CLAIM_PCR_MASK must equal 130 (0x82)."""
-    assert NCRYPTBUFFER_ATTESTATION_CLAIM_PCR_MASK == 130
+    """NCRYPTBUFFER_ATTESTATION_CLAIM_PCR_MASK must match the Windows SDK constant."""
+    assert NCRYPTBUFFER_ATTESTATION_CLAIM_PCR_MASK == 80
 
 
 # ---------------------------------------------------------------------------

@@ -17,3 +17,5 @@ observer_logs/
 ultra_server/node_modules/
 .claude/
 .sessions/
+.tools/
+.wix/

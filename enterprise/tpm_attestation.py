@@ -1,18 +1,20 @@
-"""enterprise/tpm_attestation.py — TPM Platform Attestation
+"""enterprise.tpm_attestation — TPM platform attestation.
 
-Hardware-rooted agent identity via NCryptCreateClaim / NCryptVerifyClaim.
+Hardware-rooted platform evidence via NCryptCreateClaim / NCryptVerifyClaim.
 
-The private key is sealed to the local TPM using the Microsoft Platform Crypto
-Provider.  A platform attestation claim binds the key to the TPM state at
-creation time (PCR snapshot + nonce), producing a verifiable blob that cannot
-be replayed on a different machine.
+The module creates a TPM-backed key under the Microsoft Platform Crypto
+Provider and attempts to create a platform attestation claim over PCR state
+using a nonce for freshness. Windows exposes NCRYPT_CLAIM_PLATFORM as platform
+PCR evidence; binding that evidence to a specific agent key is a higher-level
+protocol composition, not something this function falsely claims when the
+platform claim itself is unavailable.
 
 Patent note
 -----------
 This is a stronger embodiment of "machine-bound agent identity" than either the
-DPAPI path (identity.py) or the NCrypt software KSP path (identity_cng.py).
-The claim blob is independently verifiable by NCryptVerifyClaim — the private
-key material is never exported and is hardware-protected.
+DPAPI path (identity.py) or the NCrypt software KSP path (identity_cng.py) when
+the platform can produce a claim. The function never returns a fake PASS:
+unsupported machines return supported=False with the Windows status code.
 
 API
 ---
@@ -38,7 +40,7 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 # ---------------------------------------------------------------------------
 # Windows guard — every public API is a no-op on non-Windows platforms.
@@ -136,12 +138,12 @@ if _WIN32_AVAILABLE:
     # NCryptCreateClaim / NCryptVerifyClaim structures & bindings
     # -----------------------------------------------------------------------
 
-    # Platform-attestation claim type.
-    NCRYPT_CLAIM_PLATFORM: int = 3
+    # Platform-attestation claim type from the Windows SDK ncrypt.h.
+    NCRYPT_CLAIM_PLATFORM: int = 0x00010000
 
     # NCryptBufferDesc buffer-type constants for attestation parameters.
-    NCRYPTBUFFER_ATTESTATION_CLAIM_NONCE: int = 129     # 0x81
-    NCRYPTBUFFER_ATTESTATION_CLAIM_PCR_MASK: int = 130  # 0x82
+    NCRYPTBUFFER_ATTESTATION_CLAIM_PCR_MASK: int = 80
+    NCRYPTBUFFER_ATTESTATION_CLAIM_NONCE: int = 81
 
     # HRESULT codes that mean "TPM feature unavailable on this machine".
     _NTE_NOT_SUPPORTED: int = 0x80090029
@@ -177,8 +179,9 @@ if _WIN32_AVAILABLE:
             ctypes.c_void_p,                          # hAuthorityKey (NULL for SW)
             ctypes.c_ulong,                           # dwClaimType
             ctypes.POINTER(NCryptBufferDesc),         # pParameterList
-            ctypes.POINTER(ctypes.c_void_p),          # ppbClaimBlob (PBYTE*)
-            ctypes.POINTER(ctypes.c_ulong),           # pcbClaimBlob
+            ctypes.c_void_p,                          # pbClaimBlob
+            ctypes.c_ulong,                           # cbClaimBlob
+            ctypes.POINTER(ctypes.c_ulong),           # pcbResult
             ctypes.c_ulong,                           # dwFlags
         ]
         NCRYPT.NCryptCreateClaim.restype = ctypes.c_long
@@ -191,29 +194,22 @@ if _WIN32_AVAILABLE:
             ctypes.POINTER(NCryptBufferDesc),         # pParameterList
             ctypes.c_void_p,                          # pbClaimBlob
             ctypes.c_ulong,                           # cbClaimBlob
-            ctypes.POINTER(ctypes.c_void_p),          # ppOutput (ignored)
+            ctypes.POINTER(NCryptBufferDesc),         # pOutput
             ctypes.c_ulong,                           # dwFlags
         ]
         NCRYPT.NCryptVerifyClaim.restype = ctypes.c_long
-
-        # LocalFree is needed to release the claim blob allocated by NCryptCreateClaim
-        _kernel32 = ctypes.windll.kernel32
-        _kernel32.LocalFree.argtypes = [ctypes.c_void_p]
-        _kernel32.LocalFree.restype = ctypes.c_void_p
 
         _NCRYPT_CLAIM_FUNCS_AVAILABLE = True
     except (AttributeError, OSError):
         # NCryptCreateClaim not present on this Windows build — mark unavailable.
         _NCRYPT_CLAIM_FUNCS_AVAILABLE = False
-        _kernel32 = None
 
 else:
     # Stub type for non-Windows so the dataclass can still be imported.
-    NCRYPT_CLAIM_PLATFORM = 3
-    NCRYPTBUFFER_ATTESTATION_CLAIM_NONCE = 129
-    NCRYPTBUFFER_ATTESTATION_CLAIM_PCR_MASK = 130
+    NCRYPT_CLAIM_PLATFORM = 0x00010000
+    NCRYPTBUFFER_ATTESTATION_CLAIM_PCR_MASK = 80
+    NCRYPTBUFFER_ATTESTATION_CLAIM_NONCE = 81
     _NCRYPT_CLAIM_FUNCS_AVAILABLE = False
-    _kernel32 = None
 
     class NCryptBuffer:  # type: ignore[no-redef]
         pass
@@ -245,6 +241,7 @@ class TpmAttestationResult:
     public_key_blob: bytes = field(default_factory=bytes)
     claim_blob: bytes = field(default_factory=bytes)
     algorithm: str = "ECDSA_P256"
+    pcr_mask: int = 0x00FFFFFF
     supported: bool = False
     error: Optional[str] = None
 
@@ -262,6 +259,7 @@ _TPM_NA_CODES = frozenset({
     0x8009000B,  # NTE_UNAVAILABLE
     0x80090008,  # NTE_FAIL
     0x80090002,  # NTE_BAD_KEYSET (provider not accessible)
+    0x80090026,  # platform attestation material not provisioned/found
 })
 
 
@@ -274,11 +272,29 @@ def _is_tpm_na(hresult: int) -> bool:
     return _hresult(hresult) in _TPM_NA_CODES
 
 
+def _platform_claim_params(nonce: bytes, pcr_mask: int) -> tuple[NCryptBufferDesc, Any, Any, Any]:
+    nonce_buf = (ctypes.c_ubyte * len(nonce))(*nonce)
+    pcr_mask_value = ctypes.c_ulong(pcr_mask)
+    buffers = (NCryptBuffer * 2)()
+    buffers[0].cbBuffer = ctypes.sizeof(pcr_mask_value)
+    buffers[0].BufferType = NCRYPTBUFFER_ATTESTATION_CLAIM_PCR_MASK
+    buffers[0].pvBuffer = ctypes.cast(ctypes.byref(pcr_mask_value), ctypes.c_void_p)
+    buffers[1].cbBuffer = len(nonce)
+    buffers[1].BufferType = NCRYPTBUFFER_ATTESTATION_CLAIM_NONCE
+    buffers[1].pvBuffer = ctypes.cast(nonce_buf, ctypes.c_void_p)
+
+    bufdesc = NCryptBufferDesc()
+    bufdesc.ulVersion = 0
+    bufdesc.cBuffers = len(buffers)
+    bufdesc.pBuffers = ctypes.cast(buffers, ctypes.POINTER(NCryptBuffer))
+    return bufdesc, buffers, nonce_buf, pcr_mask_value
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def create_tpm_platform_claim(nonce: bytes) -> TpmAttestationResult:
+def create_tpm_platform_claim(nonce: bytes, pcr_mask: int = 0x00FFFFFF) -> TpmAttestationResult:
     """Create a hardware-backed platform attestation claim.
 
     A fresh ECDSA_P256 key is created under the Microsoft Platform Crypto
@@ -302,6 +318,7 @@ def create_tpm_platform_claim(nonce: bytes) -> TpmAttestationResult:
     if not _WIN32_AVAILABLE:
         return TpmAttestationResult(
             nonce=nonce,
+            pcr_mask=pcr_mask,
             supported=False,
             error="TPM attestation requires Windows",
         )
@@ -310,13 +327,13 @@ def create_tpm_platform_claim(nonce: bytes) -> TpmAttestationResult:
     if not _NCRYPT_CLAIM_FUNCS_AVAILABLE:
         return TpmAttestationResult(
             nonce=nonce,
+            pcr_mask=pcr_mask,
             supported=False,
             error="NCryptCreateClaim not available on this Windows build",
         )
 
     prov = None
     hkey = None
-    claim_ptr = ctypes.c_void_p(None)
     claim_cb = ctypes.c_ulong(0)
 
     try:
@@ -326,6 +343,7 @@ def create_tpm_platform_claim(nonce: bytes) -> TpmAttestationResult:
         except OSError as exc:
             return TpmAttestationResult(
                 nonce=nonce,
+                pcr_mask=pcr_mask,
                 supported=False,
                 error=f"Microsoft Platform Crypto Provider unavailable: {exc}",
             )
@@ -340,6 +358,7 @@ def create_tpm_platform_claim(nonce: bytes) -> TpmAttestationResult:
             if _is_tpm_na(st):
                 return TpmAttestationResult(
                     nonce=nonce,
+                    pcr_mask=pcr_mask,
                     supported=False,
                     error=(
                         f"TPM not available or Platform Crypto Provider unsupported "
@@ -353,6 +372,7 @@ def create_tpm_platform_claim(nonce: bytes) -> TpmAttestationResult:
             if _is_tpm_na(st):
                 return TpmAttestationResult(
                     nonce=nonce,
+                    pcr_mask=pcr_mask,
                     supported=False,
                     error=(
                         f"TPM not available or Platform Crypto Provider unsupported "
@@ -367,29 +387,27 @@ def create_tpm_platform_claim(nonce: bytes) -> TpmAttestationResult:
         except OSError as exc:
             return TpmAttestationResult(
                 nonce=nonce,
+                pcr_mask=pcr_mask,
                 supported=False,
                 error=f"Failed to export public key blob: {exc}",
             )
 
-        # 4. Build NCryptBufferDesc with the nonce.
-        nonce_buf = (ctypes.c_ubyte * len(nonce))(*nonce)
-        ncbuf = NCryptBuffer()
-        ncbuf.cbBuffer = len(nonce)
-        ncbuf.BufferType = NCRYPTBUFFER_ATTESTATION_CLAIM_NONCE
-        ncbuf.pvBuffer = ctypes.cast(nonce_buf, ctypes.c_void_p)
+        # 4. Build NCryptBufferDesc with PCR mask + nonce.
+        bufdesc, _buffers, _nonce_buf, _pcr_mask_value = _platform_claim_params(nonce, pcr_mask)
 
-        bufdesc = NCryptBufferDesc()
-        bufdesc.ulVersion = 0
-        bufdesc.cBuffers = 1
-        bufdesc.pBuffers = ctypes.cast(ctypes.byref(ncbuf), ctypes.POINTER(NCryptBuffer))
-
-        # 5. NCryptCreateClaim — produces a TPM-signed platform attestation blob.
+        # 5. NCryptCreateClaim — query required size, then fill a
+        # caller-allocated buffer. The Windows SDK signature is
+        # pbClaimBlob/cbClaimBlob/pcbResult, not an allocated PBYTE*.
+        # NCRYPT_CLAIM_PLATFORM quotes PCR state through the platform
+        # attestation material; passing the agent key handle as hSubjectKey
+        # makes Windows return ERROR_INVALID_PARAMETER.
         st = NCRYPT.NCryptCreateClaim(
-            hkey,                          # subject key (the one being attested)
+            None,
             None,                          # authority key (NULL = software-bound)
-            NCRYPT_CLAIM_PLATFORM,         # dwClaimType = 3
-            ctypes.byref(bufdesc),         # nonce parameter list
-            ctypes.byref(claim_ptr),       # OUT: opaque claim blob
+            NCRYPT_CLAIM_PLATFORM,
+            ctypes.byref(bufdesc),
+            None,                          # query required blob size
+            0,
             ctypes.byref(claim_cb),        # OUT: blob size
             0,                             # dwFlags
         )
@@ -399,6 +417,7 @@ def create_tpm_platform_claim(nonce: bytes) -> TpmAttestationResult:
             if _is_tpm_na(st) or hr in {0x80090029, 0x80090009}:
                 return TpmAttestationResult(
                     nonce=nonce,
+                    pcr_mask=pcr_mask,
                     public_key_blob=pub_blob,
                     supported=False,
                     error=(
@@ -408,14 +427,53 @@ def create_tpm_platform_claim(nonce: bytes) -> TpmAttestationResult:
                 )
             raise OSError(f"NCryptCreateClaim -> 0x{hr:08X}")
 
+        if claim_cb.value == 0:
+            return TpmAttestationResult(
+                nonce=nonce,
+                pcr_mask=pcr_mask,
+                public_key_blob=pub_blob,
+                supported=False,
+                error=(
+                    "NCryptCreateClaim size query returned S_OK but reported "
+                    "zero bytes (no hardware attestation blob available)"
+                ),
+            )
+
+        claim_bytes_arr = (ctypes.c_ubyte * claim_cb.value)()
+        st = NCRYPT.NCryptCreateClaim(
+            None,
+            None,
+            NCRYPT_CLAIM_PLATFORM,
+            ctypes.byref(bufdesc),
+            claim_bytes_arr,
+            claim_cb.value,
+            ctypes.byref(claim_cb),
+            0,
+        )
+        hr = _hresult(st)
+        if hr != 0:
+            if _is_tpm_na(st) or hr in {0x80090029, 0x80090009}:
+                return TpmAttestationResult(
+                    nonce=nonce,
+                    pcr_mask=pcr_mask,
+                    public_key_blob=pub_blob,
+                    supported=False,
+                    error=(
+                        "TPM not available or Platform Crypto Provider unsupported "
+                        f"(NCryptCreateClaim fill -> 0x{hr:08X})"
+                    ),
+                )
+            raise OSError(f"NCryptCreateClaim fill -> 0x{hr:08X}")
+
         # DOWNGRADE GUARD: NCryptCreateClaim succeeded (hr == 0) but returned a
         # zero-size blob.  This occurs on Windows builds where the Platform Crypto
         # Provider is present but no AIK (Attestation Identity Key) is enrolled,
         # causing a silent software-only fallback that is NOT hardware-backed.
         # We must NOT return supported=True in this case.
-        if claim_cb.value == 0 or not claim_ptr.value:
+        if claim_cb.value == 0:
             return TpmAttestationResult(
                 nonce=nonce,
+                pcr_mask=pcr_mask,
                 public_key_blob=pub_blob,
                 supported=False,
                 error=(
@@ -424,9 +482,6 @@ def create_tpm_platform_claim(nonce: bytes) -> TpmAttestationResult:
                 ),
             )
 
-        # 6. Copy the claim blob out of the CNG-allocated buffer.
-        claim_bytes_arr = (ctypes.c_ubyte * claim_cb.value)()
-        ctypes.memmove(claim_bytes_arr, claim_ptr, claim_cb.value)
         claim_bytes = bytes(claim_bytes_arr)
 
         # Final anti-downgrade check: a valid hardware platform claim must be
@@ -436,6 +491,7 @@ def create_tpm_platform_claim(nonce: bytes) -> TpmAttestationResult:
         if len(claim_bytes) < 16:
             return TpmAttestationResult(
                 nonce=nonce,
+                pcr_mask=pcr_mask,
                 public_key_blob=pub_blob,
                 supported=False,
                 error=(
@@ -449,6 +505,7 @@ def create_tpm_platform_claim(nonce: bytes) -> TpmAttestationResult:
             public_key_blob=pub_blob,
             claim_blob=claim_bytes,
             algorithm="ECDSA_P256",
+            pcr_mask=pcr_mask,
             supported=True,
             error=None,
         )
@@ -457,20 +514,16 @@ def create_tpm_platform_claim(nonce: bytes) -> TpmAttestationResult:
         # Unknown error — still return supported=False, never raise.
         return TpmAttestationResult(
             nonce=nonce,
+            pcr_mask=pcr_mask,
             supported=False,
             error=f"Unexpected error during TPM attestation: {exc}",
         )
 
     finally:
-        # Always clean up — delete the ephemeral key and free the claim blob.
+        # Always clean up — delete the ephemeral key.
         if hkey is not None and hkey.value:
             try:
                 NCRYPT.NCryptDeleteKey(hkey, 0)
-            except Exception:  # noqa: BLE001
-                pass
-        if claim_ptr.value and _kernel32 is not None:
-            try:
-                _kernel32.LocalFree(claim_ptr)
             except Exception:  # noqa: BLE001
                 pass
         if prov is not None and prov.value:
@@ -526,20 +579,17 @@ def verify_tpm_platform_claim(result: TpmAttestationResult) -> bool:
         if _hresult(st) != 0:
             return False
 
-        # Build the same nonce parameter list for verification.
-        nonce_buf = (ctypes.c_ubyte * len(result.nonce))(*result.nonce)
-        ncbuf = NCryptBuffer()
-        ncbuf.cbBuffer = len(result.nonce)
-        ncbuf.BufferType = NCRYPTBUFFER_ATTESTATION_CLAIM_NONCE
-        ncbuf.pvBuffer = ctypes.cast(nonce_buf, ctypes.c_void_p)
-
-        bufdesc = NCryptBufferDesc()
-        bufdesc.ulVersion = 0
-        bufdesc.cBuffers = 1
-        bufdesc.pBuffers = ctypes.cast(ctypes.byref(ncbuf), ctypes.POINTER(NCryptBuffer))
+        # Build the same PCR-mask + nonce parameter list for verification.
+        bufdesc, _buffers, _nonce_buf, _pcr_mask_value = _platform_claim_params(
+            result.nonce,
+            result.pcr_mask,
+        )
 
         claim_arr = (ctypes.c_ubyte * len(result.claim_blob))(*result.claim_blob)
-        out_ptr = ctypes.c_void_p(None)
+        output = NCryptBufferDesc()
+        output.ulVersion = 0
+        output.cBuffers = 0
+        output.pBuffers = None
 
         st = NCRYPT.NCryptVerifyClaim(
             hkey,
@@ -548,7 +598,7 @@ def verify_tpm_platform_claim(result: TpmAttestationResult) -> bool:
             ctypes.byref(bufdesc),
             claim_arr,
             len(result.claim_blob),
-            ctypes.byref(out_ptr),
+            ctypes.byref(output),
             0,
         )
         return _hresult(st) == 0
