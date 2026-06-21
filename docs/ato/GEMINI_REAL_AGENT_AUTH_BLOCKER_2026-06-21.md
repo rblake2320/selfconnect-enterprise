@@ -29,3 +29,28 @@ This is not a SelfConnect transport failure. It prevents Gemini from joining the
 - Google Application Default Credentials.
 
 Codex and Claude real-agent ladders remain valid; Gemini remains excluded until the provider auth condition is fixed.
+
+## Fresh Recheck
+
+Rechecked on 2026-06-21 with Gemini CLI `0.46.0` installed.
+
+Command:
+
+```powershell
+python experiments\fabric_v2\real_agent_baseline.py --preflight-only --agents 3 --providers codex:1,claude:1,gemini:1 --timeout 90
+```
+
+Result:
+
+| Field | Value |
+|---|---|
+| Run ID | `SC_PROVIDER_PREFLIGHT_20260621_023853` |
+| Codex | ready |
+| Claude | ready |
+| Gemini | `provider_auth_required` |
+| `GEMINI_API_KEY` | not present |
+| `GOOGLE_APPLICATION_CREDENTIALS` | not present |
+| `GOOGLE_CLOUD_PROJECT` | not present |
+| `CLOUDSDK_CONFIG` | not present |
+
+No raw provider logs or prompts are included in this evidence file.

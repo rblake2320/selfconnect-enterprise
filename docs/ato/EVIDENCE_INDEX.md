@@ -44,6 +44,7 @@
 | 32 | Live TPM platform attestation probe | Live host evidence | `docs/ato/TPM_LIVE_PROBE_2026-06-21.md`, `docs/ato/TPM_LIVE_PROBE_2026-06-21.json`, `enterprise/tpm_attestation.py` | SDK-correct NCryptCreateClaim ABI and all-PCR platform claim parameters are exercised live; host returns a clean NA (`0x80090026`) rather than malformed-call or fake PASS | IA-5, IA-3, SC-28, CA-2 | 2026-06-21 |
 | 33 | MSI build proof | Local release evidence | `docs/ato/MSI_BUILD_PROOF_2026-06-21.md`, `installer/selfconnect-enterprise.wxs` | WiX v4 build produces `selfconnect-enterprise-1.2.3.msi` with recorded SHA-256 and size; installer source schema now compiles under WiX v4 | CM-7, CM-9, SI-7 | 2026-06-21 |
 | 34 | Gemini real-agent auth blocker | Provider boundary evidence | `docs/ato/GEMINI_REAL_AGENT_AUTH_BLOCKER_2026-06-21.md` | Gemini CLI cannot join real-agent ladders without interactive login, `GEMINI_API_KEY`, or ADC; documents the non-SelfConnect provider-auth blocker | CA-2, SI-4 | 2026-06-21 |
+| 35 | MSI release artifact workflow proof | GitHub Actions evidence | `.github/workflows/release-msi.yml`, `docs/ato/MSI_RELEASE_AUTOMATION_2026-06-21.md` | Manual GitHub Actions run `27897466199` built and uploaded `selfconnect-enterprise-1.2.3.msi` with SHA-256 `9A1CD2F56B6A4CE3AEFC6CC8CF4C5FE09B07F406F6D0E3ED8E62D9591749CF4D`; code signing remains false until certificate secrets are configured | CM-7, CM-9, SI-7 | 2026-06-21 |
 
 ---
 
@@ -55,8 +56,8 @@
 | AU | 7, 12, 17, 19, 22, 25, 26, 28, 31 | ledger.py, identity_gate.py, observer.py, mcp_dispatch.py, worm_service.py, S3ObjectLockSink |
 | IA | 7, 8, 10, 14, 16, 17, 27, 29 | identity.py, chained_channel.py, governance profiles, tpm_attestation.py |
 | SC | 9, 11, 12, 13, 19, 21, 29 | bpc_crypto.py, chained_channel.py, tpm_attestation.py |
-| SI | 1, 2, 3, 4, 5, 6, 18, 19, 20, 24, 26, 30 | test_dependency_integrity.py, version_gate.py, mcp_dispatch.py, installer/ |
-| CM | 1, 3, 9, 15, 20, 24, 27, 30 | test_dependency_integrity.py, version_gate.py, governance profiles, installer/ |
+| SI | 1, 2, 3, 4, 5, 6, 18, 19, 20, 24, 26, 30, 35 | test_dependency_integrity.py, version_gate.py, mcp_dispatch.py, installer/ |
+| CM | 1, 3, 9, 15, 20, 24, 27, 30, 35 | test_dependency_integrity.py, version_gate.py, governance profiles, installer/ |
 | CA | 7, 8, 9, 10, 17, 20, 31 | identity_gate.py (inline WRAITH references), WORM_LIVE_AWS_PROOF_2026-06-21.md |
 | IR | 8, 25 | identity_gate.py:emergency_bypass(), ledger.py |
 

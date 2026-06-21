@@ -1,9 +1,33 @@
 # MSI Release Automation Evidence
 
 **Date:** 2026-06-21  
-**Verdict:** AUTOMATED BUILD PATH ADDED  
+**Verdict:** AUTOMATED BUILD PATH VERIFIED
 **Scope:** GitHub Actions workflow for building and publishing the SelfConnect
 Enterprise MSI as a release artifact bundle.
+
+## Verified GitHub Actions Run
+
+Manual workflow dispatch was executed and completed successfully.
+
+| Field | Value |
+|---|---|
+| Workflow | `Build MSI Release Artifact` |
+| Run ID | `27897466199` |
+| Ref | `refs/heads/master` |
+| Git SHA | `bb83ae8c492c77bc497fde75d9b50c3c40ef057d` |
+| Result | PASS |
+| Artifact bundle | `selfconnect-enterprise-msi` |
+| MSI | `selfconnect-enterprise-1.2.3.msi` |
+| Size | `602112` bytes |
+| SHA-256 | `9A1CD2F56B6A4CE3AEFC6CC8CF4C5FE09B07F406F6D0E3ED8E62D9591749CF4D` |
+| Signed | `false` |
+| Generated UTC | `2026-06-21T07:37:59.3265351Z` |
+
+Downloaded artifact bundle contents:
+
+- `selfconnect-enterprise-1.2.3.msi`
+- `msi-evidence.json`
+- `msi-sha256.txt`
 
 ## What changed
 
@@ -25,7 +49,7 @@ The workflow runs on manual dispatch and release tags matching `v*` or
 
 ## Boundary
 
-This closes the CI/release-runner build and release-asset publication automation
+This closes the CI/release-runner build and manual artifact-upload automation
 gap. It does not fake code signing. If no signing certificate secret is
 configured, the workflow uploads an unsigned MSI and records that boundary in
 `msi-evidence.json`.
