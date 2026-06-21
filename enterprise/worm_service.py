@@ -156,6 +156,7 @@ def make_replication_sink(config: AuditConfig) -> Optional[ReplicationSink]:
         return S3ObjectLockSink(
             bucket=config.worm_bucket,
             prefix=config.worm_prefix,
+            region_name=config.worm_region,
         )
 
     if sink_type == WormSinkType.R2:
@@ -172,6 +173,8 @@ def make_replication_sink(config: AuditConfig) -> Optional[ReplicationSink]:
         return CloudflareR2Sink(
             bucket=config.worm_bucket,
             prefix=config.worm_prefix,
+            endpoint_url=config.worm_endpoint,
+            region_name=config.worm_region,
         )
 
     # Unknown sink type — should not happen given enum validation in AuditConfig.

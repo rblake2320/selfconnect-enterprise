@@ -2,17 +2,31 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 import pytest
 
 from enterprise.audit_config import AuditConfig, AuditMode, WormSinkType
-from enterprise.provenance import InMemoryWitnessSink, ProvenanceRecorder
+from enterprise.provenance import (
+    CloudflareR2Sink,
+    InMemoryWitnessSink,
+    ProvenanceRecorder,
+    ReplicationError,
+    S3ObjectLockSink,
+)
 from enterprise.worm_service import (
     FileReplicationSink,
     WormServiceError,
     build_provenance_recorder,
     make_replication_sink,
 )
+
+
+class FakeNotFound(Exception):
+    response = {"Error": {"Code": "404"}}
+
+
+class FakePrecondition(Exception):
+    response = {"Error": {"Code": "PreconditionFailed"}}
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +97,6 @@ class TestMakeReplicationSinkS3:
                 make_replication_sink(cfg)
 
     def test_returns_s3_sink_when_boto3_available(self):
-        from enterprise.provenance import S3ObjectLockSink
         cfg = AuditConfig(
             audit_mode=AuditMode.ENTERPRISE,
             worm_sink=WormSinkType.S3,
@@ -95,7 +108,132 @@ class TestMakeReplicationSinkS3:
             sink = make_replication_sink(cfg)
         assert isinstance(sink, S3ObjectLockSink)
         assert sink.bucket == "audit-bucket"
-        assert sink.prefix == "test/"
+        assert sink.prefix == "test"
+
+    def test_s3_push_writes_object_lock_headers(self):
+        mock_client = MagicMock()
+        mock_client.head_object.side_effect = FakeNotFound()
+        mock_client.put_object.return_value = {"ETag": '"etag-123"'}
+        mock_boto3 = MagicMock()
+        mock_boto3.client.return_value = mock_client
+
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
+            sink = S3ObjectLockSink(
+                bucket="audit-bucket",
+                prefix="scent/audit/",
+                region_name="us-east-1",
+            )
+
+        record = {"seq": 1, "event_type": "tool_call", "payload": {"tool": "pytest"}}
+        receipt = sink.push("session-001", 0, record)
+
+        assert receipt.startswith("s3://audit-bucket/scent/audit/session-001/")
+        kwargs = mock_client.put_object.call_args.kwargs
+        assert kwargs["Bucket"] == "audit-bucket"
+        assert kwargs["ContentType"] == "application/json"
+        assert kwargs["ObjectLockMode"] == "COMPLIANCE"
+        assert "ObjectLockRetainUntilDate" in kwargs
+        assert kwargs["Metadata"]["session-id"] == "session-001"
+        assert kwargs["Metadata"]["segment-no"] == "0"
+
+    def test_s3_push_is_idempotent_when_object_exists(self):
+        mock_client = MagicMock()
+        mock_client.head_object.return_value = {"ETag": '"existing-etag"'}
+        mock_boto3 = MagicMock()
+        mock_boto3.client.return_value = mock_client
+
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
+            sink = S3ObjectLockSink(bucket="audit-bucket", prefix="scent/audit/")
+
+        record = {"seq": 2, "event_type": "tool_call", "payload": {"tool": "pytest"}}
+        receipt = sink.push("session-002", 1, record)
+
+        assert receipt.endswith("#existing-etag")
+        mock_client.put_object.assert_not_called()
+
+    def test_s3_push_rejects_conflicting_seal_root(self):
+        mock_client = MagicMock()
+        mock_client.head_object.side_effect = FakeNotFound()
+        mock_client.put_object.return_value = {"ETag": '"etag"'}
+        mock_boto3 = MagicMock()
+        mock_boto3.client.return_value = mock_client
+
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
+            sink = S3ObjectLockSink(bucket="audit-bucket", prefix="scent/audit/")
+
+        first = {"seq": 100, "event_type": "merkle_seal", "payload": {"merkle_root": "a" * 96}}
+        second = {"seq": 101, "event_type": "merkle_seal", "payload": {"merkle_root": "b" * 96}}
+        sink.push("session-003", 7, first)
+
+        with pytest.raises(ReplicationError, match="fork_detected"):
+            sink.push("session-003", 7, second)
+
+    def test_s3_push_accepts_existing_remote_seal_index_same_root(self):
+        root = "c" * 96
+        mock_client = MagicMock()
+
+        def head_object(**kwargs):
+            if kwargs["Key"].endswith("seal-index.json"):
+                return {"Metadata": {"root": root}, "ETag": '"index-etag"'}
+            raise FakeNotFound()
+
+        mock_client.head_object.side_effect = head_object
+        mock_client.put_object.return_value = {"ETag": '"record-etag"'}
+        mock_boto3 = MagicMock()
+        mock_boto3.client.return_value = mock_client
+
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
+            sink = S3ObjectLockSink(bucket="audit-bucket", prefix="scent/audit/")
+
+        record = {"seq": 100, "event_type": "merkle_seal", "payload": {"merkle_root": root}}
+        receipt = sink.push("session-remote", 2, record)
+
+        assert receipt.endswith("#record-etag")
+        put_keys = [call.kwargs["Key"] for call in mock_client.put_object.call_args_list]
+        assert not any(key.endswith("seal-index.json") for key in put_keys)
+
+    def test_s3_push_rejects_existing_remote_seal_index_different_root(self):
+        mock_client = MagicMock()
+        mock_client.head_object.return_value = {"Metadata": {"root": "a" * 96}}
+        mock_boto3 = MagicMock()
+        mock_boto3.client.return_value = mock_client
+
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
+            sink = S3ObjectLockSink(bucket="audit-bucket", prefix="scent/audit/")
+
+        record = {"seq": 100, "event_type": "merkle_seal", "payload": {"merkle_root": "b" * 96}}
+
+        with pytest.raises(ReplicationError, match="fork_detected"):
+            sink.push("session-remote", 3, record)
+        mock_client.put_object.assert_not_called()
+
+    def test_s3_push_resolves_seal_index_precondition_race(self):
+        root = "d" * 96
+        mock_client = MagicMock()
+        seal_heads = 0
+
+        def head_object(**kwargs):
+            nonlocal seal_heads
+            if kwargs["Key"].endswith("seal-index.json"):
+                seal_heads += 1
+                if seal_heads == 1:
+                    raise FakeNotFound()
+                return {"Metadata": {"root": root}, "ETag": '"index-etag"'}
+            raise FakeNotFound()
+
+        mock_client.head_object.side_effect = head_object
+        mock_client.put_object.side_effect = [FakePrecondition(), {"ETag": '"record-etag"'}]
+        mock_boto3 = MagicMock()
+        mock_boto3.client.return_value = mock_client
+
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
+            sink = S3ObjectLockSink(bucket="audit-bucket", prefix="scent/audit/")
+
+        record = {"seq": 100, "event_type": "merkle_seal", "payload": {"merkle_root": root}}
+        receipt = sink.push("session-race", 4, record)
+
+        assert receipt.endswith("#record-etag")
+        assert mock_client.put_object.call_count == 2
 
 
 class TestMakeReplicationSinkR2:
@@ -121,7 +259,6 @@ class TestMakeReplicationSinkR2:
                 make_replication_sink(cfg)
 
     def test_returns_r2_sink_when_boto3_available(self):
-        from enterprise.provenance import CloudflareR2Sink
         cfg = AuditConfig(
             audit_mode=AuditMode.ENTERPRISE,
             worm_sink=WormSinkType.R2,
@@ -133,6 +270,25 @@ class TestMakeReplicationSinkR2:
             sink = make_replication_sink(cfg)
         assert isinstance(sink, CloudflareR2Sink)
         assert sink.bucket == "r2-audit"
+
+    def test_r2_push_does_not_send_aws_object_lock_headers(self):
+        mock_client = MagicMock()
+        mock_client.head_object.side_effect = FakeNotFound()
+        mock_client.put_object.return_value = {"ETag": '"etag-r2"'}
+        mock_boto3 = MagicMock()
+        mock_boto3.client.return_value = mock_client
+
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
+            sink = CloudflareR2Sink(
+                bucket="r2-audit",
+                prefix="r2/",
+                endpoint_url="https://example.r2.cloudflarestorage.com",
+            )
+
+        sink.push("session-r2", 0, {"seq": 1, "event_type": "tool_call", "payload": {}})
+        kwargs = mock_client.put_object.call_args.kwargs
+        assert "ObjectLockMode" not in kwargs
+        assert "ObjectLockRetainUntilDate" not in kwargs
 
 
 # ---------------------------------------------------------------------------

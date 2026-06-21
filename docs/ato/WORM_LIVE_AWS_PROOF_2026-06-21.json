@@ -1,0 +1,21 @@
+{
+  "bucket": "selfconnect-worm-proof-723013807658-20260621013523",
+  "prefix": "scent/audit/live-proof/20260621T063604Z",
+  "receipt": "s3://selfconnect-worm-proof-723013807658-20260621013523/scent/audit/live-proof/20260621T063604Z/selfconnect-worm-live-20260621T063604Z/seg-000000/seq-000000000100-ffffffffffffffff.json#817a32c3310dbb57a0815d0dd6d32d37",
+  "record_etag": "817a32c3310dbb57a0815d0dd6d32d37",
+  "record_key": "scent/audit/live-proof/20260621T063604Z/selfconnect-worm-live-20260621T063604Z/seg-000000/seq-000000000100-ffffffffffffffff.json",
+  "record_object_lock_mode": "COMPLIANCE",
+  "record_retention_until": "2026-06-22 06:36:05+00:00",
+  "redacted": true,
+  "remote_fork_rejection": {
+    "message": "fork_detected: session=selfconnect-worm-live-20260621T063604Z segment=0 existing_root=ffffffffffffffff\u2026 new_root=eeeeeeeeeeeeeeee\u2026",
+    "raised": true
+  },
+  "run_id": "20260621T063604Z",
+  "seal_index_etag": "8541e7851212f965b4d0d111d2cfa4a6",
+  "seal_index_key": "scent/audit/live-proof/20260621T063604Z/selfconnect-worm-live-20260621T063604Z/seg-000000/seal-index.json",
+  "seal_index_object_lock_mode": "COMPLIANCE",
+  "seal_index_retention_until": "2026-06-22 06:36:05+00:00",
+  "session_id": "selfconnect-worm-live-20260621T063604Z",
+  "verdict": "PASS"
+}

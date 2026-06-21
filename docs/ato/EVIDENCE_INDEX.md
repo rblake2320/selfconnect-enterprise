@@ -40,6 +40,7 @@
 | 28 | WORM audit wiring | Code + tests | `enterprise/audit_config.py`, `enterprise/worm_service.py`, `tests/test_enterprise/test_audit_config.py`, `tests/test_enterprise/test_worm_service.py` | AU-9 off-host replication: AuditConfig maps SCENT_AUDIT_MODE/SCENT_WORM_SINK env vars to ReplicationSink; government mode is fail-closed without a real WORM sink; FileReplicationSink provides append-only NDJSON with atomic segment-seal | AU-9, AU-12, AU-5 | 2026-06 |
 | 29 | TPM platform attestation | Code + tests | `enterprise/tpm_attestation.py`, `tests/test_enterprise/test_tpm_attestation.py` | IA-5 hardware identity: NCryptCreateClaim binds agent key to TPM PCR state; downgrade guards reject empty/small blobs (AIK-absent software fallback); tpm_probe() provides NA-safe runtime detection | IA-5, IA-3, SC-28 | 2026-06 |
 | 30 | MSI installer (WiX v4) | Deployment artifact | `installer/selfconnect-enterprise.wxs`, `installer/build_installer.py`, `installer/INSTALL.md` | Deployment hardening: Windows service registered with auto-start, PATH entry, and ProgramData directory; reproducible signed build via WiX toolset | CM-7, CM-9, SI-7 | 2026-06 |
+| 31 | Live AWS S3 Object Lock WORM proof | Live cloud evidence | `docs/ato/WORM_LIVE_AWS_PROOF_2026-06-21.md`, `docs/ato/WORM_LIVE_AWS_PROOF_2026-06-21.json`, `enterprise/provenance.py:S3ObjectLockSink` | A redacted Merkle-seal event and its stable seal-index were pushed to an Object Lock bucket in `COMPLIANCE` mode; a fresh sink instance rejected a conflicting root from remote seal-index state | AU-9, AU-10, AU-12, AU-5, CA-2 | 2026-06-21 |
 
 ---
 
@@ -48,12 +49,12 @@
 | Family | Evidence Entries | Key Artifacts |
 |--------|-----------------|---------------|
 | AC | 1, 7, 8, 9, 15, 18, 21, 22, 26, 27 | identity_gate.py, target_guard.py, egress_guard.py, mcp_dispatch.py |
-| AU | 7, 12, 17, 19, 22, 25, 26, 28 | ledger.py, identity_gate.py, observer.py, mcp_dispatch.py, worm_service.py |
+| AU | 7, 12, 17, 19, 22, 25, 26, 28, 31 | ledger.py, identity_gate.py, observer.py, mcp_dispatch.py, worm_service.py, S3ObjectLockSink |
 | IA | 7, 8, 10, 14, 16, 17, 27, 29 | identity.py, chained_channel.py, governance profiles, tpm_attestation.py |
 | SC | 9, 11, 12, 13, 19, 21, 29 | bpc_crypto.py, chained_channel.py, tpm_attestation.py |
 | SI | 1, 2, 3, 4, 5, 6, 18, 19, 20, 24, 26, 30 | test_dependency_integrity.py, version_gate.py, mcp_dispatch.py, installer/ |
 | CM | 1, 3, 9, 15, 20, 24, 27, 30 | test_dependency_integrity.py, version_gate.py, governance profiles, installer/ |
-| CA | 7, 8, 9, 10, 17, 20 | identity_gate.py (inline WRAITH references) |
+| CA | 7, 8, 9, 10, 17, 20, 31 | identity_gate.py (inline WRAITH references), WORM_LIVE_AWS_PROOF_2026-06-21.md |
 | IR | 8, 25 | identity_gate.py:emergency_bypass(), ledger.py |
 
 ---
@@ -76,5 +77,6 @@ For each CI run, the following artifacts must be collected and retained:
 2. Exit code 0 from `python experiments/win32_probe/chained_channel.py` — proves the 4-leg chain functions end-to-end.
 3. Startup log output confirming `IdentityGate: TPM detected` (or documenting the accepted CRITICAL log if no TPM).
 4. Hash of `enterprise/identity_gate.py`, `enterprise/identity.py`, `experiments/win32_probe/target_guard.py`, and `experiments/win32_probe/chained_channel.py` — to detect post-deployment modification.
+5. For AU-9 evidence, retain the live S3 Object Lock receipt and `head-object` output showing `ObjectLockMode=COMPLIANCE` for both the event record and the stable seal-index object.
 
 Evidence retention: minimum 3 years per NIST SP 800-53 AU-11 guidance.

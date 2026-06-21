@@ -72,7 +72,7 @@ import uuid
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
@@ -246,7 +246,7 @@ class ReplicationSink(ABC):
 
 
 class S3ObjectLockSink(ReplicationSink):
-    """Stub for AWS S3 Object Lock WORM replication.
+    """AWS S3 Object Lock WORM replication sink.
 
     S3 Object Lock in COMPLIANCE mode prevents overwrite/delete during
     the retention period even by the bucket owner. Use COMPLIANCE mode,
@@ -257,32 +257,345 @@ class S3ObjectLockSink(ReplicationSink):
     different key, so both versions exist — but the verifier checks for
     duplicate (session_id, segment_no) with different roots.
 
-    To activate: pip install boto3, set AWS credentials, implement push().
+    The sink writes canonical JSON records. Each key includes the session,
+    segment, sequence, and record root prefix so repeated writes are idempotent
+    and conflicting roots produce distinct evidence objects.
     """
 
-    def __init__(self, bucket: str, prefix: str = "provenance/") -> None:
+    def __init__(
+        self,
+        bucket: str,
+        prefix: str = "provenance/",
+        *,
+        endpoint_url: str | None = None,
+        region_name: str | None = None,
+        object_lock_mode: str = "COMPLIANCE",
+        retention_days: int = 365,
+    ) -> None:
+        import boto3
+
         self.bucket = bucket
-        self.prefix = prefix
+        self.prefix = prefix.strip("/")
+        self.object_lock_mode = object_lock_mode
+        self.retention_days = retention_days
+        self._client = boto3.client(
+            "s3",
+            endpoint_url=endpoint_url or None,
+            region_name=region_name or None,
+        )
+        self._seal_store: dict[tuple[str, int], str] = {}
+        self._receipts: dict[str, dict] = {}
+        self._lock = threading.Lock()
 
     def push(self, session_id: str, segment_no: int, record: dict) -> str:
-        raise NotImplementedError(
-            "S3ObjectLockSink.push() not yet implemented. "
-            "Install boto3 and configure AWS credentials to activate."
+        return _push_s3_record(
+            client=self._client,
+            bucket=self.bucket,
+            prefix=self.prefix,
+            session_id=session_id,
+            segment_no=segment_no,
+            record=record,
+            object_lock_mode=self.object_lock_mode,
+            retention_days=self.retention_days,
+            seal_store=self._seal_store,
+            receipts=self._receipts,
+            lock=self._lock,
         )
+
+    def get_latest_receipt(self, session_id: str) -> Optional[dict]:
+        return self._receipts.get(session_id)
 
 
 class CloudflareR2Sink(ReplicationSink):
-    """Stub for Cloudflare R2 WORM replication (S3-compatible)."""
+    """Cloudflare R2 S3-compatible replication sink.
 
-    def __init__(self, bucket: str, prefix: str = "provenance/") -> None:
+    R2 object-lock/WORM configuration is bucket-side. This sink writes
+    canonical JSON evidence through the S3-compatible API and leaves retention
+    enforcement to the configured R2 bucket policy.
+    """
+
+    def __init__(
+        self,
+        bucket: str,
+        prefix: str = "provenance/",
+        *,
+        endpoint_url: str | None = None,
+        region_name: str | None = None,
+    ) -> None:
+        import boto3
+
         self.bucket = bucket
-        self.prefix = prefix
+        self.prefix = prefix.strip("/")
+        self._client = boto3.client(
+            "s3",
+            endpoint_url=endpoint_url or None,
+            region_name=region_name or None,
+        )
+        self._seal_store: dict[tuple[str, int], str] = {}
+        self._receipts: dict[str, dict] = {}
+        self._lock = threading.Lock()
 
     def push(self, session_id: str, segment_no: int, record: dict) -> str:
-        raise NotImplementedError(
-            "CloudflareR2Sink.push() not yet implemented. "
-            "Configure R2 credentials and implement this method to activate."
+        return _push_s3_record(
+            client=self._client,
+            bucket=self.bucket,
+            prefix=self.prefix,
+            session_id=session_id,
+            segment_no=segment_no,
+            record=record,
+            object_lock_mode="",
+            retention_days=0,
+            seal_store=self._seal_store,
+            receipts=self._receipts,
+            lock=self._lock,
         )
+
+    def get_latest_receipt(self, session_id: str) -> Optional[dict]:
+        return self._receipts.get(session_id)
+
+
+def _safe_s3_component(value: str) -> str:
+    clean = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in value)
+    clean = clean.strip(".-_")
+    return clean or hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _s3_record_root(record: dict) -> str:
+    payload = record.get("payload", {})
+    return str(payload.get("merkle_root") or canonical_hash(record))
+
+
+def _s3_object_key(prefix: str, session_id: str, segment_no: int, record: dict) -> str:
+    seq = record.get("seq", 0)
+    try:
+        seq_int = int(seq)
+    except (TypeError, ValueError):
+        seq_int = 0
+    root = _s3_record_root(record)
+    session = _safe_s3_component(session_id)
+    prefix_part = prefix.strip("/")
+    body = f"{session}/seg-{segment_no:06d}/seq-{seq_int:012d}-{root[:16]}.json"
+    return f"{prefix_part}/{body}" if prefix_part else body
+
+
+def _s3_seal_index_key(prefix: str, session_id: str, segment_no: int) -> str:
+    session = _safe_s3_component(session_id)
+    prefix_part = prefix.strip("/")
+    body = f"{session}/seg-{segment_no:06d}/seal-index.json"
+    return f"{prefix_part}/{body}" if prefix_part else body
+
+
+def _error_code(exc: Exception) -> str:
+    response = getattr(exc, "response", {})
+    return str(response.get("Error", {}).get("Code", ""))
+
+
+def _is_not_found_error(exc: Exception) -> bool:
+    code = _error_code(exc)
+    return code in {"404", "NoSuchKey", "NotFound", "NoSuchBucket"}
+
+
+def _is_precondition_error(exc: Exception) -> bool:
+    return _error_code(exc) in {"412", "PreconditionFailed"}
+
+
+def _root_from_head(head: dict) -> str:
+    return str(head.get("Metadata", {}).get("root", ""))
+
+
+def _s3_object_lock_args(object_lock_mode: str, retention_days: int) -> dict[str, Any]:
+    if not object_lock_mode:
+        return {}
+    return {
+        "ObjectLockMode": object_lock_mode,
+        "ObjectLockRetainUntilDate": (
+            datetime.now(timezone.utc) + timedelta(days=max(1, retention_days))
+        ),
+    }
+
+
+def _confirm_remote_seal_root(
+    *,
+    client: Any,
+    bucket: str,
+    key: str,
+    session_id: str,
+    segment_no: int,
+    root: str,
+) -> None:
+    try:
+        head = client.head_object(Bucket=bucket, Key=key)
+    except Exception as exc:
+        raise ReplicationError(f"s3_seal_index_head_failed: {exc}") from exc
+    remote_root = _root_from_head(head)
+    if not remote_root:
+        raise ReplicationError(
+            f"s3_seal_index_missing_root: session={session_id} segment={segment_no}"
+        )
+    if remote_root != root:
+        raise ReplicationError(
+            f"fork_detected: session={session_id} segment={segment_no} "
+            f"existing_root={remote_root[:16]}… new_root={root[:16]}…"
+        )
+
+
+def _ensure_s3_seal_index(
+    *,
+    client: Any,
+    bucket: str,
+    prefix: str,
+    session_id: str,
+    segment_no: int,
+    root: str,
+    object_lock_mode: str,
+    retention_days: int,
+) -> None:
+    key = _s3_seal_index_key(prefix, session_id, segment_no)
+    try:
+        head = client.head_object(Bucket=bucket, Key=key)
+        remote_root = _root_from_head(head)
+        if not remote_root:
+            raise ReplicationError(
+                f"s3_seal_index_missing_root: session={session_id} segment={segment_no}"
+            )
+        if remote_root != root:
+            raise ReplicationError(
+                f"fork_detected: session={session_id} segment={segment_no} "
+                f"existing_root={remote_root[:16]}… new_root={root[:16]}…"
+            )
+        return
+    except ReplicationError:
+        raise
+    except Exception as exc:
+        if not _is_not_found_error(exc):
+            raise ReplicationError(f"s3_seal_index_head_failed: {exc}") from exc
+
+    body = json.dumps(
+        {
+            "type": "s3_seal_index",
+            "session_id": session_id,
+            "segment_no": segment_no,
+            "root": root,
+        },
+        separators=(",", ":"),
+        ensure_ascii=True,
+        sort_keys=True,
+    )
+    put_args: dict[str, Any] = {
+        "Bucket": bucket,
+        "Key": key,
+        "Body": body.encode("utf-8"),
+        "ContentType": "application/json",
+        "Metadata": {
+            "session-id": session_id[:256],
+            "segment-no": str(segment_no),
+            "event-type": "seal_index",
+            "root": root,
+        },
+        "IfNoneMatch": "*",
+    }
+    put_args.update(_s3_object_lock_args(object_lock_mode, retention_days))
+    try:
+        client.put_object(**put_args)
+    except Exception as exc:
+        if _is_precondition_error(exc):
+            _confirm_remote_seal_root(
+                client=client,
+                bucket=bucket,
+                key=key,
+                session_id=session_id,
+                segment_no=segment_no,
+                root=root,
+            )
+            return
+        raise ReplicationError(f"s3_seal_index_put_failed: {exc}") from exc
+
+
+def _push_s3_record(
+    *,
+    client: Any,
+    bucket: str,
+    prefix: str,
+    session_id: str,
+    segment_no: int,
+    record: dict,
+    object_lock_mode: str,
+    retention_days: int,
+    seal_store: dict[tuple[str, int], str],
+    receipts: dict[str, dict],
+    lock: threading.Lock,
+) -> str:
+    root = _s3_record_root(record)
+    payload = record.get("payload", {})
+    is_seal = "merkle_root" in payload
+    key = _s3_object_key(prefix, session_id, segment_no, record)
+
+    with lock:
+        if is_seal:
+            fork_key = (session_id, segment_no)
+            existing_root = seal_store.get(fork_key)
+            if existing_root and existing_root != root:
+                raise ReplicationError(
+                    f"fork_detected: session={session_id} segment={segment_no} "
+                    f"existing_root={existing_root[:16]}… new_root={root[:16]}…"
+                )
+            _ensure_s3_seal_index(
+                client=client,
+                bucket=bucket,
+                prefix=prefix,
+                session_id=session_id,
+                segment_no=segment_no,
+                root=root,
+                object_lock_mode=object_lock_mode,
+                retention_days=retention_days,
+            )
+            seal_store[fork_key] = root
+
+        try:
+            head = client.head_object(Bucket=bucket, Key=key)
+            receipt = {
+                "backend": "s3",
+                "bucket": bucket,
+                "key": key,
+                "etag": str(head.get("ETag", "")).strip('"'),
+                "root": root,
+            }
+            receipts[session_id] = receipt
+            return f"s3://{bucket}/{key}#{receipt['etag']}"
+        except Exception as exc:
+            if not _is_not_found_error(exc):
+                raise ReplicationError(f"s3_head_failed: {exc}") from exc
+
+        body = json.dumps(record, separators=(",", ":"), ensure_ascii=True, sort_keys=True)
+        put_args: dict[str, Any] = {
+            "Bucket": bucket,
+            "Key": key,
+            "Body": body.encode("utf-8"),
+            "ContentType": "application/json",
+            "Metadata": {
+                "session-id": session_id[:256],
+                "segment-no": str(segment_no),
+                "seq": str(record.get("seq", "")),
+                "event-type": str(record.get("event_type", ""))[:128],
+                "root": root,
+            },
+        }
+        if object_lock_mode:
+            put_args.update(_s3_object_lock_args(object_lock_mode, retention_days))
+        try:
+            response = client.put_object(**put_args)
+        except Exception as exc:
+            raise ReplicationError(f"s3_put_failed: {exc}") from exc
+
+        receipt = {
+            "backend": "s3",
+            "bucket": bucket,
+            "key": key,
+            "etag": str(response.get("ETag", "")).strip('"'),
+            "root": root,
+        }
+        receipts[session_id] = receipt
+        return f"s3://{bucket}/{key}#{receipt['etag']}"
 
 
 class InMemoryWitnessSink(ReplicationSink):
