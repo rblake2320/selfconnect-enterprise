@@ -15,3 +15,5 @@ observer_logs/
 .coverage
 .hypothesis/
 ultra_server/node_modules/
+.claude/
+.sessions/

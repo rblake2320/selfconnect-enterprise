@@ -139,7 +139,7 @@ def check_status() -> None:
         print(f"[bootstrap] Ultra Server: {data}")
     except Exception as exc:
         print(f"[bootstrap] Ultra Server unreachable: {exc}")
-        print(f"  Start with: python bootstrap_mesh.py")
+        print("  Start with: python bootstrap_mesh.py")
 
 
 def main() -> None:
@@ -194,8 +194,8 @@ def main() -> None:
         print("  Emergency bypass: python -c \"from enterprise.identity_gate import emergency_bypass; emergency_bypass()\"")
         print()
         print(f"  Ultra Server PID: {proc.pid}")
-        print(f"  Status: python bootstrap_mesh.py --status")
-        print(f"  Stop:   python bootstrap_mesh.py --stop")
+        print("  Status: python bootstrap_mesh.py --status")
+        print("  Stop:   python bootstrap_mesh.py --stop")
     except Exception as exc:
         print(f"[bootstrap] ERROR: {exc}")
         sys.exit(1)

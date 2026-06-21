@@ -21,7 +21,6 @@ import statistics
 import sys
 import time
 import ctypes
-import ctypes.wintypes as wintypes
 
 # Provider name constants — do NOT mix these up
 MS_PLATFORM_CRYPTO_PROVIDER = "Microsoft Platform Crypto Provider"   # Hardware TPM target
@@ -162,9 +161,9 @@ def print_report(label: str, provider: str, samples: list[float],
     print(f"{'='*65}")
 
     if error:
-        print(f"  STATUS: FAILED")
+        print("  STATUS: FAILED")
         print(f"  REASON: {error}")
-        print(f"  SECURITY NOTE: This provider is NOT available for signing.")
+        print("  SECURITY NOTE: This provider is NOT available for signing.")
         print(f"{'='*65}")
         return
 
@@ -181,7 +180,7 @@ def print_report(label: str, provider: str, samples: list[float],
     print(f"  p95  : {p95:.2f} ms")
     print(f"  p99  : {p99:.2f} ms")
     print(f"  Max  : {mx:.2f} ms")
-    print(f"")
+    print("")
     print(f"  Recommended heartbeat re-sign : every {max(1, int(p95 * 2 / 1000))}s  (2x p95)")
     print(f"  Handshake timeout per agent   : {p95 * 10:.0f} ms  (10x p95)")
     print(f"{'='*65}")
@@ -192,11 +191,11 @@ def main() -> None:
     parser.add_argument("--iterations", type=int, default=200)
     args = parser.parse_args()
 
-    print(f"\nSelfConnect Identity Hardening — NCrypt Signing Benchmark")
+    print("\nSelfConnect Identity Hardening — NCrypt Signing Benchmark")
     print(f"Platform: {sys.platform} | Python: {sys.version.split()[0]}")
     print(f"Iterations: {args.iterations}")
-    print(f"\nIMPORTANT: Platform KSP and Software KSP have different security properties.")
-    print(f"Only Platform KSP provides hardware-bound, non-exportable keys.")
+    print("\nIMPORTANT: Platform KSP and Software KSP have different security properties.")
+    print("Only Platform KSP provides hardware-bound, non-exportable keys.")
 
     tpm_state = _check_tpm()
     print(f"\nTPM Driver present: {tpm_state['tpm_driver']}")
@@ -204,7 +203,7 @@ def main() -> None:
     print(f"NOTE: {tpm_state['note']}")
 
     # --- Test 1: Platform Crypto Provider (THE TARGET) ---
-    print(f"\n[1/3] Testing Microsoft Platform Crypto Provider (HARDWARE TPM TARGET)...")
+    print("\n[1/3] Testing Microsoft Platform Crypto Provider (HARDWARE TPM TARGET)...")
     platform_samples, platform_err = _ncrypt_bench(
         MS_PLATFORM_CRYPTO_PROVIDER,
         "sc_bench_platform_p384",
@@ -217,7 +216,7 @@ def main() -> None:
     )
 
     # --- Test 2: Software KSP (fallback only, NOT the security target) ---
-    print(f"\n[2/3] Testing Microsoft Software Key Storage Provider (SOFTWARE FALLBACK)...")
+    print("\n[2/3] Testing Microsoft Software Key Storage Provider (SOFTWARE FALLBACK)...")
     sw_ksp_samples, sw_ksp_err = _ncrypt_bench(
         MS_SOFTWARE_KEY_STORAGE_PROVIDER,
         "sc_bench_software_p384",
@@ -230,7 +229,7 @@ def main() -> None:
     )
 
     # --- Test 3: Pure Python software (baseline comparison) ---
-    print(f"\n[3/3] Testing pure Python ECDSA P-384 (baseline comparison)...")
+    print("\n[3/3] Testing pure Python ECDSA P-384 (baseline comparison)...")
     try:
         py_samples = _software_ecdsa_bench(args.iterations)
         print_report(
@@ -243,28 +242,28 @@ def main() -> None:
 
     # --- Decision ---
     print(f"\n{'='*65}")
-    print(f"  DECISION")
+    print("  DECISION")
     print(f"{'='*65}")
     if platform_err:
         print(f"  Platform KSP: UNAVAILABLE ({platform_err})")
-        print(f"")
-        print(f"  Branch B options (pick one explicitly):")
-        print(f"  B1 — Ship Software KSP, document reduced guarantee in SECURITY.md")
-        print(f"       Risk: 'TPM-backed' claims would be inaccurate for Citizant/DoD")
-        print(f"  B2 — Find dev machine with provisioned TPM 2.0 for all signing work")
-        print(f"       Best for federal trajectory")
-        print(f"  B3 — Software KSP in dev/CI, Platform KSP enforced at deploy via startup check")
-        print(f"       Best long-term if dev hardware varies")
+        print("")
+        print("  Branch B options (pick one explicitly):")
+        print("  B1 — Ship Software KSP, document reduced guarantee in SECURITY.md")
+        print("       Risk: 'TPM-backed' claims would be inaccurate for Citizant/DoD")
+        print("  B2 — Find dev machine with provisioned TPM 2.0 for all signing work")
+        print("       Best for federal trajectory")
+        print("  B3 — Software KSP in dev/CI, Platform KSP enforced at deploy via startup check")
+        print("       Best long-term if dev hardware varies")
     else:
         p95 = sorted(platform_samples)[int(0.95 * len(platform_samples))]
         print(f"  Platform KSP: AVAILABLE (p95={p95:.1f}ms)")
         if p95 < 30:
-            print(f"  Heartbeat: sub-second re-sign feasible")
+            print("  Heartbeat: sub-second re-sign feasible")
         elif p95 < 100:
             print(f"  Heartbeat: re-sign every {int(p95*2/1000) or 1}s recommended")
         else:
-            print(f"  Heartbeat: sign on-demand only (p95 too high for periodic re-sign)")
-        print(f"  Proceed: Tier 1 unblocked. Platform KSP confirmed as signing primitive.")
+            print("  Heartbeat: sign on-demand only (p95 too high for periodic re-sign)")
+        print("  Proceed: Tier 1 unblocked. Platform KSP confirmed as signing primitive.")
     print(f"{'='*65}\n")
 
 

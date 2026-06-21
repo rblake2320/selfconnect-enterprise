@@ -8,7 +8,11 @@ if not hasattr(ctypes, "windll"):
     from unittest.mock import MagicMock
     ctypes.windll = MagicMock()
 
-import json, urllib.request, base64, tempfile, pathlib
+import json
+import urllib.request
+import base64
+import tempfile
+import pathlib
 
 from enterprise.identity import AgentIdentity
 from enterprise.ultra_gate import UltraGate
