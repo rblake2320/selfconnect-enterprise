@@ -52,5 +52,7 @@ Result:
 | `GOOGLE_APPLICATION_CREDENTIALS` | not present |
 | `GOOGLE_CLOUD_PROJECT` | not present |
 | `CLOUDSDK_CONFIG` | not present |
+| `gcloud` | not installed |
+| default ADC files | not present under `%APPDATA%\gcloud` or `%USERPROFILE%\.config\gcloud` |
 
 No raw provider logs or prompts are included in this evidence file.
