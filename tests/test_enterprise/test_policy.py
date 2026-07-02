@@ -183,6 +183,7 @@ class TestEnforcerDenyPaths:
         d = e.check(AGENT_A, "assign_task")
         assert d.allowed is False
         assert d.approval_mode == "quarantined"
+        assert "revoked" in d.reason
 
     def test_expired_policy_denied(self):
         b = make_bundle(
@@ -229,6 +230,8 @@ class TestEnforcerDenyPaths:
         e = _enforcer(_bundle(allowed_actions=[]))
         d = e.check(AGENT_A, "assign_task")
         assert d.allowed is False
+        assert "allowed_actions" in d.reason
+        assert d.approval_mode == "denied"
 
 
 # ── PolicyEnforcer — allow paths ──────────────────────────────────────────────
@@ -436,3 +439,50 @@ class TestFullWorkflow:
         assert meta["approval_mode"] == "human_approved"
         assert meta["operator_id"] == "CAC:OPERATOR123"
         assert meta["decision"] == "allow"
+
+    def test_composition_deny_calls_ledger_log(self):
+        """PolicyEnforcer must call ledger.log() when composition monitor denies.
+
+        Spec requirement (integration guide):
+            ledger.log("tool_call", result="denied", metadata=verdict.to_ledger_metadata())
+        Verifies the wiring is present and passes the correct arguments.
+        """
+        from enterprise.composition_monitor import CompositionMonitor
+
+        class _FakeLedger:
+            def __init__(self):
+                self.calls: list[dict] = []
+            def log(self, event_type: str, *, result: str = "", metadata: dict | None = None) -> None:
+                self.calls.append({"event_type": event_type, "result": result, "metadata": metadata})
+
+        monitor = CompositionMonitor()
+        ledger  = _FakeLedger()
+        e = _enforcer(
+            _bundle(allowed_actions=["read_text", "read_file", "http_request"]),
+            composition_monitor=monitor,
+            ledger=ledger,
+        )
+
+        # Trigger the recon → access → egress signature (3-step window).
+        # Tool names must match DEFAULT_EFFECT_MAP:
+        #   read_text → recon, read_file → access, http_request → egress
+        e.check(AGENT_A, "read_text")       # step 1 — recon
+        e.check(AGENT_A, "read_file")       # step 2 — access
+        d = e.check(AGENT_A, "http_request") # step 3 — egress — should be denied
+
+        assert d.allowed is False, "composition monitor should have denied the egress step"
+        assert d.approval_mode == "composition_denied"
+        # The PolicyEnforcer ledger must have been called exactly once
+        assert len(ledger.calls) == 1, (
+            f"expected 1 ledger.log() call, got {len(ledger.calls)}: {ledger.calls}"
+        )
+        call = ledger.calls[0]
+        assert call["event_type"] == "tool_call"
+        assert call["result"] == "denied"
+        assert isinstance(call["metadata"], dict)
+        # The metadata dict comes from CompositionVerdict.to_ledger_metadata().
+        # Actual shape: {"layer": "composition_monitor", "decision": "deny",
+        #                "reason": "...", "signature": "recon_to_egress", ...}
+        assert call["metadata"].get("decision") == "deny"
+        assert call["metadata"].get("layer") == "composition_monitor"
+        assert call["metadata"].get("signature") == "recon_to_egress"

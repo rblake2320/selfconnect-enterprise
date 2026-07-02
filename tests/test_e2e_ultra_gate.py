@@ -287,3 +287,150 @@ class TestFullE2EFlow:
             except Exception as exc:
                 failures.append(f"request {i} exception: {exc}")
         assert not failures, "High-frequency test failures:\n" + "\n".join(failures)
+
+
+# ── US-3: Lifecycle Endpoint Authentication Tests ─────────────────────────────
+class TestLifecycleAuth:
+    """US-3 closure: POST /bind-identity, PATCH /tsk/keys/:id, PATCH /bpc/pairs/:id
+    must reject requests that lack a valid Authorization: Bearer header.
+
+    These tests run against the live Ultra Server (localhost:7777) and exercise
+    the real HTTP layer — no mocks, no stubs.
+
+    Two scenarios are tested for each endpoint:
+      (a) No Authorization header at all → 401 LIFECYCLE_AUTH_REQUIRED
+          (or 503 LIFECYCLE_AUTH_UNCONFIGURED if LIFECYCLE_SECRET is not set)
+      (b) Wrong token → 401 LIFECYCLE_AUTH_REQUIRED
+
+    The tests accept *either* 401 or 503 as the rejection status code because
+    the CI environment may not have LIFECYCLE_SECRET configured.  What matters
+    is that the server NEVER returns 2xx/3xx for an unauthenticated request.
+    """
+
+    LIFECYCLE_ENDPOINTS = [
+        ("POST",  "/bind-identity"),
+        ("PATCH", "/tsk/keys/nonexistent-client-id"),
+        ("PATCH", "/bpc/pairs/nonexistent-pair-id"),
+    ]
+
+    def _raw_request(self, method: str, path: str, body: dict | None = None,
+                     headers: dict | None = None) -> tuple[int, dict]:
+        """Make a raw HTTP request and return (status_code, json_body)."""
+        import json as _json
+        import urllib.request as _req
+        import urllib.error as _err
+        data = _json.dumps(body or {}).encode()
+        req = _req.Request(
+            f"{SERVER_URL}{path}",
+            data=data,
+            method=method,
+            headers={"Content-Type": "application/json", **(headers or {})},
+        )
+        try:
+            with _req.urlopen(req, timeout=5) as resp:
+                return resp.status, _json.loads(resp.read())
+        except _err.HTTPError as exc:
+            try:
+                body_bytes = exc.read()
+                return exc.code, _json.loads(body_bytes)
+            except Exception:
+                return exc.code, {}
+
+    def test_bind_identity_no_auth_is_rejected(self):
+        """POST /bind-identity without Authorization header must return 401 or 503."""
+        status, body = self._raw_request("POST", "/bind-identity", body={
+            "client_id": "test-no-auth",
+            "public_key": "dGVzdA==",
+        })
+        assert status in (401, 503), (
+            f"Expected 401 or 503, got {status}. "
+            f"Lifecycle endpoint must reject unauthenticated requests. body={body}"
+        )
+        assert body.get("ok") is False, f"ok must be False on rejection, got: {body}"
+
+    def test_bind_identity_wrong_token_is_rejected(self):
+        """POST /bind-identity with wrong Bearer token must return 401."""
+        status, body = self._raw_request(
+            "POST", "/bind-identity",
+            body={"client_id": "test-wrong-token", "public_key": "dGVzdA=="},
+            headers={"Authorization": "Bearer this-is-the-wrong-secret-token"},
+        )
+        # If LIFECYCLE_SECRET is not set → 503; if set → 401 for wrong token
+        assert status in (401, 503), (
+            f"Expected 401 or 503 for wrong token, got {status}. body={body}"
+        )
+        assert body.get("ok") is False, f"ok must be False on rejection, got: {body}"
+
+    def test_tsk_keys_patch_no_auth_is_rejected(self):
+        """PATCH /tsk/keys/:clientId without Authorization header must return 401 or 503."""
+        status, body = self._raw_request(
+            "PATCH", "/tsk/keys/nonexistent-client-id",
+            body={"label": "attempt-without-auth"},
+        )
+        assert status in (401, 503), (
+            f"Expected 401 or 503, got {status}. body={body}"
+        )
+        assert body.get("ok") is False, f"ok must be False on rejection, got: {body}"
+
+    def test_tsk_keys_patch_wrong_token_is_rejected(self):
+        """PATCH /tsk/keys/:clientId with wrong Bearer token must return 401."""
+        status, body = self._raw_request(
+            "PATCH", "/tsk/keys/nonexistent-client-id",
+            body={"label": "attempt-wrong-token"},
+            headers={"Authorization": "Bearer totally-wrong-token-12345"},
+        )
+        assert status in (401, 503), (
+            f"Expected 401 or 503 for wrong token, got {status}. body={body}"
+        )
+        assert body.get("ok") is False, f"ok must be False on rejection, got: {body}"
+
+    def test_bpc_pairs_patch_no_auth_is_rejected(self):
+        """PATCH /bpc/pairs/:pairId without Authorization header must return 401 or 503."""
+        status, body = self._raw_request(
+            "PATCH", "/bpc/pairs/nonexistent-pair-id",
+            body={"name": "attempt-without-auth"},
+        )
+        assert status in (401, 503), (
+            f"Expected 401 or 503, got {status}. body={body}"
+        )
+        assert body.get("ok") is False, f"ok must be False on rejection, got: {body}"
+
+    def test_bpc_pairs_patch_wrong_token_is_rejected(self):
+        """PATCH /bpc/pairs/:pairId with wrong Bearer token must return 401."""
+        status, body = self._raw_request(
+            "PATCH", "/bpc/pairs/nonexistent-pair-id",
+            body={"name": "attempt-wrong-token"},
+            headers={"Authorization": "Bearer wrong-token-xyz-999"},
+        )
+        assert status in (401, 503), (
+            f"Expected 401 or 503 for wrong token, got {status}. body={body}"
+        )
+        assert body.get("ok") is False, f"ok must be False on rejection, got: {body}"
+
+    def test_all_lifecycle_endpoints_reject_empty_bearer(self):
+        """All three lifecycle endpoints must reject an empty Bearer token."""
+        for method, path in self.LIFECYCLE_ENDPOINTS:
+            status, body = self._raw_request(
+                method, path, body={},
+                headers={"Authorization": "Bearer "},
+            )
+            assert status in (401, 503), (
+                f"{method} {path}: Expected 401 or 503 for empty Bearer, got {status}. body={body}"
+            )
+            assert body.get("ok") is False, (
+                f"{method} {path}: ok must be False on rejection, got: {body}"
+            )
+
+    def test_all_lifecycle_endpoints_reject_malformed_auth_header(self):
+        """All three lifecycle endpoints must reject a malformed Authorization header."""
+        for method, path in self.LIFECYCLE_ENDPOINTS:
+            status, body = self._raw_request(
+                method, path, body={},
+                headers={"Authorization": "NotBearer some-token"},
+            )
+            assert status in (401, 503), (
+                f"{method} {path}: Expected 401 or 503 for malformed header, got {status}. body={body}"
+            )
+            assert body.get("ok") is False, (
+                f"{method} {path}: ok must be False on rejection, got: {body}"
+            )

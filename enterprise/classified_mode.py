@@ -60,6 +60,12 @@ class ClassifiedModeProfile:
                                       in PolicyEnforcer).
         allow_cloud_egress:           If False, all outbound API calls are
                                       denied and logged by EgressGuard.
+        allowed_destinations:         When allow_cloud_egress is True and this
+                                      set is non-empty, only destinations in
+                                      this set are permitted.  Empty set means
+                                      any destination is allowed (use only for
+                                      development/CUI profiles).  Has no effect
+                                      when allow_cloud_egress is False.
         allow_export:                 If False, EvidenceExporter is disabled
                                       and ExportGuard denies all export
                                       attempts.
@@ -79,6 +85,7 @@ class ClassifiedModeProfile:
     require_cng_identity:          bool                    = True
     require_signed_policy:         bool                    = True
     allow_cloud_egress:            bool                    = False
+    allowed_destinations:          frozenset[str]          = field(default_factory=frozenset)
     allow_export:                  bool                    = False
     require_operator_approval_for: frozenset[str]          = field(default_factory=frozenset)
     allowed_apps:                  frozenset[str]          = field(default_factory=frozenset)
@@ -123,6 +130,7 @@ class ClassifiedModeProfile:
             "require_cng_identity":          self.require_cng_identity,
             "require_signed_policy":         self.require_signed_policy,
             "allow_cloud_egress":            self.allow_cloud_egress,
+            "allowed_destinations":          sorted(self.allowed_destinations),
             "allow_export":                  self.allow_export,
             "require_operator_approval_for": sorted(self.require_operator_approval_for),
             "allowed_apps":                  sorted(self.allowed_apps),
@@ -141,6 +149,7 @@ class ClassifiedModeProfile:
             "require_cng_identity":          self.require_cng_identity,
             "require_signed_policy":         self.require_signed_policy,
             "allow_cloud_egress":            self.allow_cloud_egress,
+            "allowed_destinations":          sorted(self.allowed_destinations),
             "allow_export":                  self.allow_export,
             "require_operator_approval_for": sorted(self.require_operator_approval_for),
             "allowed_apps":                  sorted(self.allowed_apps),
@@ -172,8 +181,10 @@ class ClassifiedModeProfile:
             require_cng_identity          = bool(d.get("require_cng_identity", True)),
             require_signed_policy         = bool(d.get("require_signed_policy", True)),
             allow_cloud_egress            = bool(d.get("allow_cloud_egress", False)),
+            allowed_destinations          = frozenset(d.get("allowed_destinations", [])),
             allow_export                  = bool(d.get("allow_export", False)),
             require_operator_approval_for = frozenset(d.get("require_operator_approval_for", [])),
+
             allowed_apps                  = frozenset(d.get("allowed_apps", [])),
             blocked_apps                  = frozenset(d.get("blocked_apps", [])),
         )
@@ -287,7 +298,8 @@ class ClassifiedModeProfile:
             f"id={self.profile_id!r}, "
             f"ceiling={self.max_classification.name}, "
             f"egress={self.allow_cloud_egress}, "
-            f"export={self.allow_export})"
+        f"destinations={len(self.allowed_destinations)}, "
+        f"export={self.allow_export})"
         )
 
 

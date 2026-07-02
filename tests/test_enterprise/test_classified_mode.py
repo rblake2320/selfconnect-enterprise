@@ -90,6 +90,7 @@ class TestClassifiedModeProfile:
             "profile_id", "signed_by", "max_classification", "allowed_caveats",
             "require_cng_identity", "require_signed_policy", "allow_cloud_egress",
             "allow_export", "require_operator_approval_for", "allowed_apps", "blocked_apps",
+            "allowed_destinations",  # EG-1: per-profile egress destination allowlist
         }
         assert set(d.keys()) == expected
 
@@ -220,6 +221,68 @@ class TestEgressGuard:
         profile = ClassifiedModeProfile.secret_baseline()
         guard = EgressGuard(profile)   # no ledger
         assert guard.check_outbound("api.example.com") is False  # no exception
+
+    # ── EG-1 closure: per-profile destination allowlist ──────────────────────────────
+
+    def test_allowlist_permits_listed_destination(self):
+        """When allowed_destinations is non-empty, a listed destination is allowed."""
+        from dataclasses import replace
+        profile = replace(
+            ClassifiedModeProfile.cui_baseline(),
+            allowed_destinations=frozenset({"api.anthropic.com", "api.openai.com"}),
+        )
+        guard = EgressGuard(profile)
+        assert guard.check_outbound("api.anthropic.com", "SC-AGENT1") is True
+        assert guard.check_outbound("api.openai.com", "SC-AGENT1") is True
+
+    def test_allowlist_denies_unlisted_destination(self):
+        """When allowed_destinations is non-empty, an unlisted destination is denied
+        even though allow_cloud_egress is True.  This is the EG-1 exfil lane fix."""
+        from dataclasses import replace
+        profile = replace(
+            ClassifiedModeProfile.cui_baseline(),
+            allowed_destinations=frozenset({"api.anthropic.com"}),
+        )
+        guard = EgressGuard(profile)
+        assert guard.check_outbound("attacker.evil.com", "SC-AGENT1") is False
+        assert guard.check_outbound("api.openai.com", "SC-AGENT1") is False
+        assert guard.check_outbound("api.anthropic.com", "SC-AGENT1") is True
+
+    def test_empty_allowlist_permits_any_destination(self):
+        """Empty allowed_destinations means no allowlist is applied — any destination
+        is permitted when allow_cloud_egress is True.  Backward-compatible."""
+        profile = ClassifiedModeProfile.cui_baseline()  # allowed_destinations=frozenset()
+        guard = EgressGuard(profile)
+        assert guard.check_outbound("api.anthropic.com") is True
+        assert guard.check_outbound("any.arbitrary.host.example.com") is True
+
+    def test_allowlist_deny_logs_deny_reason(self):
+        """Allowlist denial logs deny_reason='destination_not_allowlisted'."""
+        from dataclasses import replace
+        profile = replace(
+            ClassifiedModeProfile.cui_baseline(),
+            allowed_destinations=frozenset({"api.anthropic.com"}),
+        )
+        ledger = _mock_ledger()
+        guard = EgressGuard(profile, ledger=ledger)
+        guard.check_outbound("attacker.evil.com", "SC-AGENT1")
+        call_args = ledger.log.call_args
+        assert call_args[1]["metadata"]["decision"] == "deny"
+        assert call_args[1]["metadata"]["deny_reason"] == "destination_not_allowlisted"
+        assert call_args[1]["metadata"]["destination"] == "attacker.evil.com"
+
+    def test_allowlist_serialization_round_trip(self):
+        """allowed_destinations survives to_dict() / from_dict() round-trip."""
+        from dataclasses import replace
+        original = replace(
+            ClassifiedModeProfile.cui_baseline(),
+            allowed_destinations=frozenset({"api.anthropic.com", "api.openai.com"}),
+        )
+        restored = ClassifiedModeProfile.from_dict(original.to_dict())
+        assert restored.allowed_destinations == frozenset({"api.anthropic.com", "api.openai.com"})
+        guard = EgressGuard(restored)
+        assert guard.check_outbound("api.anthropic.com") is True
+        assert guard.check_outbound("attacker.evil.com") is False
 
 
 # ── TestExportGuard ────────────────────────────────────────────────────────────

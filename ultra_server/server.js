@@ -68,6 +68,54 @@ import { verifyUltraRequest } from '@tsk/bpc-bridge';
 const PORT = parseInt(process.env.ULTRA_SERVER_PORT ?? '7777', 10);
 const SIG_WINDOW_MS = 60_000;
 
+// ── Lifecycle auth (Gap US-3 fix) ─────────────────────────────────────────────
+// LIFECYCLE_SECRET must be set in production. If absent, lifecycle endpoints
+// are blocked entirely (fail-closed) to prevent unauthenticated key revocation.
+//
+// Set via env: LIFECYCLE_SECRET=<strong-random-string>
+// Pass in requests: Authorization: Bearer <LIFECYCLE_SECRET>
+//
+// For local dev / CI, set LIFECYCLE_SECRET=dev-only-not-for-production.
+const LIFECYCLE_SECRET = process.env.LIFECYCLE_SECRET ?? null;
+
+function requireLifecycleAuth(req, res, next) {
+  if (!LIFECYCLE_SECRET) {
+    // No secret configured — fail closed. Log a loud warning.
+    console.error(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'CRITICAL',
+      event: 'lifecycle_auth_unconfigured',
+      message: 'LIFECYCLE_SECRET not set — lifecycle endpoints are disabled. Set LIFECYCLE_SECRET env var.',
+      path: req.path,
+    }));
+    return res.status(503).json({
+      ok: false,
+      error: 'LIFECYCLE_AUTH_UNCONFIGURED',
+      message: 'LIFECYCLE_SECRET env var is not set. Lifecycle endpoints are disabled until it is configured.',
+    });
+  }
+  const authHeader = req.headers['authorization'] ?? '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  // Constant-time comparison to prevent timing attacks
+  const expected = Buffer.from(LIFECYCLE_SECRET);
+  const provided = Buffer.from(token.padEnd(LIFECYCLE_SECRET.length, '\x00').slice(0, LIFECYCLE_SECRET.length));
+  const match = token.length === LIFECYCLE_SECRET.length &&
+    createHmac('sha256', RECOVERY_HMAC_KEY).update(expected).digest().equals(
+      createHmac('sha256', RECOVERY_HMAC_KEY).update(provided).digest()
+    );
+  if (!match) {
+    console.warn(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'WARN',
+      event: 'lifecycle_auth_failed',
+      path: req.path,
+      ip: req.ip,
+    }));
+    return res.status(401).json({ ok: false, error: 'LIFECYCLE_AUTH_REQUIRED' });
+  }
+  next();
+}
+
 // ── Stores — Redis nonce backend when REDIS_URL is set ───────────────────────
 const pairStore    = new MemoryPairStore();
 const anomalyStore = new MemoryAnomalyStore();
@@ -194,7 +242,7 @@ app.post('/provision-tsk', async (req, res) => {
 });
 
 // ── Route: POST /bind-identity ────────────────────────────────────────────────
-app.post('/bind-identity', (req, res) => {
+app.post('/bind-identity', requireLifecycleAuth, (req, res) => {
   try {
     const { pairId, tskClientId, agentId } = req.body;
     if (!pairId || !tskClientId) {
@@ -381,7 +429,7 @@ app.get('/tsk/keys/:clientId', async (req, res) => {
 // ── Route: PATCH /tsk/keys/:clientId ─────────────────────────────────────────
 // Update TSK key lifecycle: label, expiresAt, maxRequests, status.
 // Does NOT modify cryptographic material — re-provision to change keys.
-app.patch('/tsk/keys/:clientId', async (req, res) => {
+app.patch('/tsk/keys/:clientId', requireLifecycleAuth, async (req, res) => {
   try {
     const { label, expiresAt, maxRequests, status } = req.body ?? {};
     const updates = {};
@@ -420,7 +468,7 @@ app.get('/bpc/pairs', async (_req, res) => {
 
 // ── Route: PATCH /bpc/pairs/:pairId ──────────────────────────────────────────
 // Update BPC pair lifecycle: scope, expiresAt, maxRequests, name.
-app.patch('/bpc/pairs/:pairId', async (req, res) => {
+app.patch('/bpc/pairs/:pairId', requireLifecycleAuth, async (req, res) => {
   try {
     const { scope, expiresAt, maxRequests, name } = req.body ?? {};
     const updates = {};

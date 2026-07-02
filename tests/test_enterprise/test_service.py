@@ -1,6 +1,7 @@
 """Tests for enterprise/service.py — Windows Service wrapper."""
 from __future__ import annotations
 
+import sys
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -108,6 +109,7 @@ class TestPathValidation:
         with pytest.raises(ValueError, match="traversal"):
             _validate_env_path("../../etc/passwd", "SCENT_CONFIG")
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows backslash path semantics only")
     def test_dotdot_in_middle_rejected(self):
         with pytest.raises(ValueError, match="traversal"):
             _validate_env_path(r"logs\..\..\..\Windows\System32\evil", "SCENT_LOG_DIR")
@@ -120,6 +122,7 @@ class TestPathValidation:
         with pytest.raises(ValueError, match="UNC"):
             _validate_env_path("//attacker/share/config.toml", "SCENT_CONFIG")
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows WINDIR path semantics only")
     def test_windows_system32_rejected(self, monkeypatch):
         import os
         windir = os.environ.get("WINDIR", r"C:\Windows")

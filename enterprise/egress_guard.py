@@ -32,6 +32,8 @@ class EgressGuard:
 
     Every check is logged to the ledger regardless of outcome.  When
     allow_cloud_egress is False, the check returns False and logs a denial.
+    When allow_cloud_egress is True but profile.allowed_destinations is
+    non-empty, the destination must be in that set or the call is denied.
     The actual outbound call is never made.
 
     Args:
@@ -53,21 +55,34 @@ class EgressGuard:
     def check_outbound(self, destination: str, agent_id: str = "") -> bool:
         """Return True if outbound call to destination is permitted.
 
+        Decision logic (in order):
+          1. If profile.allow_cloud_egress is False → DENY (no egress at all).
+          2. If profile.allowed_destinations is non-empty and destination is
+             NOT in that set → DENY (destination not on allowlist).
+          3. Otherwise → ALLOW.
+
         Args:
             destination: Human-readable destination name (e.g. "api.anthropic.com").
             agent_id:    The agent making the call (for ledger attribution).
 
         Returns:
-            True if profile.allow_cloud_egress is True.
-            False otherwise — the call must NOT be made.
+            True if the call is permitted.
+            False if denied — the caller must NOT make the outbound call.
         """
-        allowed = self._profile.allow_cloud_egress
-        self._log(
-            agent_id    = agent_id,
-            destination = destination,
-            allowed     = allowed,
-        )
-        return allowed
+        if not self._profile.allow_cloud_egress:
+            self._log(agent_id=agent_id, destination=destination, allowed=False,
+                      deny_reason="egress_disabled")
+            return False
+
+        allowed_dests = self._profile.allowed_destinations
+        if allowed_dests and destination not in allowed_dests:
+            self._log(agent_id=agent_id, destination=destination, allowed=False,
+                      deny_reason="destination_not_allowlisted")
+            return False
+
+        self._log(agent_id=agent_id, destination=destination, allowed=True,
+                  deny_reason=None)
+        return True
 
     def wrap(
         self,
@@ -101,18 +116,27 @@ class EgressGuard:
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _log(self, agent_id: str, destination: str, allowed: bool) -> None:
+    def _log(
+        self,
+        agent_id: str,
+        destination: str,
+        allowed: bool,
+        deny_reason: Optional[str] = None,
+    ) -> None:
         if self._ledger is None:
             return
+        metadata: dict = {
+            "destination":  destination,
+            "agent_id":     agent_id,
+            "profile_id":   self._profile.profile_id,
+            "decision":     "allow" if allowed else "deny",
+        }
+        if deny_reason is not None:
+            metadata["deny_reason"] = deny_reason
         self._ledger.log(
             "egress_check",
-            result = "allowed" if allowed else "denied",
-            metadata = {
-                "destination":  destination,
-                "agent_id":     agent_id,
-                "profile_id":   self._profile.profile_id,
-                "decision":     "allow" if allowed else "deny",
-            },
+            result   = "allowed" if allowed else "denied",
+            metadata = metadata,
         )
 
 

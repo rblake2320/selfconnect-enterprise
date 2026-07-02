@@ -12,7 +12,7 @@ Rule: if a limitation is known, it is in this file the first time it is asked ab
 |---|-----|--------|--------|--------|
 | US-1 | No automatic rate limiting / lockout policy | Anomaly data collected but nothing acts on it. Brute-force attacker is slowed by HOTP/TOTP but not hard-blocked. | 1 day | Open |
 | US-2 | No PostgreSQL persistence for pairs and TSK keys | Restart = all registered agents must re-register. Memory-only. | 2–3 days | Open |
-| US-3 | No authentication on lifecycle API endpoints | `/tsk/keys/:id`, `/bpc/pairs/:id`, `/bind-identity` have no auth guard. Any process that can reach the server can modify or revoke keys. | Half day | Open |
+| US-3 | No authentication on lifecycle API endpoints | `/tsk/keys/:id`, `/bpc/pairs/:id`, `/bind-identity` have no auth guard. Any process that can reach the server can modify or revoke keys. | Half day | **CLOSED 2026-07-02** |
 | US-4 | Redis nonce store wired but not tested under load | `RedisNonceStore` code is in `@bpc/server` and wired in `server.js`, but E2E tests run against memory backend only. Redis path has no integration test in CI. | 1 day | Open |
 | US-5 | No TLS | Binds to `127.0.0.1` only, so LAN exposure is not the risk — but any process on the same machine can reach it. Matters for multi-tenant or shared machines. | Config only | Open |
 
@@ -58,7 +58,7 @@ Rule: if a limitation is known, it is in this file the first time it is asked ab
 
 | # | Gap | Impact | Effort | Status |
 |---|-----|--------|--------|--------|
-| EG-1 | `EgressGuard.check_outbound()` destination is cosmetic | The enforcement decision is the global `allow_cloud_egress` boolean; the `destination` string is logged but never checked against an allowlist. With egress on, an agent can reach any host. Root cause: no per-profile destination allowlist exists. This is the exfiltration lane. Fix: add `allowed_destinations: frozenset` to `ClassifiedModeProfile` and check it in `check_outbound()`. | Half day | Open |
+| EG-1 | `EgressGuard.check_outbound()` destination is cosmetic | The enforcement decision is the global `allow_cloud_egress` boolean; the `destination` string is logged but never checked against an allowlist. With egress on, an agent can reach any host. Root cause: no per-profile destination allowlist exists. This is the exfiltration lane. Fix: add `allowed_destinations: frozenset` to `ClassifiedModeProfile` and check it in `check_outbound()`. | Half day | **CLOSED 2026-07-02** |
 
 ---
 
@@ -138,3 +138,20 @@ All 19 items from the original gap registry are closed. Specific recent closures
   day-to-day path; enterprise MCP remains lease/audit governed; government
   profile fails closed for software-only identity/session paths until TPM is
   wired.
+
+---
+## What Was Closed (as of 2026-07-02)
+- **EG-1 CLOSED:** Added `allowed_destinations: frozenset[str]` field to `ClassifiedModeProfile`.
+  `EgressGuard.check_outbound()` now enforces the allowlist: when non-empty, only listed destinations
+  are permitted even if `allow_cloud_egress=True`. Empty allowlist preserves backward-compatible
+  behavior (any destination allowed). Covered by 5 adversarial tests in
+  `tests/test_enterprise/test_classified_mode.py::TestEgressGuard` (allowlist permit, deny,
+  empty-list passthrough, deny-reason logging, serialization round-trip). All 12 EgressGuard
+  tests pass.
+- **US-3 CLOSED:** Added `LIFECYCLE_SECRET` env var and `requireLifecycleAuth` middleware to
+  `ultra_server/server.js`. Applied to `POST /bind-identity`, `PATCH /tsk/keys/:clientId`,
+  `PATCH /bpc/pairs/:pairId`. Middleware is fail-closed: returns 503 if `LIFECYCLE_SECRET` is
+  not configured, 401 if wrong token, uses constant-time HMAC comparison to prevent timing
+  attacks. Covered by 8 adversarial tests in
+  `tests/test_e2e_ultra_gate.py::TestLifecycleAuth` (no-auth → 401/503, wrong token → 401/503,
+  empty Bearer, malformed Authorization header — all three endpoints).

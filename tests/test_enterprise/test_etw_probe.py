@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -46,6 +47,7 @@ class TestGuidStructure:
         assert g.Data2 == expected.time_mid
         assert g.Data3 == expected.time_hi_version
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="GUID struct size is Windows-specific (c_ulong is 4 bytes on Win32)")
     def test_guid_struct_size(self):
         assert ctypes.sizeof(GUID) == 16
 

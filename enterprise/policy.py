@@ -54,7 +54,7 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from enterprise.classified_mode import ClassifiedModeProfile
 from enterprise.labels import (
@@ -261,12 +261,14 @@ class PolicyEnforcer:
         control_plane=None,
         profile: Optional[ClassifiedModeProfile] = None,
         composition_monitor: Optional[CompositionMonitor] = None,
+        ledger: Any = None,
     ) -> None:
         self._policy          = policy
         self._trust_root_pub  = trust_root_pub
         self._control_plane   = control_plane  # Optional[ControlPlane]
         self._profile         = profile        # Optional[ClassifiedModeProfile]
         self._composition_monitor = composition_monitor  # Optional[CompositionMonitor]
+        self._ledger          = ledger         # Optional[AgentLedger / CngLedger]
 
         # Profile is authoritative: if it demands signature verification, force
         # it on regardless of what the caller passed as require_signature.
@@ -444,6 +446,15 @@ class PolicyEnforcer:
         if self._composition_monitor is not None:
             verdict = self._composition_monitor.observe(agent_id, action)
             if not verdict.allowed:
+                # Log the composition denial to the main agent ledger (per spec).
+                # This is separate from any ledger the CompositionMonitor itself
+                # holds — the PolicyEnforcer ledger is the authoritative audit trail.
+                if self._ledger is not None:
+                    self._ledger.log(
+                        "tool_call",
+                        result="denied",
+                        metadata=verdict.to_ledger_metadata(),
+                    )
                 return PolicyDecision(
                     allowed=False,
                     reason=verdict.reason,
