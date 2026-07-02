@@ -110,6 +110,37 @@ def test_execute_then_egress_shape():
     assert not v.allowed and v.signature == "execute_then_egress"
 
 
+def test_velocity_boundary_exactly_at_max_is_allowed():
+    """Exactly max_elevated_rate calls must still be allowed; only max+1 triggers deny."""
+    m = CompositionMonitor(max_elevated_rate=5)
+    results = [m.observe("A", "write_file") for _ in range(5)]
+    # All 5 calls at the limit must be allowed
+    assert all(r.allowed for r in results), (
+        f"Expected all {len(results)} calls at limit to be allowed; "
+        f"first denial at index {next(i for i, r in enumerate(results) if not r.allowed)}"
+    )
+    # The 6th call (max+1) must be denied
+    over = m.observe("A", "write_file")
+    assert not over.allowed and over.signature == "elevated_velocity", (
+        f"Expected denial at max+1, got: allowed={over.allowed} sig={over.signature!r}"
+    )
+
+
+def test_default_elevated_rate_is_8():
+    """The production default max_elevated_rate must be exactly 8.
+    If this changes, the test fails — forcing a conscious decision."""
+    m = CompositionMonitor()
+    # 8 elevated calls must be allowed
+    for _ in range(8):
+        r = m.observe("A", "write_file")
+        assert r.allowed, f"Expected call within default limit to be allowed"
+    # 9th call must be denied
+    over = m.observe("A", "write_file")
+    assert not over.allowed and over.signature == "elevated_velocity", (
+        f"Default rate limit is not 8; got: allowed={over.allowed} sig={over.signature!r}"
+    )
+
+
 if __name__ == "__main__":
     import sys, traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

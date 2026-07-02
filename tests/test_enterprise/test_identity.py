@@ -82,6 +82,26 @@ class TestInit:
         pub_hex = (tmp_path / AGENT_NAME / "identity.pub").read_text()
         assert bytes.fromhex(pub_hex) == identity.public_key_bytes
 
+    def test_dpapi_blob_structure(self, tmp_path):
+        """DPAPI blob must be non-empty, start with mock ENC: prefix, and contain
+        actual key material. This verifies the encrypt path is called and produces
+        a real blob, not a no-op that writes empty bytes."""
+        enc, dec = _mock_dpapi()
+        with enc, dec:
+            identity = AgentIdentity.init(AGENT_NAME, data_dir=tmp_path)
+        blob = (tmp_path / AGENT_NAME / "identity.dpapi").read_bytes()
+        # Mock encrypt prepends b"ENC:" — verify the blob structure
+        assert blob.startswith(b"ENC:"), (
+            f"DPAPI blob should start with mock ENC: prefix, got: {blob[:16]!r}"
+        )
+        # After stripping the 4-byte prefix, payload should be >= 32 bytes of key material
+        payload = blob[4:]
+        assert len(payload) >= 32, (
+            f"DPAPI blob payload too short ({len(payload)} bytes); expected >= 32 bytes of key material"
+        )
+        # The public key must be 32 bytes (ed25519)
+        assert len(identity.public_key_bytes) == 32
+
 
 # ── AgentIdentity.load ────────────────────────────────────────────────────────
 

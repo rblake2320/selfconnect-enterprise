@@ -180,7 +180,11 @@ class TestRT02SignatureBypass:
         d["sig"] = ""
         b = PolicyBundle.from_dict(d)
         e = PolicyEnforcer(b, trust_root_pub=None, require_signature=True)
-        assert e.check(AGENT_A, "assign_task").allowed is False
+        result = e.check(AGENT_A, "assign_task")
+        assert result.allowed is False
+        assert "signature" in result.reason.lower(), (
+            f"Expected 'signature' in denial reason, got: {result.reason!r}"
+        )
 
     def test_sig_field_set_to_garbage_is_denied(self):
         d = _bundle().to_dict()
@@ -188,7 +192,11 @@ class TestRT02SignatureBypass:
         d["signed_by_pub"] = "ab" * 96
         b = PolicyBundle.from_dict(d)
         e = PolicyEnforcer(b, trust_root_pub=None, require_signature=True)
-        assert e.check(AGENT_A, "assign_task").allowed is False
+        result = e.check(AGENT_A, "assign_task")
+        assert result.allowed is False
+        assert "signature" in result.reason.lower(), (
+            f"Expected 'signature' in denial reason, got: {result.reason!r}"
+        )
 
     def test_wrong_public_key_denies_valid_sig(self, tmp_path):
         """Use a different key to verify → must fail.
@@ -212,7 +220,11 @@ class TestRT02SignatureBypass:
         # Verify with the WRONG key — must be denied
         e = PolicyEnforcer(b, trust_root_pub=verifier.public_key_bytes,
                            require_signature=True)
-        assert e.check(AGENT_A, "assign_task").allowed is False
+        result = e.check(AGENT_A, "assign_task")
+        assert result.allowed is False
+        assert "signature" in result.reason.lower(), (
+            f"Expected 'signature' in denial reason, got: {result.reason!r}"
+        )
 
 
 # ── RT-04: Classification spoofing ────────────────────────────────────────────
@@ -221,15 +233,27 @@ class TestRT04ClassificationSpoofing:
     def test_cannot_claim_unclassified_if_max_is_unclassified(self):
         """Agent with max_classification=UNCLASSIFIED cannot act on SECRET data."""
         e = _enforcer(max_classification="UNCLASSIFIED")
-        assert e.check(AGENT_A, "assign_task", classification="SECRET").allowed is False
+        result = e.check(AGENT_A, "assign_task", classification="SECRET")
+        assert result.allowed is False
+        assert "classification" in result.reason.lower(), (
+            f"Expected 'classification' in denial reason, got: {result.reason!r}"
+        )
 
     def test_cannot_claim_cui_above_ceiling(self):
         e = _enforcer(max_classification="UNCLASSIFIED")
-        assert e.check(AGENT_A, "assign_task", classification="CUI").allowed is False
+        result = e.check(AGENT_A, "assign_task", classification="CUI")
+        assert result.allowed is False
+        assert "classification" in result.reason.lower(), (
+            f"Expected 'classification' in denial reason, got: {result.reason!r}"
+        )
 
     def test_top_secret_blocked_by_secret_ceiling(self):
         e = _enforcer(max_classification="SECRET")
-        assert e.check(AGENT_A, "assign_task", classification="TOP_SECRET").allowed is False
+        result = e.check(AGENT_A, "assign_task", classification="TOP_SECRET")
+        assert result.allowed is False
+        assert "classification" in result.reason.lower(), (
+            f"Expected 'classification' in denial reason, got: {result.reason!r}"
+        )
 
     def test_classification_not_in_request_defaults_to_unclassified(self):
         """Omitting classification defaults to UNCLASSIFIED — always <= any ceiling."""
@@ -321,19 +345,29 @@ class TestRT07ControlPlaneBypass:
         cp = ControlPlane()
         cp.pause(AGENT_A, OP)
         e = _enforcer(cp=cp)
-        assert e.check(AGENT_A, "assign_task").allowed is False
-
+        result = e.check(AGENT_A, "assign_task")
+        assert result.allowed is False
+        assert "paused" in result.reason.lower(), (
+            f"Expected 'paused' in denial reason, got: {result.reason!r}"
+        )
     def test_quarantined_agent_cannot_act_through_enforcer(self):
         cp = ControlPlane()
         cp.quarantine(AGENT_A, OP)
         e = _enforcer(cp=cp)
-        assert e.check(AGENT_A, "assign_task").allowed is False
-
+        result = e.check(AGENT_A, "assign_task")
+        assert result.allowed is False
+        assert "quarantine" in result.reason.lower(), (
+            f"Expected 'quarantine' in denial reason, got: {result.reason!r}"
+        )
     def test_revoked_agent_cannot_act_through_enforcer(self):
         cp = ControlPlane()
         cp.revoke(AGENT_A, OP)
         e = _enforcer(cp=cp)
-        assert e.check(AGENT_A, "assign_task").allowed is False
+        result = e.check(AGENT_A, "assign_task")
+        assert result.allowed is False
+        assert "revoke" in result.reason.lower(), (
+            f"Expected 'revoke' in denial reason, got: {result.reason!r}"
+        )
 
     def test_revoked_agent_cannot_be_reinstated_via_resume(self):
         cp = ControlPlane()
