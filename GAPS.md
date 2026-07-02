@@ -54,6 +54,22 @@ Rule: if a limitation is known, it is in this file the first time it is asked ab
 
 ---
 
+## EgressGuard
+
+| # | Gap | Impact | Effort | Status |
+|---|-----|--------|--------|--------|
+| EG-1 | `EgressGuard.check_outbound()` destination is cosmetic | The enforcement decision is the global `allow_cloud_egress` boolean; the `destination` string is logged but never checked against an allowlist. With egress on, an agent can reach any host. Root cause: no per-profile destination allowlist exists. This is the exfiltration lane. Fix: add `allowed_destinations: frozenset` to `ClassifiedModeProfile` and check it in `check_outbound()`. | Half day | Open |
+
+---
+
+## Distillation
+
+| # | Gap | Impact | Effort | Status |
+|---|-----|--------|--------|--------|
+| DL-1 | `distillation/` is an empty stub | `enterprise/distillation/__init__.py` is 0 bytes. No model-extraction control exists despite distillation being part of the Mythos-class concern (model weights extraction via repeated inference). Fable's own safeguards treat this as a routed-away risk; the enterprise stack has a placeholder and no control. | Design decision required | Open |
+
+---
+
 ## Cross-cutting
 
 | # | Gap | Impact | Effort | Status |
@@ -93,6 +109,18 @@ All 19 items from the original gap registry are closed. Specific recent closures
 - Prometheus `/metrics` endpoint live with 4 counters
 - E2E tests now run automatically via `pytest_sessionstart` Ultra Server auto-start
 - Test suite: **905 passed, 0 skipped, 0 failed** (local Windows, 2026-05-27)
+
+---
+
+## What Was Closed (as of 2026-07-02)
+
+- **Gap #2 (composition attacks) closed:** `enterprise/composition_monitor.py` adds a stateful,
+  per-agent sliding-window sequence gate that runs *after* `PolicyEnforcer.check()`. It evaluates
+  whether a sequence of individually-authorized calls composes into a dangerous shape
+  (recon→access→egress, execute→egress, mutate→execute). Wired as `PolicyEnforcer(composition_monitor=...)`
+  — optional, fail-closed, non-bypassing. Covered by 12 adversarial tests in
+  `tests/test_composition_monitor.py` (12/12 pass, no mocks, real failure injection).
+- **EG-1 and DL-1 added** to this registry (surfaced during composition-monitor code audit).
 
 ---
 

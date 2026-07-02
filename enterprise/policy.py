@@ -65,6 +65,7 @@ from enterprise.labels import (
 from enterprise.labels import (
     rank as _rank,
 )
+from enterprise.composition_monitor import CompositionMonitor  # sequence gate
 
 # ── AgentPolicy ────────────────────────────────────────────────────────────────
 
@@ -259,11 +260,13 @@ class PolicyEnforcer:
         require_signature: bool = True,
         control_plane=None,
         profile: Optional[ClassifiedModeProfile] = None,
+        composition_monitor: Optional[CompositionMonitor] = None,
     ) -> None:
         self._policy          = policy
         self._trust_root_pub  = trust_root_pub
         self._control_plane   = control_plane  # Optional[ControlPlane]
         self._profile         = profile        # Optional[ClassifiedModeProfile]
+        self._composition_monitor = composition_monitor  # Optional[CompositionMonitor]
 
         # Profile is authoritative: if it demands signature verification, force
         # it on regardless of what the caller passed as require_signature.
@@ -434,6 +437,23 @@ class PolicyEnforcer:
             action in agent.requires_operator_approval
             or action in profile_approval
         )
+
+        # Step 10 — Composition gate (sequence check, runs AFTER per-call allow)
+        # The monitor can only further restrict — it never sees denied calls and
+        # cannot widen authority.  Fail-closed: any internal error -> deny.
+        if self._composition_monitor is not None:
+            verdict = self._composition_monitor.observe(agent_id, action)
+            if not verdict.allowed:
+                return PolicyDecision(
+                    allowed=False,
+                    reason=verdict.reason,
+                    approval_mode="composition_denied",
+                    policy_id=pid,
+                    classification=effective_classification,
+                    agent_id=agent_id,
+                    action=action,
+                )
+
         return _allow(
             f"action {action!r} permitted for agent {agent_id!r}",
             requires_approval=requires_approval,
