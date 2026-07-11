@@ -32,12 +32,12 @@ validated. It supplements, but does not replace, Git history or `CHANGELOG.md`.
 ```markdown
 ## LOG-<UTC-date>-<sequence> - Short title
 
-**Timestamp (UTC):** YYYY-MM-DDTHH:MM:SSZ  
-**Actor:** Name or automation identity  
-**Category:** implementation | test | audit | documentation | release | decision  
-**Base commit:** Full Git SHA  
-**Change reference:** Commit, PR, or `commit containing this entry`  
-**Why:** WHY-<UTC-date>-<sequence>  
+**Timestamp (UTC):** YYYY-MM-DDTHH:MM:SSZ
+**Actor:** Name or automation identity
+**Category:** implementation | test | audit | documentation | release | decision
+**Base commit:** Full Git SHA
+**Change reference:** Commit, PR, or `commit containing this entry`
+**Why:** WHY-<UTC-date>-<sequence>
 **Parked records:** PARK-<UTC-date>-<sequence>, or `None`
 
 **Changed:** Exact files and behavior or wording changed.
@@ -56,12 +56,12 @@ related records sufficient to reconstruct the action.
 
 ## LOG-20260710-001 - Add evidence-preserving documentation records
 
-**Timestamp (UTC):** 2026-07-10T04:43:01Z  
-**Actor:** Codex, requested by the repository owner  
-**Category:** documentation  
-**Base commit:** `cf0f2a36b05cca2acce943a036ae6b7239d1cd57`  
-**Change reference:** commit containing this entry  
-**Why:** [WHY-20260710-001](WHY.md#why-20260710-001)  
+**Timestamp (UTC):** 2026-07-10T04:43:01Z
+**Actor:** Codex, requested by the repository owner
+**Category:** documentation
+**Base commit:** `cf0f2a36b05cca2acce943a036ae6b7239d1cd57`
+**Change reference:** commit containing this entry
+**Why:** [WHY-20260710-001](WHY.md#why-20260710-001)
 **Parked records:** None
 
 **Changed:** Added `LOG.md`, `WHY.md`, and `PARKED.md`; linked the records from

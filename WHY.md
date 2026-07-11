@@ -27,11 +27,11 @@ recovery record, when material was removed or changed.
 ```markdown
 ## WHY-<UTC-date>-<sequence> - Short decision title
 
-**Status:** Accepted | Superseded | Reversed  
-**Decision date (UTC):** YYYY-MM-DDTHH:MM:SSZ  
-**Decision owner:** Person or accountable role  
-**Action log:** LOG-<UTC-date>-<sequence>  
-**Parked records:** PARK-<UTC-date>-<sequence>, or `None`  
+**Status:** Accepted | Superseded | Reversed
+**Decision date (UTC):** YYYY-MM-DDTHH:MM:SSZ
+**Decision owner:** Person or accountable role
+**Action log:** LOG-<UTC-date>-<sequence>
+**Parked records:** PARK-<UTC-date>-<sequence>, or `None`
 **Source state:** Repository, branch, and full Git SHA
 
 **Decision:** What was decided.
@@ -53,11 +53,11 @@ related records.
 
 ## WHY-20260710-001 - Use linked, restorable change records
 
-**Status:** Accepted  
-**Decision date (UTC):** 2026-07-10T04:43:01Z  
-**Decision owner:** Repository owner  
-**Action log:** [LOG-20260710-001](LOG.md#log-20260710-001)  
-**Parked records:** None  
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-10T04:43:01Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260710-001](LOG.md#log-20260710-001)
+**Parked records:** None
 **Source state:** `selfconnect-enterprise`, `origin/master`,
 `cf0f2a36b05cca2acce943a036ae6b7239d1cd57`
 

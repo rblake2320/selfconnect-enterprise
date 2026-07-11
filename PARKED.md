@@ -53,13 +53,13 @@ change that does not alter meaning.
 ```markdown
 ## PARK-<UTC-date>-<sequence> - Short description
 
-**Status:** Parked | Superseded | Restored  
-**Category:** patent evidence | security property | authorization | release | other  
-**Former location:** Repository, file, and section  
-**Source commit:** Full Git SHA  
-**Affected paths:** All files, data, interfaces, and configuration involved  
-**Action log:** LOG-<UTC-date>-<sequence>  
-**Why changed:** WHY-<UTC-date>-<sequence>  
+**Status:** Parked | Superseded | Restored
+**Category:** patent evidence | security property | authorization | release | other
+**Former location:** Repository, file, and section
+**Source commit:** Full Git SHA
+**Affected paths:** All files, data, interfaces, and configuration involved
+**Action log:** LOG-<UTC-date>-<sequence>
+**Why changed:** WHY-<UTC-date>-<sequence>
 **Parked by:** Change commit or PR
 
 **Former wording:**
