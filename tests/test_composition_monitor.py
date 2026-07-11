@@ -1,12 +1,12 @@
 """Adversarial tests — no mocks, real failure injection, non-happy-path."""
-import time
-from enterprise.composition_monitor import (
-    CompositionMonitor, CompositionSignature, DEFAULT_EFFECT_MAP,
-)
+
+from enterprise.composition_monitor import CompositionMonitor
 
 
 class RecordingLedger:
-    def __init__(self): self.entries = []
+    def __init__(self):
+        self.entries = []
+
     def log(self, event, result=None, metadata=None):
         self.entries.append((event, result, metadata))
 
@@ -82,16 +82,20 @@ def test_fail_closed_on_internal_error():
 def test_ledger_records_denials():
     led = RecordingLedger()
     m = CompositionMonitor(ledger=led)
-    m.observe("A", "read_text"); m.observe("A", "read_file")
+    m.observe("A", "read_text")
+    m.observe("A", "read_file")
     m.observe("A", "http_request")
     assert any(e[0] == "composition_check" and e[1] == "denied" for e in led.entries)
 
 
 def test_ledger_failure_does_not_flip_deny_to_allow():
     class BrokenLedger:
-        def log(self, *a, **k): raise RuntimeError("ledger down")
+        def log(self, *a, **k):
+            raise RuntimeError("ledger down")
+
     m = CompositionMonitor(ledger=BrokenLedger())
-    m.observe("A", "read_text"); m.observe("A", "read_file")
+    m.observe("A", "read_text")
+    m.observe("A", "read_file")
     v = m.observe("A", "http_request")
     assert not v.allowed  # deny survives ledger failure
 
@@ -133,7 +137,7 @@ def test_default_elevated_rate_is_8():
     # 8 elevated calls must be allowed
     for _ in range(8):
         r = m.observe("A", "write_file")
-        assert r.allowed, f"Expected call within default limit to be allowed"
+        assert r.allowed, "Expected call within default limit to be allowed"
     # 9th call must be denied
     over = m.observe("A", "write_file")
     assert not over.allowed and over.signature == "elevated_velocity", (
@@ -142,13 +146,18 @@ def test_default_elevated_rate_is_8():
 
 
 if __name__ == "__main__":
-    import sys, traceback
+    import sys
+    import traceback
+
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0
     for fn in fns:
         try:
-            fn(); passed += 1; print(f"PASS {fn.__name__}")
+            fn()
+            passed += 1
+            print(f"PASS {fn.__name__}")
         except Exception:
-            print(f"FAIL {fn.__name__}"); traceback.print_exc()
+            print(f"FAIL {fn.__name__}")
+            traceback.print_exc()
     print(f"\n{passed}/{len(fns)} passed")
     sys.exit(0 if passed == len(fns) else 1)
