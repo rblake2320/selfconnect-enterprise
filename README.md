@@ -203,6 +203,9 @@ listed in [SECURITY.md](SECURITY.md) has a named test that proves it.
 | [`docs/compliance/gap-analysis.md`](docs/compliance/gap-analysis.md) | POA&M: 7 gaps identified, G-2/G-3/G-5/G-7/G-8 closed, G-1/G-4/G-6 scheduled for v1.3.0 |
 | [`SECURITY.md`](SECURITY.md) | Guarantees, explicit non-guarantees, test citations |
 | [`CHANGELOG.md`](CHANGELOG.md) | Per-version security deliverables and gap status |
+| [`LOG.md`](LOG.md) | Chronological, commit-specific work and validation evidence |
+| [`WHY.md`](WHY.md) | Decision rationale, alternatives, consequences, and rollback triggers |
+| [`PARKED.md`](PARKED.md) | Restorable prior wording, code, configuration, and behavior |
 
 ### Key invariants (each proved by a named test)
 

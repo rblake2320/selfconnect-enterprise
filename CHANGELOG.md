@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Documentation governance
+
+- Added the chronological [LOG.md](LOG.md) for commit-specific work, audit,
+  validation, and decision records.
+- Added [WHY.md](WHY.md) for decision rationale, alternatives, consequences, and
+  rollback conditions.
+- Added the append-only [PARKED.md](PARKED.md) register for wording that is
+  removed, superseded, or materially narrowed, plus code and configuration that
+  may need to be restored.
+- Added structural tests that require unique record IDs and prevent changelog
+  references from pointing to nonexistent parked records.
+- Evidence: [LOG-20260710-001](LOG.md#log-20260710-001).
+- Rationale: [WHY-20260710-001](WHY.md#why-20260710-001).
+- Parked records: None. This is an additive documentation change.
+
+Future changelog entries that remove or materially change behavior,
+configuration, or a statement must cite the corresponding recovery record using
+its stable `PARK-<date>-<sequence>` ID.
+
+---
+
 ## v1.2.3 — Protocol Checksum Correctness (2026-05-22)
 
 Patch release fixing a stale checksum-length assumption in local verification.
