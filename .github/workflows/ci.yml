@@ -56,10 +56,11 @@ jobs:
           skipped_m = re.search(r'(\d+) skipped', output)
           skipped = int(skipped_m.group(1)) if skipped_m else 0
 
-          # 21 skips: test_e2e_ultra_gate.py — require a live Ultra Server process
+          # 28 skips: test_e2e_ultra_gate.py — require a live Ultra Server process
+          # 1 skip:  test_identity_gate.py — requires the same live Ultra Server
           # 1 skip:  test_selfconnect_declared_deps_match_installed — sdk/ submodule
           #          not checked out in CI (private repo, --no-deps install)
-          WIN32_SESSION_SKIPS = 22  # 21 Ultra Server E2E + 1 SDK submodule
+          WIN32_SESSION_SKIPS = 30
 
           print(f"Results: {passed} passed, {failed} failed, {skipped} skipped")
 
@@ -69,11 +70,11 @@ jobs:
 
           unexpected_skips = skipped - WIN32_SESSION_SKIPS
           if unexpected_skips > 0:
-              print(f"FAIL: {unexpected_skips} unexpected skip(s) beyond the {WIN32_SESSION_SKIPS} known Win32-session skips")
+              print(f"FAIL: {unexpected_skips} unexpected skip(s) beyond the {WIN32_SESSION_SKIPS} known CI-environment skips")
               sys.exit(1)
 
           if passed < 880:
               print(f"FAIL: only {passed} tests passed (expected >= 880)")
               sys.exit(1)
 
-          print(f"OK: {passed} passed, {failed} failed, {skipped} skipped ({WIN32_SESSION_SKIPS} are expected Win32-session skips)")
+          print(f"OK: {passed} passed, {failed} failed, {skipped} skipped ({WIN32_SESSION_SKIPS} are expected CI-environment skips)")
