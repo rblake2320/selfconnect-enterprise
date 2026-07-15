@@ -51,7 +51,7 @@ _WIN32_AVAILABLE = sys.platform == "win32"
 if _WIN32_AVAILABLE:
     import ctypes
 
-    # Re-use the proven DLL handles from tpm_identity so we don't open the
+    # Re-use the exercised DLL handles from tpm_identity so we don't open the
     # same DLL twice in the same process.  If that module is not importable
     # (e.g. the experiments tree is not on sys.path) we fall back to opening
     # ncrypt.dll ourselves.

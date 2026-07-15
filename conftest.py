@@ -28,7 +28,9 @@ _ULTRA_SERVER_DIR = pathlib.Path(__file__).parent / "ultra_server"
 
 def _server_reachable(timeout: float = 1.0) -> bool:
     try:
-        urllib.request.urlopen(f"{_ULTRA_SERVER_URL}/status", timeout=timeout)
+        # /status is operator-authenticated. /health is the intentionally public
+        # liveness endpoint and is the only valid readiness probe here.
+        urllib.request.urlopen(f"{_ULTRA_SERVER_URL}/health", timeout=timeout)
         return True
     except Exception:
         return False

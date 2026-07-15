@@ -8,7 +8,7 @@ guarantee or an authorization determination.
 
 ---
 
-## What This System Guarantees
+## Narrowly Tested Component Properties
 
 ### 1. Classification Ceiling Enforcement
 
@@ -18,7 +18,7 @@ is evaluated on every entry before `EvidenceRecord` construction, and there is
 no code path from a TOP_SECRET entry to `EvidenceExporter` when the ceiling is
 set to SECRET or below.
 
-**Proven by:** `test_observer_never_passes_above_max_classification`
+**Tested by:** `test_observer_never_passes_above_max_classification`
 (`tests/test_enterprise/test_labels.py`, v0.8.0+)
 
 **Additional coverage:** RT-04, RT-15 (classification ceiling matrix,
@@ -50,7 +50,7 @@ modules remain callable and must not be described as globally intercepted.
 9. Classification ceiling not exceeded
 10. Caveat validation and composition constraint (when configured)
 
-**Proven by:** `tests/test_enterprise/test_policy.py` (deny-by-default suite),
+**Tested by:** `tests/test_enterprise/test_policy.py` (deny-by-default suite),
 RT-01 through RT-08 (`tests/test_enterprise/test_redteam.py`)
 
 ---
@@ -65,7 +65,7 @@ the enforcer will deny every action rather than operate on an unverified policy.
 
 **Test coverage:** `enterprise/policy_sign.py` at 100% line coverage.
 
-**Proven by:** RT-02 (signature bypass attempts),
+**Tested by:** RT-02 (signature bypass attempts),
 `test_enforcer_rejects_missing_sig` (`tests/test_enterprise/test_policy.py`)
 
 ---
@@ -78,10 +78,10 @@ for pause/resume: `active → paused → quarantined → revoked`. There is no
 transition from `revoked` or `quarantined` back to `active`. State transitions
 are logged when a ledger is configured; `GovernedRuntime` always supplies one.
 
-**Proven by:** `TestKillAll`, `TestEnforcerControlGate`
+**Tested by:** `TestKillAll`, `TestEnforcerControlGate`
 (`tests/test_enterprise/test_control.py`)
 
-**Concurrent safety proven by:**
+**Concurrent case tested by:**
 `test_concurrent_double_revoke_exactly_one_succeeds` (RT-09,
 `tests/test_enterprise/test_redteam.py`)
 
@@ -105,7 +105,7 @@ When `ClassifiedModeProfile.allow_cloud_egress=False`, outbound calls routed
 through `EgressGuard` are denied and logged to the ledger. Direct sockets and
 unwrapped libraries are outside this property and require OS/network controls.
 
-**Proven by:** `TestEgressGuard` (`tests/test_enterprise/test_classified_mode.py`)
+**Tested by:** `TestEgressGuard` (`tests/test_enterprise/test_classified_mode.py`)
 
 ---
 
@@ -119,7 +119,7 @@ unwrapped libraries are outside this property and require OS/network controls.
 Denial is always logged. No evidence record reaches `EvidenceExporter` without
 an explicit `True` from `can_export()` or `check_and_log()`.
 
-**Proven by:** `TestExportGuard` (`tests/test_enterprise/test_classified_mode.py`)
+**Tested by:** `TestExportGuard` (`tests/test_enterprise/test_classified_mode.py`)
 
 ---
 
@@ -131,7 +131,7 @@ denial at Step 0.5. CNG (NCrypt ECDSA P-384) identity is required; DPAPI
 (Python ed25519) is rejected. When `require_cng_identity=False`, both identity
 types are accepted.
 
-**Proven by:** `test_profile_dpapi_rejected_when_cng_required`,
+**Tested by:** `test_profile_dpapi_rejected_when_cng_required`,
 `test_profile_cng_identity_accepted`
 (`tests/test_enterprise/test_classified_mode.py`)
 
@@ -150,7 +150,12 @@ detectable. Tail truncation and complete-file deletion require a trusted
 external checkpoint or WORM/off-host copy; a local chain alone cannot detect
 that its final entries or entire file disappeared.
 
-**Proven by:** RT-11 (CNG ledger tamper detection, hash chain forgery),
+`AgentLedger` can seal verified local segments at entry or byte thresholds.
+Verification treats all sealed segments plus the active file as one monotonic
+sequence and refuses startup or rotation on corruption. Segmentation controls
+local file growth; it does not close the external-checkpoint limitation.
+
+**Tested by:** RT-11 (CNG ledger tamper detection, hash chain forgery),
 RT-12 (hash chain insertion) (`tests/test_enterprise/test_redteam.py`)
 
 ---
@@ -162,7 +167,7 @@ RT-12 (hash chain insertion) (`tests/test_enterprise/test_redteam.py`)
 `PolicyEnforcer.check()`, the action is denied at Step 8b with the invalid
 caveats listed in the reason string.
 
-**Proven by:** `test_check_label_invalid_caveats_denied`
+**Tested by:** `test_check_label_invalid_caveats_denied`
 (`tests/test_enterprise/test_labels.py`)
 
 ---
@@ -198,12 +203,26 @@ replacement key proof.
 Production mode refuses memory fallback. PostgreSQL persists pair, complete
 tumbler, identity-binding, and idempotency state; Redis persists replay and
 anomaly state. The store preserves monotonic HOTP counters even when upstream
-lifecycle metadata is written from an earlier read. The restart probe requires
-a HOTP-bearing map and verifies the same agent, pair, TSK client, and new request
-after process restart.
+lifecycle metadata is written from an earlier read. Lifecycle crash recovery
+is operation-specific and serialized with PostgreSQL advisory locks. It
+reconstructs a response only from the exact owned durable resource and fails
+closed on ambiguous duplicates; it is not a generic retry lease. The restart
+probe requires a HOTP-bearing map and verifies the same agent, pair, TSK client,
+and new request after process restart.
+
+Ultra also applies independent source-IP and pair rate limits. A BPC shadow or
+ghost result is converted to a hard denial before the TSK bridge so deceptive
+shadow behavior cannot authorize an action. Recovery tokens are versioned and
+bind the agent, replacement key, recovery challenge, issuance time, and key ID.
+Production may accept one distinct previous operator/recovery secret during a
+bounded rotation. TSK client rotation uses prepare, compare-and-swap commit,
+old-key revocation, and owner-authenticated resume; local client state changes
+only after commit.
 
 **Narrowly established by:** `ultra_server/agent-auth.test.mjs`,
+`ultra_server/recovery-token.test.mjs`,
 `ultra_server/runtime-stores.test.mjs`, `ultra_server/server.test.mjs`,
+`ultra_server/security-boundary.test.mjs`,
 `tests/test_e2e_ultra_gate.py`, and
 `tools/ultra_restart_conformance.py` against live services.
 
@@ -249,9 +268,9 @@ keys in the user's key container. If the host environment is compromised,
 the keys are compromised. HSM-backed key storage is not implemented.
 
 Ultra production mode checks that independent operator and recovery secrets are
-configured and at least 32 bytes. It does not provide the deployment's secret
-manager, service-account isolation, rotation ceremony, or emergency custody
-approvals.
+configured and at least 32 bytes, and code/runbooks support bounded rolling
+rotation. It does not provide the deployment's secret manager, service-account
+isolation, personnel separation, or emergency custody approvals.
 
 **Ledger write access is not restricted.** The system does not protect against
 a malicious process with write access to the JSONL ledger file. Tampering is

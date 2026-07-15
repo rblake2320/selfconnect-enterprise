@@ -179,7 +179,8 @@ class RecoveryManager:
         The server verifies the new public key is signed by the new private key
         (proof of possession) and returns a signed confirmation token.
 
-        Returns the token dict: { agent_name, new_pub_hex, issued_at, sig }
+        Returns a versioned token binding the agent identity, new public key,
+        recovery challenge, issuance time, and recovery-signing key ID.
         """
         from enterprise.lifecycle_auth import lifecycle_auth_headers
 
@@ -349,6 +350,10 @@ def _verify_server_token(
             return False
         if token.get("newPubHex") != new_pub_hex:
             _log.warning("_verify_server_token: newPubHex mismatch for '%s'", agent_name)
+            return False
+        challenge_hash = token.get("challengeHash")
+        if not isinstance(challenge_hash, str) or len(challenge_hash) != 64:
+            _log.warning("_verify_server_token: invalid challengeHash for '%s'", agent_name)
             return False
         expected_agent_id = "SC-" + hashlib.sha256(bytes.fromhex(new_pub_hex)).hexdigest()[:8].upper()
         if token.get("agentId") != expected_agent_id:

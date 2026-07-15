@@ -5,11 +5,50 @@ import test from 'node:test';
 import { Pool } from 'pg';
 
 import {
+  MemoryIdempotencyStore,
+  MemoryIdentityBindingStore,
   PgIdempotencyStore,
   PgIdentityBindingStore,
   PgTumblerStore,
   ULTRA_PG_SCHEMA,
 } from './runtime-stores.js';
+
+test('memory idempotency completion and operation locks are retry safe', async () => {
+  const store = new MemoryIdempotencyStore();
+  const key = randomUUID();
+  assert.deepEqual(await store.claim(key, 'operation', 'agent'), { kind: 'claimed' });
+  await store.complete(key, { ok: true, nested: { a: 1, b: 2 } });
+  await store.complete(key, { nested: { b: 2, a: 1 }, ok: true });
+  await assert.rejects(store.complete(key, { ok: false }), /response conflict/);
+
+  let active = 0;
+  let maximum = 0;
+  const enter = async () => store.withLock('same-resource', async () => {
+    active += 1;
+    maximum = Math.max(maximum, active);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    active -= 1;
+  });
+  await Promise.all([enter(), enter(), enter()]);
+  assert.equal(maximum, 1);
+});
+
+test('memory identity binding compare-and-swap is idempotent and conflict aware', async () => {
+  const store = new MemoryIdentityBindingStore();
+  await store.set('pair-1', { tskClientId: 'old', agentId: 'agent-1' });
+  assert.equal(await store.compareAndSwap(
+    'pair-1', 'old', { tskClientId: 'new', agentId: 'agent-1' },
+  ), 'updated');
+  assert.equal(await store.compareAndSwap(
+    'pair-1', 'old', { tskClientId: 'new', agentId: 'agent-1' },
+  ), 'already');
+  assert.equal(await store.compareAndSwap(
+    'pair-1', 'other', { tskClientId: 'wrong', agentId: 'agent-1' },
+  ), 'conflict');
+  assert.equal(await store.compareAndSwap(
+    'missing', 'old', { tskClientId: 'new', agentId: 'agent-1' },
+  ), 'missing');
+});
 
 const connectionString = process.env.DATABASE_URL;
 
@@ -23,6 +62,7 @@ test('PostgreSQL stores preserve monotonic counters and atomic idempotency', {
   const bindings = new PgIdentityBindingStore(pool);
   const suffix = randomUUID();
   const clientId = `tsk_test_${suffix}`;
+  const rotatedClientId = `tsk_rotated_${suffix}`;
   const pairId = `pair_test_${suffix}`;
   const idemKey = randomUUID();
   const map = {
@@ -63,11 +103,28 @@ test('PostgreSQL stores preserve monotonic counters and atomic idempotency', {
       idempotency.claim(idemKey, 'test-operation', 'SC-12345678'),
     ]);
     assert.deepEqual(claims.map((claim) => claim.kind).sort(), ['claimed', 'processing']);
-    await idempotency.complete(idemKey, { clientId });
+    await idempotency.complete(idemKey, { clientId, ok: true });
+    await idempotency.complete(idemKey, { ok: true, clientId });
+    await assert.rejects(
+      idempotency.complete(idemKey, { clientId: 'different' }),
+      /response conflict/,
+    );
     assert.deepEqual(
       await idempotency.claim(idemKey, 'test-operation', 'SC-12345678'),
-      { kind: 'complete', response: { clientId } },
+      { kind: 'complete', response: { ok: true, clientId } },
     );
+
+    let active = 0;
+    let maximum = 0;
+    const lockKey = `test-lock:${suffix}`;
+    const enter = async () => idempotency.withLock(lockKey, async () => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      active -= 1;
+    });
+    await Promise.all([enter(), enter(), enter()]);
+    assert.equal(maximum, 1);
 
     await bindings.set(pairId, { tskClientId: clientId, agentId: 'SC-12345678' });
     const secondBindingInstance = new PgIdentityBindingStore(pool);
@@ -75,6 +132,21 @@ test('PostgreSQL stores preserve monotonic counters and atomic idempotency', {
       await secondBindingInstance.get(pairId),
       { tskClientId: clientId, agentId: 'SC-12345678' },
     );
+    assert.equal(await bindings.compareAndSwap(
+      pairId,
+      clientId,
+      { tskClientId: rotatedClientId, agentId: 'SC-12345678' },
+    ), 'updated');
+    assert.equal(await secondBindingInstance.compareAndSwap(
+      pairId,
+      clientId,
+      { tskClientId: rotatedClientId, agentId: 'SC-12345678' },
+    ), 'already');
+    assert.equal(await bindings.compareAndSwap(
+      pairId,
+      clientId,
+      { tskClientId: 'wrong', agentId: 'SC-12345678' },
+    ), 'conflict');
   } finally {
     await pool.query('DELETE FROM ultra_identity_bindings WHERE pair_id=$1', [pairId]);
     await pool.query('DELETE FROM ultra_idempotency WHERE idempotency_key=$1', [idemKey]);

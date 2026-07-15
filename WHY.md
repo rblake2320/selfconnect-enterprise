@@ -51,6 +51,86 @@ related records.
 
 ## Register
 
+## WHY-20260715-006 - Prefer bounded rotation and explicit lifecycle boundaries over inferred readiness
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-15T07:07:32Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260715-006](LOG.md#log-20260715-006)
+**Parked records:** [PARK-20260715-008](PARKED.md#park-20260715-008),
+[PARK-20260715-009](PARKED.md#park-20260715-009), and
+[PARK-20260715-010](PARKED.md#park-20260715-010), and
+[PARK-20260715-011](PARKED.md#park-20260715-011), and
+[PARK-20260715-012](PARKED.md#park-20260715-012), and
+[PARK-20260715-013](PARKED.md#park-20260715-013), and
+[PARK-20260715-014](PARKED.md#park-20260715-014), and
+[PARK-20260715-015](PARKED.md#park-20260715-015)
+**Source state:** `selfconnect-enterprise`,
+`hardening/partner-rollout-readiness-20260715`,
+`b0c9fa80a1b327c80bbb1b14b81c8cf7504ac72f`
+
+**Decision:** Add fail-closed abuse composition, bounded current/previous secret
+rotation, challenge-bound recovery tokens, two-phase TSK rotation with resume,
+and verified local ledger segmentation. Keep deployment custody, actual backup
+restore, external witnessing, and authorization as non-executable descriptions.
+Remove surfaces that only imply a control or stronger test evidence.
+Require the IRS action record kind to determine retention rather than applying
+the prompt-log schedule to unrelated test or incident evidence.
+Treat algorithm and backend identity as evidence fields, not validation claims;
+require the stored public key and backend marker to match the loaded signer.
+Treat deployable package contents as a security boundary: keep Ultra private
+while source-relative dependencies remain and package only an explicit runtime
+allowlist.
+Recover lifecycle requests with operation-specific durable reconciliation under
+a per-resource lock; never infer that an unknown side effect is safe to replay.
+Describe named tests as tests of their stated propositions, not proof of a
+broader system guarantee.
+Use the installed VCS commit as dependency identity and report package version
+as separate metadata; do not infer source provenance from a release label.
+
+**Why:** A control must survive process restart and failure boundaries, not
+only a happy-path call. Shadow-mode deception was useful for observation but
+unsafe as an authorization result. Replacing credentials in one step risks
+outages; accepting unlimited old credentials defeats rotation. TSK local state
+must not advance before the server binding commits. Ledger rotation must retain
+one signed sequence and fail closed on corruption. None of these code properties
+can create personnel custody, provider retention, or an external authorization.
+
+**Alternatives considered:** Immediate key replacement without overlap was
+rejected as the normal procedure because it creates avoidable outages; unlimited
+keyrings were rejected because retired credentials would remain valid. Automatic
+TSK renewal at exhaustion was deferred until approval and abandoned-candidate
+policy are defined. A generic timeout takeover for `processing` idempotency rows
+was rejected because replay after an unknown side effect could duplicate pair or
+TSK creation. A new graph, service, or distillation package was rejected because
+no scoped enforcement requirement justified it.
+Relying on a parent `.gitignore` to define an npm artifact was rejected because
+the package root did not apply that exclusion and the dry-run proved local state
+would ship.
+
+**Consequences:** Operators can rotate without exposing secret values in
+evidence and can retire the previous generation deterministically. TSK rotation
+and service restart are recoverable under the tested composition. Local ledger
+files are bounded and verifiable across segments. More live tests require real
+PostgreSQL, Redis, and process restarts, while external restore/custody checks
+remain manual deployment evidence. Idempotency recovery is operation-specific:
+durable advisory locks serialize ownership, exact resources reconstruct lost
+responses, absent resources may execute once under the lock, and ambiguous
+state fails closed rather than applying a generic timeout retry.
+
+**Rollback conditions:** Roll back a rotation interface only if a replacement
+preserves challenge binding, owner proof, bounded verification overlap,
+compare-and-swap binding, old-key revocation, lost-response retry safety, and
+restart recovery. Roll back ledger segmentation only if the replacement retains
+fsync durability, cross-segment sequence/signature verification, corrupt-resume
+refusal, and a tested migration procedure. Never restore deceptive shadow
+success as permission or restore blanket evidence wording.
+
+**Evidence and links:** [LOG-20260715-006](LOG.md#log-20260715-006),
+`ultra_server/*.test.mjs`, `tests/test_e2e_ultra_gate.py`,
+`tests/test_enterprise/test_ledger.py`, the two Ultra operational runbooks,
+`docs/assurance/control_catalog.json`, and the linked PARK records.
+
 ## WHY-20260715-005 - Treat enqueue, delivery, and execution as separate propositions
 
 **Status:** Accepted

@@ -1,7 +1,7 @@
 # Gap Analysis — Open Security Items
 ## SelfConnect Enterprise v1.2.3
 
-**Date:** 2026-07-14
+**Date:** 2026-07-15
 **Prepared against:** NIST SP 800-53 Rev 5 Moderate Baseline  
 **Status:** Self-assessment in progress. `GAPS.md` is the canonical cross-component registry.
 
@@ -116,7 +116,10 @@ audit review role). Physical modification is an insider threat scenario.
 **Remediation implemented:** S3 Object Lock and R2 bucket-lock adapters verify
 provider retention configuration and per-object retention readback. Local file
 replication is explicitly a replica, not WORM, and government mode rejects it
-as the immutable sink.
+as the immutable sink. `AgentLedger` additionally fsyncs appends, seals verified
+local segments at configurable entry/byte limits, verifies archives plus the
+active file as one sequence, and refuses corrupt startup. Segmentation controls
+file lifecycle but cannot witness removal of the final tail or all files.
 
 **Remaining deployment proof:** Select an independently controlled provider,
 configure credentials and retention/legal-hold policy, run a live write/readback,
@@ -136,6 +139,10 @@ provisioning (`init()`) and used indefinitely. There is no key rotation
 workflow, no key expiry, no certificate-based lifecycle management. Revocation
 via `ControlPlane.revoke()` terminates the agent's ability to act but does not
 rotate the underlying cryptographic key.
+
+Ultra's operator/recovery secrets and TSK client keys now have separate tested
+rotation procedures. That closes the sidecar-key portion only; it does not
+rotate the `CngIdentity` or `AgentIdentity` signing key described by this gap.
 
 **Why it exists:**  
 Key lifecycle management (rotation schedules, expiry enforcement, OCSP/CRL
@@ -268,7 +275,7 @@ affected, pending qualified assessor review.
 | G-15 | TPM/CNG capability probes and software identities do not establish mandatory TPM attestation on every governed frame or remote attestation. | IA-3, SC-17 | Medium | Open |
 | G-16 | Core SelfConnect raw-send, cross-machine relay, and other repositories are separate boundaries. Enterprise composition does not globally intercept them. | AC-3, SC-8 | Medium | Open cross-repository conformance |
 | G-17 | No completed STIG/SRG assessment, inheritance matrix, configuration baseline, POA&M approval, continuous-monitoring plan, incident evidence, or independent assessment exists. | CA-2, CA-7, CM-2, IR-1 | Blocker | Open |
-| G-18 | Ultra lifecycle authentication and durability were inconsistent across Python and Node. Signed body-bound agent proofs, operator-authorized production enrollment, dual-control recovery, PostgreSQL/Redis stores, and mandatory live CI now cover the composition. | IA-3, IA-5, AU-9 | High | **Closed in code and live local test 2026-07-15; CI publication pending** |
+| G-18 | Ultra lifecycle authentication and durability were inconsistent across Python and Node. Signed body-bound agent proofs, operator-authorized production enrollment, dual-control recovery, PostgreSQL/Redis stores, source-IP/pair rate limits, fail-closed shadow handling, bounded secret overlap/retirement, and restart-safe TSK rotation now cover the tested composition. Deployment custody remains G-20/US-7. | IA-3, IA-5, AU-9 | High | **Closed in code and live local test 2026-07-15; CI publication pending** |
 | G-19 | No external workflow adapter has completed a live approved-tenant test with a versioned callback contract, rollback evidence, and integrator acceptance. | SA-9, CA-3, AC-20 | High | Open |
 | G-20 | No live off-host immutable evidence deployment, independent custody decision, retention/legal-hold policy, or restore drill has been completed for the proposed partner boundary. | AU-9, CP-9, CP-10 | Blocker | Open |
 

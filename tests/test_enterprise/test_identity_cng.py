@@ -1,6 +1,7 @@
 """tests/test_enterprise/test_identity_cng.py — Integration tests for CngIdentity and CngLedger
 
-Tests call real Windows CNG (NCrypt software KSP) — no mocking needed.
+On Windows without the portable override, tests call the NCrypt software KSP.
+Other environments exercise the explicitly identified portable test backend.
 Keys are created with unique names and deleted in teardown.
 """
 from __future__ import annotations
@@ -9,7 +10,7 @@ import json
 import uuid
 
 import pytest
-from enterprise.crypto import CNG_BACKEND_AVAILABLE
+from enterprise.crypto import CNG_BACKEND_AVAILABLE, CRYPTO_BACKEND_ID
 
 from enterprise.crypto import ALGO_ID, P384_SIG_BYTES, SHA384_BYTES, cng_delete_key, cng_sha384
 from enterprise.identity_cng import GENESIS_HASH_CNG, CngIdentity, CngLedger
@@ -62,6 +63,12 @@ class TestInit:
             algo_path = tmp_path / agent_name / "identity_cng.algo"
             assert algo_path.exists()
             assert algo_path.read_text() == ALGO_ID
+
+    def test_creates_backend_file(self, tmp_path, agent_name):
+        with CngIdentity.init(agent_name, data_dir=tmp_path) as identity:
+            backend_path = tmp_path / agent_name / "identity_cng.backend"
+            assert backend_path.read_text() == CRYPTO_BACKEND_ID
+            assert identity.backend_id == CRYPTO_BACKEND_ID
 
     def test_agent_id_format(self, identity):
         assert identity.agent_id.startswith("SC-")
@@ -127,6 +134,18 @@ class TestLoad:
             # id1 pubkey and id2 pubkey are the same key
             assert id2.public_key_bytes == pub
 
+    def test_load_rejects_public_file_that_does_not_match_key(self, tmp_path, agent_name):
+        CngIdentity.init(agent_name, data_dir=tmp_path).close()
+        (tmp_path / agent_name / "identity_cng.pub").write_text("00" * 96)
+        with pytest.raises(OSError, match="does not match"):
+            CngIdentity.load(agent_name, data_dir=tmp_path)
+
+    def test_load_rejects_backend_mismatch(self, tmp_path, agent_name):
+        CngIdentity.init(agent_name, data_dir=tmp_path).close()
+        (tmp_path / agent_name / "identity_cng.backend").write_text("other-backend")
+        with pytest.raises(OSError, match="backend does not match"):
+            CngIdentity.load(agent_name, data_dir=tmp_path)
+
 
 # ── CngIdentity.exists ─────────────────────────────────────────────────────────
 
@@ -186,12 +205,16 @@ class TestCngLedgerLog:
 
     def test_entry_has_required_fields(self, ledger):
         entry = ledger.log("action", result="done")
-        for field in ("seq", "agent_id", "algo", "action", "result", "ts", "prev_hash", "sig"):
+        for field in (
+            "seq", "agent_id", "algo", "crypto_backend", "action", "result",
+            "ts", "prev_hash", "sig",
+        ):
             assert field in entry, f"missing field: {field}"
 
     def test_algo_field_is_correct(self, ledger):
         entry = ledger.log("action")
         assert entry["algo"] == ALGO_ID
+        assert entry["crypto_backend"] == CRYPTO_BACKEND_ID
 
     def test_seq_increments(self, ledger):
         e1 = ledger.log("first")
@@ -231,7 +254,13 @@ class TestCngLedgerLog:
         entry = ledger.log("act", metadata={"target_hwnd": 0xABC})
         assert entry["target_hwnd"] == 0xABC
 
-    @pytest.mark.parametrize("field", ["seq", "agent_id", "action", "result", "ts", "prev_hash", "sig", "algo"])
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "seq", "agent_id", "action", "result", "ts", "prev_hash", "sig",
+            "algo", "crypto_backend",
+        ],
+    )
     def test_reserved_metadata_cannot_overwrite_signed_core(self, ledger, field):
         with pytest.raises(ValueError, match="reserved ledger fields"):
             ledger.log("act", metadata={field: "attacker-controlled"})

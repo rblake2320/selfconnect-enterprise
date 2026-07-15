@@ -54,6 +54,95 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260715-006 - Add bounded rotation, fail-closed abuse handling, and ledger lifecycle
+
+**Timestamp (UTC):** 2026-07-15T07:07:32Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, security fix, durability, test, documentation
+**Base commit:** `b0c9fa80a1b327c80bbb1b14b81c8cf7504ac72f`
+**Change reference:** commit containing this entry
+**Why:** [WHY-20260715-006](WHY.md#why-20260715-006)
+**Parked records:** [PARK-20260715-008](PARKED.md#park-20260715-008),
+[PARK-20260715-009](PARKED.md#park-20260715-009), and
+[PARK-20260715-010](PARKED.md#park-20260715-010), and
+[PARK-20260715-011](PARKED.md#park-20260715-011), and
+[PARK-20260715-012](PARKED.md#park-20260715-012), and
+[PARK-20260715-013](PARKED.md#park-20260715-013), and
+[PARK-20260715-014](PARKED.md#park-20260715-014), and
+[PARK-20260715-015](PARKED.md#park-20260715-015)
+
+**Changed:** Ultra now has independent source-IP/pair rate limits, converts BPC
+shadow or ghost success into hard denial, rotates operator and recovery secrets
+through one bounded previous generation, binds versioned recovery tokens to the
+recovery challenge, and rotates TSK clients through retry-safe prepare/commit/
+resume operations. AgentLedger now fsyncs appends, seals verified segments at
+entry/byte thresholds, verifies one sequence across segments, and refuses
+corrupt resume. Added rotation and disaster-recovery runbooks, removed an empty
+distillation placeholder, and narrowed the test registry's blanket evidence
+wording. IRS action evidence now requires an explicit record kind and derives
+the IRM retention class instead of defaulting every action to prompt-log
+retention.
+Corrected unconditional FIPS/CNSA wording, bound stored CNG public identity to
+the loaded key, recorded the active cryptographic backend in identity metadata
+and signed ledger entries, and rejected backend mismatches.
+The Ultra package is private while its protocol dependencies remain source-
+relative and now uses an executable runtime-only package allowlist; local logs,
+restart state, tests, and key-like files are excluded from the npm artifact.
+Lifecycle mutations now recover stranded `processing` records under per-
+resource locks by reconciling the exact durable pair, key, candidate, or
+binding, while ambiguous state fails closed.
+Security property headings now say `Tested by` and name the exact proposition;
+blanket `guarantees` and `proven` labels were parked.
+Release conformance now verifies the installed SelfConnect `direct_url.json`
+commit against the declared full Git pin and reports version metadata without
+using it as source identity.
+
+**Reason:** Live composition review found that BPC shadow mode could cross the
+bridge as deceptive `ok=true`, lifecycle secrets had no exercised overlap/
+retirement path, recovery tokens did not bind the challenge, TSK replacement
+was not restart-safe, and the governed action ledger had no file lifecycle.
+The empty package and blanket test wording also implied controls or evidence
+that did not exist. Release packing exposed ignored local runtime state, and
+idempotency had no recovery after a crash between durable side effect and
+response persistence.
+
+**Full actions and links:** `ultra_server/server.js`, `agent-auth.js`,
+`recovery-token.js`, `security-boundary.js`, `runtime-stores.js`,
+`enterprise/ultra_gate.py`, `enterprise/ledger.py`,
+`tools/ultra_rotation_conformance.mjs`,
+`tools/ultra_restart_conformance.py`, `.github/workflows/ci.yml`,
+`docs/operations/ULTRA_KEY_ROTATION.md`,
+`docs/operations/ULTRA_DISASTER_RECOVERY.md`, the executable control catalog,
+`GAPS.md`, `SECURITY.md`, and the linked WHY/PARK records.
+
+**Validation:** The complete isolated Python suite passed 1,429 tests with zero
+skips and two expected warnings about deliberately absent immutable sinks. A
+production-mode drill using real local PostgreSQL 17.5 and Redis 7.4.5 passed
+16/16 Node store/auth/package tests, 39/39 live Node contract checks, 84/84
+Python live tests, TSK rotation, process stop/restart, and same-identity/HOTP
+continuation. The live contract deliberately rewound completed pair, TSK,
+binding, and rotation idempotency rows to `processing`; operation-specific
+reconciliation restored every response without duplicate resources.
+The same contract then made the initial key inactive, rewound its row again,
+and confirmed recovery failed closed without creating a replacement.
+The first production drill correctly failed before health because its operator
+assumed the disposable database password; the successful rerun read the actual
+container configuration without printing the secret. The rolling-rotation
+drill accepted only current plus immediate previous values during overlap and
+only new current values after retirement. Release conformance reported
+`PASS_WITH_NAMED_BLIND_SPOTS` with no failed executable controls. Ruff,
+compileall, `git diff --check`, actionlint 1.7.12, Python and npm audits, Python
+sdist/wheel build, Node syntax checks, and the actual npm pack manifest passed.
+The npm manifest contained only eight expected runtime/package entries. The
+built wheel installed into a new virtual environment, `pip check` passed, the
+packaged CLI started, and the installed SDK commit matched the declared pin.
+
+**Notes:** Off-host immutable retention, an isolated restore of deployment
+backups, approved secret custody, external workflow acceptance, and government
+authorization remain open. Generic timeout takeover remains prohibited;
+operation-specific recovery now closes CC-13 for the implemented lifecycle
+routes and fails closed if durable state is ambiguous.
+
 ## LOG-20260715-005 - Require confirmed delivery, execution effect, and protected target paths
 
 **Timestamp (UTC):** 2026-07-15T06:38:00Z

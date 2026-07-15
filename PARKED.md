@@ -91,6 +91,422 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260715-015 - Blanket guarantee and proof labels for component tests
+
+**Status:** Parked
+**Category:** security claim scope, test evidence language
+**Former location:** `SECURITY.md`, `enterprise/identity_gate.py`, and
+`enterprise/tpm_attestation.py`
+**Source commit:** `b0c9fa80a1b327c80bbb1b14b81c8cf7504ac72f`
+**Affected paths:** Named former locations and
+`tests/test_documentation_records.py`
+**Action log:** [LOG-20260715-006](LOG.md#log-20260715-006)
+**Why changed:** [WHY-20260715-006](WHY.md#why-20260715-006)
+**Parked by:** commit containing this record
+
+**Former wording:** `What This System Guarantees`, repeated `Proven by:` labels,
+`Concurrent safety proven by:`, `proven enterprise identity layer`, and
+`proven DLL handles`.
+
+**Recovery source:** The named files at Git object `b0c9fa8`.
+
+**Reason parked:** A named test establishes only its exercised proposition in
+its exact environment. A collection of component tests does not by itself prove
+the whole deployed system, every concurrent schedule, authorization status, or
+the reliability of an implementation layer beyond the tested boundary.
+
+**Replacement:** `Narrowly Tested Component Properties`, `Tested by:`,
+`Concurrent case tested by:`, and tested/exercised implementation language,
+with the existing explicit deployment and authorization boundaries retained.
+
+**Restore when:** Never restore as blanket language. A narrowly scoped use of
+`proved` may be added only for an exact logical/test proposition whose scope,
+inputs, environment, and blind spots are stated next to it.
+
+**Restore procedure:** Reproduce the former text only on a historical review
+branch. Do not overwrite current evidence wording.
+
+**Validation after restore:** Claim regression must reject blanket guarantee or
+proof labels. Review each named test to confirm the nearby property is no wider
+than the assertion it executes.
+
+**Recovery rehearsal:** The former phrases were found by a repository-wide
+claim scan and removed; the documentation regression now scans their current
+product surfaces.
+
+**Restoration risks:** Compliance overclaim, evidence contamination, misleading
+partner materials, and conflating component behavior with deployment approval.
+
+**Evidence and links:** [LOG-20260715-006](LOG.md#log-20260715-006),
+[WHY-20260715-006](WHY.md#why-20260715-006), `SECURITY.md`, and
+`tests/test_documentation_records.py`.
+
+## PARK-20260715-014 - Permanent conflict for stranded lifecycle requests
+
+**Status:** Parked
+**Category:** lifecycle durability, idempotency recovery behavior
+**Former location:** `ultra_server/server.js` `claimIdempotency()`
+**Source commit:** `b0c9fa80a1b327c80bbb1b14b81c8cf7504ac72f`
+**Affected paths:** `ultra_server/server.js`, `runtime-stores.js`, their tests,
+GAPS CC-13, the Ultra operation-recovery control, and production runbooks
+**Action log:** [LOG-20260715-006](LOG.md#log-20260715-006)
+**Why changed:** [WHY-20260715-006](WHY.md#why-20260715-006)
+**Parked by:** commit containing this record
+
+**Former wording:** A repeated idempotency key whose durable state was
+`processing` always returned HTTP 409 `IDEMPOTENCY_REQUEST_IN_PROGRESS`, even
+after the process that owned the operation no longer existed.
+
+**Recovery source:** `ultra_server/server.js` and `runtime-stores.js` at Git
+object `b0c9fa8`.
+
+**Reason parked:** A crash after pair/key/binding creation but before response
+persistence left the request unavailable indefinitely. A generic time lease was
+still unsafe because the side effect might already have occurred.
+
+**Replacement:** Per-resource in-memory locks for development, PostgreSQL
+advisory locks for production, idempotent completion, and operation-specific
+durable reconciliation for pair registration, initial TSK provisioning,
+identity binding, and rotation preparation. Missing resources execute only
+while holding the lock; multiple matching resources fail closed.
+
+**Restore when:** Only if a newly discovered reconciliation flaw can authorize
+the wrong principal or duplicate a resource and immediate fail-closed service
+is safer while a corrected operation-specific protocol is built.
+
+**Restore procedure:** Revert only the four route recovery paths and store-lock
+methods on an incident branch. Preserve the idempotency rows and resource state
+for investigation; do not delete ambiguous records to force a retry.
+
+**Validation after restore:** Verify that stranded requests return 409, no
+side-effect route retries automatically, and an operator runbook exists to
+reconcile every affected resource before service resumes.
+
+**Recovery rehearsal:** The former behavior was reproduced by rewriting real
+PostgreSQL rows to `processing`. The replacement recovered all four operations,
+returned the original resource identifiers, and left one pair plus one initial
+and one rotation key for the tested agent.
+
+**Restoration risks:** Permanent request outage, manual database repair,
+duplicate resources if operators bypass the conflict, and loss of deterministic
+restart recovery.
+
+**Evidence and links:** [LOG-20260715-006](LOG.md#log-20260715-006),
+[WHY-20260715-006](WHY.md#why-20260715-006), GAPS CC-13,
+`ULTRA-OP-RECOVERY-001`, and `ultra_server/server.test.mjs`.
+
+## PARK-20260715-013 - Implicit Ultra npm package contents
+
+**Status:** Parked
+**Category:** release packaging, secret and state exposure prevention
+**Former location:** `ultra_server/package.json` without `private` or `files`
+**Source commit:** `b0c9fa80a1b327c80bbb1b14b81c8cf7504ac72f`
+**Affected paths:** `ultra_server/package.json`,
+`ultra_server/package-content.test.mjs`, control catalog, CI, and GAPS US-8
+**Action log:** [LOG-20260715-006](LOG.md#log-20260715-006)
+**Why changed:** [WHY-20260715-006](WHY.md#why-20260715-006)
+**Parked by:** commit containing this record
+
+**Former wording:** There was no explicit package-content statement. The
+effective behavior was an implicit npm artifact containing runtime files plus
+local `.ultra-*.log` and `.ultra-*.json` test/restart artifacts.
+
+**Recovery source:** `ultra_server/package.json` at Git object `b0c9fa8` and
+the local npm dry-run evidence observed during release validation.
+
+**Reason parked:** The parent repository `.gitignore` did not constrain the
+nested npm package. A release artifact could therefore disclose local logs or
+identity/restart state and was not a reproducible runtime-only package.
+
+**Replacement:** `private: true` while protocol dependencies use relative
+`file:` paths; an explicit seven-file runtime allowlist; a Node test that runs
+and verifies the actual `npm pack --dry-run --json` manifest; and release-
+control entry `ULTRA-PACKAGE-001`.
+
+**Restore when:** Never restore implicit broad packing. Remove `private` only
+after BPC/TSK dependencies have signed, publishable, pinned artifacts and the
+registry publication/provenance procedure is exercised.
+
+**Restore procedure:** Reproduce on an isolated branch only. Run the package
+test and inspect the exact npm manifest before and after any manifest change.
+
+**Validation after restore:** The manifest must contain only reviewed runtime
+files plus npm-required metadata and must contain no log, state, test, private
+key, environment-secret, or restart artifact.
+
+**Recovery rehearsal:** The former package was reproduced with `npm pack
+--dry-run --json`; it listed 32 entries, including local logs and restart-state
+JSON. The replacement listed eight expected entries and no forbidden file.
+
+**Restoration risks:** Secret or identity disclosure, unreproducible packages,
+test evidence leakage, and distribution of an artifact whose relative
+dependencies cannot be resolved by a consumer.
+
+**Evidence and links:** [LOG-20260715-006](LOG.md#log-20260715-006),
+[WHY-20260715-006](WHY.md#why-20260715-006), `US-8`,
+`ULTRA-PACKAGE-001`, and `ultra_server/package-content.test.mjs`.
+
+## PARK-20260715-012 - Unconditional FIPS and CNSA implementation wording
+
+**Status:** Parked
+**Category:** cryptographic security claim, evidence format
+**Former location:** `enterprise/crypto.py`, `enterprise/identity_cng.py`, and
+CNG ledger entries
+**Source commit:** `b0c9fa80a1b327c80bbb1b14b81c8cf7504ac72f`
+**Affected paths:** `enterprise/crypto.py`, `enterprise/identity_cng.py`,
+`tests/test_enterprise/test_crypto.py`,
+`tests/test_enterprise/test_identity_cng.py`
+**Action log:** [LOG-20260715-006](LOG.md#log-20260715-006)
+**Why changed:** [WHY-20260715-006](WHY.md#why-20260715-006)
+**Parked by:** commit containing this record
+
+**Former wording:**
+
+> FIPS-Validated Cryptographic Primitives via Windows CNG
+>
+> Algorithm suite (CNSA 2.0 compliant)
+>
+> fully CNSA 2.0 compliant audit trail
+
+The same algorithm ID was also used by the portable test backend without a
+signed backend field in ledger entries.
+
+**Recovery source:** Named files at Git object `b0c9fa8`.
+
+**Reason parked:** ECDSA P-384/SHA-384 selection and use of Windows CNG do not
+alone establish FIPS module validation, CNSA system compliance, or an approved
+operating environment. The portable backend is test-only and must be
+distinguishable in evidence. The stored public identity also was not compared
+to the key returned by the active backend during load.
+
+**Replacement:** Deployment-conditional validation language;
+`CRYPTO_BACKEND_ID`; persisted backend metadata; signed `crypto_backend` ledger
+field; stored-public-key, algorithm, and backend mismatch refusal.
+
+**Restore when:** Never restore unconditional validation/compliance language.
+A deployment may cite a specific active CMVP certificate only after verifying
+all certificate conditions, module versions, OS build, configuration, and
+operating environment and preserving that evidence separately.
+
+**Restore procedure:** For historical reproduction, create a branch at
+`b0c9fa8`. Do not use its wording or backend-ambiguous ledger as current
+assurance evidence.
+
+**Validation after restore:** Run CNG/portable suites, swap the public identity
+file, change the backend marker, and inspect signed entries. The former state is
+expected to lack backend attribution and accept an unchecked stored public
+file.
+
+**Recovery rehearsal:** The mismatch attacks were exercised by the replacement
+tests; restoration itself was not rehearsed.
+
+**Restoration risks:** False FIPS/CNSA claims, portable-test evidence mistaken
+for Windows CNG evidence, identity continuity ambiguity, and invalid assessor
+or customer conclusions.
+
+**Evidence and links:** [WHY-20260715-006](WHY.md#why-20260715-006),
+`tests/test_enterprise/test_crypto.py`,
+`tests/test_enterprise/test_identity_cng.py`, NIST CMVP guidance, and NSA CNSA
+guidance.
+
+## PARK-20260715-011 - Default prompt retention for every IRS action record
+
+**Status:** Parked
+**Category:** evidence schema, retention behavior
+**Former location:** `enterprise/irs_evidence.py`, `IRSActionEvidence` and
+`IRSEvidenceRecorder.record_action()`
+**Source commit:** `b0c9fa80a1b327c80bbb1b14b81c8cf7504ac72f`
+**Affected paths:** `enterprise/irs_evidence.py`, `enterprise/__init__.py`,
+`tests/test_enterprise/test_irs_evidence.py`
+**Action log:** [LOG-20260715-006](LOG.md#log-20260715-006)
+**Why changed:** [WHY-20260715-006](WHY.md#why-20260715-006)
+**Parked by:** commit containing this record
+
+**Former wording:** `record_action()` defaulted `retention_class` to
+`PROMPT_LOG_1_YEAR` and wrote schema `selfconnect.irs-action-evidence.v1` even
+when the record represented a test or incident event.
+
+**Recovery source:** `enterprise/irs_evidence.py` at Git object `b0c9fa8`.
+
+**Reason parked:** IRM 10.24.1.8 assigns different retention rules to prompt,
+test, and incident logs. A generic prompt-log default can under-retain incident
+evidence or incorrectly classify test evidence.
+
+**Replacement:** `IRSActionRecordKind` is required. The v2 recorder derives
+prompt, test, or incident retention from that enum and rejects unknown kinds.
+
+**Restore when:** Restore v1 decoding only in an explicit migration reader for
+historical records. Never restore its default as the write contract.
+
+**Restore procedure:** Add a version-aware read adapter that treats retained v1
+records as historical input, requires an operator-approved classification, and
+writes a new v2 classification event without altering the original entry.
+
+**Validation after restore:** Test all three v2 mappings, unknown-kind refusal,
+historical v1 read-only handling, and retention-policy enforcement in the actual
+storage boundary.
+
+**Recovery rehearsal:** Not rehearsed; no production migration was performed.
+
+**Restoration risks:** Under-retention, incorrect records schedules, silent
+schema ambiguity, and false claims that a stored label enforces provider
+retention.
+
+**Evidence and links:** [WHY-20260715-006](WHY.md#why-20260715-006),
+`tests/test_enterprise/test_irs_evidence.py`, IRM 10.24.1.8, and GAPS IRS-4.
+
+## PARK-20260715-010 - Blanket no-mock test claim and obsolete impact-level label
+
+**Status:** Parked
+**Category:** evidence claim, authorization wording
+**Former location:** `TEST_REGISTRY.md` title, introduction, and BPC security section
+**Source commit:** `b0c9fa80a1b327c80bbb1b14b81c8cf7504ac72f`
+**Affected paths:** `TEST_REGISTRY.md`, documentation claim regression surface
+**Action log:** [LOG-20260715-006](LOG.md#log-20260715-006)
+**Why changed:** [WHY-20260715-006](WHY.md#why-20260715-006)
+**Parked by:** commit containing this record
+
+**Former wording:**
+
+> Complete Test Registry — Every Test Ever Written
+>
+> Tests are real — no mocks, no stubs that return True.
+>
+> Security Hardening (IL4-7)
+
+**Recovery source:** `TEST_REGISTRY.md` at Git object `b0c9fa8`.
+
+**Reason parked:** The repository contains appropriate deterministic unit test
+doubles and monkeypatching alongside live integration tests. A hand-maintained
+cross-repository list is not automatically exhaustive. Test names and counts do
+not establish a DoD Impact Level authorization, and the obsolete range included
+a level not present in the current model.
+
+**Replacement:** The registry identifies itself as a maintained named-coverage
+inventory, distinguishes unit/test-double evidence from live evidence, and uses
+a normalized security-hardening label with an explicit authorization boundary.
+
+**Restore when:** Never restore as a blanket evidence or authorization claim.
+Individual sections may state no-test-double execution only when their commands
+and dependencies actually exercise the named real boundary.
+
+**Restore procedure:** Create a review branch at `b0c9fa8`; do not overwrite the
+current registry. Reintroduce only a narrowly scoped statement tied to a named
+live test and exact commit.
+
+**Validation after restore:** Enumerate `unittest.mock`, `MagicMock`, patching,
+and monkeypatch usage; compare registry totals to collected tests; scan current
+documentation for obsolete Impact Level ranges. The former blanket statement is
+expected to fail this review.
+
+**Recovery rehearsal:** Not rehearsed; the contradictory unit-test usage was
+observed directly during the 2026-07-15 repository audit.
+
+**Restoration risks:** False assurance, misleading customer evidence, obsolete
+government language, and conflation of deterministic unit coverage with live
+production acceptance.
+
+**Evidence and links:** [WHY-20260715-006](WHY.md#why-20260715-006),
+`tests/test_identity_gate.py`, `tests/test_enterprise/test_classified_mode.py`,
+`tests/test_e2e_ultra_gate.py`, and `docs/assurance/CONTROL_CATALOG.md`.
+
+## PARK-20260715-009 - Empty distillation capability placeholder
+
+**Status:** Parked
+**Category:** product surface, security property
+**Former location:** top-level `distillation/__init__.py`
+**Source commit:** `b0c9fa80a1b327c80bbb1b14b81c8cf7504ac72f`
+**Affected paths:** `distillation/__init__.py`, `GAPS.md`
+**Action log:** [LOG-20260715-006](LOG.md#log-20260715-006)
+**Why changed:** [WHY-20260715-006](WHY.md#why-20260715-006)
+**Parked by:** commit containing this record
+
+**Former wording:** The file was zero bytes; its presence alone exposed a
+top-level `distillation` package name without implementation, enforcement,
+tests, or a package declaration.
+
+**Recovery source:** `b0c9fa8:distillation/__init__.py` (empty Git blob).
+
+**Reason parked:** An empty security-adjacent package can be mistaken for a
+capability even though it performs no control. Retaining it adds claim surface
+and maintenance ambiguity without executable value.
+
+**Replacement:** No package and no model-extraction/distillation control claim.
+`GAPS.md` records that a future component requires a scoped requirement, threat
+model, enforcement point, and executable assertion.
+
+**Restore when:** Restore only with an approved design and implementation that
+names inputs, outputs, trust boundary, abuse cases, owner, tests, and operational
+evidence. Do not restore an empty placeholder.
+
+**Restore procedure:** Implement the reviewed component on a branch, add it to
+packaging, add control-catalog and gap entries in the same commit, then restore
+the package path with substantive code.
+
+**Validation after restore:** Build the wheel, inspect its contents, run the
+component's adversarial tests, and run release conformance. Importability alone
+is not a pass condition.
+
+**Recovery rehearsal:** Not rehearsed; the former file contained no behavior to
+rehearse.
+
+**Restoration risks:** Recreating false capability surface, package-name
+collision, unowned security claims, and untested model-data handling.
+
+**Evidence and links:** [WHY-20260715-006](WHY.md#why-20260715-006),
+`GAPS.md` DL-1, `pyproject.toml`, and the source Git object.
+
+## PARK-20260715-008 - Unbound recovery tokens and non-ceremonial Ultra key replacement
+
+**Status:** Parked
+**Category:** security behavior, key lifecycle
+**Former location:** `ultra_server/server.js`, `enterprise/ultra_gate.py`, Ultra environment contract
+**Source commit:** `b0c9fa80a1b327c80bbb1b14b81c8cf7504ac72f`
+**Affected paths:** `ultra_server/server.js`, `ultra_server/agent-auth.js`,
+`ultra_server/runtime-stores.js`, `enterprise/key_recovery.py`,
+`enterprise/ultra_gate.py`, `.github/workflows/ci.yml`
+**Action log:** [LOG-20260715-006](LOG.md#log-20260715-006)
+**Why changed:** [WHY-20260715-006](WHY.md#why-20260715-006)
+**Parked by:** commit containing this record
+
+**Former wording:** Recovery HMACs covered agent name, agent ID, replacement
+public key, and issue time but not the recovery challenge or a signing-key ID.
+Only one operator/recovery secret was accepted. TSK replacement required a new
+provision/bind sequence without prepare/commit/resume semantics.
+
+**Recovery source:** Named paths at Git object `b0c9fa8`.
+
+**Reason parked:** The prior token could be replayed across recovery challenges
+within its TTL, ordinary secret replacement created an avoidable availability
+cutover, and TSK local/server state lacked a retry-safe rotation boundary.
+
+**Replacement:** Versioned challenge-bound recovery tokens with key IDs; one
+bounded previous verification generation; prepare/CAS-commit/revoke/resume TSK
+rotation; real PostgreSQL/Redis restart and retirement exercises.
+
+**Restore when:** Never restore to a production or governed path. Use the prior
+state only on an isolated regression branch to reproduce the token-binding and
+rotation gaps.
+
+**Restore procedure:** Create a detached review branch at `b0c9fa8`, use only
+ephemeral secrets and stores, and do not connect external clients or data.
+
+**Validation after restore:** Demonstrate challenge substitution, lack of
+current/previous overlap, lost-response ambiguity, and inability to resume a
+rotated binding. The restored state is expected to fail current tests.
+
+**Recovery rehearsal:** The former state was exercised before replacement;
+restoration was not rehearsed.
+
+**Restoration risks:** Cross-challenge replay, rotation outage, duplicate or
+orphaned TSK clients, loss of binding continuity, and unsupported readiness
+claims.
+
+**Evidence and links:** [WHY-20260715-006](WHY.md#why-20260715-006),
+`ultra_server/recovery-token.test.mjs`,
+`ultra_server/server.test.mjs`, `tests/test_e2e_ultra_gate.py`, and
+`docs/operations/ULTRA_KEY_ROTATION.md`.
+
 ## PARK-20260715-007 - Enqueue-only delivery and basename-only target assurance
 
 **Status:** Parked

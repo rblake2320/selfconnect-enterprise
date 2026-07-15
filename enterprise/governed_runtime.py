@@ -51,6 +51,8 @@ class GovernedRuntime:
         target_verifier: Callable[..., dict[str, Any]] | None = None,
         output_reader: Callable[[int], str] | None = None,
         profile: str = "enterprise",
+        ledger_max_entries_per_segment: int = 100_000,
+        ledger_max_bytes_per_segment: int = 128 * 1024 * 1024,
     ) -> "GovernedRuntime":
         """Build a fail-closed runtime from an externally pinned policy root.
 
@@ -77,6 +79,8 @@ class GovernedRuntime:
             identity,
             log_path=ledger_path,
             redact_denied=True,
+            max_entries_per_segment=ledger_max_entries_per_segment,
+            max_bytes_per_segment=ledger_max_bytes_per_segment,
         )
         resolved_ledger_path = Path(ledger.log_path)
         resolved_approval_path = (

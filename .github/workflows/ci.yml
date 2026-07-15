@@ -7,6 +7,16 @@ on:
     branches: [master]
 
 jobs:
+  workflow-lint:
+    name: Workflow syntax
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Validate GitHub Actions workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml
+
   test:
     name: Lint + Test
     runs-on: windows-latest
@@ -196,7 +206,10 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ultra
       REDIS_URL: redis://127.0.0.1:6379/0
       ULTRA_ADMIN_TOKEN: ci-production-ultra-admin-token-2026
+      ULTRA_ADMIN_TOKEN_PREVIOUS: ci-previous-ultra-admin-token-2026-retire-me
       ULTRA_RECOVERY_HMAC_KEY: ci-production-recovery-hmac-key-2026
+      ULTRA_RECOVERY_HMAC_KEY_PREVIOUS: ci-previous-recovery-hmac-key-2026-retire-me
+      SC_RECOVERY_WINDOW_SEC: "300"
       SC_REQUIRE_ULTRA_SERVER: "1"
 
     steps:
@@ -249,20 +262,52 @@ jobs:
           npm run test:live --prefix ultra_server
           python -m pytest tests/test_e2e_ultra_gate.py -q --tb=short
           python -m tools.ultra_restart_conformance seed --state "$RUNNER_TEMP/ultra-restart.json"
+          node tools/ultra_rotation_conformance.mjs issue --state "$RUNNER_TEMP/ultra-rotation.json"
 
-      - name: Restart sidecar and verify durable identity continuity
+      - name: Rotate keys, restart, retire old keys, and verify durable identity continuity
         shell: bash
         run: |
           set -euo pipefail
+          wait_for_health() {
+            for attempt in $(seq 1 30); do
+              curl --fail --silent http://127.0.0.1:7777/health >/dev/null && return 0
+              sleep 1
+            done
+            return 1
+          }
+
+          initial_admin="$ULTRA_ADMIN_TOKEN"
+          initial_recovery="$ULTRA_RECOVERY_HMAC_KEY"
+          retired_admin="$ULTRA_ADMIN_TOKEN_PREVIOUS"
+          rotated_admin="ci-rotated-ultra-admin-token-2026"
+          rotated_recovery="ci-rotated-recovery-hmac-key-2026"
+
           kill "$(cat "$RUNNER_TEMP/ultra.pid")"
           wait "$(cat "$RUNNER_TEMP/ultra.pid")" || true
+          export ULTRA_ADMIN_TOKEN="$rotated_admin"
+          export ULTRA_ADMIN_TOKEN_PREVIOUS="$initial_admin"
+          export ULTRA_RECOVERY_HMAC_KEY="$rotated_recovery"
+          export ULTRA_RECOVERY_HMAC_KEY_PREVIOUS="$initial_recovery"
           node ultra_server/server.js >>"$RUNNER_TEMP/ultra.stdout.log" 2>>"$RUNNER_TEMP/ultra.stderr.log" &
           echo $! >"$RUNNER_TEMP/ultra.pid"
-          for attempt in $(seq 1 30); do
-            curl --fail --silent http://127.0.0.1:7777/health >/dev/null && break
-            sleep 1
-          done
+          wait_for_health
+          ULTRA_EXPECT_RECOVERY_VALID=1 \
+          ULTRA_EXPECT_ADMIN_ACCEPT="$initial_admin" \
+          ULTRA_EXPECT_ADMIN_REJECT="$retired_admin" \
+            node tools/ultra_rotation_conformance.mjs verify --state "$RUNNER_TEMP/ultra-rotation.json"
           python -m tools.ultra_restart_conformance verify --state "$RUNNER_TEMP/ultra-restart.json"
+
+          kill "$(cat "$RUNNER_TEMP/ultra.pid")"
+          wait "$(cat "$RUNNER_TEMP/ultra.pid")" || true
+          unset ULTRA_ADMIN_TOKEN_PREVIOUS ULTRA_RECOVERY_HMAC_KEY_PREVIOUS
+          node ultra_server/server.js >>"$RUNNER_TEMP/ultra.stdout.log" 2>>"$RUNNER_TEMP/ultra.stderr.log" &
+          echo $! >"$RUNNER_TEMP/ultra.pid"
+          wait_for_health
+          ULTRA_EXPECT_RECOVERY_VALID=0 \
+          ULTRA_EXPECT_ADMIN_ACCEPT="$rotated_admin" \
+          ULTRA_EXPECT_ADMIN_REJECT="$initial_admin" \
+            node tools/ultra_rotation_conformance.mjs verify \
+              --state "$RUNNER_TEMP/ultra-rotation.json" --delete
 
       - name: Print sidecar logs and stop
         if: always()

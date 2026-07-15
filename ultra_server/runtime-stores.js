@@ -26,10 +26,32 @@ function parseMap(value) {
   return typeof value === 'string' ? JSON.parse(value) : value;
 }
 
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(
+      (key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`,
+    ).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
 export class MemoryIdentityBindingStore {
   constructor() { this.bindings = new Map(); }
   async get(pairId) { return this.bindings.get(pairId) ?? null; }
   async set(pairId, binding) { this.bindings.set(pairId, { ...binding }); }
+  async compareAndSwap(pairId, expectedClientId, binding) {
+    const current = this.bindings.get(pairId);
+    if (!current) return 'missing';
+    if (current.tskClientId === binding.tskClientId && current.agentId === binding.agentId) {
+      return 'already';
+    }
+    if (current.tskClientId !== expectedClientId || current.agentId !== binding.agentId) {
+      return 'conflict';
+    }
+    this.bindings.set(pairId, { ...binding });
+    return 'updated';
+  }
   async count() { return this.bindings.size; }
 }
 
@@ -49,6 +71,22 @@ export class PgIdentityBindingStore {
          tsk_client_id=EXCLUDED.tsk_client_id, agent_id=EXCLUDED.agent_id, updated_at=NOW()`,
       [pairId, binding.tskClientId, binding.agentId],
     );
+  }
+  async compareAndSwap(pairId, expectedClientId, binding) {
+    const updated = await this.pool.query(
+      `UPDATE ultra_identity_bindings SET
+         tsk_client_id=$3, updated_at=NOW()
+       WHERE pair_id=$1 AND tsk_client_id=$2 AND agent_id=$4
+       RETURNING pair_id`,
+      [pairId, expectedClientId, binding.tskClientId, binding.agentId],
+    );
+    if (updated.rows[0]) return 'updated';
+    const current = await this.get(pairId);
+    if (!current) return 'missing';
+    if (current.tskClientId === binding.tskClientId && current.agentId === binding.agentId) {
+      return 'already';
+    }
+    return 'conflict';
   }
   async count() {
     const { rows } = await this.pool.query('SELECT COUNT(*)::int AS count FROM ultra_identity_bindings');
@@ -176,7 +214,10 @@ export class PgTumblerStore {
 }
 
 export class MemoryIdempotencyStore {
-  constructor() { this.entries = new Map(); }
+  constructor() {
+    this.entries = new Map();
+    this.locks = new Map();
+  }
   async claim(key, operation, agentId) {
     const existing = this.entries.get(key);
     if (existing) {
@@ -191,8 +232,28 @@ export class MemoryIdempotencyStore {
   async complete(key, response) {
     const existing = this.entries.get(key);
     if (!existing) throw new Error('idempotency key was not claimed');
+    if (existing.state === 'complete') {
+      if (canonicalJson(existing.response) !== canonicalJson(response)) {
+        throw new Error('idempotency response conflict');
+      }
+      return;
+    }
     existing.state = 'complete';
     existing.response = structuredClone(response);
+  }
+  async withLock(key, callback) {
+    const previous = this.locks.get(key) ?? Promise.resolve();
+    let release;
+    const current = new Promise((resolve) => { release = resolve; });
+    const tail = previous.then(() => current);
+    this.locks.set(key, tail);
+    await previous;
+    try {
+      return await callback();
+    } finally {
+      release();
+      if (this.locks.get(key) === tail) this.locks.delete(key);
+    }
   }
 }
 
@@ -222,6 +283,28 @@ export class PgIdempotencyStore {
        WHERE idempotency_key=$1 AND state='processing'`,
       [key, JSON.stringify(response)],
     );
-    if (result.rowCount !== 1) throw new Error('idempotency key was not claimed');
+    if (result.rowCount === 1) return;
+    const { rows } = await this.pool.query(
+      'SELECT state, response FROM ultra_idempotency WHERE idempotency_key=$1', [key],
+    );
+    const existing = rows[0];
+    if (
+      existing?.state === 'complete' &&
+      canonicalJson(parseMap(existing.response)) === canonicalJson(response)
+    ) return;
+    throw new Error(existing ? 'idempotency response conflict' : 'idempotency key was not claimed');
+  }
+  async withLock(key, callback) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]);
+      return await callback();
+    } finally {
+      try {
+        await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [key]);
+      } finally {
+        client.release();
+      }
+    }
   }
 }

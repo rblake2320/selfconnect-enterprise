@@ -99,6 +99,7 @@ from enterprise.mcp_dispatch import MCPDispatcher, dispatch_tool, get_default_di
 from enterprise.governed_runtime import GovernedRuntime, RuntimeConfigurationError  # noqa: F401
 from enterprise.irs_evidence import (  # noqa: F401
     HighImpactDetermination,
+    IRSActionRecordKind,
     IRSActionEvidence,
     IRSEvidenceRecorder,
     IRSModelDataRecord,

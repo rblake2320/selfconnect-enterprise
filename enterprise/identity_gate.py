@@ -33,7 +33,7 @@ Degradation cascade (if full 7-layer fails):
   Level 5: Pass-through with logging  (audit mode only — all crypto down)
 
 In enforce mode, cascade stops at Level 2. The worst case in production is
-falling back to the proven enterprise identity layer (ed25519 + birth tags).
+falling back to the tested enterprise identity layer (ed25519 + birth tags).
 
 Gap 4 fix: SC_STRICT_ENFORCE=1 makes the cascade fail CLOSED on network errors
 instead of degrading to Level 2. An attacker cannot force a downgrade by

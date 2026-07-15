@@ -131,3 +131,24 @@ test('admin auth fails closed and accepts only the exact bearer', () => {
   );
   assert.equal(called, true);
 });
+
+test('admin auth supports a bounded current/previous rotation overlap', () => {
+  const middleware = createAdminAuthMiddleware(['new-current-token', 'old-previous-token']);
+  for (const token of ['new-current-token', 'old-previous-token']) {
+    let called = false;
+    middleware(
+      requestCapture(null, null, `Bearer ${token}`),
+      responseCapture(),
+      () => { called = true; },
+    );
+    assert.equal(called, true, `${token} was not accepted during overlap`);
+  }
+
+  const retired = responseCapture();
+  createAdminAuthMiddleware('new-current-token')(
+    requestCapture(null, null, 'Bearer old-previous-token'),
+    retired,
+    () => assert.fail('retired token was accepted'),
+  );
+  assert.equal(retired.statusCode, 401);
+});

@@ -337,7 +337,10 @@ class TestAgentLedgerConcurrency:
         valid, _count, msg = ledger.verify()
         if not valid:
             # EXPECTED: concurrent writes corrupted the chain.  Document it.
-            assert "chain broken" in msg or "signature invalid" in msg, (
+            assert any(
+                reason in msg
+                for reason in ("sequence mismatch", "chain broken", "signature invalid")
+            ), (
                 f"Unexpected failure reason: {msg}"
             )
         # If valid=True, the OS happened to serialize all writes — also fine.

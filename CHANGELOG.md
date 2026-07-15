@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+### Ultra rotation, abuse boundary, and ledger lifecycle
+
+- Added Redis-backed production source-IP and pair rate limits and converted
+  BPC shadow/ghost responses to hard Ultra denials before TSK evaluation.
+- Added versioned challenge-bound recovery tokens, one bounded previous
+  operator/recovery key generation, exercised overlap/retirement, and
+  retry-safe TSK prepare/commit/resume rotation.
+- Added fsynced, verified AgentLedger segment rotation with cross-segment
+  sequence/signature validation and corrupt-resume refusal.
+- Added key-rotation and disaster-recovery runbooks while retaining deployment
+  custody, actual restore, immutable storage, and authorization as open evidence.
+- Removed an empty distillation placeholder and narrowed the test registry's
+  false blanket no-mock/exhaustiveness wording.
+- Replaced the IRS action-evidence v1 default prompt retention with a v2
+  record-kind contract that derives prompt, test, or incident retention.
+- Replaced unconditional FIPS/CNSA implementation wording with deployment-
+  conditional boundaries and added signed `crypto_backend` evidence plus
+  stored-public-key/backend mismatch refusal for CNG identities.
+- Made Ultra private while its protocol dependencies remain source-relative,
+  added a runtime-only npm package allowlist, and tested the actual pack
+  manifest to exclude local logs, restart state, tests, and key-like files.
+- Added PostgreSQL advisory-lock and operation-specific reconciliation for
+  pair, TSK, binding, and rotation requests stranded in `processing`, with a
+  real-store crash-window recovery contract that checks for duplicates.
+- Replaced broad `guarantees`/`proven by` security headings with narrowly tested
+  component-property language and regression guards against restoration.
+- Added a release control that compares the installed SelfConnect VCS
+  provenance with the exact declared commit instead of inferring source identity
+  from stale or divergent version labels.
+- Evidence: [LOG-20260715-006](LOG.md#log-20260715-006).
+- Rationale: [WHY-20260715-006](WHY.md#why-20260715-006).
+- Parked records: [PARK-20260715-008](PARKED.md#park-20260715-008),
+  [PARK-20260715-009](PARKED.md#park-20260715-009), and
+  [PARK-20260715-010](PARKED.md#park-20260715-010), and
+  [PARK-20260715-011](PARKED.md#park-20260715-011), and
+  [PARK-20260715-012](PARKED.md#park-20260715-012), and
+  [PARK-20260715-013](PARKED.md#park-20260715-013), and
+  [PARK-20260715-014](PARKED.md#park-20260715-014), and
+  [PARK-20260715-015](PARKED.md#park-20260715-015).
+
 ### Confirmed Win32 delivery and target-path hardening
 
 - Separated Win32 queue acceptance, UIA-confirmed delivery, and independently

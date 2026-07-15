@@ -165,9 +165,14 @@ def test_known_overclaims_and_partner_docs_remain_absent() -> None:
     current_surfaces = [
         README_PATH,
         ROOT / "SECURITY.md",
+        ROOT / "enterprise" / "crypto.py",
+        ROOT / "enterprise" / "identity_cng.py",
+        ROOT / "enterprise" / "identity_gate.py",
+        ROOT / "enterprise" / "tpm_attestation.py",
         ROOT / "enterprise" / "ultra_gate.py",
         ROOT / "ultra_server" / "README.md",
         ROOT / "docs" / "assurance" / "SECTOR_PROFILES.md",
+        ROOT / "TEST_REGISTRY.md",
     ]
     combined = "\n".join(_read(path).lower() for path in current_surfaces)
     prohibited = (
@@ -176,6 +181,14 @@ def test_known_overclaims_and_partner_docs_remain_absent() -> None:
         "tumbler keys with structural secrecy",
         "il4-il7",
         "il4/il7",
+        "every test ever written",
+        "tests are real — no mocks",
+        "fips-validated cryptographic primitives",
+        "algorithm suite (cnsa 2.0 compliant)",
+        "fully cnsa 2.0 compliant audit trail",
+        "what this system guarantees",
+        "**proven by:**",
+        "concurrent safety proven by",
     )
     for phrase in prohibited:
         assert phrase not in combined

@@ -28,6 +28,7 @@ import os
 import time
 import uuid
 from typing import TYPE_CHECKING, Any
+from urllib.error import HTTPError
 
 from enterprise.bpc_crypto import (
     b64url,
@@ -138,9 +139,11 @@ class UltraGate:
         try:
             pair_id = self._register_bpc_pair()
             self.pair_id = pair_id
-            tsk_state = self._provision_tsk()
+            tsk_state = self._resume_tsk(pair_id)
+            if tsk_state is None:
+                tsk_state = self._provision_tsk()
+                self._bind_identity(pair_id, tsk_state.client_id)
             self.tsk_state = tsk_state
-            self._bind_identity(pair_id, tsk_state.client_id)
             self._bootstrapped = True
             _log.info("UltraGate bootstrapped: agent=%s pair=%s tsk=%s",
                       self.agent_id, self.pair_id, self.tsk_state.client_id)
@@ -261,6 +264,128 @@ class UltraGate:
         _log.debug("UltraGate: provisioned TSK client %s (%d segments)",
                    client_id, len(state.segments))
         return state
+
+    def _resume_tsk(self, pair_id: str) -> TSKClientState | None:
+        """Resume the server's currently bound TSK state after restart.
+
+        The response is released only after the server verifies this agent's
+        body-bound identity proof and, in production, operator authorization.
+        A missing binding is the normal first-enrollment path and returns None.
+        """
+        import urllib.request
+
+        payload = json.dumps({
+            "pairId": pair_id,
+            "agentId": self.agent_id,
+        }, separators=(",", ":")).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.server_url}/resume-identity",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                **(
+                    {"Authorization": f"Bearer {self._admin_token}"}
+                    if self._admin_token else {}
+                ),
+                **self._lifecycle_auth_headers(payload),
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise
+        client_id = data.get("clientId")
+        shared_secret = data.get("sharedSecret")
+        if not client_id or not shared_secret:
+            raise RuntimeError(f"UltraGate: resume-identity returned incomplete data: {data}")
+        return parse_provision_payload(
+            client_id,
+            shared_secret,
+            data.get("provisionPayload", {}),
+        )
+
+    def rotate_tsk(self) -> TSKClientState:
+        """Rotate the active TSK with a retry-safe two-phase server ceremony."""
+        import urllib.request
+
+        if not self._bootstrapped or not self.pair_id or self.tsk_state is None:
+            raise UltraGateNotBootstrappedError("Call UltraGate.bootstrap() first")
+        old_client_id = self.tsk_state.client_id
+        idempotency_key = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"rotate-tsk:{self.pair_id}:{old_client_id}",
+        ))
+        prepare_body = {
+            "pairId": self.pair_id,
+            "oldClientId": old_client_id,
+            "agentId": self.agent_id,
+            "idempotencyKey": idempotency_key,
+        }
+        prepare_payload = json.dumps(
+            prepare_body, separators=(",", ":")
+        ).encode("utf-8")
+        prepare_request = urllib.request.Request(
+            f"{self.server_url}/rotate-tsk/prepare",
+            data=prepare_payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Idempotency-Key": idempotency_key,
+                **(
+                    {"Authorization": f"Bearer {self._admin_token}"}
+                    if self._admin_token else {}
+                ),
+                **self._lifecycle_auth_headers(prepare_payload),
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(prepare_request, timeout=10) as response:
+            prepared = json.loads(response.read().decode("utf-8"))
+        new_client_id = prepared.get("clientId")
+        shared_secret = prepared.get("sharedSecret")
+        if not new_client_id or not shared_secret:
+            raise RuntimeError(f"UltraGate: rotation prepare was incomplete: {prepared}")
+        new_state = parse_provision_payload(
+            new_client_id,
+            shared_secret,
+            prepared.get("provisionPayload", {}),
+        )
+
+        commit_payload = json.dumps({
+            "pairId": self.pair_id,
+            "oldClientId": old_client_id,
+            "newClientId": new_client_id,
+            "agentId": self.agent_id,
+        }, separators=(",", ":")).encode("utf-8")
+        commit_request = urllib.request.Request(
+            f"{self.server_url}/rotate-tsk/commit",
+            data=commit_payload,
+            headers={
+                "Content-Type": "application/json",
+                **(
+                    {"Authorization": f"Bearer {self._admin_token}"}
+                    if self._admin_token else {}
+                ),
+                **self._lifecycle_auth_headers(commit_payload),
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(commit_request, timeout=10) as response:
+            committed = json.loads(response.read().decode("utf-8"))
+        if not committed.get("ok") or committed.get("newClientId") != new_client_id:
+            raise RuntimeError(f"UltraGate: rotation commit failed: {committed}")
+        self.tsk_state = new_state
+        _log.info(
+            "UltraGate TSK rotated: agent=%s pair=%s old=%s new=%s",
+            self.agent_id,
+            self.pair_id,
+            old_client_id,
+            new_client_id,
+        )
+        return new_state
 
     def _bind_identity(self, pair_id: str, tsk_client_id: str) -> None:
         """POST /bind-identity — links BPC pair to TSK client on server.

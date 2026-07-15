@@ -16,6 +16,7 @@ Run: python -m pytest tests/test_identity_gate.py -v
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -541,7 +542,7 @@ class TestKeyRecovery:
             "agentName": agent_name,
             "agentId": identity.agent_id,
             "newPubHex": pubkey_hex,
-            "challengeHash": "deadbeef",
+            "challengeHash": hashlib.sha256(b"gap2-live-recovery").hexdigest(),
         }, separators=(",", ":")).encode("utf-8")
         req = urllib.request.Request(
             f"{server_url}/confirm-recovery",

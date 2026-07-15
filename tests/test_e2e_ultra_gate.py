@@ -331,6 +331,9 @@ class TestLifecycleAuth:
         ("POST",  "/provision-tsk"),
         ("POST",  "/bind-identity"),
         ("POST",  "/confirm-recovery"),
+        ("POST",  "/resume-identity"),
+        ("POST",  "/rotate-tsk/prepare"),
+        ("POST",  "/rotate-tsk/commit"),
         ("PATCH", "/tsk/keys/nonexistent-client-id"),
         ("PATCH", "/bpc/pairs/nonexistent-pair-id"),
     ]
@@ -540,3 +543,86 @@ class TestSignedLifecycleAuth:
         )
         assert status in (401, 503)
         assert body["error"] in ("ADMIN_AUTH_REQUIRED", "ADMIN_AUTH_UNCONFIGURED")
+
+
+class TestLiveBpcLockoutBoundary:
+    """Prove repeated signature attacks quarantine without global pair lockout."""
+
+    @staticmethod
+    def _verify(headers: dict[str, str], text: str) -> dict:
+        from enterprise.bpc_crypto import body_hash
+
+        payload = json.dumps({
+            "headers": headers,
+            "bodyHash": body_hash(text),
+        }).encode()
+        request = urllib.request.Request(
+            f"{SERVER_URL}/verify",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read())
+
+    def test_automatic_quarantine_cannot_become_shadow_authorization(self, tmp_path):
+        from enterprise.identity import AgentIdentity
+        from enterprise.ultra_gate import UltraGate
+
+        identity = AgentIdentity.init("lockout-boundary-agent", data_dir=tmp_path)
+        gate = UltraGate(identity, server_url=SERVER_URL)
+        gate.bootstrap()
+
+        for attempt in range(7):
+            text = f"lockout-attempt-{attempt}"
+            headers = gate.build_injection_request(0xF000 + attempt, text)
+            headers["X-BPC-Signature"] = "A" * 16
+            decision = self._verify(headers, text)
+            assert decision["ok"] is False, f"forged signature {attempt} was accepted"
+
+        request = urllib.request.Request(
+            f"{SERVER_URL}/bpc/pairs",
+            headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            pairs = json.loads(response.read())["pairs"]
+        pair = next(item for item in pairs if item["id"] == gate.pair_id)
+        # The pair remains active so an attacker cannot lock out the legitimate
+        # principal from a different source IP. The attacking IP/pair tuple is
+        # instead placed into persistent anomaly-backed shadow quarantine.
+        assert pair["status"] == "active"
+
+        text = "must-remain-denied-after-lockout"
+        fresh_headers = gate.build_injection_request(0xFFFF, text)
+        decision = self._verify(fresh_headers, text)
+        assert decision["ok"] is False, (
+            "locked pair crossed shadow mode as authorization"
+        )
+        assert "SHADOW_QUARANTINED" in decision["error"]
+
+
+class TestLiveTskRotation:
+    """Exercise prepare, commit, revocation, retry, and restart resume live."""
+
+    def test_rotation_survives_new_client_instance(self, tmp_path):
+        from enterprise.identity import AgentIdentity
+        from enterprise.ultra_gate import UltraGate
+
+        identity = AgentIdentity.init("tsk-rotation-agent", data_dir=tmp_path)
+        gate = UltraGate(identity, server_url=SERVER_URL)
+        gate.bootstrap()
+        old_client_id = gate.tsk_state.client_id
+        new_state = gate.rotate_tsk()
+        assert new_state.client_id != old_client_id
+
+        text = "rotation-live-verification"
+        headers = gate.build_injection_request(0xA11CE, text)
+        assert gate.verify_server(headers, text) == (True, "")
+
+        resumed = UltraGate(identity, server_url=SERVER_URL)
+        resumed.bootstrap()
+        assert resumed.pair_id == gate.pair_id
+        assert resumed.tsk_state.client_id == new_state.client_id
+        text = "rotation-restart-verification"
+        headers = resumed.build_injection_request(0xA11CF, text)
+        assert resumed.verify_server(headers, text) == (True, "")

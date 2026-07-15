@@ -104,14 +104,21 @@ export function createAgentAuthMiddleware({ nonceStore, windowMs = 30_000 }) {
   };
 }
 
-export function createAdminAuthMiddleware(adminToken) {
+export function createAdminAuthMiddleware(adminTokens) {
+  const configured = (Array.isArray(adminTokens) ? adminTokens : [adminTokens])
+    .filter((token) => typeof token === 'string' && token.length > 0)
+    .map((token) => createHash('sha256').update(token, 'utf8').digest());
+
   return function requireAdminAuth(req, res, next) {
-    if (!adminToken) return reject(res, 503, 'ADMIN_AUTH_UNCONFIGURED');
+    if (configured.length === 0) return reject(res, 503, 'ADMIN_AUTH_UNCONFIGURED');
     const header = req.get('Authorization') ?? '';
     const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-    const expected = Buffer.from(adminToken, 'utf8');
-    const actual = Buffer.from(token, 'utf8');
-    if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+    const actual = createHash('sha256').update(token, 'utf8').digest();
+    let accepted = false;
+    for (const expected of configured) {
+      accepted = timingSafeEqual(expected, actual) || accepted;
+    }
+    if (!accepted) {
       return reject(res, 401, 'ADMIN_AUTH_REQUIRED');
     }
     return next();

@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -88,6 +89,10 @@ _RESERVED_ENTRY_FIELDS = frozenset({
 GENESIS_HASH = "0" * 64
 
 
+class LedgerIntegrityError(RuntimeError):
+    """Raised when an existing ledger cannot be safely resumed."""
+
+
 # ── AgentLedger ────────────────────────────────────────────────────────────────
 
 class AgentLedger:
@@ -103,6 +108,8 @@ class AgentLedger:
         identity: AgentIdentity,
         log_path: Optional[Path] = None,
         redact_denied: bool = False,
+        max_entries_per_segment: int = 0,
+        max_bytes_per_segment: int = 0,
     ) -> None:
         """
         Args:
@@ -119,6 +126,15 @@ class AgentLedger:
         self._identity     = identity
         self._log_path     = log_path or self._default_path(identity.agent_name)
         self._redact_denied = redact_denied
+        if max_entries_per_segment < 0 or max_bytes_per_segment < 0:
+            raise ValueError("ledger segment limits cannot be negative")
+        self._max_entries_per_segment = max_entries_per_segment
+        self._max_bytes_per_segment = max_bytes_per_segment
+        valid, _, message = self.verify()
+        if not valid:
+            raise LedgerIntegrityError(
+                f"refusing to resume an invalid ledger: {message}"
+            )
         self._seq          = self._load_last_seq()
         self._prev_hash    = self._load_last_hash()
 
@@ -163,6 +179,7 @@ class AgentLedger:
                 + ", ".join(sorted(collisions))
             )
 
+        self._rotate_if_needed()
         self._seq += 1
 
         # Determine if this is a deny entry that should be redacted (G-1 fix)
@@ -202,6 +219,8 @@ class AgentLedger:
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         with self._log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
 
         return entry
 
@@ -213,61 +232,91 @@ class AgentLedger:
             valid=True means every signature is valid and every hash link is intact.
             valid=False includes a message describing the first failure.
         """
-        if not self._log_path.exists():
+        paths = self._ledger_paths()
+        if not paths:
             return True, 0, "ledger is empty"
 
         prev_hash = GENESIS_HASH
         count     = 0
+        expected_seq = 1
 
-        with self._log_path.open("r", encoding="utf-8") as fh:
-            for lineno, line in enumerate(fh, start=1):
-                line = line.strip()
-                if not line:
-                    continue
+        for path in paths:
+            with path.open("r", encoding="utf-8") as fh:
+                for lineno, line in enumerate(fh, start=1):
+                    line = line.strip()
+                    if not line:
+                        continue
 
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    return False, count, f"line {lineno}: JSON parse error: {exc}"
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        return (
+                            False,
+                            count,
+                            f"{path.name} line {lineno}: JSON parse error: {exc}",
+                        )
 
-                # Extract and remove sig for verification
-                sig_hex = entry.pop("sig", None)
-                if sig_hex is None:
-                    return False, count, f"line {lineno}: missing 'sig' field"
+                    sig_hex = entry.pop("sig", None)
+                    if sig_hex is None:
+                        return (
+                            False,
+                            count,
+                            f"{path.name} line {lineno}: missing 'sig' field",
+                        )
+                    if entry.get("seq") != expected_seq:
+                        return (
+                            False,
+                            count,
+                            f"{path.name} line {lineno}: sequence mismatch "
+                            f"(expected {expected_seq}, got {entry.get('seq')!r})",
+                        )
+                    if entry.get("agent_id") != self._identity.agent_id:
+                        return (
+                            False,
+                            count,
+                            f"{path.name} line {lineno}: agent identity mismatch",
+                        )
 
-                # Verify hash chain link
-                stored_prev = entry.get("prev_hash", "")
-                if stored_prev != prev_hash:
-                    return (
-                        False,
-                        count,
-                        f"line {lineno}: hash chain broken "
-                        f"(expected {prev_hash[:12]}..., got {stored_prev[:12]}...)",
-                    )
+                    stored_prev = entry.get("prev_hash", "")
+                    if stored_prev != prev_hash:
+                        return (
+                            False,
+                            count,
+                            f"{path.name} line {lineno}: hash chain broken "
+                            f"(expected {prev_hash[:12]}..., got {stored_prev[:12]}...)",
+                        )
 
-                # Verify signature over canonical entry bytes (without sig field)
-                entry_bytes = json.dumps(
-                    entry, sort_keys=True, separators=(",", ":")
-                ).encode()
-                try:
-                    sig_bytes = bytes.fromhex(sig_hex)
-                except ValueError:
-                    return False, count, f"line {lineno}: invalid sig hex"
+                    entry_bytes = json.dumps(
+                        entry, sort_keys=True, separators=(",", ":")
+                    ).encode()
+                    try:
+                        sig_bytes = bytes.fromhex(sig_hex)
+                    except ValueError:
+                        return (
+                            False,
+                            count,
+                            f"{path.name} line {lineno}: invalid sig hex",
+                        )
 
-                pub_key_bytes = self._identity.public_key_bytes
-                if not AgentIdentity.verify(entry_bytes, sig_bytes, pub_key_bytes):
-                    return False, count, f"line {lineno}: signature invalid"
+                    pub_key_bytes = self._identity.public_key_bytes
+                    if not AgentIdentity.verify(entry_bytes, sig_bytes, pub_key_bytes):
+                        return (
+                            False,
+                            count,
+                            f"{path.name} line {lineno}: signature invalid",
+                        )
 
-                prev_hash = hashlib.sha256(entry_bytes).hexdigest()
-                count += 1
+                    prev_hash = hashlib.sha256(entry_bytes).hexdigest()
+                    count += 1
+                    expected_seq += 1
 
         return True, count, f"{count} entries, all signatures valid, chain intact"
 
     def tail(self, n: int = 10) -> list[dict]:
         """Return the last n entries from the ledger (most recent last)."""
-        if not self._log_path.exists():
-            return []
-        lines = self._log_path.read_text(encoding="utf-8").splitlines()
+        lines: list[str] = []
+        for path in self._ledger_paths():
+            lines.extend(path.read_text(encoding="utf-8").splitlines())
         recent = [ln for ln in lines if ln.strip()][-n:]
         result = []
         for line in recent:
@@ -278,24 +327,25 @@ class AgentLedger:
         return result
 
     def entry_count(self) -> int:
-        """Return the number of entries currently in the ledger."""
-        if not self._log_path.exists():
-            return 0
-        return sum(1 for ln in self._log_path.read_text(encoding="utf-8").splitlines() if ln.strip())
+        """Return the number of entries across sealed and active segments."""
+        total = 0
+        for path in self._ledger_paths():
+            total += sum(
+                1
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            )
+        return total
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _load_last_seq(self) -> int:
         """Read the highest seq number from an existing log, or 0 if empty."""
-        if not self._log_path.exists():
-            return 0
         last = self._last_entry()
         return last.get("seq", 0) if last else 0
 
     def _load_last_hash(self) -> str:
         """Compute the hash of the last entry bytes (for chain continuation)."""
-        if not self._log_path.exists():
-            return GENESIS_HASH
         last = self._last_entry()
         if not last:
             return GENESIS_HASH
@@ -306,15 +356,83 @@ class AgentLedger:
 
     def _last_entry(self) -> Optional[dict]:
         """Return the last non-empty parsed entry, or None."""
-        if not self._log_path.exists():
-            return None
-        lines = [ln for ln in self._log_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        for line in reversed(lines):
-            try:
-                return json.loads(line)
-            except json.JSONDecodeError:
-                continue
+        for path in reversed(self._ledger_paths()):
+            lines = [
+                line
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            for line in reversed(lines):
+                try:
+                    return json.loads(line)
+                except json.JSONDecodeError:
+                    continue
         return None
+
+    @property
+    def archive_paths(self) -> tuple[Path, ...]:
+        """Sealed local segment paths, oldest first."""
+        return tuple(self._archive_paths())
+
+    def _ledger_paths(self) -> list[Path]:
+        paths = self._archive_paths()
+        if self._log_path.exists():
+            paths.append(self._log_path)
+        return paths
+
+    def _archive_dir(self) -> Path:
+        return self._log_path.parent / f"{self._log_path.name}.segments"
+
+    def _archive_paths(self) -> list[Path]:
+        directory = self._archive_dir()
+        if not directory.exists():
+            return []
+        return sorted(directory.glob("segment-*.jsonl"))
+
+    def _current_entry_count(self) -> int:
+        if not self._log_path.exists():
+            return 0
+        with self._log_path.open("r", encoding="utf-8") as handle:
+            return sum(1 for line in handle if line.strip())
+
+    def _rotate_if_needed(self) -> None:
+        if not self._log_path.exists() or self._log_path.stat().st_size == 0:
+            return
+        entry_limit_hit = (
+            self._max_entries_per_segment > 0
+            and self._current_entry_count() >= self._max_entries_per_segment
+        )
+        byte_limit_hit = (
+            self._max_bytes_per_segment > 0
+            and self._log_path.stat().st_size >= self._max_bytes_per_segment
+        )
+        if not entry_limit_hit and not byte_limit_hit:
+            return
+
+        valid, _, message = self.verify()
+        if not valid:
+            raise LedgerIntegrityError(
+                f"refusing to rotate an invalid ledger: {message}"
+            )
+        entries = [
+            json.loads(line)
+            for line in self._log_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        if not entries:
+            return
+        first_seq = int(entries[0]["seq"])
+        last_seq = int(entries[-1]["seq"])
+        archive_dir = self._archive_dir()
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        target = archive_dir / (
+            f"segment-{first_seq:020d}-{last_seq:020d}-{self._prev_hash[:16]}.jsonl"
+        )
+        if target.exists():
+            raise LedgerIntegrityError(
+                f"ledger segment already exists: {target.name}"
+            )
+        os.replace(self._log_path, target)
 
     @staticmethod
     def _default_path(agent_name: str) -> Path:
@@ -352,9 +470,17 @@ class ThreadSafeAgentLedger(AgentLedger):
         identity: AgentIdentity,
         log_path: Optional[Path] = None,
         redact_denied: bool = False,
+        max_entries_per_segment: int = 0,
+        max_bytes_per_segment: int = 0,
     ) -> None:
         self._lock = threading.RLock()
-        super().__init__(identity, log_path, redact_denied=redact_denied)
+        super().__init__(
+            identity,
+            log_path,
+            redact_denied=redact_denied,
+            max_entries_per_segment=max_entries_per_segment,
+            max_bytes_per_segment=max_bytes_per_segment,
+        )
 
     def log(
         self,

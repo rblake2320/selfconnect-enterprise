@@ -49,6 +49,21 @@ class IRSRetentionClass(str, Enum):
     INCIDENT_LOG_LIFE = "incident_log_life"
 
 
+class IRSActionRecordKind(str, Enum):
+    """IRM 10.24.1.8 record categories that may contain action evidence."""
+
+    PROMPT_LOG = "prompt_log"
+    TEST_LOG = "test_log"
+    INCIDENT_LOG = "incident_log"
+
+
+_ACTION_RETENTION = {
+    IRSActionRecordKind.PROMPT_LOG: IRSRetentionClass.PROMPT_LOG_1_YEAR,
+    IRSActionRecordKind.TEST_LOG: IRSRetentionClass.TEST_LOG_UNTIL_REPLACED,
+    IRSActionRecordKind.INCIDENT_LOG: IRSRetentionClass.INCIDENT_LOG_LIFE,
+}
+
+
 def _require_text(name: str, value: str) -> None:
     if not value or not value.strip():
         raise ValueError(f"{name} is required")
@@ -130,6 +145,7 @@ class IRSActionEvidence:
     outcome: str
     input_sha256: str
     output_sha256: str
+    record_kind: IRSActionRecordKind
     high_impact: bool = False
     human_review_status: str = "not_required"
     approval_id: str = ""
@@ -198,17 +214,19 @@ class IRSEvidenceRecorder:
     def record_action(
         self,
         record: IRSActionEvidence,
-        *,
-        retention_class: IRSRetentionClass = IRSRetentionClass.PROMPT_LOG_1_YEAR,
     ) -> dict:
         record.validate()
+        try:
+            retention_class = _ACTION_RETENTION[record.record_kind]
+        except (KeyError, TypeError) as exc:
+            raise ValueError("record_kind must be a supported IRSActionRecordKind") from exc
         return self._ledger.log(
             "irs_ai_action_evidence",
             result=record.outcome,
             metadata={
                 "irs_action": _jsonable(asdict(record)),
                 "retention_class": retention_class.value,
-                "schema": "selfconnect.irs-action-evidence.v1",
+                "schema": "selfconnect.irs-action-evidence.v2",
             },
         )
 
@@ -221,6 +239,7 @@ class IRSEvidenceRecorder:
 
 __all__ = [
     "HighImpactDetermination",
+    "IRSActionRecordKind",
     "IRSActionEvidence",
     "IRSEvidenceRecorder",
     "IRSModelDataRecord",

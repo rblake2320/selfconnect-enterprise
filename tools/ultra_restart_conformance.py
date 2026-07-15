@@ -5,6 +5,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import secrets
 from pathlib import Path
 
@@ -54,6 +55,18 @@ def seed(state_path: Path, server_url: str) -> None:
     else:
         raise RuntimeError("could not provision a HOTP-bearing map after 20 live attempts")
     _verify_gate(gate)
+    original_tsk_client_id = gate.tsk_state.client_id
+    for _attempt in range(20):
+        gate.rotate_tsk()
+        if gate.tsk_state and any(
+            segment.type == "hotp" for segment in gate.tsk_state.segments
+        ):
+            break
+    else:
+        raise RuntimeError("could not rotate to a HOTP-bearing map after 20 attempts")
+    if gate.tsk_state.client_id == original_tsk_client_id:
+        raise RuntimeError("TSK rotation did not change the client identifier")
+    _verify_gate(gate)
     state = {
         "private_key": base64.b64encode(_private_bytes(identity._private_key)).decode("ascii"),
         "mesh_secret": mesh_secret,
@@ -62,7 +75,16 @@ def seed(state_path: Path, server_url: str) -> None:
         "tsk_client_id": gate.tsk_state.client_id if gate.tsk_state else "",
     }
     state_path.write_text(json.dumps(state), encoding="utf-8")
-    print(json.dumps({"ok": True, "phase": "seed", **{k: v for k, v in state.items() if k not in {"private_key", "mesh_secret"}}}))
+    try:
+        os.chmod(state_path, 0o600)
+    except OSError:
+        pass
+    print(json.dumps({
+        "ok": True,
+        "phase": "seed-after-rotation",
+        "original_tsk_client_id": original_tsk_client_id,
+        **{k: v for k, v in state.items() if k not in {"private_key", "mesh_secret"}},
+    }))
 
 
 def verify(state_path: Path, server_url: str) -> None:

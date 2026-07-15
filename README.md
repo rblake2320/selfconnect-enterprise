@@ -31,7 +31,7 @@ system boundary.
 | `enterprise/transport.py` | WM_COPYDATA structured payload transport (64KB atomic JSON; sender HWND is caller-supplied and requires separate validation) |
 | `enterprise/identity.py` | Persistent machine-bound ed25519 agent identity (DPAPI) |
 | `enterprise/identity_cng.py` | CNG-backed identity + CngLedger (ECDSA P-384, SHA-384); FIPS status depends on the validated Windows module and configuration |
-| `enterprise/ledger.py` | AgentLedger — tamper-evident action log (SHA-256 hash chain) |
+| `enterprise/ledger.py` | AgentLedger — signed, tamper-evident SHA-256 chain with verified local segment lifecycle; external witnessing remains separate |
 | `enterprise/crypto.py` | NCrypt ECDSA P-384 / SHA-384 primitives via Windows CNG |
 | `enterprise/policy.py` | PolicyEnforcer — deny-by-default decision pipeline plus composition gate |
 | `enterprise/policy_sign.py` | ECDSA P-384 policy bundle signing and verification (100% coverage) |
@@ -40,7 +40,7 @@ system boundary.
 | `enterprise/governed_runtime.py` | Mandatory enterprise composition for policy, approval, target binding, identity, and signed audit |
 | `enterprise/irs_evidence.py` | Structured IRS integration evidence records; not an IRS system-of-record submission |
 | `enterprise/uia_output.py` | Fail-closed UIA TextPattern output adapter used by governed MCP readback |
-| `ultra_server/` | Signed BPC+TSK lifecycle sidecar; development memory mode and fail-closed PostgreSQL/Redis production mode |
+| `ultra_server/` | Signed BPC+TSK lifecycle sidecar; fail-closed shadow boundary, bounded rate limits, key rotation, development memory mode, and PostgreSQL/Redis production mode |
 | `enterprise/observer.py` | LedgerObserver, ObserverFilter, EvidenceExporter, training pipeline |
 | `enterprise/labels.py` | Classification enum, LabelEnvelope, rank(), le(), ALLOWED_CAVEATS |
 | `enterprise/classified_mode.py` | ClassifiedModeProfile — immutable deployment profile |
@@ -201,6 +201,9 @@ python -m pytest tests/ -q
 ```
 
 SDK submodule pinned to commit hash: `8cf151dbc5f312ce888e51aa429f62960e1a2ee6`
+That source declares package version `0.10.0`. Release conformance verifies the
+installed distribution's `direct_url.json` commit against the full pin; it does
+not infer a newer SDK version from later source tags or feature documents.
 
 ---
 

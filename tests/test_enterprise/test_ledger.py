@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from enterprise.identity import AgentIdentity
-from enterprise.ledger import GENESIS_HASH, AgentLedger
+from enterprise.ledger import GENESIS_HASH, AgentLedger, LedgerIntegrityError
 
 AGENT_NAME = "ledger-test-agent"
 
@@ -219,6 +219,82 @@ class TestContinuity:
         ledger2 = AgentLedger(identity, log_path=log_path)
         entry = ledger2.log("c")  # should be seq=3
         assert entry["seq"] == 3
+
+
+class TestSegmentLifecycle:
+    def test_rotation_preserves_cross_segment_chain_and_tail(self, tmp_path):
+        identity = make_identity(tmp_path)
+        ledger = AgentLedger(
+            identity,
+            log_path=tmp_path / "rotating.jsonl",
+            max_entries_per_segment=2,
+        )
+        for index in range(5):
+            ledger.log(f"action-{index}")
+
+        assert len(ledger.archive_paths) == 2
+        assert ledger.entry_count() == 5
+        assert [entry["seq"] for entry in ledger.tail(3)] == [3, 4, 5]
+        assert ledger.verify()[:2] == (True, 5)
+
+    def test_restart_continues_after_segment_rotation(self, tmp_path):
+        identity = make_identity(tmp_path)
+        log_path = tmp_path / "restart-rotating.jsonl"
+        first = AgentLedger(
+            identity,
+            log_path=log_path,
+            max_entries_per_segment=2,
+        )
+        for index in range(4):
+            first.log(f"before-{index}")
+
+        second = AgentLedger(
+            identity,
+            log_path=log_path,
+            max_entries_per_segment=2,
+        )
+        entry = second.log("after-restart")
+        assert entry["seq"] == 5
+        assert second.verify()[:2] == (True, 5)
+
+    def test_missing_archived_segment_is_detected(self, tmp_path):
+        identity = make_identity(tmp_path)
+        ledger = AgentLedger(
+            identity,
+            log_path=tmp_path / "missing-segment.jsonl",
+            max_entries_per_segment=2,
+        )
+        for index in range(7):
+            ledger.log(f"action-{index}")
+        assert len(ledger.archive_paths) == 3
+
+        ledger.archive_paths[1].unlink()
+        valid, _, message = ledger.verify()
+        assert valid is False
+        assert "sequence mismatch" in message or "hash chain broken" in message
+
+    def test_corrupt_existing_tail_refuses_resume(self, tmp_path):
+        identity = make_identity(tmp_path)
+        log_path = tmp_path / "corrupt-resume.jsonl"
+        ledger = AgentLedger(identity, log_path=log_path)
+        ledger.log("valid")
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write('{"incomplete":')
+
+        with pytest.raises(LedgerIntegrityError, match="refusing to resume"):
+            AgentLedger(identity, log_path=log_path)
+
+    def test_byte_limit_rotates_before_next_append(self, tmp_path):
+        identity = make_identity(tmp_path)
+        ledger = AgentLedger(
+            identity,
+            log_path=tmp_path / "byte-limit.jsonl",
+            max_bytes_per_segment=1,
+        )
+        ledger.log("first")
+        ledger.log("second")
+        assert len(ledger.archive_paths) == 1
+        assert ledger.verify()[:2] == (True, 2)
 
 
 # ── tail() and entry_count() ──────────────────────────────────────────────────

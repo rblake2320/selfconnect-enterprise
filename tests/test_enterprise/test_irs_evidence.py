@@ -6,6 +6,7 @@ import pytest
 from enterprise.identity import AgentIdentity
 from enterprise.irs_evidence import (
     HighImpactDetermination,
+    IRSActionRecordKind,
     IRSActionEvidence,
     IRSEvidenceRecorder,
     IRSModelDataRecord,
@@ -68,6 +69,7 @@ def test_records_use_case_model_data_and_action_in_verified_chain(tmp_path):
             outcome="executed",
             input_sha256="a" * 64,
             output_sha256="b" * 64,
+            record_kind=IRSActionRecordKind.PROMPT_LOG,
             high_impact=True,
             human_review_status="completed",
             approval_id="approval-001",
@@ -95,6 +97,7 @@ def test_executed_high_impact_action_requires_completed_human_review(tmp_path):
         outcome="executed",
         input_sha256="a" * 64,
         output_sha256="b" * 64,
+        record_kind=IRSActionRecordKind.PROMPT_LOG,
         high_impact=True,
         human_review_status="pending",
     )
@@ -115,3 +118,61 @@ def test_deployed_use_case_requires_model_and_data_inventory(tmp_path):
     )
     with pytest.raises(ValueError, match="model_ids and dataset_ids"):
         recorder.record_use_case(record)
+
+
+@pytest.mark.parametrize(
+    ("record_kind", "expected_retention"),
+    [
+        (IRSActionRecordKind.PROMPT_LOG, "prompt_log_1_year"),
+        (IRSActionRecordKind.TEST_LOG, "test_log_until_replaced"),
+        (IRSActionRecordKind.INCIDENT_LOG, "incident_log_life"),
+    ],
+)
+def test_action_record_kind_derives_irm_retention_class(
+    tmp_path,
+    record_kind,
+    expected_retention,
+):
+    recorder = _recorder(tmp_path)
+    entry = recorder.record_action(
+        IRSActionEvidence(
+            event_id=f"EV-{record_kind.value}",
+            timestamp="2026-07-15T07:00:00Z",
+            use_case_id="UC-RETENTION",
+            actor_id="SC-AGENT001",
+            action="record_retention_test",
+            target_system="test-boundary",
+            purpose="validate retention classification",
+            data_categories=(),
+            policy_id="policy-retention",
+            policy_decision="allow",
+            outcome="recorded",
+            input_sha256="a" * 64,
+            output_sha256="b" * 64,
+            record_kind=record_kind,
+        )
+    )
+    assert entry["retention_class"] == expected_retention
+    assert entry["schema"] == "selfconnect.irs-action-evidence.v2"
+
+
+def test_action_record_rejects_unrecognized_record_kind(tmp_path):
+    recorder = _recorder(tmp_path)
+    event = IRSActionEvidence(
+        event_id="EV-invalid-kind",
+        timestamp="2026-07-15T07:00:00Z",
+        use_case_id="UC-RETENTION",
+        actor_id="SC-AGENT001",
+        action="record_retention_test",
+        target_system="test-boundary",
+        purpose="negative test",
+        data_categories=(),
+        policy_id="policy-retention",
+        policy_decision="allow",
+        outcome="recorded",
+        input_sha256="a" * 64,
+        output_sha256="b" * 64,
+        record_kind="other",  # type: ignore[arg-type]
+    )
+    with pytest.raises(ValueError, match="record_kind"):
+        recorder.record_action(event)

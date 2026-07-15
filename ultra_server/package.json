@@ -1,13 +1,23 @@
 {
   "name": "@selfconnect/ultra-server",
   "version": "1.3.0",
+  "private": true,
   "description": "BPC+TSK 7-layer identity verification sidecar for SelfConnect mesh",
   "type": "module",
   "main": "server.js",
+  "files": [
+    ".env.example",
+    "README.md",
+    "agent-auth.js",
+    "recovery-token.js",
+    "runtime-stores.js",
+    "security-boundary.js",
+    "server.js"
+  ],
   "scripts": {
     "start": "node server.js",
     "install-deps": "npm install",
-    "test": "node --test agent-auth.test.mjs runtime-stores.test.mjs",
+    "test": "node --test agent-auth.test.mjs package-content.test.mjs recovery-token.test.mjs runtime-stores.test.mjs security-boundary.test.mjs",
     "test:live": "node server.test.mjs"
   },
   "dependencies": {
