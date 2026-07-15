@@ -98,6 +98,35 @@ test('PostgreSQL stores preserve monotonic counters and atomic idempotency', {
     assert.equal(persisted.segments.find((segment) => segment.segmentId === 'hotp_test').counter, 1);
     assert.equal(persisted.requestCount, 1);
 
+    const validationCommits = await Promise.all([
+      tumblerStore.commitValidation(clientId, {
+        counterMatches: [{ segmentId: 'hotp_test', matchedCounter: 1 }],
+        usedAt: Date.now(),
+      }),
+      tumblerStore.commitValidation(clientId, {
+        counterMatches: [{ segmentId: 'hotp_test', matchedCounter: 1 }],
+        usedAt: Date.now(),
+      }),
+    ]);
+    assert.equal(validationCommits.filter((result) => result.ok).length, 1);
+    assert.equal(
+      validationCommits.filter((result) => result.error === 'TSK_HOTP_REPLAY_DETECTED').length,
+      1,
+    );
+    const committed = await tumblerStore.get(clientId);
+    assert.equal(committed.segments.find((segment) => segment.segmentId === 'hotp_test').counter, 2);
+    assert.equal(committed.requestCount, 2);
+
+    const replacement = {
+      ...map,
+      clientId: rotatedClientId,
+      segments: map.segments.map((segment) => ({ ...segment })),
+    };
+    assert.equal(await tumblerStore.replaceCredential(clientId, replacement), true);
+    assert.equal((await tumblerStore.get(clientId)).status, 'revoked');
+    assert.equal((await tumblerStore.get(rotatedClientId)).status, 'active');
+    assert.equal(await tumblerStore.replaceCredential(clientId, replacement), false);
+
     const claims = await Promise.all([
       idempotency.claim(idemKey, 'test-operation', 'SC-12345678'),
       idempotency.claim(idemKey, 'test-operation', 'SC-12345678'),
@@ -151,6 +180,7 @@ test('PostgreSQL stores preserve monotonic counters and atomic idempotency', {
     await pool.query('DELETE FROM ultra_identity_bindings WHERE pair_id=$1', [pairId]);
     await pool.query('DELETE FROM ultra_idempotency WHERE idempotency_key=$1', [idemKey]);
     await tumblerStore.delete(clientId);
+    await tumblerStore.delete(rotatedClientId);
     await pool.end();
   }
 });

@@ -1,3 +1,5 @@
+import { commitValidationToMap } from '@tsk/server';
+
 export const ULTRA_PG_SCHEMA = `
 CREATE TABLE IF NOT EXISTS ultra_tumbler_maps (
   client_id TEXT PRIMARY KEY,
@@ -201,6 +203,73 @@ export class PgTumblerStore {
       await client.query(
         'UPDATE ultra_tumbler_maps SET map=$2::jsonb, updated_at=NOW() WHERE client_id=$1',
         [clientId, JSON.stringify(map)],
+      );
+      await client.query('COMMIT');
+      return true;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  async commitValidation(clientId, input) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query(
+        'SELECT map FROM ultra_tumbler_maps WHERE client_id=$1 FOR UPDATE', [clientId],
+      );
+      if (!rows[0]) {
+        await client.query('ROLLBACK');
+        return { ok: false, error: 'TSK_KEY_EXPIRED' };
+      }
+      const map = parseMap(rows[0].map);
+      const result = commitValidationToMap(map, input);
+      await client.query(
+        'UPDATE ultra_tumbler_maps SET map=$2::jsonb, updated_at=NOW() WHERE client_id=$1',
+        [clientId, JSON.stringify(map)],
+      );
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  async replaceCredential(oldClientId, replacement) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query(
+        'SELECT map FROM ultra_tumbler_maps WHERE client_id=$1 FOR UPDATE', [oldClientId],
+      );
+      if (!rows[0]) {
+        await client.query('ROLLBACK');
+        return false;
+      }
+      const current = parseMap(rows[0].map);
+      if (current.status !== undefined && current.status !== 'active' && current.status !== 'expiring') {
+        await client.query('ROLLBACK');
+        return false;
+      }
+      const existing = await client.query(
+        'SELECT 1 FROM ultra_tumbler_maps WHERE client_id=$1', [replacement.clientId],
+      );
+      if (existing.rows[0]) {
+        await client.query('ROLLBACK');
+        return false;
+      }
+      current.status = 'revoked';
+      await client.query(
+        'UPDATE ultra_tumbler_maps SET map=$2::jsonb, updated_at=NOW() WHERE client_id=$1',
+        [oldClientId, JSON.stringify(current)],
+      );
+      await client.query(
+        'INSERT INTO ultra_tumbler_maps (client_id, map) VALUES ($1,$2::jsonb)',
+        [replacement.clientId, JSON.stringify(replacement)],
       );
       await client.query('COMMIT');
       return true;

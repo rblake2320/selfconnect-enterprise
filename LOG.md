@@ -54,6 +54,41 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260715-010 - Complete the PostgreSQL TSK validation transaction
+
+**Timestamp (UTC):** 2026-07-15T11:46:01Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, security fix, test
+**Base commit:** `47fa8ba6fbba67c4ef77aa3cdd27ffbe15aa4cd6`
+**Change reference:** commit containing this entry and draft PR #20
+**Why:** [WHY-20260715-008](WHY.md#why-20260715-008)
+**Parked records:** None
+
+**Changed:** Added PostgreSQL implementations of TSK's atomic
+`commitValidation()` and `replaceCredential()` store operations. Expanded the
+live PostgreSQL test to prove a concurrent duplicate produces one commit and
+one replay rejection, all replay-sensitive counters and usage commit together,
+replacement revokes the old credential, and repeated replacement is denied.
+
+**Reason:** Hosted production CI exercised the merged hardened TSK verifier
+against Enterprise's PostgreSQL adapter and found the adapter still implemented
+the older store interface. The resulting missing method failed closed, but
+prevented every production-mode verification.
+
+**Full actions and links:** `ultra_server/runtime-stores.js`,
+`ultra_server/runtime-stores.test.mjs`, draft PR #20, GitHub Actions run
+`29412603725`, and failed job `87342988818`.
+
+**Validation:** The Ultra Node suite passed 15/15 without PostgreSQL. Against a
+fresh digest-pinned PostgreSQL 17.5 container it passed 16/16, including the new
+atomic validation/replacement assertions. Documentation conformance passed
+7/7, the exact hosted actionlint v1.7.12 passed, and `git diff --check` passed.
+Hosted production durability CI must rerun on the containing commit.
+
+**Notes:** This closes the single PostgreSQL-store interface mismatch found by
+the hosted composition run. It does not establish two-node HA or external
+deployment authorization.
+
 ## LOG-20260715-009 - Align CI shell checks with the hosted gate
 
 **Timestamp (UTC):** 2026-07-15T11:42:16Z
