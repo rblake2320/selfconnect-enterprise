@@ -54,6 +54,33 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260715-009 - Align CI shell checks with the hosted gate
+
+**Timestamp (UTC):** 2026-07-15T11:42:16Z
+**Actor:** Codex, requested by the repository owner
+**Category:** test, supply-chain hardening
+**Base commit:** `92356607f22d39ca2051b9c15b4f9fedd94686d4`
+**Change reference:** commit containing this entry and draft PR #20
+**Why:** [WHY-20260715-008](WHY.md#why-20260715-008)
+**Parked records:** None
+
+**Changed:** Replaced two unused Bash retry-loop variables in the production
+Ultra CI job with the conventional `_` placeholder.
+
+**Reason:** Draft PR #20's hosted workflow-syntax job ran actionlint v1.7.12
+with ShellCheck and rejected the dead assignments under SC2034. The correction
+keeps the hard gate intact and removes dead workflow state.
+
+**Full actions and links:** `.github/workflows/ci.yml`, GitHub Actions run
+`29412460642`, job `87342530758`, and draft PR #20.
+
+**Validation:** `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12`
+passed against every `.github/workflows/*.yml` file after the change, and
+`git diff --check` passed. Hosted CI must rerun on the containing commit.
+
+**Notes:** This is a workflow correctness fix. It does not widen any security,
+availability, compliance, or authorization claim.
+
 ## LOG-20260715-008 - Make Ultra authorization authoritative and fail closed
 
 **Timestamp (UTC):** 2026-07-15T11:30:07Z
