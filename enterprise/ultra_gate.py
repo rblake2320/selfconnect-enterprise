@@ -7,15 +7,18 @@ UltraGate is the main integration class that:
      (fast path) or via Ultra Server (full 7-layer), and authorizes or denies.
 
 The BPC layers 1-5 provide device-bound identity, pair registry, secret HMAC,
-anti-replay, and behavioral anomaly. TSK layers 6-7 add tumbler keys with
-structural secrecy. An attacker who compromises ALL BPC credentials still cannot
-forge a TSK key without knowing the server-only positional map.
+anti-replay, and behavioral anomaly. TSK layers 6-7 add a separately provisioned
+shared secret, rotating segments, a checksum, and server-enforced HOTP state.
+The server retains the complete tumbler record. The owning client receives the
+secret and a reduced provisioning view containing segment types, lengths, and
+order, so this module does not claim that the effective layout is hidden from
+that client.
 
-Ultra Server sidecar: Node.js process on localhost:7777, imports @bpc/server and
+Ultra Server sidecar: Node.js process on 127.0.0.1:7777, imports @bpc/server and
 @tsk/server packages directly. Python calls it via HTTP for provisioning and
 full-server verification. Local fast-path verification runs in-process.
 
-Version: 1.0.0  BPC+TSK integration
+Version: 1.3.0  BPC+TSK integration
 """
 from __future__ import annotations
 
@@ -58,7 +61,7 @@ _log = logging.getLogger(__name__)
 # ── Constants ─────────────────────────────────────────────────────────────────
 BPC_VERSION = "1.0"
 TSK_VERSION = "1"
-DEFAULT_SERVER_URL = "http://localhost:7777"
+DEFAULT_SERVER_URL = "http://127.0.0.1:7777"
 NONCE_WINDOW_SEC = 120  # nonces older than this are rejected
 DEFAULT_MESH_SECRET = "SelfConnect-Mesh-Dev-Secret-2026!"  # override via %APPDATA%\SelfConnect\mesh.key
 
@@ -105,10 +108,12 @@ class UltraGate:
         identity: "AgentIdentity",
         mesh_secret: str | None = None,
         server_url: str = DEFAULT_SERVER_URL,
+        admin_token: str | None = None,
     ) -> None:
         self.identity = identity
         self.agent_id: str = identity.agent_id
         self.server_url = server_url.rstrip("/")
+        self._admin_token = admin_token or os.environ.get("ULTRA_ADMIN_TOKEN", "")
         self._mesh_secret = mesh_secret or self._load_mesh_secret()
         self._p256_private = derive_p256_from_ed25519(identity._private_key, self.agent_id)
         self._pub_jwk = p256_public_key_to_jwk(self._p256_private)
@@ -174,24 +179,9 @@ class UltraGate:
         from the client's perspective and requires no pre-shared secret beyond
         the identity keypair that the agent already holds.
         """
-        import base64
-        import hashlib
-        import uuid
-        ts = str(time.time())
-        nonce = str(uuid.uuid4())
-        # Sign: SHA-256(payload_bytes) || ts || nonce
-        payload_hash = hashlib.sha256(payload_bytes).digest()
-        signed_material = payload_hash + ts.encode() + nonce.encode()
-        sig = self.identity.sign(signed_material)
-        return {
-            "X-SC-Agent-Auth": json.dumps({
-                "agent_id": self.agent_id,
-                "pubkey_hex": self.identity.public_key_bytes.hex(),
-                "ts": ts,
-                "nonce": nonce,
-                "sig": base64.b64encode(sig).decode(),
-            }, separators=(",", ":")),
-        }
+        from enterprise.lifecycle_auth import lifecycle_auth_headers
+
+        return lifecycle_auth_headers(self.identity, payload_bytes)
 
     def _register_bpc_pair(self) -> str:
         """POST /register-pair → returns pairId.
@@ -221,6 +211,7 @@ class UltraGate:
             headers={
                 "Content-Type": "application/json",
                 "X-Idempotency-Key": idem_key,
+                **({"Authorization": f"Bearer {self._admin_token}"} if self._admin_token else {}),
                 **auth_headers,
             },
             method="POST",

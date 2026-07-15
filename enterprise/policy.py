@@ -94,16 +94,20 @@ class AgentPolicy:
 
     @classmethod
     def from_dict(cls, agent_id: str, d: dict) -> "AgentPolicy":
+        clearance = d.get("clearance", "UNCLASSIFIED")
+        max_classification = d.get("max_classification", "UNCLASSIFIED")
+        _rank(clearance)
+        _rank(max_classification)
         return cls(
             agent_id                   = agent_id,
             role                       = d.get("role", "unknown"),
-            clearance                  = d.get("clearance", "UNCLASSIFIED"),
+            clearance                  = clearance,
             allowed_targets            = frozenset(d.get("allowed_targets", [])),
             allowed_apps               = frozenset(d.get("allowed_apps", [])),
             blocked_apps               = frozenset(d.get("blocked_apps", [])),
             allowed_actions            = frozenset(d.get("allowed_actions", [])),
             requires_operator_approval = frozenset(d.get("requires_operator_approval", [])),
-            max_classification         = d.get("max_classification", "UNCLASSIFIED"),
+            max_classification         = max_classification,
             revoked                    = bool(d.get("revoked", False)),
         )
 
@@ -332,6 +336,11 @@ class PolicyEnforcer:
                 agent_id=agent_id, action=action,
             )
 
+        try:
+            effective_rank = _rank(effective_classification)
+        except (TypeError, ValueError):
+            return _deny(f"unknown classification {effective_classification!r}")
+
         # 0. Control plane gate (pause / quarantine / revoke)
         if self._control_plane is not None:
             state = self._control_plane.get_state(agent_id)
@@ -345,7 +354,7 @@ class PolicyEnforcer:
         # 0.5. Classified mode profile gate
         if self._profile is not None:
             # Profile classification ceiling (before agent is looked up)
-            if _rank(effective_classification) > _rank(self._profile.max_classification.name):
+            if effective_rank > _rank(self._profile.max_classification.name):
                 return _deny(
                     f"classification {effective_classification!r} exceeds profile "
                     f"ceiling {self._profile.max_classification.name!r}"
@@ -415,7 +424,7 @@ class PolicyEnforcer:
             return _deny(f"action {action!r} not in allowed_actions for {agent_id!r}")
 
         # 8. Classification ceiling
-        if _rank(effective_classification) > _rank(agent.max_classification):
+        if effective_rank > _rank(agent.max_classification):
             return _deny(
                 f"classification {effective_classification!r} exceeds max "
                 f"{agent.max_classification!r} for {agent_id!r}"

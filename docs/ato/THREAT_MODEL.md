@@ -45,14 +45,19 @@ Trust boundaries:
 Any process in the same Windows session can call `RegisterClassExW` with any class name string, including `CASCADIA_HOSTING_WINDOW_CLASS`. `GetClassNameW` returns the class name as a string — it does not verify the owning executable. An attacker who registers a fake terminal class and creates a visible window could receive injection payloads intended for the legitimate terminal.
 
 **Mitigated By:**  
-`target_guard.py:TERMINAL_CLASS_TO_EXE` mapping — when `require_terminal=True` and the window class is in the map, `QueryFullProcessImageNameW` is called to get the kernel's image path for the owning process. This is a kernel-protected path: the target process cannot modify what the kernel reports. The owning executable must match `WindowsTerminal.exe` (for `CASCADIA_HOSTING_WINDOW_CLASS`) or `conhost.exe` (for `ConsoleWindowClass`) — any mismatch is logged and refused:
+`target_guard.py:TERMINAL_CLASS_TO_EXE` and `_trusted_terminal_image()` — when
+`require_terminal=True`, `QueryFullProcessImageNameW` obtains the OS-reported
+owning image path. Supported classes are accepted only for named executables in
+protected Windows, WindowsApps, or PowerShell installation roots. A matching
+basename in a user-writable directory is refused:
 ```python
-if exe.lower() != required_exe.lower():
-    r.append(f"class {cls!r} requires exe {required_exe!r} but owning process is"
-             f" {exe!r} — possible class-name spoof (WRAITH-001)")
+if not _trusted_terminal_image(cls, exe_path):
+    r.append("...possible class-name spoof (WRAITH-001)")
 ```
 
-**Residual Risk:** LOW — Kernel image path verification cannot be spoofed by a user-mode process. An attacker would need kernel-level code execution to fake `QueryFullProcessImageNameW`.
+**Residual Risk:** LOW within the tested local-user threat model. The check does
+not validate an Authenticode signer and does not protect a compromised trusted
+binary, administrator-controlled protected directory, or kernel.
 
 ---
 
@@ -233,7 +238,9 @@ WM_CHAR injection is semantically valid for ConPTY terminals but destructive in 
 **Mitigated By:**  
 `verify_target()` in `target_guard.py` checks `cls in allow_classes` (the set of ConPTY terminal classes). Any non-terminal class produces `reasons.append(f"class {cls!r} is not a ConPTY terminal")` and `ok=False`. `assert_safe_target()` raises `PermissionError` on failure.
 
-**Residual Risk:** NEGLIGIBLE — The terminal class whitelist is explicit and kernel-path-verified.
+**Residual Risk:** LOW for supported protected-path terminal images. Unmapped
+terminal classes fail closed; deployment-specific terminal variants require a
+reviewed protected-path policy and live delivery confirmation.
 
 ---
 

@@ -1,55 +1,37 @@
-# SelfConnect Enterprise — Authority to Operate (ATO) Package
+# SelfConnect Enterprise — ATO Evidence Support Package
 
 **Version:** 1.2.3  
 **Date:** 2026-06-18  
-**Classification:** UNCLASSIFIED // FOR OFFICIAL USE ONLY  
-**Prepared by:** UltraSecure Developer Team  
-**ATO Sponsor:** [Authorizing Official Placeholder]
+**Repository data marking:** UNCLASSIFIED
+**Authorization status:** Engineering evidence only; no ATO, IATT, PA, or Impact Level authorization
 
 ---
 
 ## Executive Summary
 
-SelfConnect Enterprise is an OS-native AI peer mesh communication system for Windows 10/11
-(x64). It enables authenticated, audited, policy-controlled inter-process messaging between
-AI agent processes running within the same Windows user session, using only kernel-verified
-OS primitives — no network stack, no third-party middleware, no kernel drivers.
+SelfConnect Enterprise contains engineering controls and evidence artifacts that can
+support a future authorization package for an explicitly defined Windows deployment.
+Repository tests do not create an authorization, approve a system boundary, establish a
+cloud Impact Level, or authorize processing of government data.
 
-The system provides three core security guarantees that differentiate it from conventional
-message-passing frameworks:
+The strongest current composed path is `GovernedRuntime`: it requires an externally pinned
+signed policy, persistent cryptographic identity and signed ledger, active ControlPlane,
+live HWND/PID/class/protected-image binding, applicable one-time operator approval, and UIA
+confirmation of newly visible injected text. A full live conformance PASS additionally
+requires an execution-output token that is absent from the injected command and appears
+only after the target executes it.
 
-**Kernel-verified identity.** Every message sender is authenticated via a 7-layer cascade:
-full BPC+TSK cryptographic verification at Layer 0, degrading under controlled conditions to
-ed25519 birth-tag verification (Layer 2) as the worst-case in enforce mode. Agent identities
-are ed25519 key pairs stored as DPAPI-encrypted blobs bound to the Windows user SID and
-machine SID — they cannot be decrypted on any other machine or by any other account. The
-`AgentIdentity` class (`enterprise/identity.py`) implements this binding; the
-`DegradationCascade` class (`enterprise/identity_gate.py`) enforces that production enforce
-mode never falls below Layer 2. Emergency bypass requires BOTH a Named Mutex AND a valid
-DPAPI-signed Registry token with a 1-hour TTL, preventing unprivileged malware from
-triggering a downgrade by simply creating a mutex.
+Other modules, including `IdentityGate`, `DegradationCascade`, and low-level SDK send
+functions, have narrower contracts. Their component tests do not imply that every caller
+uses the complete governed composition. DPAPI-backed keys are scoped to the Windows user
+and machine mechanisms used by the implementation; TPM/CNG and deployment-specific FIPS
+claims require separate configuration and evidence.
 
-**Fail-closed actuation.** The `IdentityGate` (`enterprise/identity_gate.py`) operates in
-one of three modes — `bypass`, `audit`, `enforce` — with `audit` as the safe default. In
-`enforce` mode, any injection that fails verification raises `InjectionDeniedError` and is
-blocked before it reaches the target window. The `SC_STRICT_ENFORCE=1` flag eliminates the
-degradation-to-Level-2 path on network failure, preventing an attacker from forcing a
-downgrade by blocking the local Ultra Server on port 7777. The `TargetGuard`
-(`experiments/win32_probe/target_guard.py`) adds a second fail-closed layer: it verifies the
-live window's class, owning process image path (via kernel `QueryFullProcessImageNameW`, not
-spoofable), PID, and title substring before any injection is attempted.
-
-**Per-action audit receipts.** Every call to `gated_send_string()` emits structured log
-records at DEBUG (pass), WARNING (degraded), ERROR (blocked), or CRITICAL (emergency bypass)
-severity. The audit ledger (`enterprise/ledger.py`) maintains tamper-evident records. The
-dependency integrity test suite (`tests/test_enterprise/test_dependency_integrity.py`)
-verifies supply chain integrity against the AXIOS-1 through MCP-2 attack patterns at every
-CI run.
-
-This ATO package covers the Windows 10/11 x64 deployment surface, with and without TPM 2.0.
-The known gap when TPM is absent (DPAPI root key offline extraction risk) is documented,
-actively monitored via `_check_tpm_available()`, and logged at CRITICAL severity at startup
-to ensure operator awareness.
+`TargetGuard` reads the owning image path through `QueryFullProcessImageNameW` and restricts
+supported Windows Terminal and classic-console classes to protected installation roots.
+This raises the cost of class-name spoofing but is not a kernel identity or non-repudiation
+claim. The remaining gaps and external evidence requirements are tracked in `GAPS.md` and
+`docs/compliance/gap-analysis.md`.
 
 ---
 
@@ -57,7 +39,7 @@ to ensure operator awareness.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                     AUTHORIZATION BOUNDARY                                  │
+│                     CANDIDATE ENGINEERING BOUNDARY                          │
 │                     Windows 10/11 x64 User Session                         │
 │                                                                             │
 │  ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────────┐   │
@@ -88,14 +70,14 @@ to ensure operator awareness.
 │  │         TargetGuard                      │                             │
 │  │  IsWindow / GetClassNameW /              │                             │
 │  │  QueryFullProcessImageNameW              │                             │
-│  │  (kernel path — not spoofable)           │                             │
+│  │  (protected image-path policy)            │                             │
 │  │  Checks: is_terminal, exe match,         │                             │
 │  │          pid match, title substr         │                             │
 │  └─────────────────────────┬────────────────┘                             │
 │                            │                                               │
 │                            ▼ Win32 PostMessage                             │
 │  ┌───────────────────────────────────────────────────────────────────┐    │
-│  │  Target Window (ConPTY — WindowsTerminal.exe / conhost.exe)       │    │
+│  │  Target Window (approved protected terminal image)                │    │
 │  └───────────────────────────────────────────────────────────────────┘    │
 │                                                                             │
 │  ┌──────────────────────────────────────────────────────────────────────┐  │
@@ -167,21 +149,22 @@ to ensure operator awareness.
 
 ---
 
-## Security Claim
+## Bounded Engineering Claims
 
-> **OS-native AI peer mesh with kernel-verified identity, fail-closed actuation, and per-action audit receipts.**
+The repository implements and exercises OS-native terminal routing, cryptographic agent
+identities, policy and operator gates, protected-path target validation, and signed
+hash-chained audit records. The mandatory `GovernedRuntime` composition is the only path in
+this repository that may be described as governed actuation without further qualification.
 
-This claim is substantiated by:
-
-1. **Kernel-verified identity** — `QueryFullProcessImageNameW` (kernel image path) is used in `target_guard.py` for exe verification; DPAPI binds agent keys to machine + user SID at the OS level; TPM-backed signing is available via `tpm_identity` and demonstrated in `chained_channel.py`.
-
-2. **Fail-closed actuation** — `get_current_mode()` defaults to `audit` (never `bypass`) when `SC_IDENTITY_MODE` is unset (WRAITH-003 fix); `enforce` mode blocks injection on any verification failure; `SC_STRICT_ENFORCE=1` fails closed on network errors (Gap 4 fix); emergency bypass requires dual-factor (mutex + DPAPI token, Gap 1 fix).
-
-3. **Per-action audit receipts** — every `gated_send_string()` call produces a structured log entry; `enterprise/ledger.py` maintains tamper-evident records; supply chain integrity is verified at CI time via `test_dependency_integrity.py`.
+`QueryFullProcessImageNameW` supplies the OS-reported owning image path; SelfConnect then
+checks that path against protected installation roots. This is target validation, not
+cryptographic identity. `gated_send_string()` logging is also not equivalent to a confirmed
+delivery receipt. Confirmed delivery requires a new UIA-visible payload occurrence, and
+confirmed execution requires a separately observed effect.
 
 ---
 
-## Scope of ATO
+## Evidence Scope
 
 | Dimension | In Scope | Out of Scope |
 |-----------|----------|--------------|
@@ -192,4 +175,4 @@ This claim is substantiated by:
 | Network | Localhost only (Ultra Server on 127.0.0.1:7777) | Remote network |
 | Privilege | Standard user | Administrator / SYSTEM |
 | Transport | Win32 PostMessage (WM_CHAR), Named Pipe (DACL) | Network sockets, COM |
-| Terminals | WindowsTerminal.exe, conhost.exe | All other window classes |
+| Terminals | Protected Windows Terminal package; protected classic console images | Unmapped or user-writable terminal images |

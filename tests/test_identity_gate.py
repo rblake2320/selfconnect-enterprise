@@ -517,25 +517,40 @@ class TestKeyRecovery:
         from enterprise.key_recovery import check_peer_recovery
 
         # Skip if Ultra Server is not running
-        server_url = "http://localhost:7777"
+        server_url = "http://127.0.0.1:7777"
         try:
-            urllib.request.urlopen(f"{server_url}/status", timeout=2)
+            urllib.request.urlopen(f"{server_url}/health", timeout=2)
         except Exception:
             pytest.skip("Ultra Server not available on localhost:7777")
 
+        admin_token = os.environ.get("ULTRA_ADMIN_TOKEN", "")
+        if not admin_token:
+            if os.environ.get("SC_REQUIRE_ULTRA_SERVER") == "1":
+                pytest.fail("ULTRA_ADMIN_TOKEN is required by the live Ultra conformance run")
+            pytest.skip("ULTRA_ADMIN_TOKEN is not configured")
+
+        from enterprise.identity import AgentIdentity
+        from enterprise.lifecycle_auth import lifecycle_auth_headers
+
         agent_name = "test-agent-gap2"
-        fake_pubkey_hex = "ab" * 32  # 32 bytes = 64 hex chars
+        identity = AgentIdentity.init(agent_name, data_dir=tmp_path / "identity")
+        pubkey_hex = identity.public_key_bytes.hex()
 
         # Get a real server-signed token from the Ultra Server
         payload = json.dumps({
             "agentName": agent_name,
-            "newPubHex": fake_pubkey_hex,
+            "agentId": identity.agent_id,
+            "newPubHex": pubkey_hex,
             "challengeHash": "deadbeef",
-        }).encode("utf-8")
+        }, separators=(",", ":")).encode("utf-8")
         req = urllib.request.Request(
             f"{server_url}/confirm-recovery",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {admin_token}",
+                **lifecycle_auth_headers(identity, payload),
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -546,14 +561,14 @@ class TestKeyRecovery:
         # Write recovery.pub and recovery.token
         pub_path = tmp_path / "SelfConnect" / agent_name
         pub_path.mkdir(parents=True, exist_ok=True)
-        (pub_path / "recovery.pub").write_text(fake_pubkey_hex + "\n", encoding="utf-8")
+        (pub_path / "recovery.pub").write_text(pubkey_hex + "\n", encoding="utf-8")
         (pub_path / "recovery.token").write_text(
             json.dumps(token), encoding="utf-8"
         )
 
         result = check_peer_recovery(0x1234, agent_name, server_url=server_url)
         assert result is not None, "check_peer_recovery returned None despite valid token"
-        assert result.hex() == fake_pubkey_hex
+        assert result.hex() == pubkey_hex
 
     def test_recovery_pub_without_token_is_rejected(self, tmp_path, monkeypatch):
         """Gap 2: recovery.pub without recovery.token MUST be rejected.

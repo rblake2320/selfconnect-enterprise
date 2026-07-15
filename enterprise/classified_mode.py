@@ -6,7 +6,7 @@ agent startup; governs all runtime behavior for the session.
 A ClassifiedModeProfile specifies:
     - Classification ceiling for all operations
     - Permitted caveats
-    - Whether CNG identity (FIPS 140-2) is required (rejecting DPAPI fallback)
+    - Whether CNG identity is required (rejecting DPAPI fallback)
     - Whether unsigned policies are accepted
     - Whether outbound cloud/LLM API calls are permitted
     - Whether EvidenceExporter may write training data to disk
@@ -170,8 +170,8 @@ class ClassifiedModeProfile:
         raw_cls = d.get("max_classification", "UNCLASSIFIED")
         try:
             max_cls = Classification[raw_cls.upper()] if isinstance(raw_cls, str) else Classification(raw_cls)
-        except (KeyError, ValueError):
-            max_cls = Classification.UNCLASSIFIED
+        except (KeyError, ValueError) as exc:
+            raise ValueError(f"unknown max_classification: {raw_cls!r}") from exc
 
         return cls(
             profile_id                    = str(d.get("profile_id", "")),
@@ -254,7 +254,7 @@ class ClassifiedModeProfile:
 
         - Ceiling: SECRET
         - Caveats: SI, NOFORN only
-        - CNG identity required (FIPS 140-2)
+        - CNG identity required; deployment validation is assessed separately
         - Signed policy required
         - No cloud egress
         - No export (training data write disabled)

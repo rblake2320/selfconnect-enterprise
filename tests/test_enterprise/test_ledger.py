@@ -9,6 +9,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from enterprise.identity import AgentIdentity
 from enterprise.ledger import GENESIS_HASH, AgentLedger
 
@@ -92,6 +94,13 @@ class TestLog:
         ledger = make_ledger(tmp_path)
         entry = ledger.log("act", metadata={"target_hwnd": 0xABC})
         assert entry["target_hwnd"] == 0xABC
+
+    @pytest.mark.parametrize("field", ["seq", "agent_id", "action", "result", "ts", "prev_hash", "sig"])
+    def test_reserved_metadata_cannot_overwrite_signed_core(self, tmp_path, field):
+        ledger = make_ledger(tmp_path)
+        with pytest.raises(ValueError, match="reserved ledger fields"):
+            ledger.log("act", metadata={field: "attacker-controlled"})
+        assert ledger.entry_count() == 0
 
     def test_appends_to_file(self, tmp_path):
         ledger = make_ledger(tmp_path)

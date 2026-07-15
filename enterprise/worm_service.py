@@ -23,6 +23,7 @@ from enterprise.provenance import (
     CloudflareR2Sink,
     InMemoryWitnessSink,
     ProvenanceRecorder,
+    ReplicationError,
     ReplicationSink,
     S3ObjectLockSink,
 )
@@ -55,7 +56,7 @@ def _to_provenance_mode(audit_mode: AuditMode) -> ProvenanceAuditMode:
 # ---------------------------------------------------------------------------
 
 class FileReplicationSink(ReplicationSink):
-    """Append-only NDJSON file sink for WORM replication.
+    """Append-only NDJSON file replica for recovery and local witnessing.
 
     Writes one JSON line per event to a .ndjson file under *file_dir*.
     Uses write-to-temp + atomic rename-on-segment-close semantics: individual
@@ -157,6 +158,7 @@ def make_replication_sink(config: AuditConfig) -> Optional[ReplicationSink]:
             bucket=config.worm_bucket,
             prefix=config.worm_prefix,
             region_name=config.worm_region,
+            retention_days=config.worm_min_retention_days,
         )
 
     if sink_type == WormSinkType.R2:
@@ -175,6 +177,10 @@ def make_replication_sink(config: AuditConfig) -> Optional[ReplicationSink]:
             prefix=config.worm_prefix,
             endpoint_url=config.worm_endpoint,
             region_name=config.worm_region,
+            account_id=config.r2_account_id,
+            api_token=config.r2_api_token,
+            jurisdiction=config.r2_jurisdiction,
+            minimum_retention_days=config.worm_min_retention_days,
         )
 
     # Unknown sink type — should not happen given enum validation in AuditConfig.
@@ -185,7 +191,13 @@ def make_replication_sink(config: AuditConfig) -> Optional[ReplicationSink]:
 # build_provenance_recorder
 # ---------------------------------------------------------------------------
 
-def build_provenance_recorder(config: AuditConfig, session_id: str) -> ProvenanceRecorder:
+def build_provenance_recorder(
+    config: AuditConfig,
+    session_id: str,
+    *,
+    identity=None,
+    orchestrator_token: str | None = None,
+) -> ProvenanceRecorder:
     """Build a ProvenanceRecorder wired with the correct ReplicationSink.
 
     Raises WormServiceError if:
@@ -205,21 +217,40 @@ def build_provenance_recorder(config: AuditConfig, session_id: str) -> Provenanc
         )
         sink = None
 
-    # Government mode: refuse to start without a real sink (fail-closed).
-    if config.fail_closed_without_worm() and sink is None:
+    # Government mode: local and in-memory copies are replication aids, not
+    # externally enforced immutable retention boundaries.
+    if config.fail_closed_without_worm() and not isinstance(
+        sink,
+        (S3ObjectLockSink, CloudflareR2Sink),
+    ):
         raise WormServiceError(
-            "government audit mode requires a WORM replication sink. "
-            "Configure SCENT_WORM_SINK to one of: memory, file, s3, r2."
+            "government audit mode requires a live, externally enforced S3 Object Lock "
+            "or Cloudflare R2 bucket-lock sink; memory and file are not WORM"
         )
 
-    # Enterprise mode with only memory sink: AU-9 compliance warning.
+    retention_evidence = None
+    if config.requires_worm() and isinstance(sink, (S3ObjectLockSink, CloudflareR2Sink)):
+        try:
+            retention_evidence = sink.verify_retention_configuration()
+        except ReplicationError as exc:
+            raise WormServiceError(
+                f"configured immutable sink did not pass live retention verification: {exc}"
+            ) from exc
+        logger.info(
+            "Live immutable-retention configuration verified: backend=%s bucket=%s",
+            retention_evidence["backend"],
+            retention_evidence["bucket"],
+        )
+
+    # Enterprise mode without a provider-enforced retention sink: warn clearly.
     if (
         config.audit_mode == AuditMode.ENTERPRISE
-        and isinstance(sink, InMemoryWitnessSink)
+        and not isinstance(sink, (S3ObjectLockSink, CloudflareR2Sink))
     ):
         logger.warning(
-            "AU-9 compliance warning: enterprise mode is using InMemoryWitnessSink. "
-            "Off-host WORM replication (file, s3, r2) is required for AU-9."
+            "Enterprise audit mode has no live-verified immutable retention sink. "
+            "Memory and file sinks are replicas only; configure S3 Object Lock or "
+            "Cloudflare R2 bucket lock and validate the deployment."
         )
 
     provenance_mode = _to_provenance_mode(config.audit_mode)
@@ -228,5 +259,7 @@ def build_provenance_recorder(config: AuditConfig, session_id: str) -> Provenanc
         session_id=session_id,
         agent_id="scent-service",
         audit_mode=provenance_mode,
+        identity=identity,
+        orchestrator_token=orchestrator_token,
         replication_sink=sink,
     )

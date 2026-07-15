@@ -44,7 +44,7 @@ from enterprise.observer import (  # noqa: F401
     ShadowHook,
     TrainingTrigger,
 )
-from enterprise.operator import OperatorQueue, PendingApproval  # noqa: F401
+from enterprise.operator import DurableOperatorQueue, OperatorQueue, PendingApproval  # noqa: F401
 from enterprise.policy import AgentPolicy, PolicyBundle, PolicyDecision, PolicyEnforcer, make_bundle  # noqa: F401
 from enterprise.discovery_config import (  # noqa: F401
     HANDSHAKE_BACKOFF_SEC,
@@ -96,6 +96,16 @@ from enterprise.identity_gate import (  # noqa: F401
     MODE_ENFORCE,
 )
 from enterprise.mcp_dispatch import MCPDispatcher, dispatch_tool, get_default_dispatcher  # noqa: F401
+from enterprise.governed_runtime import GovernedRuntime, RuntimeConfigurationError  # noqa: F401
+from enterprise.irs_evidence import (  # noqa: F401
+    HighImpactDetermination,
+    IRSActionEvidence,
+    IRSEvidenceRecorder,
+    IRSModelDataRecord,
+    IRSRetentionClass,
+    IRSStage,
+    IRSUseCaseRecord,
+)
 from enterprise.key_recovery import (  # noqa: F401
     RecoveryManager,
     check_peer_recovery,

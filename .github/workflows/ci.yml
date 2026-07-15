@@ -12,10 +12,10 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
@@ -25,8 +25,8 @@ jobs:
           pip install "pytest>=8" "ruff>=0.4" "hypothesis>=6.0" pywin32 "cryptography>=48.0.1" comtypes "rich>=13.0"
           pip install -e . --no-deps
 
-      - name: Lint (ruff — enterprise + tests + tools)
-        run: python -m ruff check enterprise tests tools
+      - name: Lint (ruff — complete repository)
+        run: python -m ruff check .
 
       - name: Unit tests
         run: python -m pytest -q --tb=short
@@ -42,7 +42,7 @@ jobs:
           )
           output = result.stdout + result.stderr
 
-          # Parse summary line: "716 passed, 0 failed" or "716 passed"
+          # Parse pytest's summary without hard-coding a release-wide result.
           m = re.search(r'(\d+) passed', output)
           if not m:
               print("FAIL: could not parse test count from pytest output.")
@@ -56,10 +56,8 @@ jobs:
           skipped_m = re.search(r'(\d+) skipped', output)
           skipped = int(skipped_m.group(1)) if skipped_m else 0
 
-          # 28 skips: test_e2e_ultra_gate.py — require a live Ultra Server process
-          # 1 skip:  test_identity_gate.py — requires the same live Ultra Server
-          # 1 skip:  test_selfconnect_declared_deps_match_installed — sdk/ submodule
-          #          not checked out in CI (private repo, --no-deps install)
+          # These tests require live Windows/Ultra infrastructure or the private
+          # SDK submodule and are separately exercised by live conformance runs.
           WIN32_SESSION_SKIPS = 30
 
           print(f"Results: {passed} passed, {failed} failed, {skipped} skipped")
@@ -78,3 +76,198 @@ jobs:
               sys.exit(1)
 
           print(f"OK: {passed} passed, {failed} failed, {skipped} skipped ({WIN32_SESSION_SKIPS} are expected CI-environment skips)")
+
+  ultra-contract-windows:
+    name: Ultra live contract (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Checkout pinned BPC and TSK protocol sources
+        shell: pwsh
+        run: |
+          $depsRoot = Split-Path $env:GITHUB_WORKSPACE -Parent
+          git clone https://github.com/rblake2320/bpc-protocol.git "$depsRoot\bpc-protocol"
+          git -C "$depsRoot\bpc-protocol" checkout d023c248d7661f1211081771075a900c65fb77ed
+          git clone https://github.com/rblake2320/tsk-protocol.git "$depsRoot\tsk-protocol"
+          git -C "$depsRoot\tsk-protocol" checkout 235f644f8ac84998802ffe4ddba6c34dfb5fdcb1
+
+      - name: Build pinned protocol dependencies
+        shell: pwsh
+        run: |
+          $depsRoot = Split-Path $env:GITHUB_WORKSPACE -Parent
+          Push-Location "$depsRoot\bpc-protocol"
+          npm ci
+          npm run build
+          Pop-Location
+          Push-Location "$depsRoot\tsk-protocol"
+          npm ci
+          npm run build
+          Pop-Location
+          Push-Location ultra_server
+          npm ci
+          npm test
+          Pop-Location
+
+      - name: Install Python contract dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pytest>=8" "cryptography>=48.0.1" pywin32
+          pip install -e . --no-deps
+
+      - name: Start development sidecar
+        shell: pwsh
+        env:
+          ULTRA_ADMIN_TOKEN: ci-live-ultra-admin-token-2026
+        run: |
+          $process = Start-Process node -ArgumentList 'server.js' `
+            -WorkingDirectory "$env:GITHUB_WORKSPACE\ultra_server" `
+            -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\ultra.stdout.log" `
+            -RedirectStandardError "$env:RUNNER_TEMP\ultra.stderr.log"
+          $process.Id | Set-Content "$env:RUNNER_TEMP\ultra.pid"
+          for ($attempt = 0; $attempt -lt 30; $attempt++) {
+            try {
+              Invoke-RestMethod http://127.0.0.1:7777/health | Out-Null
+              exit 0
+            } catch { Start-Sleep -Seconds 1 }
+          }
+          throw 'Ultra Server did not become healthy'
+
+      - name: Run live Node and Python contracts
+        shell: pwsh
+        env:
+          ULTRA_ADMIN_TOKEN: ci-live-ultra-admin-token-2026
+          SC_REQUIRE_ULTRA_SERVER: "1"
+        run: |
+          Push-Location ultra_server
+          npm run test:live
+          Pop-Location
+          python -m pytest tests/test_e2e_ultra_gate.py tests/test_identity_gate.py -q --tb=short
+
+      - name: Print sidecar logs and stop
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Content "$env:RUNNER_TEMP\ultra.stdout.log" -ErrorAction SilentlyContinue
+          Get-Content "$env:RUNNER_TEMP\ultra.stderr.log" -ErrorAction SilentlyContinue
+          if (Test-Path "$env:RUNNER_TEMP\ultra.pid") {
+            Stop-Process -Id (Get-Content "$env:RUNNER_TEMP\ultra.pid") -Force -ErrorAction SilentlyContinue
+          }
+
+  ultra-production-restart:
+    name: Ultra production durability (PostgreSQL + Redis)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ultra
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ultra"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      ULTRA_RUNTIME_MODE: production
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ultra
+      REDIS_URL: redis://127.0.0.1:6379/0
+      ULTRA_ADMIN_TOKEN: ci-production-ultra-admin-token-2026
+      ULTRA_RECOVERY_HMAC_KEY: ci-production-recovery-hmac-key-2026
+      SC_REQUIRE_ULTRA_SERVER: "1"
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Checkout and build pinned protocol sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          deps_root="$(dirname "$GITHUB_WORKSPACE")"
+          git clone https://github.com/rblake2320/bpc-protocol.git "$deps_root/bpc-protocol"
+          git -C "$deps_root/bpc-protocol" checkout d023c248d7661f1211081771075a900c65fb77ed
+          git clone https://github.com/rblake2320/tsk-protocol.git "$deps_root/tsk-protocol"
+          git -C "$deps_root/tsk-protocol" checkout 235f644f8ac84998802ffe4ddba6c34dfb5fdcb1
+          npm ci --prefix "$deps_root/bpc-protocol"
+          npm run build --prefix "$deps_root/bpc-protocol"
+          npm ci --prefix "$deps_root/tsk-protocol"
+          npm run build --prefix "$deps_root/tsk-protocol"
+          npm ci --prefix ultra_server
+          npm test --prefix ultra_server
+
+      - name: Install Python contract dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pytest>=8" "cryptography>=48.0.1"
+          pip install -e . --no-deps
+
+      - name: Start production sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          node ultra_server/server.js >"$RUNNER_TEMP/ultra.stdout.log" 2>"$RUNNER_TEMP/ultra.stderr.log" &
+          echo $! >"$RUNNER_TEMP/ultra.pid"
+          for attempt in $(seq 1 30); do
+            curl --fail --silent http://127.0.0.1:7777/health >/dev/null && exit 0
+            sleep 1
+          done
+          exit 1
+
+      - name: Run live production contracts and seed restart proof
+        run: |
+          npm run test:live --prefix ultra_server
+          python -m pytest tests/test_e2e_ultra_gate.py -q --tb=short
+          python -m tools.ultra_restart_conformance seed --state "$RUNNER_TEMP/ultra-restart.json"
+
+      - name: Restart sidecar and verify durable identity continuity
+        shell: bash
+        run: |
+          set -euo pipefail
+          kill "$(cat "$RUNNER_TEMP/ultra.pid")"
+          wait "$(cat "$RUNNER_TEMP/ultra.pid")" || true
+          node ultra_server/server.js >>"$RUNNER_TEMP/ultra.stdout.log" 2>>"$RUNNER_TEMP/ultra.stderr.log" &
+          echo $! >"$RUNNER_TEMP/ultra.pid"
+          for attempt in $(seq 1 30); do
+            curl --fail --silent http://127.0.0.1:7777/health >/dev/null && break
+            sleep 1
+          done
+          python -m tools.ultra_restart_conformance verify --state "$RUNNER_TEMP/ultra-restart.json"
+
+      - name: Print sidecar logs and stop
+        if: always()
+        shell: bash
+        run: |
+          cat "$RUNNER_TEMP/ultra.stdout.log" 2>/dev/null || true
+          cat "$RUNNER_TEMP/ultra.stderr.log" 2>/dev/null || true
+          test ! -f "$RUNNER_TEMP/ultra.pid" || kill "$(cat "$RUNNER_TEMP/ultra.pid")" 2>/dev/null || true

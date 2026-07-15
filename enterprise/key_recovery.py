@@ -48,7 +48,7 @@ _log = logging.getLogger(__name__)
 # ── Constants ─────────────────────────────────────────────────────────────────
 RECOVERY_WINDOW_SEC: int = int(os.environ.get("SC_RECOVERY_WINDOW_SEC", "60"))
 PROP_RECOVERY = "SCRECOVERY"  # Set to "1" on HWND during recovery window
-DEFAULT_SERVER_URL = "http://localhost:7777"
+DEFAULT_SERVER_URL = "http://127.0.0.1:7777"
 
 # ── Gap 2: Server confirmation token verification ─────────────────────────────
 # The Ultra Server signs recovery confirmations with an HMAC-SHA256 key that
@@ -99,9 +99,15 @@ class RecoveryManager:
             mgr.notify_peers(listener_hwnd=my_hwnd)
     """
 
-    def __init__(self, agent_name: str, server_url: str = DEFAULT_SERVER_URL) -> None:
+    def __init__(
+        self,
+        agent_name: str,
+        server_url: str = DEFAULT_SERVER_URL,
+        admin_token: str | None = None,
+    ) -> None:
         self.agent_name = agent_name
         self.server_url = server_url.rstrip("/")
+        self.admin_token = admin_token or os.environ.get("ULTRA_ADMIN_TOKEN", "")
         self._recovery_start: float = 0.0
         self._new_pub_hex: str = ""
 
@@ -175,24 +181,32 @@ class RecoveryManager:
 
         Returns the token dict: { agent_name, new_pub_hex, issued_at, sig }
         """
-        from enterprise.bpc_crypto import sign_payload
+        from enterprise.lifecycle_auth import lifecycle_auth_headers
 
-        # Proof of possession: sign a challenge with the new private key
-        challenge = f"recovery:{self.agent_name}:{self._new_pub_hex}:{int(time.time())}"
+        if not self.admin_token:
+            raise RuntimeError(
+                "ULTRA_ADMIN_TOKEN is required for operator-authorized identity recovery"
+            )
+
+        challenge = f"recovery:{self.agent_name}:{identity.agent_id}:{int(time.time())}"
         challenge_hash = hashlib.sha256(challenge.encode()).hexdigest()
-        signature = sign_payload(identity._private_key, {"challenge_hash": challenge_hash})
 
         payload = json.dumps({
             "agentName": self.agent_name,
+            "agentId": identity.agent_id,
             "newPubHex": self._new_pub_hex,
             "challengeHash": challenge_hash,
-            "signature": signature,
-        }).encode("utf-8")
+        }, separators=(",", ":")).encode("utf-8")
+        auth_headers = lifecycle_auth_headers(identity, payload)
 
         req = urllib.request.Request(
             f"{self.server_url}/confirm-recovery",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.admin_token}",
+                **auth_headers,
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -336,11 +350,15 @@ def _verify_server_token(
         if token.get("newPubHex") != new_pub_hex:
             _log.warning("_verify_server_token: newPubHex mismatch for '%s'", agent_name)
             return False
+        expected_agent_id = "SC-" + hashlib.sha256(bytes.fromhex(new_pub_hex)).hexdigest()[:8].upper()
+        if token.get("agentId") != expected_agent_id:
+            _log.warning("_verify_server_token: agentId mismatch for '%s'", agent_name)
+            return False
 
         # Check token age locally first (fast path)
         issued_at = token.get("issuedAt", 0)
         age = int(time.time()) - issued_at
-        if age > RECOVERY_WINDOW_SEC:
+        if age < 0 or age > RECOVERY_WINDOW_SEC:
             _log.warning(
                 "_verify_server_token: token for '%s' is %ds old (window=%ds) — expired",
                 agent_name, age, RECOVERY_WINDOW_SEC,

@@ -1,9 +1,10 @@
 # Security Properties
 
-This document states what SelfConnect Enterprise guarantees, what it explicitly
-does not guarantee, and how each guarantee is verified. It is intended for
+This document states narrowly scoped component properties, their explicit
+boundaries, and how each proposition is tested. It is intended for
 security reviewers, compliance evaluators, and operators deploying the system
-in classified or regulated environments.
+in regulated environments. A passing component test is not a deployed-system
+guarantee or an authorization determination.
 
 ---
 
@@ -32,6 +33,11 @@ fails, the action is denied and the reason is recorded. No code path returns
 `allowed=True` without passing all applicable checks. The enforcer fails
 closed: an agent with no policy registration receives an immediate deny.
 
+For MCP actuation, `GovernedRuntime` is the mandatory composition. The default
+dispatcher now refuses `sc_inject_text` when a signed policy enforcer,
+persistent signed ledger, or live target verifier is absent. Lower-level Python
+modules remain callable and must not be described as globally intercepted.
+
 **Evaluation order:**
 1. Control plane gate (paused / quarantined / revoked)
 2. Agent registered in policy
@@ -42,7 +48,7 @@ closed: an agent with no policy registration receives an immediate deny.
 7. Application permitted
 8. Action in `allowed_actions`
 9. Classification ceiling not exceeded
-10. Caveat validation (if `LabelEnvelope` provided)
+10. Caveat validation and composition constraint (when configured)
 
 **Proven by:** `tests/test_enterprise/test_policy.py` (deny-by-default suite),
 RT-01 through RT-08 (`tests/test_enterprise/test_redteam.py`)
@@ -69,8 +75,8 @@ the enforcer will deny every action rather than operate on an unverified policy.
 `ControlPlane.kill_all()` atomically revokes all non-revoked agents and drains
 the operator approval queue. The state machine transitions are one-way except
 for pause/resume: `active → paused → quarantined → revoked`. There is no
-transition from `revoked` or `quarantined` back to `active`. Every state
-transition is logged to the ledger as an `operator_control` entry.
+transition from `revoked` or `quarantined` back to `active`. State transitions
+are logged when a ledger is configured; `GovernedRuntime` always supplies one.
 
 **Proven by:** `TestKillAll`, `TestEnforcerControlGate`
 (`tests/test_enterprise/test_control.py`)
@@ -83,22 +89,21 @@ transition is logged to the ledger as an `operator_control` entry.
 
 ### 5. Training Data Isolation
 
-The observer operates only on entries where `decision=allow`. Denied,
-quarantined, and paused entries are structurally excluded from the training
-data pipeline. A model fine-tuned on observer output cannot learn behaviors
-that the policy forbade, because it was never exposed to them.
+The observer operates only on entries where `decision=allow`. The same filter
+is applied to primary records and every `context_before` entry, so denied,
+quarantined, and paused entries are excluded from exported training records.
 
-**Proven by:** `test_only_allow_decisions_reach_training_data`
+**Narrowly established by:** `test_only_allow_decisions_reach_training_data`
+and `test_context_window_does_not_include_denied_in_output`
 (`tests/test_enterprise/test_observer.py`)
 
 ---
 
 ### 6. Egress Gating
 
-When `ClassifiedModeProfile.allow_cloud_egress=False`, all outbound calls
-routed through `EgressGuard` are denied and logged to the ledger. There is no
-silent bypass path within the Python layer. Every check — allowed or denied —
-produces a ledger entry with `action="egress_check"` and `decision=allow|deny`.
+When `ClassifiedModeProfile.allow_cloud_egress=False`, outbound calls routed
+through `EgressGuard` are denied and logged to the ledger. Direct sockets and
+unwrapped libraries are outside this property and require OS/network controls.
 
 **Proven by:** `TestEgressGuard` (`tests/test_enterprise/test_classified_mode.py`)
 
@@ -140,6 +145,11 @@ field containing the hash of the previous entry. `AgentLedger` uses SHA-256;
 integrity for every entry. Modifying any entry invalidates all subsequent
 entries. A genesis constant (`"0" * 64`) anchors the chain.
 
+Interior modification, insertion, and deletion of retained entries are
+detectable. Tail truncation and complete-file deletion require a trusted
+external checkpoint or WORM/off-host copy; a local chain alone cannot detect
+that its final entries or entire file disappeared.
+
 **Proven by:** RT-11 (CNG ledger tamper detection, hash chain forgery),
 RT-12 (hash chain insertion) (`tests/test_enterprise/test_redteam.py`)
 
@@ -157,12 +167,75 @@ caveats listed in the reason string.
 
 ---
 
+### 11. Governed MCP Actuation and Readback
+
+`GovernedRuntime` composes the external policy trust root, active
+`ControlPlane`, live HWND/PID/executable/class binding, applicable one-time
+operator approval, durable approval store, real UIA output adapter, and
+persistent signed ledger. The dispatcher fails closed if those required
+components are absent. Approval context includes the action, lease, target
+identity, classification, and payload hash, and is consumed once.
+
+This property covers the governed MCP dispatcher. Direct SDK calls and other
+repositories are not globally intercepted.
+
+**Narrowly established by:** `tests/test_enterprise/test_governed_runtime.py`,
+`tests/test_enterprise/test_mcp_dispatch.py`, and live
+`tools/irs_runtime_conformance.py` execution when its real-target prerequisites
+are supplied.
+
+---
+
+### 12. Ultra Lifecycle and Restart Durability
+
+Ultra Server agent lifecycle requests use Ed25519 proof over the exact body
+hash, timestamp, and nonce. The server derives the agent ID from the public key,
+rejects stale/replayed/tampered proofs, binds pairs and tumbler maps to the same
+agent, and requires separate operator authorization for first production
+enrollment. Recovery issuance requires both operator authorization and the
+replacement key proof.
+
+Production mode refuses memory fallback. PostgreSQL persists pair, complete
+tumbler, identity-binding, and idempotency state; Redis persists replay and
+anomaly state. The store preserves monotonic HOTP counters even when upstream
+lifecycle metadata is written from an earlier read. The restart probe requires
+a HOTP-bearing map and verifies the same agent, pair, TSK client, and new request
+after process restart.
+
+**Narrowly established by:** `ultra_server/agent-auth.test.mjs`,
+`ultra_server/runtime-stores.test.mjs`, `ultra_server/server.test.mjs`,
+`tests/test_e2e_ultra_gate.py`, and
+`tools/ultra_restart_conformance.py` against live services.
+
+**TSK disclosure boundary:** the complete stored tumbler record is not returned
+verbatim, and literal segment `position` fields are absent from the provisioning
+response. The owning client necessarily receives the TSK shared secret plus
+segment types, lengths, positional order, initial HOTP counters, and total key
+length so it can construct keys. SelfConnect therefore does not claim that the
+effective layout is secret from the owning client. The tested properties are
+separate key material, rotating values, checksum verification, replay handling,
+and server-enforced lifecycle/counter state.
+
+---
+
 ## What This System Does Not Guarantee
 
 **This is not a certified MLS system.** SelfConnect Enterprise has not been
 evaluated under Common Criteria, DIACAP, RMF, or any other formal assurance
 framework. The guarantees above are software-level properties backed by tests,
 not certified assurance claims.
+
+**This is not IRS-authorized.** No IRS/Treasury operational approval, PCLIA,
+ATO/IATT, system boundary, independent assessment, or agency acceptance is
+established by this repository. `enterprise/irs_evidence.py` supplies a
+structured integration evidence contract; it does not replace agency systems
+of record or qualified assessor review.
+
+**This is not DoD Impact Level authorized.** Software tests do not grant a
+cloud service offering IL4, IL5, or IL6 status. IL6 is Secret; there is no IL7
+in the current DoD Cloud Computing SRG model. The Mission Owner boundary,
+authorized cloud service, RMF package, ATO/IATT as applicable, personnel access,
+and classified operating environment are separate requirements.
 
 **Network-layer isolation is out of scope.** `EgressGuard` prevents outbound
 calls through the Python API call paths it wraps. It does not prevent OS-level
@@ -174,6 +247,11 @@ infrastructure level (firewall rules, air-gap, etc.).
 depends entirely on the host environment. Windows NCrypt software KSP stores
 keys in the user's key container. If the host environment is compromised,
 the keys are compromised. HSM-backed key storage is not implemented.
+
+Ultra production mode checks that independent operator and recovery secrets are
+configured and at least 32 bytes. It does not provide the deployment's secret
+manager, service-account isolation, rotation ceremony, or emergency custody
+approvals.
 
 **Ledger write access is not restricted.** The system does not protect against
 a malicious process with write access to the JSONL ledger file. Tampering is
@@ -190,18 +268,13 @@ at the wrong layer would produce coverage numbers that lie.
 
 ---
 
-## Test Coverage Summary (v1.2.1)
+## Test Coverage Summary (v1.2.3)
 
 | Metric | Value |
 |--------|-------|
-| Total tests | 716 |
-| Passing | 716 |
-| Failures | 0 |
-| Coverage (overall) | ~90% |
-| `enterprise/observer.py` | 100% |
-| `enterprise/policy_sign.py` | 100% |
-| `enterprise/__init__.py` | 100% |
-| Win32 / DPAPI / NCrypt paths | Not covered in CI (requires live session) |
+| Current count and result | Commit-specific; use the CI run and local evidence for the exact commit |
+| Live Win32 actuation | Run `tools/irs_runtime_conformance.py`; unit adapters do not establish live behavior |
+| Authorization/compliance | Not established by test count |
 
 ### Test layers
 
@@ -220,7 +293,7 @@ at the wrong layer would produce coverage numbers that lie.
 
 | Test | File | What it proves |
 |------|------|----------------|
-| `test_only_allow_decisions_reach_training_data` | test_observer.py | Training data isolation |
+| `test_only_allow_decisions_reach_training_data` + context test | test_observer.py | Allowed primary records and allowed context only |
 | `test_observer_never_passes_above_max_classification` | test_labels.py | Classification ceiling |
 | `test_cng_ledger_tampered_entry_detected` (RT-11) | test_redteam.py | Hash chain integrity |
 | `test_inserted_entry_breaks_chain` (RT-12) | test_redteam.py | Chain insertion detection |
@@ -231,7 +304,7 @@ at the wrong layer would produce coverage numbers that lie.
 | `test_observer_reads_without_verify_documents_gap` | test_adversarial_ai.py | G-3 CLOSED: asserts ValueError when verifier absent; raw path requires `unsafe_unverified=True` |
 | `test_policy_id_allowlist_blocks_injected_training_entry` | test_adversarial_ai.py | allowed_policy_ids blocks injected training entries |
 | `test_litellm_not_backdoored_version` | test_supply_chain.py | LiteLLM supply chain hard gate |
-| `test_cryptography_at_minimum_safe_version` | test_supply_chain.py | cryptography CVE floor ≥46.0.6 |
+| `test_cryptography_at_minimum_safe_version` | test_supply_chain.py | deployment environment meets declared cryptography floor |
 | `test_direct_deps_no_known_cves` | test_supply_chain.py | pip-audit hard gate on cryptography + selfconnect |
 
 ---

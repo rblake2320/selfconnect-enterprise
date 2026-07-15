@@ -1,7 +1,9 @@
 """enterprise/crypto.py — FIPS-Validated Cryptographic Primitives via Windows CNG
 
 Replaces the Python 'cryptography' library with direct Windows CNG (BCrypt/NCrypt)
-calls for FIPS 140-2 validated cryptographic operations.  All key material is
+can use Windows CNG cryptographic operations. Whether a deployment uses a
+currently validated module depends on the exact OS build, mode, module, and
+operating environment. All key material is
 stored in the NCrypt Software Key Storage Provider — never in a Python object or
 DPAPI blob.
 
@@ -19,7 +21,8 @@ Crypto-agility design:
     after a migration.
 
 FIPS status:
-    Windows CNG (bcrypt.dll / ncrypt.dll) holds FIPS 140-2 certificate #4825,
+    Windows CNG status must be verified against the applicable CMVP certificate,
+    tested operating environment, and enabled FIPS policy for the deployment;
     valid through 21 September 2026.  Microsoft is actively pursuing FIPS 140-3
     renewal.  All operations in this module go through the CNG code path.
 
@@ -142,7 +145,8 @@ def _ck_ncrypt(status: int, op: str) -> None:
 def cng_sha384(data: bytes) -> bytes:
     """Hash data with SHA-384 via Windows BCrypt.  Returns 48-byte digest.
 
-    Uses the FIPS 140-2 certified code path in bcrypt.dll.
+    Uses the Windows CNG bcrypt.dll path. No validation status is implied by
+    calling this function alone.
     """
     h_algo = ctypes.c_void_p()
     st = _bcrypt.BCryptOpenAlgorithmProvider(

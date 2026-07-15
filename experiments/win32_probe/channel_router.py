@@ -61,6 +61,8 @@ class ActionReceipt:
     readback_hash: str
     timestamp: float
     success: bool
+    transport_enqueued: bool = False
+    delivery_confirmed: bool = False
 
 
 TERMINAL_CLASSES = frozenset({
@@ -72,6 +74,9 @@ TERMINAL_CLASSES = frozenset({
     "rxvt",
     "xterm",
 })
+
+WINDOWS_TERMINAL_HOST_CLASS = "CASCADIA_HOSTING_WINDOW_CLASS"
+WINDOWS_TERMINAL_INPUT_CLASS = "Windows.UI.Input.InputSite.WindowClass"
 
 BROWSER_CLASSES = frozenset({
     "Chrome_WidgetWin_1",
@@ -243,14 +248,33 @@ class ChannelRouter:
             readback_hash=readback_hash,
             timestamp=time.time(),
             success=success,
+            transport_enqueued=success,
+            delivery_confirmed=False,
         )
 
     def _inject_wm_char(self, hwnd: int, text: str) -> bool:
         if not _WIN32_AVAILABLE:
             return False
         try:
+            delivery_hwnd = hwnd
+            if _get_window_class(hwnd) == WINDOWS_TERMINAL_HOST_CLASS:
+                input_sites: list[int] = []
+
+                def collect_input_site(child_hwnd: int, _context: object) -> bool:
+                    if _get_window_class(child_hwnd) == WINDOWS_TERMINAL_INPUT_CLASS:
+                        input_sites.append(child_hwnd)
+                    return True
+
+                win32gui.EnumChildWindows(hwnd, collect_input_site, None)
+                if not input_sites:
+                    return False
+                delivery_hwnd = input_sites[0]
             for ch in text:
-                win32api.PostMessage(hwnd, win32con.WM_CHAR, ord(ch), 0)
+                if ch in ("\r", "\n"):
+                    win32api.PostMessage(delivery_hwnd, win32con.WM_KEYDOWN, win32con.VK_RETURN, 0)
+                    win32api.PostMessage(delivery_hwnd, win32con.WM_KEYUP, win32con.VK_RETURN, 0)
+                else:
+                    win32api.PostMessage(delivery_hwnd, win32con.WM_CHAR, ord(ch), 0)
             return True
         except Exception:  # noqa: BLE001
             return False

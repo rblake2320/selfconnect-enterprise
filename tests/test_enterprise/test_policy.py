@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import time
 
-from enterprise.operator import OperatorQueue
+from enterprise.operator import DurableOperatorQueue, OperatorQueue
 from enterprise.policy import (
     AgentPolicy,
     PolicyBundle,
@@ -393,6 +393,83 @@ class TestOperatorQueue:
         removed = q.purge_expired()
         assert removed == 0
         assert len(q) == 1
+
+    def test_approved_capability_is_single_use_and_context_bound(self):
+        q = OperatorQueue()
+        context = {"target_hwnd": 123, "payload_sha256": "a" * 64}
+        aid = q.submit(AGENT_A, "export_content", context)
+        assert q.approve(aid, "CAC:1")
+        assert q.consume_approved(
+            aid,
+            agent_id=AGENT_A,
+            action="export_content",
+            required_context=context,
+        ) is not None
+        assert q.get_status(aid) == "consumed"
+        assert q.consume_approved(
+            aid,
+            agent_id=AGENT_A,
+            action="export_content",
+            required_context=context,
+        ) is None
+
+    def test_approval_rejects_changed_payload_context(self):
+        q = OperatorQueue()
+        aid = q.submit(AGENT_A, "export_content", {"payload_sha256": "a" * 64})
+        assert q.approve(aid, "CAC:1")
+        assert q.consume_approved(
+            aid,
+            agent_id=AGENT_A,
+            action="export_content",
+            required_context={"payload_sha256": "b" * 64},
+        ) is None
+        assert q.get_status(aid) == "approved"
+
+
+class TestDurableOperatorQueue:
+    def test_approval_survives_restart_and_is_consumed_once(self, tmp_path):
+        path = tmp_path / "approvals.sqlite3"
+        first = DurableOperatorQueue(path)
+        context = {"target_hwnd": 123, "payload_sha256": "a" * 64}
+        aid = first.submit(AGENT_A, "export_content", context)
+        assert first.approve(aid, "CAC:1")
+
+        restarted = DurableOperatorQueue(path)
+        consumed = restarted.consume_approved(
+            aid,
+            agent_id=AGENT_A,
+            action="export_content",
+            required_context=context,
+        )
+        assert consumed is not None
+        assert consumed.operator_id == "CAC:1"
+        assert DurableOperatorQueue(path).get_status(aid) == "consumed"
+
+    def test_concurrent_consumers_only_one_succeeds(self, tmp_path):
+        import threading
+
+        path = tmp_path / "approvals.sqlite3"
+        queue = DurableOperatorQueue(path)
+        aid = queue.submit(AGENT_A, "export_content", {"scope": "bounded"})
+        assert queue.approve(aid, "CAC:1")
+        results: list[object] = []
+
+        def consume() -> None:
+            results.append(
+                DurableOperatorQueue(path).consume_approved(
+                    aid,
+                    agent_id=AGENT_A,
+                    action="export_content",
+                    required_context={"scope": "bounded"},
+                )
+            )
+
+        threads = [threading.Thread(target=consume) for _ in range(10)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert sum(result is not None for result in results) == 1
 
 
 # ── Full workflow: enforcer → queue → ledger metadata ─────────────────────────

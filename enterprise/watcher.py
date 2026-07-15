@@ -209,32 +209,29 @@ class WatcherState:
         Keys:
             mode    (str)  — audit mode value (consumer/enterprise/government)
             sink    (str)  — configured WORM sink type (none/memory/file/s3/r2)
-            healthy (bool) — True if the mode/sink combination is compliant:
-                             consumer or memory → always healthy (no external dep)
-                             enterprise/government with file/s3/r2 → healthy
-                             enterprise/government with memory → healthy (but warned)
-                             government with none → NOT healthy
+            healthy (bool) — True only when no immutable sink is required, or a
+                             configured remote sink passes a live retention check.
             warning (str | None) — human-readable warning, or None if healthy
         """
         try:
-            from enterprise.audit_config import AuditMode, WormSinkType, load_audit_config
+            from enterprise.audit_config import load_audit_config
+            from enterprise.provenance import CloudflareR2Sink, S3ObjectLockSink
+            from enterprise.worm_service import make_replication_sink
             cfg = load_audit_config()
             mode = cfg.audit_mode.value
             sink = cfg.worm_sink.value
             warning: str | None = None
-            healthy = True
-
-            if cfg.audit_mode == AuditMode.GOVERNMENT and cfg.worm_sink == WormSinkType.NONE:
-                healthy = False
-                warning = (
-                    "government audit mode requires a WORM sink; "
-                    "set SCENT_WORM_SINK to memory, file, s3, or r2."
-                )
-            elif cfg.requires_worm() and cfg.worm_sink == WormSinkType.MEMORY:
-                warning = (
-                    f"AU-9 compliance warning: {cfg.audit_mode.value} mode is using "
-                    "InMemoryWitnessSink — not suitable for production WORM replication."
-                )
+            healthy = not cfg.requires_worm()
+            if cfg.requires_worm():
+                remote = make_replication_sink(cfg)
+                if isinstance(remote, (S3ObjectLockSink, CloudflareR2Sink)):
+                    remote.verify_retention_configuration()
+                    healthy = True
+                else:
+                    warning = (
+                        f"{cfg.audit_mode.value} mode has no live-verified remote "
+                        "immutable-retention sink; memory/file are replicas only."
+                    )
             return {"mode": mode, "sink": sink, "healthy": healthy, "warning": warning}
         except Exception as exc:  # noqa: BLE001
             return {
@@ -246,16 +243,10 @@ class WatcherState:
 
     def _probe_channels(self) -> ChannelHealth:
         health = ChannelHealth()
-        try:
-            import ctypes
-            ctypes.windll.user32.GetForegroundWindow()
-            health.wm_char = "OK"
-        except Exception:  # noqa: BLE001
-            health.wm_char = "DOWN"
-        try:
-            health.uia = "OK"
-        except Exception:  # noqa: BLE001
-            health.uia = "DOWN"
+        # API presence is not transport health. Only a target-bound send plus
+        # independent UIA readback can establish live WM_CHAR delivery.
+        health.wm_char = "UNKNOWN"
+        health.uia = "UNKNOWN"
         try:
             import ctypes
             ctypes.windll.ntdll.NtQuerySystemInformation

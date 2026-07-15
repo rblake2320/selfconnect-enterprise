@@ -75,6 +75,7 @@ class ObserverFilter:
 
     def __post_init__(self) -> None:
         """Coerce any list/set/tuple fields to frozenset for O(1) lookups."""
+        _rank(self.max_classification)
         self.allowed_decisions      = frozenset(self.allowed_decisions)
         self.allowed_policy_ids     = frozenset(self.allowed_policy_ids)
         self.allowed_actions        = frozenset(self.allowed_actions)
@@ -97,7 +98,11 @@ class ObserverFilter:
             return False
 
         # Classification ceiling
-        if _rank(entry.get("classification", "UNCLASSIFIED")) > _rank(self.max_classification):
+        try:
+            entry_rank = _rank(entry.get("classification", "UNCLASSIFIED"))
+        except (TypeError, ValueError):
+            return False
+        if entry_rank > _rank(self.max_classification):
             return False
 
         # Caveat filter (only when a restriction is configured)
@@ -318,9 +323,15 @@ class LedgerObserver:
             if not self._filter.matches(entry):
                 continue
 
-            # Context window: N entries immediately before this one in the raw log
-            ctx_start      = max(0, i - self._context_window)
-            context_before = [self._redaction.apply(e) for e in all_entries[ctx_start:i]]
+            # Context is itself training data. Apply the same policy filter used
+            # for primary records so denied/quarantined/paused entries cannot be
+            # reintroduced through a preceding context window.
+            ctx_start = max(0, i - self._context_window)
+            context_before = [
+                self._redaction.apply(candidate)
+                for candidate in all_entries[ctx_start:i]
+                if self._filter.matches(candidate)
+            ]
 
             redacted = self._redaction.apply(entry)
             records.append(EvidenceRecord(

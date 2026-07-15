@@ -231,6 +231,11 @@ class TestCngLedgerLog:
         entry = ledger.log("act", metadata={"target_hwnd": 0xABC})
         assert entry["target_hwnd"] == 0xABC
 
+    @pytest.mark.parametrize("field", ["seq", "agent_id", "action", "result", "ts", "prev_hash", "sig", "algo"])
+    def test_reserved_metadata_cannot_overwrite_signed_core(self, ledger, field):
+        with pytest.raises(ValueError, match="reserved ledger fields"):
+            ledger.log("act", metadata={field: "attacker-controlled"})
+
     def test_appends_to_file(self, ledger):
         for i in range(5):
             ledger.log(f"action-{i}")

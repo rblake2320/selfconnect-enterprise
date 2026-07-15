@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "controls": [
+    {
+      "id": "DOC-001",
+      "title": "Evidence records are structurally linked",
+      "scope": "LOG.md, WHY.md, PARKED.md, CHANGELOG.md, and README.md in this repository",
+      "assertion": "Run the documentation-record structural tests.",
+      "expected": "All record IDs are unique, required fields exist, and every cross-reference resolves.",
+      "evidence": "pytest output and the release conformance JSON report",
+      "blind_spots": "Does not determine whether narrative content is substantively true.",
+      "tier": "quick",
+      "command": ["{python}", "-m", "pytest", "tests/test_documentation_records.py", "-q"]
+    },
+    {
+      "id": "CLAIM-001",
+      "title": "Known prohibited claim forms remain absent",
+      "scope": "Current product README, SECURITY, Enterprise Python, Ultra JavaScript, and current assurance profiles",
+      "assertion": "Run the bounded claim-language regression test.",
+      "expected": "No known banned phrase or prospective-partner documentation directory is present.",
+      "evidence": "pytest output and the release conformance JSON report",
+      "blind_spots": "Natural-language claim detection is partial and does not understand every possible paraphrase.",
+      "tier": "quick",
+      "command": ["{python}", "-m", "pytest", "tests/test_documentation_records.py", "-q"]
+    },
+    {
+      "id": "CLASS-001",
+      "title": "Unknown classifications fail closed",
+      "scope": "Classification labels, policy/profile construction, and LedgerObserver ingress",
+      "assertion": "Run label, policy, classified-mode, observer, and red-team suites.",
+      "expected": "All named suites pass, including malformed-classification denial tests.",
+      "evidence": "pytest output and the release conformance JSON report",
+      "blind_spots": "Does not intercept markings parsed by code outside these modules.",
+      "tier": "release",
+      "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_labels.py", "tests/test_enterprise/test_policy.py", "tests/test_enterprise/test_classified_mode.py", "tests/test_enterprise/test_observer.py", "tests/test_enterprise/test_redteam.py", "-q"]
+    },
+    {
+      "id": "GOV-MCP-001",
+      "title": "Governed MCP actuation composes mandatory gates",
+      "scope": "GovernedRuntime and Enterprise MCP dispatcher actuation paths",
+      "assertion": "Run governed-runtime and MCP dispatcher tests.",
+      "expected": "Policy trust root, live target, approval context, control plane, persistent ledger, transport enqueue, and new UIA readback gates pass or fail closed.",
+      "evidence": "pytest output and the release conformance JSON report",
+      "blind_spots": "Direct SDK calls and other repositories are not globally intercepted; deterministic tests do not establish a live Windows target.",
+      "tier": "release",
+      "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_governed_runtime.py", "tests/test_enterprise/test_mcp_dispatch.py", "-q"]
+    },
+    {
+      "id": "WIN32-TARGET-001",
+      "title": "Terminal target identity uses protected image paths",
+      "scope": "Current target_guard mappings for Windows Terminal and classic Windows console classes",
+      "assertion": "Run the target-guard load and class-spoof test.",
+      "expected": "Live HWND enumeration completes deterministically, user-writable lookalike image paths are refused, and protected Windows/package paths are accepted.",
+      "evidence": "Target-guard load-test output and the release conformance JSON report",
+      "blind_spots": "Does not validate Authenticode signers or protect a compromised trusted binary, administrator, or kernel; unmapped terminal classes fail closed.",
+      "tier": "release",
+      "command": ["{python}", "experiments/win32_probe/target_guard_load_test.py"]
+    },
+    {
+      "id": "WIN32-LIVE-001",
+      "title": "Live governed terminal delivery and execution effect",
+      "scope": "One inspected live Windows terminal HWND, one signed policy/identity, one bounded command, and its signed action ledger",
+      "assertion": "Run tools.irs_runtime_conformance with --execute and an --expect-output token that is absent from --text, then independently read the target.",
+      "expected": "Target binding and policy pass; UIA confirms a new payload occurrence; the separate output token newly appears; the signed ledger verifies.",
+      "evidence": "Conformance JSON, independent UIA readback, screenshot hash if retained, exact target metadata, and ledger verification result",
+      "blind_spots": "A result applies only to the tested terminal version, shell, policy, identity, action, session, and machine. It is not external-workflow, WORM, government-authorization, or scale evidence.",
+      "tier": "description"
+    },
+    {
+      "id": "ULTRA-AUTH-001",
+      "title": "Ultra lifecycle proofs reject tamper and replay",
+      "scope": "Ultra agent-auth verifier and production-store unit/integration tests available in the current environment",
+      "assertion": "Run the Ultra Node test suite.",
+      "expected": "Authentication tests pass; PostgreSQL tests pass when DATABASE_URL is supplied and otherwise report an explicit skip.",
+      "evidence": "Node test output and the release conformance JSON report",
+      "blind_spots": "A skipped PostgreSQL suite is not production durability evidence.",
+      "tier": "release",
+      "cwd": "ultra_server",
+      "command": ["npm", "test"]
+    },
+    {
+      "id": "ULTRA-LIVE-001",
+      "title": "Live Python-to-Node lifecycle contract",
+      "scope": "A running Ultra Server at the configured endpoint using current Python and Node code",
+      "assertion": "Start the intended sidecar and run both live contract suites with unavailable-server skipping disabled.",
+      "expected": "Node live checks and Python tests pass with real HTTP and cryptographic operations.",
+      "evidence": "Live command output and retained conformance report",
+      "blind_spots": "Development-mode success does not establish production persistence or restart durability.",
+      "tier": "live",
+      "cwd": "ultra_server",
+      "command": ["npm", "run", "test:live"]
+    },
+    {
+      "id": "ULTRA-RESTART-001",
+      "title": "Production identity and HOTP state survive restart",
+      "scope": "Production Ultra composition with PostgreSQL, Redis, operator secret, recovery secret, and a killed/restarted Node process",
+      "assertion": "Run tools.ultra_restart_conformance seed, stop the exact server process, restart it, then run verify against the same state file.",
+      "expected": "Agent ID, BPC pair, TSK client, HOTP-bearing map, and a post-restart verification remain valid.",
+      "evidence": "Seed/verify JSON output, service logs, dependency versions, and deployment commit",
+      "blind_spots": "Cannot be reduced to one safe generic command because process ownership and secret injection are deployment-specific.",
+      "tier": "description"
+    },
+    {
+      "id": "WORM-DEPLOY-001",
+      "title": "Off-host immutable evidence deployment",
+      "scope": "Selected provider bucket, retention/legal-hold configuration, credentials, custody, and restore procedure",
+      "assertion": "Perform provider API retention readback, write/seal/readback, denied overwrite/delete tests, and an isolated restore drill.",
+      "expected": "Every provider and recovery check passes against the actual deployment boundary.",
+      "evidence": "Provider API responses without secrets, object/version IDs, receipt hashes, and restore report",
+      "blind_spots": "Repository tests cannot authorize or inspect an undeployed provider account.",
+      "tier": "description"
+    },
+    {
+      "id": "GOV-AUTH-001",
+      "title": "Government authorization status",
+      "scope": "The selected cloud service offering, Mission Owner system, data classification, personnel, and authorization boundary",
+      "assertion": "Review the authoritative PA/ATO/IATT and RMF package for the exact deployment.",
+      "expected": "The responsible external authority documents the applicable authorization and conditions.",
+      "evidence": "Externally issued authorization artifacts and assessor records",
+      "blind_spots": "No software test can create an ATO, Impact Level authorization, clearance, or classified operating approval.",
+      "tier": "description"
+    }
+  ]
+}

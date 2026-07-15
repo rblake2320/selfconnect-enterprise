@@ -6,7 +6,7 @@ instead of DPAPI + Python ed25519.
     # v0.3.0 path (DPAPI, ed25519)   — unchanged, still available
     from enterprise.identity import AgentIdentity
 
-    # v0.4.0 path (NCrypt, ECDSA P-384, FIPS 140-2 certified)
+    # v0.4.0 path (NCrypt, ECDSA P-384). FIPS status is deployment-conditional.
     from enterprise.identity_cng import CngIdentity, CngLedger
 
     # Interface is identical:
@@ -287,6 +287,14 @@ class CngLedger:
 
         Returns the full entry dict as written (including sig and algo fields).
         """
+        reserved = {"seq", "agent_id", "action", "result", "ts", "prev_hash", "sig", "algo"}
+        collisions = reserved.intersection(metadata or {})
+        if collisions:
+            raise ValueError(
+                "metadata cannot overwrite reserved ledger fields: "
+                + ", ".join(sorted(collisions))
+            )
+
         self._seq += 1
 
         entry: dict = {

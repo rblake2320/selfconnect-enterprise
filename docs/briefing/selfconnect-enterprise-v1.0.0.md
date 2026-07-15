@@ -239,8 +239,10 @@ milestone dates. A Moderate ATO package would present them as POA&M items.
 SelfConnect Enterprise was developed entirely at private expense with no
 government funding, contract, or CRADA. All intellectual property rights
 are retained under DFARS 252.227-7014 (Rights in Noncommercial Computer
-Software and Noncommercial Computer Software Documentation). Seven patent
-claims are documented and proved by test evidence.
+Software and Noncommercial Computer Software Documentation). Seven candidate
+claim sets have implementation and named-test evidence. Patent scope, validity,
+ownership, and enforceability require qualified legal review and are not proved
+by software tests.
 
 ---
 

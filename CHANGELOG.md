@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+### Confirmed Win32 delivery and target-path hardening
+
+- Separated Win32 queue acceptance, UIA-confirmed delivery, and independently
+  observed execution effects.
+- Routed Windows Terminal input to the InputSite child and blocked automatic
+  retry after ambiguous delivery.
+- Replaced basename-only target checks with protected installation-path policy;
+  corrected classic console ownership for the tested `cmd.exe` target.
+- Changed watcher WM_CHAR/UIA status from false `OK` to `UNKNOWN` until a live
+  target-bound probe runs.
+- Evidence: [LOG-20260715-005](LOG.md#log-20260715-005).
+- Rationale: [WHY-20260715-005](WHY.md#why-20260715-005).
+- Parked record: [PARK-20260715-007](PARKED.md#park-20260715-007).
+
+### Ultra lifecycle, classification, and product-boundary hardening
+
+- Added cryptographic lifecycle authentication, operator-authorized enrollment,
+  dual-control recovery, PostgreSQL/Redis production state, and restart proof.
+- Fixed HOTP counter rollback and stale idempotent provisioning found by real
+  PostgreSQL and process-restart tests.
+- Rejected unknown classification strings at label, policy, profile, and
+  observer ingress.
+- Removed prospective-company material and narrowed TSK disclosure claims to
+  the actual reduced provisioning view.
+- Added a tiered executable control catalog that reports scope and blind spots
+  and never converts deployment/authorization descriptions into test passes.
+- Evidence: [LOG-20260715-002](LOG.md#log-20260715-002),
+  [LOG-20260715-003](LOG.md#log-20260715-003), and
+  [LOG-20260715-004](LOG.md#log-20260715-004).
+- Rationale: [WHY-20260715-002](WHY.md#why-20260715-002),
+  [WHY-20260715-003](WHY.md#why-20260715-003), and
+  [WHY-20260715-004](WHY.md#why-20260715-004).
+- Parked records: [PARK-20260715-004](PARKED.md#park-20260715-004),
+  [PARK-20260715-005](PARKED.md#park-20260715-005), and
+  [PARK-20260715-006](PARKED.md#park-20260715-006).
+
+### Governed runtime and IRS integration evidence
+
+- Added mandatory `GovernedRuntime` composition and fail-closed MCP actuation.
+- Added live lease target binding/revalidation and approval binding.
+- Blocked reserved ledger metadata from replacing signed core fields.
+- Filtered training context with the same allow policy as primary records.
+- Started and signed service provenance; added external-key signature verification.
+- Added structured IRS integration evidence and a live no-mock conformance tool.
+- Added product-neutral sector profiles and explicit external-integration gates.
+- Evidence: [LOG-20260715-001](LOG.md#log-20260715-001).
+- Rationale: [WHY-20260715-001](WHY.md#why-20260715-001).
+- Parked records: [PARK-20260715-001](PARKED.md#park-20260715-001),
+  [PARK-20260715-002](PARKED.md#park-20260715-002), and
+  [PARK-20260715-003](PARKED.md#park-20260715-003).
+
 ### Documentation governance
 
 - Added the chronological [LOG.md](LOG.md) for commit-specific work, audit,
@@ -279,16 +330,18 @@ CNG NCrypt API (ctypes). Foundation for CngIdentity in v0.4.0.
 
 Introduced `AgentIdentity` (DPAPI-encrypted ed25519 keypair, machine-bound)
 and `AgentLedger` (append-only JSONL, SHA-256 hash chain, ed25519 signatures).
-Every agent has a permanent `SC-XXXXXXXX` identifier that survives process
-restarts. Every action is a signed, chained ledger entry — retroactive
-tampering is detectable because each entry hashes the previous one.
+Every enrolled agent has a permanent `SC-XXXXXXXX` identifier that survives
+process restarts. Every entry submitted to `AgentLedger` is signed and chained;
+the ledger does not intercept action paths that bypass it.
 
 ## v0.2.0 — WM_COPYDATA Receive Layer (2026-05-04)  `7460b44`
 
 Added `CopyDataListener` in `enterprise/transport.py`. A background thread
 creates a message-only window and runs a Win32 message pump. On `WM_COPYDATA`,
 it deserialises the JSON payload and dispatches to registered callbacks.
-Sender HWND is OS-verified — peers cannot spoof the origin. Max payload 64 KB.
+The receiver records the sender HWND supplied in `wParam`; this field requires
+separate target and identity validation because the caller controls message
+parameters. Max payload 64 KB.
 
 ## v0.1.0 — SetProp/GetProp Agent Registry + BirthTag (2026-05-03)  `150a5ad`
 

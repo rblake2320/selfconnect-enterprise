@@ -314,6 +314,12 @@ class TestSecurityInputBounds:
         h = ChannelHealth()
         assert h.pipe != "OK"
 
+    def test_channel_health_does_not_call_api_presence_delivery_health(self):
+        state = WatcherState()
+        health = state._probe_channels()
+        assert health.wm_char == "UNKNOWN"
+        assert health.uia == "UNKNOWN"
+
     # CRITICAL-1: WatcherState must be thread-safe under concurrent access
     def test_watcher_state_thread_safe_concurrent_access(self):
         state = WatcherState()

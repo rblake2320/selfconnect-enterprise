@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import os
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -37,9 +38,9 @@ TERMINAL_CLASSES = {
 # image path, which cannot be spoofed by the target process.
 # Enforcement: when require_terminal=True and the class appears in this map,
 # the owning exe MUST match (case-insensitive) — no exceptions.
-TERMINAL_CLASS_TO_EXE: dict[str, str] = {
-    "CASCADIA_HOSTING_WINDOW_CLASS": "WindowsTerminal.exe",
-    "ConsoleWindowClass": "conhost.exe",
+TERMINAL_CLASS_TO_EXE: dict[str, frozenset[str]] = {
+    "CASCADIA_HOSTING_WINDOW_CLASS": frozenset({"WindowsTerminal.exe"}),
+    "ConsoleWindowClass": frozenset({"cmd.exe", "conhost.exe", "powershell.exe", "pwsh.exe"}),
 }
 
 
@@ -64,7 +65,7 @@ def _pid(hwnd: int) -> int:
     return p.value
 
 
-def _exe(pid: int) -> str:
+def _exe_path(pid: int) -> str:
     h = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
     if not h:
         return ""
@@ -72,10 +73,45 @@ def _exe(pid: int) -> str:
         buf = ctypes.create_unicode_buffer(512)
         sz = wt.DWORD(512)
         if kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(sz)):
-            return buf.value.split("\\")[-1]
+            return buf.value
         return ""
     finally:
         kernel32.CloseHandle(h)
+
+
+def _exe(pid: int) -> str:
+    return os.path.basename(_exe_path(pid))
+
+
+def _trusted_terminal_image(window_class: str, exe_path: str) -> bool:
+    """Validate terminal images against protected installation roots."""
+    if not exe_path:
+        return False
+    normalized = os.path.normcase(os.path.abspath(exe_path))
+    name = os.path.basename(normalized)
+    allowed_names = {item.lower() for item in TERMINAL_CLASS_TO_EXE.get(window_class, ())}
+    if name.lower() not in allowed_names:
+        return False
+
+    windir = os.path.normcase(os.environ.get("WINDIR", r"C:\Windows"))
+    program_files = os.path.normcase(os.environ.get("ProgramFiles", r"C:\Program Files"))
+    if window_class == "CASCADIA_HOSTING_WINDOW_CLASS":
+        windows_apps = os.path.normcase(os.path.join(program_files, "WindowsApps") + os.sep)
+        relative = normalized[len(windows_apps):] if normalized.startswith(windows_apps) else ""
+        package = relative.split(os.sep, 1)[0].lower()
+        return package.startswith(("microsoft.windowsterminal_", "microsoft.windowsterminalpreview_"))
+
+    trusted_console_images = {
+        os.path.normcase(os.path.join(windir, "System32", "cmd.exe")),
+        os.path.normcase(os.path.join(windir, "System32", "conhost.exe")),
+        os.path.normcase(
+            os.path.join(windir, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+        ),
+    }
+    powershell_root = os.path.normcase(os.path.join(program_files, "PowerShell") + os.sep)
+    return normalized in trusted_console_images or (
+        name.lower() == "pwsh.exe" and normalized.startswith(powershell_root)
+    )
 
 
 def _session(pid: int) -> int:
@@ -92,6 +128,7 @@ def verify_target(
     *,
     expect_pid: int | None = None,
     expect_exe: str | None = None,
+    expect_exe_path: str | None = None,
     expect_class: str | None = None,
     expect_title_substr: str | None = None,
     allow_classes: set[str] = TERMINAL_CLASSES,
@@ -121,10 +158,11 @@ def verify_target(
     pid = _pid(hwnd)
     cls = _class_name(hwnd)
     title = _title(hwnd)
-    exe = _exe(pid)
+    exe_path = _exe_path(pid)
+    exe = os.path.basename(exe_path)
     rpt.update({
         "visible": bool(user32.IsWindowVisible(hwnd)),
-        "pid": pid, "exe": exe, "class": cls, "title": title,
+        "pid": pid, "exe": exe, "exe_path": exe_path, "class": cls, "title": title,
         "session_id": _session(pid), "own_pid": own_pid,
         "is_self": pid == own_pid,
         "is_terminal": cls in allow_classes,
@@ -135,17 +173,26 @@ def verify_target(
         r.append("target is my own console (refuse self-injection)")
     if require_terminal and not rpt["is_terminal"]:
         r.append(f"class {cls!r} is not a ConPTY terminal (WM_CHAR inject unsafe here)")
-    if require_terminal and rpt["is_terminal"] and cls in TERMINAL_CLASS_TO_EXE:
-        required_exe = TERMINAL_CLASS_TO_EXE[cls]
-        if exe.lower() != required_exe.lower():
+    if require_terminal and rpt["is_terminal"]:
+        if cls not in TERMINAL_CLASS_TO_EXE:
             r.append(
-                f"class {cls!r} requires exe {required_exe!r} but owning process is"
-                f" {exe!r} — possible class-name spoof (WRAITH-001)"
+                f"class {cls!r} has no protected executable-path policy — refused"
+            )
+        elif not _trusted_terminal_image(cls, exe_path):
+            required_exe = sorted(TERMINAL_CLASS_TO_EXE[cls])
+            r.append(
+                f"class {cls!r} requires a protected path for one of {required_exe!r} but "
+                f"owning image is {exe_path!r} — possible class-name spoof (WRAITH-001)"
             )
     if expect_pid is not None and pid != expect_pid:
         r.append(f"pid {pid} != expected {expect_pid} (stale hwnd?)")
     if expect_exe is not None and exe.lower() != expect_exe.lower():
         r.append(f"exe {exe!r} != expected {expect_exe!r}")
+    if expect_exe_path is not None:
+        actual_path = os.path.normcase(os.path.abspath(exe_path)) if exe_path else ""
+        expected_path = os.path.normcase(os.path.abspath(expect_exe_path))
+        if actual_path != expected_path:
+            r.append(f"exe_path {exe_path!r} != expected {expect_exe_path!r}")
     if expect_class is not None and cls != expect_class:
         r.append(f"class {cls!r} != expected {expect_class!r}")
     if expect_title_substr is not None and expect_title_substr.lower() not in title.lower():

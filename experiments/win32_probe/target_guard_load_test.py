@@ -273,7 +273,7 @@ def test_class_name_spoof_detection() -> None:
     and the class is in the map, the owning exe must match the kernel-verified
     binary from QueryFullProcessImageNameW.
 
-    This test patches target_guard._exe (the exe resolver) and
+    This test patches target_guard._exe_path (the kernel path resolver) and
     target_guard._pid / Win32 APIs so verify_target sees a live-looking window
     owned by an attacker process (e.g. python.exe) carrying a terminal class
     name.  The gate must fire: ok=False with a WRAITH-001 reason.
@@ -282,8 +282,16 @@ def test_class_name_spoof_detection() -> None:
     FAKE_HWND = 0x1234
 
     spoof_cases = [
-        ("CASCADIA_HOSTING_WINDOW_CLASS", "WindowsTerminal.exe", "python.exe"),
-        ("ConsoleWindowClass", "conhost.exe", "notepad.exe"),
+        (
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.24.0_x64__8wekyb3d8bbwe\WindowsTerminal.exe",
+            r"C:\Users\Public\WindowsTerminal.exe",
+        ),
+        (
+            "ConsoleWindowClass",
+            r"C:\Windows\System32\cmd.exe",
+            r"C:\Users\Public\cmd.exe",
+        ),
     ]
 
     failures: list[str] = []
@@ -295,7 +303,7 @@ def test_class_name_spoof_detection() -> None:
             unittest.mock.patch("target_guard._pid", return_value=9999),
             unittest.mock.patch("target_guard._class_name", return_value=cls_name),
             unittest.mock.patch("target_guard._title", return_value="Fake Terminal"),
-            unittest.mock.patch("target_guard._exe", return_value=attacker_exe),
+            unittest.mock.patch("target_guard._exe_path", return_value=attacker_exe),
             unittest.mock.patch("target_guard._session", return_value=1),
             unittest.mock.patch("target_guard._own_pid", return_value=1),
         ):
@@ -331,7 +339,7 @@ def test_class_name_spoof_detection() -> None:
             unittest.mock.patch("target_guard._pid", return_value=9998),
             unittest.mock.patch("target_guard._class_name", return_value=cls_name),
             unittest.mock.patch("target_guard._title", return_value="Real Terminal"),
-            unittest.mock.patch("target_guard._exe", return_value=required_exe),
+            unittest.mock.patch("target_guard._exe_path", return_value=required_exe),
             unittest.mock.patch("target_guard._session", return_value=1),
             unittest.mock.patch("target_guard._own_pid", return_value=1),
         ):

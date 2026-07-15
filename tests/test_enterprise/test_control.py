@@ -354,7 +354,8 @@ class TestLedgerIntegration:
         assert call[0][0] == "operator_control"
         meta = call[1]["metadata"]
         assert meta["command"] == "pause"
-        assert meta["agent_id"] == AGENT_A
+        assert meta["subject_agent_id"] == AGENT_A
+        assert "agent_id" not in meta
         assert meta["operator_id"] == OP_1
         assert meta["reason"] == "test reason"
         assert meta["prev_state"] == "active"

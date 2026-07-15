@@ -1,6 +1,7 @@
 """enterprise/ledger.py — Chained, Signed Agent Action Ledger
 
-Every action an agent takes is recorded as a signed, chained log entry.
+Every action submitted to this ledger is recorded as a signed, chained log entry.
+The class does not intercept action paths that do not call ``log()``.
 The chain makes retroactive tampering detectable: each entry hashes the
 previous one, so modifying any entry breaks all subsequent hashes.
 
@@ -77,6 +78,11 @@ from typing import Optional
 from enterprise.identity import AgentIdentity, _default_data_dir
 from enterprise.labels import LabelEnvelope
 
+
+_RESERVED_ENTRY_FIELDS = frozenset({
+    "seq", "agent_id", "action", "result", "ts", "prev_hash", "sig", "algo",
+})
+
 # ── Sentinel for genesis entry ─────────────────────────────────────────────────
 
 GENESIS_HASH = "0" * 64
@@ -150,6 +156,13 @@ class AgentLedger:
         Returns:
             The full entry dict as written (including sig).
         """
+        collisions = _RESERVED_ENTRY_FIELDS.intersection(metadata or {})
+        if collisions:
+            raise ValueError(
+                "metadata cannot overwrite reserved ledger fields: "
+                + ", ".join(sorted(collisions))
+            )
+
         self._seq += 1
 
         # Determine if this is a deny entry that should be redacted (G-1 fix)

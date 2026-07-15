@@ -249,7 +249,7 @@ def main() -> None:
         print("")
         print("  Branch B options (pick one explicitly):")
         print("  B1 — Ship Software KSP, document reduced guarantee in SECURITY.md")
-        print("       Risk: 'TPM-backed' claims would be inaccurate for Citizant/DoD")
+        print("       Risk: 'TPM-backed' claims would be inaccurate for regulated deployment")
         print("  B2 — Find dev machine with provisioned TPM 2.0 for all signing work")
         print("       Best for federal trajectory")
         print("  B3 — Software KSP in dev/CI, Platform KSP enforced at deploy via startup check")
