@@ -63,8 +63,6 @@ serialisation of the policy bundle (sorted keys, no whitespace), excluding the
 `sig` and `signed_by_pub` fields. A tampered or unsigned policy fails closed —
 the enforcer will deny every action rather than operate on an unverified policy.
 
-**Test coverage:** `enterprise/policy_sign.py` at 100% line coverage.
-
 **Tested by:** RT-02 (signature bypass attempts),
 `test_enforcer_rejects_missing_sig` (`tests/test_enterprise/test_policy.py`)
 
@@ -241,7 +239,7 @@ and server-enforced lifecycle/counter state.
 
 **This is not a certified MLS system.** SelfConnect Enterprise has not been
 evaluated under Common Criteria, DIACAP, RMF, or any other formal assurance
-framework. The guarantees above are software-level properties backed by tests,
+framework. The properties above are software-level propositions backed by tests,
 not certified assurance claims.
 
 **This is not IRS-authorized.** No IRS/Treasury operational approval, PCLIA,
@@ -280,10 +278,10 @@ detectable via `verify()`, but the system does not prevent tampering.
 It does not enumerate Windows system DLLs, CNG providers, or the Win32 API
 surface called by ctypes.
 
-**Coverage gaps reflect real limits.** The 12% of code not covered by tests
-is primarily Win32 API paths (HWND creation, DPAPI calls, NCrypt key persistence)
-that require a live Windows session. These are not mocked because mocking them
-at the wrong layer would produce coverage numbers that lie.
+**Coverage is run-specific.** No repository-wide percentage is a standing
+release property. Win32 API paths such as live HWND actuation, DPAPI calls, and
+NCrypt key persistence require real-Windows probes in addition to portable
+tests; a mock-only percentage would not establish those runtime properties.
 
 ---
 
@@ -299,7 +297,7 @@ at the wrong layer would produce coverage numbers that lie.
 
 | Layer | File | Count | What it covers |
 |-------|------|-------|----------------|
-| Logic / unit | `test_policy.py`, `test_observer.py`, `test_ledger.py`, … | ~591 | Core invariants, decision paths, edge cases |
+| Logic / unit | `test_policy.py`, `test_observer.py`, `test_ledger.py`, … | Commit-specific | Core invariants, decision paths, edge cases |
 | Red team | `test_redteam.py` | 59 | RT-01–RT-20: policy bypass, sig tamper, hash chain forgery, race conditions |
 | Adversarial AI | `test_adversarial_ai.py` | 17 | Training data poisoning, ceiling bypass via signed policy, ControlPlane races, approval replay, self-revival |
 | Dependency integrity | `test_dependency_integrity.py` | 21 | Axios-style supply chain IOCs, module shadow attack, MCP tool metadata injection scanner, git dep pinning |
@@ -310,7 +308,7 @@ at the wrong layer would produce coverage numbers that lie.
 
 ### Critical Invariant Tests
 
-| Test | File | What it proves |
+| Test | File | Narrow assertion exercised |
 |------|------|----------------|
 | `test_only_allow_decisions_reach_training_data` + context test | test_observer.py | Allowed primary records and allowed context only |
 | `test_observer_never_passes_above_max_classification` | test_labels.py | Classification ceiling |

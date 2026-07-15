@@ -51,6 +51,103 @@ related records.
 
 ## Register
 
+## WHY-20260715-008 - Require the authoritative server for Level 0 authorization
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-15T11:30:07Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260715-008](LOG.md#log-20260715-008)
+**Parked records:** [PARK-20260715-017](PARKED.md#park-20260715-017)
+**Source state:** `selfconnect-enterprise`,
+`hardening/partner-rollout-readiness-20260715`,
+`e071d745a5c87aaa0d008e35d2bd0928dea384e0`
+
+**Decision:** Level 0 authorization must be a successful response from the live
+Ultra verifier. Enforce mode defaults to strict denial and cannot convert a
+server rejection or outage into authorization through a weaker fallback.
+High-assurance operation also requires a deployment-supplied mesh secret.
+
+**Why:** A local checksum can validate client-side structure but cannot observe
+the server's durable nonce store, pair anomaly state, TSK lifecycle state, or
+authoritative identity binding. Calling that path full BPC+TSK verification was
+a composition error. A known default mesh secret further made possession
+predictable in any deployment that failed to override configuration.
+
+**Alternatives considered:** Keep local verification and rename it; rejected
+because it would leave the claimed governed path bypassing authoritative state.
+Permit fallback after a cryptographic rejection; rejected because rejection is
+a security decision, not an availability signal. Remove all fallback modes;
+deferred because explicitly configured lower-assurance compatibility remains a
+documented product choice outside strict enforce mode.
+
+**Consequences:** Enforce-mode availability now depends on the Ultra service,
+which is intentional. Operators must provision a strong mesh secret and health,
+restart, and dependency controls. Compatibility deployments can explicitly set
+`SC_STRICT_ENFORCE=0`, but cannot cite the strict Level 0 property.
+
+**Rollback conditions:** Replace the HTTP verifier only with an equivalent
+authoritative verifier that preserves durable replay, identity, anomaly, and TSK
+state. Never restore authorization from local self-checks merely to avoid a
+service dependency.
+
+**Evidence and links:** [LOG-20260715-008](LOG.md#log-20260715-008),
+[PARK-20260715-017](PARKED.md#park-20260715-017),
+`tests/test_identity_gate.py`, `tests/test_e2e_ultra_gate.py`, and the
+pinned BPC/TSK protocol commits.
+
+## WHY-20260715-007 - Bind security and compliance claims to the implemented boundary
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-15T11:24:27Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260715-007](LOG.md#log-20260715-007)
+**Parked records:** [PARK-20260715-016](PARKED.md#park-20260715-016)
+**Source state:** `selfconnect-enterprise`,
+`hardening/partner-rollout-readiness-20260715`,
+`e071d745a5c87aaa0d008e35d2bd0928dea384e0`
+
+**Decision:** Describe OS protection, cryptographic key possession, platform
+claims, hardware custody, protocol secrecy, policy filtering, candidate control
+evidence, and authorization as separate properties. Remove readiness and
+control-satisfaction conclusions from developer documentation. Make the local
+TPM probe fail closed when it cannot read the hardware implementation property,
+and advertise only algorithms/identity properties implemented by the MCP tools.
+
+**Why:** The audit found that correct components had been composed into claims
+the implementation did not establish. DPAPI was presented as hardware/process
+identity; the software KSP was presented as device binding; a software Ed25519
+signature plus independent platform claim was presented as TPM-backed payload
+signing; owning-client TSK metadata was presented as structural secrecy; and
+component tests were promoted to NIST baseline readiness. These overclaims
+weaken engineering credibility and patent evidence even when the underlying
+component is useful.
+
+**Alternatives considered:** Leave historical files untouched and add one
+disclaimer; rejected because search and partner review would still find the
+false claims as current repository statements. Delete historical records;
+rejected because provenance and restoration history matter. Add new
+cryptographic infrastructure during the wording audit; rejected because a
+claim correction must not invent evidence or blur into an unreviewed redesign.
+
+**Consequences:** Current documentation is more conservative and separates
+candidate evidence from deployment/assessment decisions. Some former marketing
+language is no longer available. Restoring stronger wording now requires exact
+implementation, named evidence, deployment configuration, and external review
+where applicable. The TPM experiment now returns non-hardware/NA rather than
+inferring hardware on a property-query failure.
+
+**Rollback conditions:** Correct only a factual regression in the bounded
+replacement. Do not restore a broader claim because a demonstration needs
+stronger wording. Add a new decision when a redesigned protocol, hardware-bound
+key path, validated cryptographic deployment, or qualified assessment provides
+the missing evidence.
+
+**Evidence and links:** [LOG-20260715-007](LOG.md#log-20260715-007),
+[PARK-20260715-016](PARKED.md#park-20260715-016), `SECURITY.md`, `GAPS.md`,
+`docs/ato/NIST_800-53_control_map.md`,
+`docs/ato/THREAT_MODEL.md`, and
+`docs/assurance/CONTROL_CATALOG.md`.
+
 ## WHY-20260715-006 - Prefer bounded rotation and explicit lifecycle boundaries over inferred readiness
 
 **Status:** Accepted

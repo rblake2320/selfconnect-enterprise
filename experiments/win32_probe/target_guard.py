@@ -32,10 +32,12 @@ TERMINAL_CLASSES = {
     "mintty",
 }
 
-# Kernel-verified exe required for spoofable class names.
+# OS-reported executable image required for spoofable class names.
 # Any process can call RegisterClassExW with any name, so GetClassNameW alone
 # is NOT a security gate.  QueryFullProcessImageNameW returns the kernel's
-# image path, which cannot be spoofed by the target process.
+# image path. This resists a class-name/basename spoof from a user-writable
+# directory; it is not cryptographic process identity and does not cover a
+# compromised trusted binary, protected directory, administrator, or kernel.
 # Enforcement: when require_terminal=True and the class appears in this map,
 # the owning exe MUST match (case-insensitive) — no exceptions.
 TERMINAL_CLASS_TO_EXE: dict[str, frozenset[str]] = {

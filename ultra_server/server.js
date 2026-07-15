@@ -172,7 +172,17 @@ if (RUNTIME_MODE === 'production') {
 const registry   = new PairRegistry(pairStore);
 const nonceStore = new ServerNonceStore(nonceBackend, SIG_WINDOW_MS * 2 + 10_000);
 const anomaly    = new AnomalyEngine(anomalyStore);
-const provisioner = new TSKProvisioner(tskStore);
+const provisioner = new TSKProvisioner(tskStore, {
+  lifecycleAuthorizer: async ({ clientId, requestorId, reason, action }) => {
+    if (action !== 'update') return false;
+    if (requestorId === 'ultra-admin' && reason === 'operator-admin-lifecycle') {
+      return true;
+    }
+    if (reason !== 'rotation-commit') return false;
+    const map = await tskStore.get(clientId);
+    return map?.label === `agent:${requestorId}` && map.status === 'active';
+  },
+});
 
 // Only this server process can issue recovery tokens. Production supports one
 // bounded previous key so operators can rotate without invalidating in-flight
@@ -514,7 +524,12 @@ app.post('/rotate-tsk/commit', ...registrationGuards, async (req, res) => {
       return res.status(409).json({ ok: false, error: 'ROTATION_BINDING_CONFLICT' });
     }
     const revoked = oldMap.status === 'revoked'
-      || await provisioner.updateKey(oldClientId, { status: 'revoked' }, agentId);
+      || await provisioner.updateKey(
+        oldClientId,
+        { status: 'revoked' },
+        agentId,
+        'rotation-commit',
+      );
     if (!revoked) {
       return res.status(500).json({ ok: false, error: 'ROTATION_OLD_KEY_REVOCATION_FAILED' });
     }
@@ -753,7 +768,12 @@ app.patch('/tsk/keys/:clientId', requireAdminAuth, async (req, res) => {
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ ok: false, error: 'NO_UPDATES_PROVIDED' });
     }
-    const found = await provisioner.updateKey(req.params.clientId, updates);
+    const found = await provisioner.updateKey(
+      req.params.clientId,
+      updates,
+      'ultra-admin',
+      'operator-admin-lifecycle',
+    );
     if (!found) return res.status(404).json({ ok: false, error: 'KEY_NOT_FOUND' });
     const updated = await provisioner.getKey(req.params.clientId);
     console.log(`[ultra-server] TSK key ${req.params.clientId} updated: ${JSON.stringify(updates)}`);

@@ -15,8 +15,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "build>=1.2",
+    "comtypes>=1.4; sys_platform == 'win32'",
     "hypothesis>=6.0",
     "pip-audit>=2.7",
+    "pywin32>=306; sys_platform == 'win32'",
     "pytest>=8",
     "rich>=13.0",
     "ruff>=0.4",

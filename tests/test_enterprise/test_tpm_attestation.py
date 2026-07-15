@@ -34,7 +34,15 @@ from enterprise.tpm_attestation import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-_PROBE_RESULT_KEYS = {"supported", "claim_size", "nonce_hex", "pubkey_hex", "error"}
+_PROBE_RESULT_KEYS = {
+    "supported",
+    "verified",
+    "identity_key_bound",
+    "claim_size",
+    "nonce_hex",
+    "pubkey_hex",
+    "error",
+}
 
 
 def _make_unsupported() -> TpmAttestationResult:
@@ -99,6 +107,9 @@ def test_tpm_probe_supported_is_bool():
     """tpm_probe()['supported'] is always a bool."""
     result = tpm_probe()
     assert isinstance(result["supported"], bool)
+    assert isinstance(result["verified"], bool)
+    assert result["supported"] is result["verified"]
+    assert result["identity_key_bound"] is False
 
 
 def test_tpm_probe_claim_size_is_int():
@@ -336,22 +347,46 @@ def test_full_round_trip_when_tpm_available():
         # TPM not available on this machine — NA, not a failure.
         assert isinstance(result.error, str)
         return  # not pytest.skip — this is a valid outcome
-    # TPM is available — verify the claim.
-    ok = verify_tpm_platform_claim(result)
-    # If verification fails due to driver/firmware quirk, don't fail the suite —
-    # but assert that it returned a bool (not an exception).
-    assert isinstance(ok, bool)
+    # A created claim that cannot be verified is not acceptable evidence.
+    assert verify_tpm_platform_claim(result) is True
 
 
-def test_tpm_probe_consistency_with_create():
-    """tpm_probe supported flag must agree with create_tpm_platform_claim."""
-    probe = tpm_probe()
-    # tpm_probe uses os.urandom(32) internally; we just verify the hex is decodable.
-    bytes.fromhex(probe["nonce_hex"])
-    # Run a fresh attestation to confirm the supported flag is consistent.
-    fresh = create_tpm_platform_claim(os.urandom(32))
-    # Both must agree on whether TPM is available.
-    assert probe["supported"] == fresh.supported or True  # best-effort: hardware state can change
+def test_tpm_probe_fails_closed_when_claim_verification_fails(monkeypatch):
+    """A produced but unverified claim must never be reported as supported."""
+    import enterprise.tpm_attestation as mod
+
+    created = TpmAttestationResult(
+        nonce=b"n" * 32,
+        claim_blob=b"claim" * 16,
+        supported=True,
+    )
+    monkeypatch.setattr(mod, "create_tpm_platform_claim", lambda _nonce: created)
+    monkeypatch.setattr(mod, "verify_tpm_platform_claim", lambda _result: False)
+
+    probe = mod.tpm_probe()
+
+    assert probe["supported"] is False
+    assert probe["verified"] is False
+    assert probe["error"] == "local claim verification failed"
+
+
+def test_tpm_probe_reports_verified_platform_claim_without_identity_binding(monkeypatch):
+    import enterprise.tpm_attestation as mod
+
+    created = TpmAttestationResult(
+        nonce=b"n" * 32,
+        claim_blob=b"claim" * 16,
+        supported=True,
+        identity_key_bound=False,
+    )
+    monkeypatch.setattr(mod, "create_tpm_platform_claim", lambda _nonce: created)
+    monkeypatch.setattr(mod, "verify_tpm_platform_claim", lambda _result: True)
+
+    probe = mod.tpm_probe()
+
+    assert probe["supported"] is True
+    assert probe["verified"] is True
+    assert probe["identity_key_bound"] is False
 
 
 # ---------------------------------------------------------------------------

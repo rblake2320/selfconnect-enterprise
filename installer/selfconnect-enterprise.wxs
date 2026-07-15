@@ -18,7 +18,7 @@
   <?define ProductName = "SelfConnect Enterprise" ?>
   <?define ServiceName = "SelfConnectEnterprise" ?>
   <?define ServiceDisplayName = "SelfConnect Enterprise Control Plane" ?>
-  <?define ServiceDescription = "Governed OS-native AI peer mesh. Provides TPM-backed identity leases, DACL-guarded pipe transport, fail-closed target verification, and per-action audit receipts." ?>
+  <?define ServiceDescription = "Governed OS-native AI peer mesh with cryptographic identity leases, guarded local transport, target verification, and per-action audit receipts." ?>
   <?define InstallDir = "SelfConnectEnterprise" ?>
   <?define ProgramDataDir = "SelfConnectEnterprise" ?>
   <?define WheelPattern = "selfconnect_enterprise-*.whl" ?>
@@ -43,8 +43,9 @@
 
         Schedule="afterInstallInitialize" means the old product's uninstall
         sequence runs FIRST (which fires ServiceControl Stop="both"), then the
-        new product's install sequence runs.  This guarantees the service is
-        fully stopped and deregistered before any new files are laid down.
+        new product's install sequence runs. This ordering is intended to stop
+        and deregister the service before new files are laid down; installer
+        validation must confirm that behavior on each supported Windows target.
 
         Do NOT change this to "afterInstallExecute" — that late-removal schedule
         leaves the old service running while new files are being copied.

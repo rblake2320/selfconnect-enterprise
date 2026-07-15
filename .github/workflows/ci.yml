@@ -32,7 +32,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "pytest>=8" "ruff>=0.4" "hypothesis>=6.0" pywin32 "cryptography>=48.0.1" comtypes "rich>=13.0"
+          pip install "pytest>=8" "ruff>=0.4" "hypothesis>=6.0" "pip-audit>=2.7" pywin32 "cryptography>=48.0.1" comtypes "rich>=13.0"
           pip install -e . --no-deps
 
       - name: Lint (ruff — complete repository)
@@ -100,16 +100,16 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22"
+          node-version: "24"
 
       - name: Checkout pinned BPC and TSK protocol sources
         shell: pwsh
         run: |
           $depsRoot = Split-Path $env:GITHUB_WORKSPACE -Parent
           git clone https://github.com/rblake2320/bpc-protocol.git "$depsRoot\bpc-protocol"
-          git -C "$depsRoot\bpc-protocol" checkout d023c248d7661f1211081771075a900c65fb77ed
+          git -C "$depsRoot\bpc-protocol" checkout 7304e86d1d5df30b63e647146b20312a2a0da0c5
           git clone https://github.com/rblake2320/tsk-protocol.git "$depsRoot\tsk-protocol"
-          git -C "$depsRoot\tsk-protocol" checkout 235f644f8ac84998802ffe4ddba6c34dfb5fdcb1
+          git -C "$depsRoot\tsk-protocol" checkout 63afcb83a033a82ce21f8f473e6a186cc195e801
 
       - name: Build pinned protocol dependencies
         shell: pwsh
@@ -118,10 +118,14 @@ jobs:
           Push-Location "$depsRoot\bpc-protocol"
           npm ci
           npm run build
+          npm test
           Pop-Location
           Push-Location "$depsRoot\tsk-protocol"
           npm ci
           npm run build
+          npm test
+          npm run test:ha
+          npm run typecheck
           Pop-Location
           Push-Location ultra_server
           npm ci
@@ -221,7 +225,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22"
+          node-version: "24"
 
       - name: Checkout and build pinned protocol sources
         shell: bash
@@ -229,13 +233,17 @@ jobs:
           set -euo pipefail
           deps_root="$(dirname "$GITHUB_WORKSPACE")"
           git clone https://github.com/rblake2320/bpc-protocol.git "$deps_root/bpc-protocol"
-          git -C "$deps_root/bpc-protocol" checkout d023c248d7661f1211081771075a900c65fb77ed
+          git -C "$deps_root/bpc-protocol" checkout 7304e86d1d5df30b63e647146b20312a2a0da0c5
           git clone https://github.com/rblake2320/tsk-protocol.git "$deps_root/tsk-protocol"
-          git -C "$deps_root/tsk-protocol" checkout 235f644f8ac84998802ffe4ddba6c34dfb5fdcb1
+          git -C "$deps_root/tsk-protocol" checkout 63afcb83a033a82ce21f8f473e6a186cc195e801
           npm ci --prefix "$deps_root/bpc-protocol"
           npm run build --prefix "$deps_root/bpc-protocol"
+          npm test --prefix "$deps_root/bpc-protocol"
           npm ci --prefix "$deps_root/tsk-protocol"
           npm run build --prefix "$deps_root/tsk-protocol"
+          npm test --prefix "$deps_root/tsk-protocol"
+          npm run test:ha --prefix "$deps_root/tsk-protocol"
+          npm run typecheck --prefix "$deps_root/tsk-protocol"
           npm ci --prefix ultra_server
           npm test --prefix ultra_server
 

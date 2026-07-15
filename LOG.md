@@ -54,6 +54,118 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260715-008 - Make Ultra authorization authoritative and fail closed
+
+**Timestamp (UTC):** 2026-07-15T11:30:07Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, security fix, test, supply-chain hardening
+**Base commit:** `e071d745a5c87aaa0d008e35d2bd0928dea384e0`
+**Change reference:** commit containing this entry
+**Why:** [WHY-20260715-008](WHY.md#why-20260715-008)
+**Parked records:** [PARK-20260715-017](PARKED.md#park-20260715-017)
+
+**Changed:** Replaced the Level 0 local self-check with authoritative Ultra
+server verification; made strict enforce mode default-deny for every Level 0
+rejection; made `SC_REQUIRE_ULTRA_SERVER=1` an executable runtime requirement;
+serialized local nonce and peer-registration state; required an explicit
+32-byte mesh secret in high-assurance modes; separated software Ed25519 payload
+signing from locally verified TPM platform-state claims; pinned BPC and TSK to
+their reviewed full commit identifiers; and pinned release-workflow actions to
+immutable commits. The direct-dependency pip-audit hard gate now fails instead
+of skipping when its scanner is absent or returns malformed output, and CI
+installs that scanner explicitly.
+
+**Reason:** The previous Level 0 label implied composed BPC/TSK server
+authorization while `authorize_injection()` only ran a local checksum and
+nonce check. This bypassed server anomaly state, durable replay state, complete
+TSK verification, and authoritative identity binding. The server-required flag
+was also asserted by tests that reimplemented the desired condition instead of
+calling the production wrapper.
+
+**Full actions and links:** `enterprise/ultra_gate.py`,
+`enterprise/identity_gate.py`, `enterprise/mcp_dispatch.py`,
+`enterprise/tpm_attestation.py`, `ultra_server/server.js`,
+`conftest.py`, `scripts/run_all_tests.py`, `.github/workflows/ci.yml`,
+`.github/workflows/release-msi.yml`, the associated tests, and the linked
+WHY/PARK records. Protocol pins reference BPC
+`7304e86d1d5df30b63e647146b20312a2a0da0c5` and TSK
+`63afcb83a033a82ce21f8f473e6a186cc195e801`.
+
+**Validation:** The full isolated Python suite passed 1,456 tests with two
+expected warnings for tests that intentionally omit an immutable sink. Ruff,
+pip-audit, actionlint, Ultra's 15 executed Node tests (one live-PostgreSQL unit
+case explicitly skipped in that unit command), and npm audit passed. The exact
+pinned BPC commit built and passed 171 Node tests; the exact pinned TSK commit
+built, passed 168 core/runtime cases plus 25 HA cases, and passed typecheck.
+Focused identity/live-gate tests included a 64-way same-nonce race with one
+accepted request and 63 replay denials. Focused TPM/MCP tests passed 79 cases,
+and the documentation/identity audit passed 193 focused tests plus 7 record
+tests. Published CI remains required before merge.
+
+**Notes:** This does not establish production two-node Ultra HA, hardware-bound
+agent signing, remote attestation, FIPS validation, a DoD Impact Level, an ATO,
+or an externally anchored audit system.
+
+## LOG-20260715-007 - Correct hardware, secrecy, control, and readiness claim boundaries
+
+**Timestamp (UTC):** 2026-07-15T11:24:27Z
+**Actor:** Codex, requested by the repository owner
+**Category:** audit, security fix, documentation
+**Base commit:** `e071d745a5c87aaa0d008e35d2bd0928dea384e0`
+**Change reference:** commit containing this entry
+**Why:** [WHY-20260715-007](WHY.md#why-20260715-007)
+**Parked records:** [PARK-20260715-016](PARKED.md#park-20260715-016)
+
+**Changed:** Corrected DPAPI and software-KSP identity descriptions; removed
+owning-client TSK structural-secrecy claims; bounded ObserverFilter to its data
+path; corrected MCP tool schemas/descriptions to Ed25519-only verification and
+software-capable session stamping; removed TPM-backed service/signing claims;
+made the local TPM hardware-property probe fail closed; narrowed target-guard,
+UIA, challenge-response, and chained-channel evidence; replaced legacy NIST
+`Satisfied`/`Ready` maps with candidate-evidence boundaries; corrected AU-11,
+FIPS, threat-model, historical briefing, installer/deployment, and evidence
+index claims; and recorded the resulting gaps and recovery source.
+
+**Reason:** Repository-wide claim review found multiple cases where a useful
+component property had been promoted to a stronger composition, hardware,
+secrecy, compliance, or authorization statement. The affected statements were
+not established by the code or named tests and could mislead a buyer, assessor,
+partner, or patent evidence review.
+
+**Full actions and links:** `README.md`, `SECURITY.md`, `CHANGELOG.md`,
+`GAPS.md`, `enterprise/identity.py`, `enterprise/identity_cng.py`,
+`enterprise/tsk_client.py`, `enterprise/observer.py`,
+`enterprise/mcp_tools.py`, `enterprise/service.py`,
+`bench/tpm_sign_bench.py`,
+`experiments/win32_probe/chained_channel.py`,
+`experiments/win32_probe/target_guard.py`,
+`experiments/win32_probe/tpm_identity.py`,
+`installer/selfconnect-enterprise.wxs`, `installer/INSTALL.md`,
+`docs/ROLLBACK.md`, `docs/operations/ULTRA_KEY_ROTATION.md`,
+`docs/ato/TPM_LIVE_PROBE_2026-06-21.md`,
+`docs/GOVERNANCE_PROFILES.md`, `docs/ato/DEPLOYMENT_GUIDE.md`,
+`docs/ato/EVIDENCE_INDEX.md`, `docs/ato/NIST_800-53_control_map.md`,
+`docs/ato/THREAT_MODEL.md`,
+`docs/briefing/selfconnect-enterprise-v1.0.0.md`,
+`docs/compliance/control-baselines.md`,
+`docs/compliance/nist-800-53-mapping.md`, and the linked WHY/PARK record.
+
+**Validation:** `python -m ruff check` passed for the nine Python files in this
+audit; `python -m py_compile` passed for the same files; 193 focused identity,
+observer, and MCP-tool tests passed; all 7 documentation-record tests passed;
+the bounded-term claim scan returned only explicit non-guarantees/open-gap
+language plus runtime files owned by the concurrent root fix; and
+`git diff --check` passed. One initial pytest command named a nonexistent
+`test_tsk_client.py`, ran zero tests, and was corrected to the existing focused
+files. Full-suite combined validation is owned by the root hardening pass
+because this worktree contains concurrent runtime changes.
+
+**Notes:** This audit does not add a hardware-bound agent signing protocol,
+remote attestation, a FIPS-validated deployment, NIST control assessment, ATO,
+or risk acceptance. Direct/legacy send-path inventory, same-user emergency
+bypass authority, independent audit custody, UIA confidentiality, and Ultra HA
+deployment composition remain explicit open boundaries.
+
 ## LOG-20260715-006 - Add bounded rotation, fail-closed abuse handling, and ledger lifecycle
 
 **Timestamp (UTC):** 2026-07-15T07:07:32Z

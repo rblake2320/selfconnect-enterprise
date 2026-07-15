@@ -63,8 +63,8 @@ for the operator procedures and their explicit evidence boundaries.
 The package currently consumes local protocol source packages. CI checks out,
 builds, and tests these exact commits before starting the sidecar:
 
-- `bpc-protocol`: `d023c248d7661f1211081771075a900c65fb77ed`
-- `tsk-protocol`: `235f644f8ac84998802ffe4ddba6c34dfb5fdcb1`
+- `bpc-protocol`: `7304e86d1d5df30b63e647146b20312a2a0da0c5`
+- `tsk-protocol`: `63afcb83a033a82ce21f8f473e6a186cc195e801`
 
 From `ultra_server`, the file dependencies resolve at
 `../../bpc-protocol/packages/*` and `../../tsk-protocol/packages/*`. This layout
@@ -85,8 +85,9 @@ npm run test:live
 The repository CI additionally runs the real Python `UltraGate` against the
 Node server on Windows. A separate production job uses digest-pinned PostgreSQL
 and Redis, exercises concurrent HOTP compare-and-swap, kills/restarts the Node
-process, and proves the same agent, pair, tumbler client, and verification path
-survive. The production job also rotates operator and recovery keys through one
+process, and verifies that the same agent, pair, tumbler client, and
+verification path survive that named run. The production job also rotates
+operator and recovery keys through one
 bounded overlap generation, retires the old generation, and restarts after TSK
 rotation. `SC_REQUIRE_ULTRA_SERVER=1` converts an unavailable sidecar from a
 skip to a test failure. These checks establish the tested composition only;

@@ -29,12 +29,12 @@ system boundary.
 |--------|---------|
 | `enterprise/registry.py` | SetProp/GetProp agent registry, BirthTag, `discover_mesh()`, heartbeat |
 | `enterprise/transport.py` | WM_COPYDATA structured payload transport (64KB atomic JSON; sender HWND is caller-supplied and requires separate validation) |
-| `enterprise/identity.py` | Persistent machine-bound ed25519 agent identity (DPAPI) |
+| `enterprise/identity.py` | Persistent ed25519 identity with current-user DPAPI protection at rest; not hardware-bound |
 | `enterprise/identity_cng.py` | CNG-backed identity + CngLedger (ECDSA P-384, SHA-384); FIPS status depends on the validated Windows module and configuration |
 | `enterprise/ledger.py` | AgentLedger — signed, tamper-evident SHA-256 chain with verified local segment lifecycle; external witnessing remains separate |
 | `enterprise/crypto.py` | NCrypt ECDSA P-384 / SHA-384 primitives via Windows CNG |
 | `enterprise/policy.py` | PolicyEnforcer — deny-by-default decision pipeline plus composition gate |
-| `enterprise/policy_sign.py` | ECDSA P-384 policy bundle signing and verification (100% coverage) |
+| `enterprise/policy_sign.py` | ECDSA P-384 policy bundle signing and verification; coverage is run-specific |
 | `enterprise/operator.py` | One-time context-bound approvals; SQLite WAL durable queue for governed runtime |
 | `enterprise/control.py` | ControlPlane — pause / quarantine / revoke / kill_all state machine |
 | `enterprise/governed_runtime.py` | Mandatory enterprise composition for policy, approval, target binding, identity, and signed audit |
@@ -234,7 +234,7 @@ actuation can be assessed with `tools/irs_runtime_conformance.py` without mock t
 | [`docs/compliance/gap-analysis.md`](docs/compliance/gap-analysis.md) | Preliminary control mapping and remediation record; not an assessed POA&M |
 | [`docs/assurance/SECTOR_PROFILES.md`](docs/assurance/SECTOR_PROFILES.md) | Product-neutral government, tax, healthcare, and financial-services claim boundaries |
 | [`docs/assurance/CONTROL_CATALOG.md`](docs/assurance/CONTROL_CATALOG.md) | Tiered executable assertions, evidence locations, and named blind spots |
-| [`SECURITY.md`](SECURITY.md) | Guarantees, explicit non-guarantees, test citations |
+| [`SECURITY.md`](SECURITY.md) | Bounded component properties, explicit non-guarantees, test citations |
 | [`CHANGELOG.md`](CHANGELOG.md) | Per-version security deliverables and gap status |
 | [`LOG.md`](LOG.md) | Chronological, commit-specific work and validation evidence |
 | [`WHY.md`](WHY.md) | Decision rationale, alternatives, consequences, and rollback triggers |

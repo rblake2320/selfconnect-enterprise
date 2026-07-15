@@ -35,9 +35,9 @@ Degradation cascade (if full 7-layer fails):
 In enforce mode, cascade stops at Level 2. The worst case in production is
 falling back to the tested enterprise identity layer (ed25519 + birth tags).
 
-Gap 4 fix: SC_STRICT_ENFORCE=1 makes the cascade fail CLOSED on network errors
-instead of degrading to Level 2. An attacker cannot force a downgrade by
-blocking localhost:7777.
+SC_STRICT_ENFORCE defaults to 1. In enforce mode it makes every Level 0 failure
+fail closed instead of accepting a weaker fallback. An operator must explicitly
+set it to 0 to permit degradation.
 
 Gap 3 note: DPAPI deterministic derivation is a known gap (TPM migration
 roadmap). A CRITICAL log is emitted at startup if no TPM is detected.
@@ -80,9 +80,9 @@ _BYPASS_TOKEN_ENTROPY = b"SC-EmergencyBypass-Entropy-v1"
 _BYPASS_TOKEN_TTL_SEC = 3600  # token expires after 1 hour
 
 # ── Strict enforce mode (Gap 4 fix) ───────────────────────────────────────────
-# When SC_STRICT_ENFORCE=1, a network failure at Level 0 fails CLOSED instead
-# of degrading to Level 2. Crypto failures still degrade normally.
-_STRICT_ENFORCE: bool = os.environ.get("SC_STRICT_ENFORCE", "0").strip() == "1"
+def _strict_enforce_enabled() -> bool:
+    """Read strict posture per call; enforce mode defaults to fail closed."""
+    return os.environ.get("SC_STRICT_ENFORCE", "1").strip() == "1"
 
 # ── Bridge timeout ─────────────────────────────────────────────────────────────
 BRIDGE_TIMEOUT_MS: int = int(os.environ.get("SC_IDENTITY_BRIDGE_TIMEOUT_MS", "500"))
@@ -413,10 +413,9 @@ class DegradationCascade:
     In enforce mode, cascade stops at Level 2. If Level 2 fails in enforce,
     injection is blocked.
 
-    Gap 4 fix: When SC_STRICT_ENFORCE=1, an OSError (network failure) at
-    Level 0 fails CLOSED — no degradation to Level 2. This prevents an attacker
-    from blocking localhost:7777 to force a downgrade and bypass Layer 8 Active
-    Defense (Ghost Pairs, Shadow Mode, Tarpit).
+    With strict enforcement enabled, every Level 0 failure denies the operation.
+    This prevents either a blocked sidecar or a cryptographic rejection from
+    being converted into authorization by a weaker fallback.
     """
 
     def __init__(
@@ -446,6 +445,8 @@ class DegradationCascade:
                 if ok:
                     return True, "", 0
                 _log.warning("IdentityGate: Level 0 (full BPC+TSK) failed: %s", reason)
+                if _strict_enforce_enabled() and self.mode == MODE_ENFORCE:
+                    return False, f"strict_enforce: Level 0 rejected: {reason}", 0
                 # Level 1: BPC-only (verify without TSK checksum)
                 ok, reason = self._level1_bpc_only(target_hwnd, text)
                 if ok:
@@ -455,7 +456,7 @@ class DegradationCascade:
             except OSError as exc:
                 # Network/connection failure — not a crypto failure.
                 # Gap 4 fix: SC_STRICT_ENFORCE=1 fails CLOSED on network errors.
-                if _STRICT_ENFORCE and self.mode == MODE_ENFORCE:
+                if _strict_enforce_enabled() and self.mode == MODE_ENFORCE:
                     _log.critical(
                         "IdentityGate: STRICT_ENFORCE — Ultra Server unreachable (%s). "
                         "Failing CLOSED. An attacker may be blocking localhost:7777. "
@@ -490,6 +491,8 @@ class DegradationCascade:
         try:
             self.gate.authorize_injection(target_hwnd, text)
             return True, ""
+        except OSError:
+            raise
         except Exception as exc:
             return False, str(exc)
 
@@ -574,14 +577,24 @@ def gated_send_string(
         raise ValueError("gated_send_string: _original_send_string must be provided")
 
     mode = get_current_mode()
+    require_ultra = os.environ.get("SC_REQUIRE_ULTRA_SERVER", "0").strip() == "1"
 
     if mode == MODE_BYPASS:
+        if require_ultra:
+            raise InjectionDeniedError(
+                "SC_REQUIRE_ULTRA_SERVER=1 is incompatible with bypass mode"
+            )
         _original_send_string(target, text, *args, **kwargs)
         return
 
     hwnd = getattr(target, "hwnd", 0)
     cascade = DegradationCascade(gate=gate, mode=mode)
     ok, reason, level = cascade.verify(hwnd, text)
+
+    if require_ultra and (not ok or level != 0):
+        raise InjectionDeniedError(
+            reason or f"SC_REQUIRE_ULTRA_SERVER=1 requires Level 0, got level {level}"
+        )
 
     if mode == MODE_AUDIT:
         if not ok:

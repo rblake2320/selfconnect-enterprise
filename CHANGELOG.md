@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Authoritative Ultra enforcement and protocol composition
+
+- Replaced Level 0 local self-check authorization with the live Ultra server's
+  BPC/TSK decision and made enforce mode fail closed by default.
+- Made `SC_REQUIRE_ULTRA_SERVER=1` an executable runtime requirement, made
+  local nonce acceptance atomic, and rejected known or short mesh secrets in
+  high-assurance modes.
+- Separated software Ed25519 payload signatures from independently verified
+  local TPM platform-state claims; neither is described as hardware-bound
+  agent signing or remote attestation.
+- Pinned the reviewed BPC and TSK commits and immutable release-workflow action
+  revisions for reproducible composition testing.
+- Evidence: [LOG-20260715-008](LOG.md#log-20260715-008).
+- Rationale: [WHY-20260715-008](WHY.md#why-20260715-008).
+- Parked record:
+  [PARK-20260715-017](PARKED.md#park-20260715-017).
+
+### Claim-boundary and control-map correction
+
+- Separated current-user DPAPI protection, software-KSP signing, platform
+  claims, hardware-key custody, and remote attestation into distinct properties.
+- Removed owning-client structural-secrecy, model-behavior, hardware birth-ID,
+  and TPM-backed payload-signing overclaims; aligned MCP schemas with the
+  algorithms and session properties actually implemented.
+- Replaced legacy NIST `Satisfied`/`Ready` tables with bounded candidate
+  evidence and explicit deployment, assessor, authorization, and retention
+  dependencies.
+- Corrected the threat model, historical briefing, deployment guide, evidence
+  index, and local Win32 probe wording; the TPM hardware-property probe now
+  fails closed instead of inferring hardware on query failure.
+- Evidence: [LOG-20260715-007](LOG.md#log-20260715-007).
+- Rationale: [WHY-20260715-007](WHY.md#why-20260715-007).
+- Parked record:
+  [PARK-20260715-016](PARKED.md#park-20260715-016).
+
 ### Ultra rotation, abuse boundary, and ledger lifecycle
 
 - Added Redis-backed production source-IP and pair rate limits and converted
@@ -184,11 +219,10 @@ this release makes existing claims true at runtime and makes CI authoritative.
 
 ## v1.2.0 — Hardened Posture: Zero-Day Audit, Fuzz/Stress/Exhaustion Test Suite (2026-05-12)
 
-This release establishes v1.2.0 as the **first continuously-audited posture release**
-of SelfConnect Enterprise. It does not introduce new user-facing features. It proves
-that the existing security guarantees hold under adversarial conditions that were not
-previously tested, and it locks in the dependency hygiene required for production
-classified deployment.
+Historical release note: v1.2.0 expanded adversarial and dependency testing and
+did not introduce new user-facing features. The named tests establish only their
+specific assertions at that commit; they do not establish universal security,
+classified deployment readiness, or authorization.
 
 **What this is not:** The planned v1.2.0 "participant-mode / executor / bridge"
 architecture is deferred. That work will be scoped and versioned separately. This
@@ -231,7 +265,7 @@ Three new test files covering attack surfaces that RT-01..RT-20 (logic tests) do
   `PolicyBundle.from_dict()`, `WfpProfile._sanitize_ps_string()`. 200+ examples per
   boundary. Never-crash invariants across arbitrary inputs.
 - **`test_stress_concurrent.py` (8 tests):** 50–100 thread stress — `ControlPlane`,
-  `OperatorQueue`, `AgentLedger`. Confirms thread-safety guarantees and documents the
+  `OperatorQueue`, `AgentLedger`. Exercises the named concurrency scenarios and documents the
   `AgentLedger` single-writer design boundary (G-6).
 - **`test_resource_exhaustion.py` (10 tests):** 10k ledger entries, 1k operator queue,
   500-agent bundles, 200 WFP allow entries, 10k action lists. Timing budgets enforced.
@@ -295,12 +329,12 @@ Gap status: G-2 CLOSED. G-1, G-3, G-4 remain open (scheduled).
 
 ---
 
-## v1.0.0 — Production Release (2026-05-08)  `71170e2` → packaging commit
+## v1.0.0 — Historical release label (2026-05-08)  `71170e2` → packaging commit
 
-Packaging and verification. No logic changes from v0.9.0. All guarantees
-formalized in SECURITY.md. 528 tests passing across all modules. Signed SBOM
-committed. README updated to reflect the actual module surface as built.
-docs/verification/ carries a verification matrix for each version.
+Packaging and verification with no logic changes from v0.9.0. The recorded 528
+tests and signed SBOM are commit-specific evidence, not current production,
+compliance, or authorization evidence. `docs/verification/` retains the
+historical version matrix.
 
 ## v0.9.0 — Classified Mode Profile (2026-05-08)  `71170e2`
 
@@ -320,7 +354,7 @@ Single canonical `enterprise/labels.py` replaces the duplicated
 `LabelEnvelope` (frozen dataclass, Bell-LaPadula lattice dominance, caveat
 validation), and `ALLOWED_CAVEATS`. `LabelEnvelope` plumbed through
 `PolicyEnforcer.check(label=)`, `AgentLedger.log(label=)`, `CngLedger.log(label=)`,
-and `ObserverFilter(allowed_caveats=)`. Critical invariant proven:
+and `ObserverFilter(allowed_caveats=)`. Named invariant exercised:
 `test_observer_never_passes_above_max_classification` — TOP_SECRET entries are
 structurally impossible to pass through a SECRET-ceiling filter. 488/488 tests.
 
@@ -340,9 +374,10 @@ tests passing. Mypy clean (zero errors).
 
 Introduced `ObserverFilter`, `EvidenceRecord`, `LedgerObserver`,
 `EvidenceExporter`, `TrainingTrigger`, and `ShadowHook` in `enterprise/observer.py`.
-The observer reads only entries where `decision=allow`, ensuring that a model
-fine-tuned on this evidence cannot learn behaviors the policy forbade —
-because it was never exposed to them. 373/373 tests passing.
+The observer selects entries where `decision=allow` for the named export path.
+This is a dataset-filtering property; it does not establish what a model can
+learn from other data or that every training path uses the filter. The release
+recorded 373/373 tests passing for its source commit.
 
 ## v0.5.0 — Signed Policy Bundles and 8-Step Enforcer (2026-05-07)  `ff5f1eb`
 
@@ -350,15 +385,19 @@ Introduced `PolicyBundle` (signed with ECDSA P-384 via `policy_sign.py`),
 `PolicyEnforcer` (8-step deny-by-default evaluator), and `OperatorQueue`
 (thread-safe human approval gate). Policy bundles are JSON files; no valid
 signature means no policy. The evaluator denies by default — every check must
-pass or the action is blocked. `policy_sign.py` ships at 100% test coverage.
+pass or the routed action is blocked. The historical release reported complete
+line coverage for `policy_sign.py`; current coverage must be established by a
+current run artifact.
 
 ## v0.4.0 — CNG Identity and CngLedger (2026-05-06)  `e9793d9`
 
 `CngIdentity` and `CngLedger` replace the DPAPI / Python ed25519 stack with
 Windows NCrypt software KSP (ECDSA P-384, SHA-384). Drop-in replacement for
-`AgentIdentity` and `AgentLedger` with identical interface. Provides FIPS 140-2
-certification path through the Windows CNG provider. Both identity types remain
-available; v0.9.0 adds profile-level enforcement of which one is required.
+`AgentIdentity` and `AgentLedger` with identical interface. It created a
+candidate path for deployment with an appropriately validated Windows
+cryptographic module; algorithm/provider selection alone is not a FIPS
+validation claim. Both identity types remain available; v0.9.0 adds
+profile-level enforcement of which one is required.
 
 ## v0.3.1 — NCrypt ECDSA P-384 Crypto Primitives (2026-05-06)  `a6fd49b`
 
@@ -368,7 +407,8 @@ CNG NCrypt API (ctypes). Foundation for CngIdentity in v0.4.0.
 
 ## v0.3.0 — Persistent Agent Identity and Chained Ledger (2026-05-05)  `b16e8ed`
 
-Introduced `AgentIdentity` (DPAPI-encrypted ed25519 keypair, machine-bound)
+Introduced `AgentIdentity` (DPAPI-protected ed25519 keypair for the current
+Windows user context; not hardware-bound)
 and `AgentLedger` (append-only JSONL, SHA-256 hash chain, ed25519 signatures).
 Every enrolled agent has a permanent `SC-XXXXXXXX` identifier that survives
 process restarts. Every entry submitted to `AgentLedger` is signed and chained;

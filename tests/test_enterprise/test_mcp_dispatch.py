@@ -607,6 +607,53 @@ class TestRuntimeTools:
         assert verified["ok"] is True
         assert verified["result"]["verified"] is False
 
+    def test_identity_verify_rejects_unimplemented_algorithm(self):
+        dispatcher = make_dispatcher()
+        signed = dispatcher.call_tool("sc_identity_sign", {"payload_hex": "aabbcc"})
+        verified = dispatcher._sc_identity_verify(
+            {
+                "payload_hex": "aabbcc",
+                "signature_b64": signed["result"]["signature_b64"],
+                "public_key_b64": signed["result"]["public_key_b64"],
+                "algorithm": "ECDSA-P384",
+            }
+        )
+        assert verified["verified"] is False
+        assert verified["algorithm"] == "Ed25519"
+        assert "unsupported" in verified["reason"]
+
+    def test_tpm_option_returns_verified_platform_claim_separate_from_signature(
+        self,
+        monkeypatch,
+    ):
+        from enterprise.tpm_attestation import TpmAttestationResult
+        import enterprise.mcp_dispatch as dispatch_module
+
+        claim = TpmAttestationResult(
+            nonce=b"n" * 32,
+            public_key_blob=b"p" * 72,
+            claim_blob=b"claim" * 16,
+            supported=True,
+            identity_key_bound=False,
+        )
+        monkeypatch.setattr(dispatch_module, "_TPM_ATTESTATION_AVAILABLE", True)
+        monkeypatch.setattr(dispatch_module, "create_tpm_platform_claim", lambda _nonce: claim)
+        monkeypatch.setattr(dispatch_module, "verify_tpm_platform_claim", lambda _claim: True)
+
+        result = MCPDispatcher(profile="government", router=FakeRouter()).call_tool(
+            "sc_identity_sign",
+            {"payload_hex": "aabbcc", "key_provider": "tpm"},
+        )
+
+        assert result["ok"] is True
+        assert result["result"]["algorithm"] == "Ed25519"
+        assert result["result"]["signature_key_provider"] == "software"
+        attestation = result["result"]["tpm_attestation"]
+        assert attestation["verified_locally"] is True
+        assert attestation["identity_key_bound"] is False
+        assert attestation["claim_b64"]
+        assert len(attestation["claim_sha256"]) == 64
+
     def test_receipt_verify_refuses_unsigned_receipt(self):
         dispatcher = make_dispatcher()
         result = dispatcher.call_tool(
@@ -641,7 +688,7 @@ class TestRuntimeTools:
         dispatcher = MCPDispatcher(profile="government", router=FakeRouter())
         result = dispatcher.call_tool("sc_identity_sign", {"payload_hex": "aabbcc"})
         assert result["ok"] is False
-        assert "requires TPM-backed identity" in result["error"]
+        assert "requires a verified TPM platform claim" in result["error"]
 
     def test_government_profile_requires_tpm_session_stamp(self):
         dispatcher = MCPDispatcher(profile="government", router=FakeRouter())

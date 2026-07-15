@@ -1,8 +1,15 @@
 # SelfConnect Enterprise v1.0.0
 ## Executive Security Briefing
 
+> **Historical snapshot — superseded.** This file preserves the wording of an
+> early engineering briefing. It is not current release evidence, a deployment
+> readiness statement, a control assessment, an authorization package, or a
+> competitive-market finding. Current claim boundaries are in `SECURITY.md`,
+> `GAPS.md`, and `docs/ato/NIST_800-53_control_map.md`.
+
 **Date:** 2026-05-08
-**Classification:** UNCLASSIFIED // FOR OFFICIAL USE ONLY
+**Document marking:** Repository documentation; no government classification or
+CUI determination is asserted
 **Audience:** CISO, Contracting Officer, AO/ISSM
 **Prepared by:** SelfConnect Engineering
 
@@ -23,15 +30,17 @@ process decided to read a classified document, summarise it, and send the
 summary to an external API. The decision — and the classification of the
 data it touched — are invisible to the audit chain.
 
-No Windows-native substrate exists to enforce policy on agent decisions,
-log those decisions to a tamper-evident chain, filter training data by
-classification, and gate egress and export by deployment profile. Agents
-either operate ungoverned or they do not deploy.
+SelfConnect Enterprise implements a Windows-oriented candidate substrate for
+policy decisions, tamper-evident local records, training-export filtering, and
+profile-aware egress/export decisions. This briefing does not establish that
+no comparable system exists or that these components alone close an
+authorization or deployment gap.
 
-SelfConnect Enterprise closes this gap. It is a deny-by-default policy
+SelfConnect Enterprise is designed as a deny-by-default policy
 enforcement and audit substrate for AI agent meshes on Windows. It is
 not an agent. It is not an LLM. It is the governance layer that makes
-agents deployable in regulated environments.
+selected agent workflows governable through the integrated paths described
+below. Regulated deployment requires boundary integration and assessment.
 
 ---
 
@@ -70,25 +79,29 @@ the policy ceiling.
 approval (configurable per profile), it enters the `OperatorQueue` and
 blocks until an operator approves or denies.
 
-**After the decision:** The `PolicyDecision` is logged to the hash-chained
+**After the decision:** In the integrated governed runtime, the
+`PolicyDecision` is logged to the hash-chained
 ledger with full metadata including classification, caveats, agent ID,
 action, target, timestamp, sequence number, and digital signature (ECDSA
-P-384 or ed25519). Every decision — allowed or denied — is recorded.
+P-384 or ed25519). This statement does not cover direct calls that bypass the
+governed runtime or deployment-specific tools not wired to the ledger.
 
-**Training data isolation:** `ObserverFilter` reads the ledger but only
+**Training export filtering:** `ObserverFilter` reads the ledger but only
 passes entries where `decision=allow` AND `classification <= max_classification`
 AND `caveats <= allowed_caveats`. The denied adversarial action never
-reaches the training data pipeline. A model fine-tuned on observer output
-cannot learn the behavior because it was never exposed to it.
+becomes the selected training record through that filter. This establishes a
+dataset-path property only; it does not prove that a model cannot learn similar
+behavior from other data or that every training path uses this filter.
 
 **Egress and export gating:** Even if the action were somehow allowed,
 `EgressGuard` blocks outbound calls when `allow_cloud_egress=False`, and
 `ExportGuard` blocks evidence export when the label exceeds the profile
 ceiling. Both log every check to the ledger.
 
-The forged classification header is irrelevant. The system does not trust
-the agent's self-declared classification — it evaluates every condition
-independently and denies on the first failure.
+The governed path evaluates the supplied label and configured policy
+conditions and denies on the first failed check. It cannot independently know
+the semantic classification of arbitrary content merely from a caller-provided
+label; trusted labeling and ingestion remain deployment responsibilities.
 
 ---
 
@@ -157,21 +170,18 @@ independently and denies on the first failure.
 
 | Mode | Environment | Target Baseline | Readiness |
 |------|------------|----------------|-----------|
-| Mode A — Commercial | SaaS, hybrid cloud | NIST Low | Ready |
-| Mode B — High-Assurance | On-premises, signed policies | NIST Moderate | 5 POA&M items (v1.1.0) |
-| Mode C — Classified | Air-gapped, CNG-only | NIST Moderate-High | Requires v1.1.0 |
+| Mode A — Commercial | SaaS, hybrid cloud | NIST Low candidate mapping | Engineering profile; not assessed |
+| Mode B — High-Assurance | On-premises, signed policies | NIST Moderate candidate mapping | Engineering profile; open gaps |
+| Mode C — Classified | Air-gapped, CNG-only | Deployment-specific | Not authorized or assessed |
 
-### NIST SP 800-53 Rev 5 Control Posture (v1.0.0)
+### NIST SP 800-53 Rev 5 Candidate Evidence (v1.0.0 snapshot)
 
-| Status | Count | Controls |
-|--------|-------|----------|
-| **Satisfied** | 9 | AC-3, AC-6, AC-16, AU-2, AU-3, AU-12, SI-3, SI-7, SI-10 |
-| **Partial** | 6 | AC-2, AC-4, AU-9, IA-5, SC-7, SC-28 |
-| **Planned (v1.1.0)** | 1 | SC-8 |
-| **Documented** | 1 | PM-9 |
-
-Partial controls have formally documented gaps with v1.1.0 remediation
-milestones. In FedRAMP terms, these are POA&M items — not findings.
+The v1.0.0 implementation referenced candidate controls including AC-2, AC-3,
+AC-4, AC-6, AC-16, AU-2, AU-3, AU-9, AU-12, IA-5, PM-9, SC-7, SC-28, SI-3,
+SI-7, and SI-10. This is a preliminary developer mapping, not a determination
+that a control is satisfied. A POA&M is part of an authorization process and
+requires the responsible system owner/authorization boundary; repository gaps
+must not be represented as approved POA&M items.
 
 ### v1.1.0 Remediation Targets
 
@@ -191,8 +201,10 @@ not guaranteed and are documented as open items with remediation plans.
 
 **This is not a certified MLS system.** SelfConnect Enterprise has not been
 evaluated under Common Criteria, DIACAP, RMF, or any other formal assurance
-framework. The guarantees are software-level properties backed by 528
-passing tests and 88% code coverage, not certified assurance claims.
+framework. Named tests may narrowly establish particular software behaviors;
+they are not certified assurance claims. The 528-test/88%-coverage figures
+below are retained only as historical, run-specific figures whose source
+commit and evidence artifact are not recorded in this briefing.
 
 **Network-layer isolation is out of scope.** `EgressGuard` prevents outbound
 calls through the Python API call paths it wraps. It does not prevent
@@ -214,13 +226,13 @@ WORM storage is planned for v1.1.0.
 ### Why the limits are stated here
 
 A system that cannot name its gaps cannot remediate them. These four items
-are known, bounded, and scheduled — not surprises. They are documented in
+were identified as engineering gaps at the time. They are documented in
 `docs/compliance/gap-analysis.md` with NIST control references and v1.1.0
-milestone dates. A Moderate ATO package would present them as POA&M items.
+milestone dates. The current gap register supersedes this snapshot.
 
 ---
 
-## Test Evidence Summary
+## Historical Test Summary (not current release evidence)
 
 | Metric | Value |
 |--------|-------|
@@ -230,19 +242,18 @@ milestone dates. A Moderate ATO package would present them as POA&M items.
 | Red team tests | 59 (20 adversarial attack categories) |
 | Critical invariant tests | 7 |
 | Ruff (linter) | Clean |
-| SBOM | Signed, committed (`sbom.json`) |
+| SBOM | v1.0.0 briefing stated committed; signing/current verification not established here |
 
 ---
 
 ## Data Rights
 
-SelfConnect Enterprise was developed entirely at private expense with no
-government funding, contract, or CRADA. All intellectual property rights
-are retained under DFARS 252.227-7014 (Rights in Noncommercial Computer
-Software and Noncommercial Computer Software Documentation). Seven candidate
-claim sets have implementation and named-test evidence. Patent scope, validity,
-ownership, and enforceability require qualified legal review and are not proved
-by software tests.
+The developer records this work as privately developed. Government contract
+data-rights treatment is contract- and funding-specific and requires qualified
+legal review; this briefing does not determine rights under DFARS clauses.
+Candidate claim sets may cite implementation and named-test artifacts, while
+patent scope, validity, ownership, and enforceability are not proved by software
+tests.
 
 ---
 
@@ -253,7 +264,8 @@ Release: v1.0.0 (2026-05-08)
 
 ---
 
-*This briefing is derived from verified system documentation and test
-evidence. It has not been reviewed by an accredited third-party assessor.
+*This historical briefing was derived from the engineering documentation and
+test results available at the time. It has not been reviewed by an accredited
+third-party assessor and must not be cited as current verification.
 See `SECURITY.md`, `docs/compliance/nist-800-53-mapping.md`, and
 `docs/compliance/gap-analysis.md` for full technical detail.*

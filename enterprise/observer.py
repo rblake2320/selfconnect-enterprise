@@ -3,16 +3,17 @@
 Reads policy-governed ledger entries and extracts them as structured training
 evidence for LoRA fine-tuning of local models (Ollama, HuggingFace PEFT, etc.)
 
-The observer operates ONLY on entries where decision=allow — actions that were
-explicitly permitted by a signed PolicyEnforcer evaluation.  This guarantees
-that any model trained on this evidence cannot learn behaviors that the policy
-forbade.
+The verified observer path exports only entries where decision=allow — actions
+that were explicitly permitted by the configured policy evaluation. The same
+filter is applied to exported context. This establishes a dataset-filtering
+property only; it cannot guarantee what a model may infer, generate, or learn
+from other data.
 
 Patent claim coverage:
     "A system in which an AI agent observes its own policy-approved action
     history to produce structured training data for a constrained fine-tuning
-    process, such that the resulting fine-tuned model cannot learn behaviors
-    outside the original policy boundary because it was never exposed to them."
+    process, with denied primary records and context excluded from this exported
+    dataset."
 
 Architecture:
     ObserverFilter    — criteria: decision, policy_id, classification, action

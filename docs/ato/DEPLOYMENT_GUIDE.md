@@ -14,7 +14,7 @@
 | Requirement | Minimum | Recommended |
 |-------------|---------|-------------|
 | CPU | x64, any | x64 with TPM 2.0 |
-| TPM | Not required (CRITICAL warning emitted at startup) | TPM 2.0 (required for full NIST IA-5 compliance) |
+| TPM | Not required by the Enterprise prototype | TPM 2.0 where selected by the deployment; a live probe does not establish IA-5 compliance |
 | RAM | 512 MB available | 1 GB+ |
 | Disk | 50 MB for identity blobs + logs | 500 MB for audit ledger |
 
@@ -142,10 +142,10 @@ Expected output (exit code 0):
 ```
 [READ] TextChanged delta carried the token; delta='SC_CHAIN_...'
 [TRANSPORT] received server challenge nonce (32 bytes)
-[IDENTITY] signed SHA-256(delta+nonce) with TPM key; sig_len=64
+[IDENTITY] signed SHA-256(delta+nonce) with Platform-KSP key; sig_len=64
 [TRANSPORT] OS-verified caller=DOMAIN\user SID=S-1-5-21-...
-[IDENTITY ] TPM signature valid=True
-CHAIN COMPLETE — UIA read + TPM identity + OS-verified DACL pipe all verified.
+[IDENTITY ] Platform-KSP signature valid=True
+CHAIN COMPLETE — UIA read + Platform-KSP key proof + OS-verified DACL pipe verified.
 ```
 
 If exit code is 1, diagnose using the `FAIL:` line in the output before proceeding.
@@ -238,7 +238,7 @@ Before declaring the deployment production-ready, verify each item:
 
 - [ ] **1. SC_IDENTITY_MODE=enforce** — Confirmed set in the service/process environment. Never use `audit` or `bypass` in production without documented exception.
 - [ ] **2. SC_STRICT_ENFORCE=1** — Confirmed set. Prevents forced degradation via Ultra Server blocking.
-- [ ] **3. TPM 2.0 present and enabled** — Verified via `Get-WmiObject -Namespace root/cimv2/security/microsofttpm -Class Win32_Tpm`. If absent, Gap 3 risk must be documented in the system security plan.
+- [ ] **3. Hardware identity decision recorded** — If TPM-backed identity is required, verify the exact key provider, key, attestation/binding protocol, and live deployment evidence. TPM presence alone is insufficient.
 - [ ] **4. Supply chain tests pass** — `pytest tests/test_enterprise/test_dependency_integrity.py` all 6 tests PASSED in this deployment's CI run.
 - [ ] **5. Identity files ACL-restricted** — `%APPDATA%\SelfConnect\` directory is readable only by the owning user account. Verify: `Get-Acl "%APPDATA%\SelfConnect"`.
 - [ ] **6. Audit log handler configured** — Python `logging` for the `enterprise` logger namespace is directed to a tamper-evident store (e.g., Windows Event Log, SIEM, append-only file). Never rely on stdout alone in production.
@@ -247,7 +247,7 @@ Before declaring the deployment production-ready, verify each item:
 - [ ] **9. Windows Terminal version verified** — `WindowsTerminal.exe` version 1.18+ present if terminal injection is required. Older versions may not support the `CASCADIA_HOSTING_WINDOW_CLASS` class name reliably.
 - [ ] **10. chained_channel.py exit-0 confirmed** — Run the chain proof once per deployment environment to confirm the full 4-leg chain functions correctly.
 - [ ] **11. No bypass env vars in production config** — Confirm `SC_IDENTITY_BYPASS_CONFIRMED` is NOT set in the production environment. Scan with: `[System.Environment]::GetEnvironmentVariables()`.
-- [ ] **12. Log retention policy configured** — Audit log records retained for minimum 3 years per AU-11 guidance. Confirm storage is sized appropriately.
+- [ ] **12. Log retention policy configured** — Set and test the organization-defined period required by the applicable records schedule, legal hold, contract, and authorization boundary. AU-11 does not prescribe a universal three-year period.
 
 ---
 
@@ -274,8 +274,10 @@ pip install --require-hashes -r requirements.txt
 ### Step 3 — Verify identity files are intact
 
 ```powershell
-# The identity.dpapi files should NOT be deleted during rollback —
-# they are machine-bound and cannot be regenerated to the same agent_id.
+# Preserve identity.dpapi during rollback. Reinitializing creates a different
+# key pair and therefore a different agent_id. DPAPI protection is normally
+# tied to the current Windows credentials/computer but has documented recovery
+# and roaming exceptions; it is not hardware binding.
 Test-Path "$env:APPDATA\SelfConnect\<agent_name>\identity.dpapi"
 # Must return: True
 ```
@@ -310,13 +312,18 @@ python -c "from enterprise.identity_gate import write_bypass_registry_token; pri
 
 # Step 2: Activate the emergency bypass mutex
 python -c "from enterprise.identity_gate import emergency_bypass; emergency_bypass(); input('Press Enter when crisis resolved...')"
-# This downgrades enforce -> audit (NOT full bypass). All injections are logged.
+# This requests the documented emergency audit downgrade for call paths that
+# support it. The governed strict wrapper still requires authoritative Ultra
+# verification; do not use this interlock as a substitute for authorization.
 
 # Step 3: Resolve the root cause, then release the bypass:
 python -c "from enterprise.identity_gate import release_bypass; release_bypass()"
 ```
 
-> **Note:** Emergency bypass automatically expires when the process holding the mutex exits. The Registry token expires after 1 hour. Both must be present simultaneously for the downgrade to take effect.
+> **Note:** Emergency bypass automatically expires when the process holding the
+> mutex exits. The Registry token expires after one hour. Both must be present
+> simultaneously. Because a same-user process may be able to create both, this
+> is an operational interlock, not independent operator authentication.
 
 ---
 
@@ -324,7 +331,7 @@ python -c "from enterprise.identity_gate import release_bypass; release_bypass()
 
 | Issue | Affected Versions | Workaround |
 |-------|-------------------|------------|
-| TPM not detected on VMs | All | Set `DPAPI_RISK_ACKNOWLEDGED=1` and document accepted risk in SSP |
-| Ultra Server on port 7777 blocked by corporate firewall | All | Set `SC_STRICT_ENFORCE=0` (accepted risk) or open port 7777 on localhost firewall rule |
+| TPM not detected on VMs | All | Record the actual key-storage boundary and obtain deployment-owner review; TPM presence alone would not prove AgentIdentity hardware binding |
+| Ultra Server on port 7777 blocked by corporate firewall | All | Restore the local Ultra dependency and keep the governed wrapper fail-closed; disabling strict enforcement is outside the high-assurance profile |
 | `chained_channel.py` fails on RDP session without audio | All | This is a UIA accessibility limitation in headless RDP sessions. Use a local console session for chain proof. |
-| `identity.dpapi` not portable across machines | By design | Agent keys are machine-bound. Re-run `AgentIdentity.init()` on each new machine. |
+| `identity.dpapi` unavailable after host/profile migration | Deployment-dependent | Preserve and test the supported Windows recovery/migration path, or initialize a new identity and explicitly re-register its new public key/agent ID |

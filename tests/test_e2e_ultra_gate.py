@@ -10,8 +10,8 @@ Flow under test:
     3. UltraGate.bootstrap()      — POST /register-pair, POST /provision-tsk,
                                     POST /bind-identity (all real HTTP)
     4. UltraGate.build_injection_request()  — build BPC+TSK headers
-    5. UltraGate.authorize_injection()      — self-verify the request
-    6. UltraGate.verify_server()            — POST /verify (7-layer server check)
+    5. UltraGate.authorize_injection()      — require the live server decision
+    6. UltraGate.verify_server()            — direct POST /verify contract checks
     7. Adversarial: tampered headers must be rejected by the server
     8. Adversarial: wrong pair_id must be rejected
     9. Adversarial: replayed nonce must be rejected
@@ -24,9 +24,12 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import urllib.request
 import urllib.error
 import uuid
+
+TEST_MESH_SECRET = secrets.token_urlsafe(32)
 
 import pytest
 
@@ -36,6 +39,8 @@ ADMIN_TOKEN = os.environ.get("ULTRA_ADMIN_TOKEN", "")
 
 def _server_available() -> bool:
     """Return True if the Ultra Server is reachable."""
+    if os.environ.get("SC_ULTRA_TEST_SERVER_READY") == "0":
+        return False
     try:
         urllib.request.urlopen(f"{SERVER_URL}/health", timeout=2)
         return True
@@ -80,7 +85,11 @@ def agent_identity(tmp_path_factory):
 def bootstrapped_gate(agent_identity):
     """Create and bootstrap a real UltraGate against the live Ultra Server."""
     from enterprise.ultra_gate import UltraGate
-    gate = UltraGate(agent_identity, server_url=SERVER_URL)
+    gate = UltraGate(
+        agent_identity,
+        mesh_secret=TEST_MESH_SECRET,
+        server_url=SERVER_URL,
+    )
     gate.bootstrap()
     return gate
 
@@ -181,7 +190,11 @@ class TestAuthorizeInjection:
     def test_authorize_injection_raises_before_bootstrap(self, agent_identity):
         """authorize_injection() must raise UltraGateNotBootstrappedError if not bootstrapped."""
         from enterprise.ultra_gate import UltraGate, UltraGateNotBootstrappedError
-        gate = UltraGate(agent_identity, server_url=SERVER_URL)
+        gate = UltraGate(
+            agent_identity,
+            mesh_secret=TEST_MESH_SECRET,
+            server_url=SERVER_URL,
+        )
         with pytest.raises(UltraGateNotBootstrappedError):
             gate.authorize_injection(0x1234, "test")
 
@@ -272,8 +285,8 @@ class TestFullE2EFlow:
         id_a = AgentIdentity.init("e2e-agent-a", data_dir=dir_a)
         id_b = AgentIdentity.init("e2e-agent-b", data_dir=dir_b)
 
-        gate_a = UltraGate(id_a, server_url=SERVER_URL)
-        gate_b = UltraGate(id_b, server_url=SERVER_URL)
+        gate_a = UltraGate(id_a, mesh_secret=TEST_MESH_SECRET, server_url=SERVER_URL)
+        gate_b = UltraGate(id_b, mesh_secret=TEST_MESH_SECRET, server_url=SERVER_URL)
 
         gate_a.bootstrap()
         gate_b.bootstrap()
@@ -299,16 +312,12 @@ class TestFullE2EFlow:
         assert ok_cross is False, "Cross-contamination: A's headers accepted with B's text"
 
     def test_full_flow_high_frequency(self, bootstrapped_gate):
-        """50 rapid sequential requests must all pass (stress test HOTP counter)."""
+        """25 rapid governed requests keep the client and server HOTP state aligned."""
         failures = []
-        for i in range(50):
+        for i in range(25):
             text = f"rapid-test-{i:04d}"
             try:
                 bootstrapped_gate.authorize_injection(0x1000 + i, text)
-                headers = bootstrapped_gate.build_injection_request(0x1000 + i, text)
-                ok, reason = bootstrapped_gate.verify_server(headers, text)
-                if not ok:
-                    failures.append(f"request {i}: {reason}")
             except Exception as exc:
                 failures.append(f"request {i} exception: {exc}")
         assert not failures, "High-frequency test failures:\n" + "\n".join(failures)
@@ -570,7 +579,7 @@ class TestLiveBpcLockoutBoundary:
         from enterprise.ultra_gate import UltraGate
 
         identity = AgentIdentity.init("lockout-boundary-agent", data_dir=tmp_path)
-        gate = UltraGate(identity, server_url=SERVER_URL)
+        gate = UltraGate(identity, mesh_secret=TEST_MESH_SECRET, server_url=SERVER_URL)
         gate.bootstrap()
 
         for attempt in range(7):
@@ -609,7 +618,7 @@ class TestLiveTskRotation:
         from enterprise.ultra_gate import UltraGate
 
         identity = AgentIdentity.init("tsk-rotation-agent", data_dir=tmp_path)
-        gate = UltraGate(identity, server_url=SERVER_URL)
+        gate = UltraGate(identity, mesh_secret=TEST_MESH_SECRET, server_url=SERVER_URL)
         gate.bootstrap()
         old_client_id = gate.tsk_state.client_id
         new_state = gate.rotate_tsk()
@@ -619,7 +628,7 @@ class TestLiveTskRotation:
         headers = gate.build_injection_request(0xA11CE, text)
         assert gate.verify_server(headers, text) == (True, "")
 
-        resumed = UltraGate(identity, server_url=SERVER_URL)
+        resumed = UltraGate(identity, mesh_secret=TEST_MESH_SECRET, server_url=SERVER_URL)
         resumed.bootstrap()
         assert resumed.pair_id == gate.pair_id
         assert resumed.tsk_state.client_id == new_state.client_id

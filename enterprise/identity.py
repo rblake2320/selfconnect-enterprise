@@ -1,4 +1,4 @@
-"""enterprise/identity.py — Persistent, Machine-Bound Agent Identity
+"""enterprise/identity.py — Persistent, DPAPI-protected Agent Identity
 
 An agent identity is an ed25519 key pair generated once on first boot and
 stored encrypted under Windows DPAPI.  The identity survives every terminal
@@ -21,22 +21,26 @@ Identity model:
     public key  = raw bytes stored in plaintext alongside the encrypted private key
 
 DPAPI storage (Windows):
-    Private key bytes are encrypted with CryptProtectData (user + machine scope).
-    The encrypted blob cannot be decrypted on any other machine or by any other
-    Windows user account — it is hardware-bound by the OS.
+    Private key bytes are encrypted with CryptProtectData in the current-user
+    scope (CRYPTPROTECT_LOCAL_MACHINE is not set). Microsoft documents this as
+    typically requiring the same logon credentials and computer, with exceptions
+    such as roaming profiles and administrative/domain recovery. This is OS
+    protection at rest, not TPM or hardware binding.
 
     Storage path: {data_dir}/{agent_name}/identity.dpapi   (encrypted private key)
                   {data_dir}/{agent_name}/identity.pub     (raw public key bytes, hex)
 
     Default data_dir: %APPDATA%\\SelfConnect
 
-Why this can't be faked:
-    - The private key never leaves the machine in plaintext
-    - DPAPI decryption is bound to the Windows user SID + machine SID
-    - Signatures produced on machine A cannot be reproduced on machine B
-      even if the encrypted blob file is copied
-    - agent_id is derived from the public key — it cannot be assumed by
-      a different key pair
+What the signature establishes:
+    - The process produced a valid signature with the private key corresponding
+      to the stored public key.
+    - The private key file is DPAPI-protected at rest and exists in plaintext in
+      process memory when used.
+    - The short agent_id is a lookup label, not a collision-resistant
+      authenticator; verification must use the complete public key.
+    - Signatures do not by themselves prove which human or process exercised the
+      key, provide non-repudiation, or establish hardware-backed identity.
 
 Version: 1.0.0-enterprise  Session 16
 """
@@ -146,7 +150,7 @@ def _default_data_dir() -> Path:
 # ── AgentIdentity ──────────────────────────────────────────────────────────────
 
 class AgentIdentity:
-    """Persistent, machine-bound ed25519 agent identity.
+    """Persistent, current-user DPAPI-protected ed25519 agent identity.
 
     The identity is permanent: it survives terminal restarts, crashes, reboots,
     and new HWND / PID assignments.  The agent_id derived from the public key

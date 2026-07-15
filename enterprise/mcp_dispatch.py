@@ -36,12 +36,17 @@ except Exception:  # noqa: BLE001
     ChannelRoutingError = RuntimeError  # type: ignore[assignment]
 
 try:
-    from enterprise.tpm_attestation import create_tpm_platform_claim, tpm_probe
+    from enterprise.tpm_attestation import (
+        create_tpm_platform_claim,
+        tpm_probe,
+        verify_tpm_platform_claim,
+    )
     _TPM_ATTESTATION_AVAILABLE = True
 except Exception:  # noqa: BLE001
     _TPM_ATTESTATION_AVAILABLE = False
     create_tpm_platform_claim = None  # type: ignore[assignment]
     tpm_probe = None  # type: ignore[assignment]
+    verify_tpm_platform_claim = None  # type: ignore[assignment]
 
 
 _AUDIT_LIMIT = 2_000
@@ -786,10 +791,14 @@ class MCPDispatcher:
     def _sc_identity_sign(self, args: dict[str, Any]) -> dict[str, Any]:
         if self.profile == "government" and args.get("key_provider", "software") != "tpm":
             raise MCPDispatchError(
-                "government profile requires TPM-backed identity for signing"
+                "government profile requires a verified TPM platform claim alongside signing"
             )
         if args.get("key_provider", "software") == "tpm":
-            if not _TPM_ATTESTATION_AVAILABLE or create_tpm_platform_claim is None:
+            if (
+                not _TPM_ATTESTATION_AVAILABLE
+                or create_tpm_platform_claim is None
+                or verify_tpm_platform_claim is None
+            ):
                 raise MCPDispatchError("TPM attestation not available on this machine")
             nonce = os.urandom(32)
             tpm_result = create_tpm_platform_claim(nonce)
@@ -797,19 +806,26 @@ class MCPDispatcher:
                 raise MCPDispatchError(
                     f"TPM attestation not available on this machine: {tpm_result.error}"
                 )
+            if not verify_tpm_platform_claim(tpm_result):
+                raise MCPDispatchError("TPM platform claim failed local verification")
             payload = bytes.fromhex(args["payload_hex"])
             sig = self._private_key.sign(payload)
             pub = self._public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
             return {
-                "algorithm": "Ed25519+TPM",
+                "algorithm": "Ed25519",
+                "signature_key_provider": "software",
                 "signature_b64": base64.b64encode(sig).decode("ascii"),
                 "public_key_b64": base64.b64encode(pub).decode("ascii"),
                 "payload_hash": hashlib.sha256(payload).hexdigest(),
                 "tpm_attestation": {
                     "supported": tpm_result.supported,
+                    "verified_locally": True,
+                    "identity_key_bound": tpm_result.identity_key_bound,
                     "algorithm": tpm_result.algorithm,
                     "nonce_hex": tpm_result.nonce.hex(),
                     "pubkey_hex": tpm_result.public_key_blob.hex(),
+                    "claim_b64": base64.b64encode(tpm_result.claim_blob).decode("ascii"),
+                    "claim_sha256": hashlib.sha256(tpm_result.claim_blob).hexdigest(),
                     "claim_size": len(tpm_result.claim_blob),
                 },
             }
@@ -824,6 +840,13 @@ class MCPDispatcher:
         }
 
     def _sc_identity_verify(self, args: dict[str, Any]) -> dict[str, Any]:
+        algorithm = args.get("algorithm", "Ed25519")
+        if algorithm != "Ed25519":
+            return {
+                "verified": False,
+                "algorithm": "Ed25519",
+                "reason": f"unsupported signature algorithm: {algorithm}",
+            }
         try:
             payload = bytes.fromhex(args["payload_hex"])
             sig = _normalise_b64(args["signature_b64"])
@@ -832,7 +855,7 @@ class MCPDispatcher:
             verified = True
         except Exception:
             verified = False
-        return {"verified": verified, "algorithm": args.get("algorithm", "Ed25519")}
+        return {"verified": verified, "algorithm": "Ed25519"}
 
     def _sc_session_stamp(self, args: dict[str, Any]) -> dict[str, Any]:
         if self.profile == "government" and not bool(args.get("use_tpm", False)):

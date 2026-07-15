@@ -143,11 +143,11 @@ identity packet with two additional fields beyond the original `ed25519_sig` /
 Provider: **Microsoft Software Key Storage Provider** (NCrypt, user-bound).
 NOT TPM-backed (Platform Crypto Provider is a separate future upgrade).
 
-**What these fields prove:**
-- `platform_ksp_sig` over `(nonce || ed25519_pubkey)` proves:
-  1. **Liveness** — nonce ties the signature to this specific handshake exchange
-  2. **Key binding** — ed25519_pubkey is inside the signed payload, so
-     both keys must be held by the same agent to produce a valid response
+**What these fields narrowly establish:**
+- a valid `platform_ksp_sig` over `(nonce || ed25519_pubkey)` establishes:
+  1. **Fresh exchange binding** — nonce ties the signature to this handshake
+  2. **Cross-key possession** — the responder had access to both private keys
+     during the exchange; this does not identify a human or prove hardware custody
 
 **`verify_peer()` enforcement steps:**
 1. `agent_id == "SC-" + SHA384(platform_ksp_pubkey)[:8].upper()` — ID fingerprint check

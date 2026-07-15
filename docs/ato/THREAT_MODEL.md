@@ -3,8 +3,14 @@
 **Version:** 1.2.3  
 **Date:** 2026-06-18  
 **Methodology:** STRIDE (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege)  
-**Assessment Team:** WRAITH Red-Team + FORGE Architecture Review  
+**Assessment Team:** Internal WRAITH/FORGE engineering review
 **Scope:** SelfConnect Enterprise v1.2.3, Windows 10/11 x64, same-user-session deployment
+
+> **Status boundary:** This is a developer threat model and test-planning
+> artifact, not an independent security assessment, authorization decision, or
+> risk acceptance. Risk labels below are preliminary. A deployment owner and a
+> qualified assessor must evaluate the configured runtime, operating system,
+> evidence, and residual risks for the intended authorization boundary.
 
 ---
 
@@ -25,9 +31,15 @@
 
 Trust boundaries:
 - **Process boundary** — two processes running as the same Windows user
-- **DPAPI boundary** — encrypted blobs are user+machine bound
+- **DPAPI boundary** — encrypted blobs are protected by the current Windows
+  user's DPAPI context and normally by the originating computer. Roaming
+  profiles, domain recovery mechanisms, administrator/SYSTEM compromise, and
+  use by another process in the same user context are outside that simplified
+  boundary; DPAPI use alone is not hardware binding or process identity.
 - **Named Pipe DACL boundary** — OS-enforced connection restriction
-- **TPM boundary** — hardware attestation (optional, recommended)
+- **TPM boundary** — optional local capability and platform claims. A successful
+  probe does not by itself bind the AgentIdentity key to the TPM or provide
+  remote attestation.
 
 ---
 
@@ -69,12 +81,20 @@ binary, administrator-controlled protected directory, or kernel.
 Prior to the WRAITH-003 fix, if `SC_IDENTITY_MODE` was not set, the gate defaulted to `bypass` mode, meaning any caller could inject without any identity verification. An attacker who could launch a process in the same session would have unconstrained injection capability.
 
 **Mitigated By:**  
-`identity_gate.py:get_current_mode()` — the default is now `MODE_AUDIT`, not `MODE_BYPASS`. Bypass requires both `SC_IDENTITY_MODE=bypass` AND `SC_IDENTITY_BYPASS_CONFIRMED=1`. An unrecognised value raises `IdentityGateError`. Production deployments set `SC_IDENTITY_MODE=enforce`.
+`identity_gate.py:get_current_mode()` defaults to `MODE_AUDIT`, not
+`MODE_BYPASS`. Bypass requires both `SC_IDENTITY_MODE=bypass` and
+`SC_IDENTITY_BYPASS_CONFIRMED=1`; an unrecognised value raises
+`IdentityGateError`. The governed send wrapper additionally requires the Ultra
+server and strict Level-0 verification. Every Level-0 rejection denies the send
+in that path; audit mode alone must not be treated as authorization.
 ```python
 raw = os.environ.get("SC_IDENTITY_MODE", MODE_AUDIT).strip().lower()
 ```
 
-**Residual Risk:** LOW — Default-safe configuration ensures unconfigured systems are never silently bypassed.
+**Residual Risk:** OPEN — The governed wrapper is fail-closed, but lower-level
+or legacy callers outside that wrapper must be separately inventoried and
+tested. A deployment must verify the live configuration and actual call path,
+not infer enforcement from the environment-file default.
 
 ---
 
@@ -86,9 +106,16 @@ raw = os.environ.get("SC_IDENTITY_MODE", MODE_AUDIT).strip().lower()
 Named Mutex creation requires no special privilege. Any user-mode process can call `CreateMutexW` with any name. Prior to the Gap 1 fix, the presence of the mutex alone was sufficient to trigger the emergency bypass downgrade.
 
 **Mitigated By:**  
-Dual-factor emergency bypass: `_emergency_mutex_active()` requires BOTH the mutex AND a valid DPAPI-signed Registry token. The token is created by `write_bypass_registry_token()` via `CryptProtectData` — only a process with access to the user's DPAPI key (i.e., a legitimate process running as that user, not an unprivileged malware process that has only created a mutex) can write a valid token. Additionally, the token has a 1-hour TTL enforced by comparing against a DPAPI-decrypted timestamp.
+`_emergency_mutex_active()` requires both the mutex and a DPAPI-protected
+Registry token. The token created by `write_bypass_registry_token()` has a
+one-hour TTL. This reduces accidental activation and creates a time-bounded
+same-user confirmation.
 
-**Residual Risk:** LOW — An attacker running as the same user with full session access could potentially write a valid DPAPI token, but at that point the attacker already has full user-session control; the bypass downgrade provides no additional attack surface.
+**Residual Risk:** OPEN — This is not dual-factor authentication. Malware
+running as the same Windows user can invoke DPAPI and may be able to create both
+artifacts. The mechanism is an operational interlock, not an independent trust
+boundary. High-assurance deployment requires a privileged approval boundary
+and tamper-evident recording outside the requesting user context.
 
 ---
 
@@ -104,9 +131,16 @@ Dual-factor emergency bypass: `_emergency_mutex_active()` requires BOTH the mute
 If an attacker can inject into the calling process's address space (e.g., via DLL injection), they could potentially modify the `text` argument after identity verification but before the Win32 call.
 
 **Mitigated By:**  
-BPC `body_hash` binds the ECDSA-P256 signature to the specific `text` content via `SHA-256(text)`. The `verify_payload_with_jwk` check confirms the body hash matches before the injection is considered verified. Any modification of `text` after signing produces a hash mismatch that fails Level 0 and Level 1 verification. At Level 2, the birth tag is signed over the session identity, not the specific payload — this is a known limitation of Level 2 and is documented in the degradation cascade design.
+BPC `body_hash` binds the ECDSA-P256 signature to the specific `text` content
+via `SHA-256(text)`. The Ultra server is the authoritative verifier for the
+governed send path. The current strict wrapper denies every Level-0 rejection
+rather than treating a local self-verification or a lower identity level as
+sufficient authorization.
 
-**Residual Risk:** MEDIUM (Level 2 only) — Level 2 (`ed25519` birth tag) does not bind to specific payload content. If an attacker forces degradation to Level 2, they may be able to substitute payload content. Mitigated by `SC_STRICT_ENFORCE=1` which fails closed rather than degrading.
+**Residual Risk:** OPEN — A caller that signs one payload and later passes a
+different payload to an ungoverned low-level send function remains outside this
+claim. Payload binding must be enforced in the same wrapper that performs the
+actual delivery, and the deployment must inventory alternate send paths.
 
 ---
 
@@ -120,7 +154,11 @@ Modeled on the March 2026 axios/Sapphire Sleet attack. A compromised dependency 
 **Mitigated By:**  
 `test_dependency_integrity.py` runs four AXIOS checks and two MCP checks at every CI invocation. AXIOS-1 detects unexpected subdependencies. AXIOS-2 detects postinstall hooks. AXIOS-3 detects mutable tag pinning. AXIOS-4 detects PyPI module name shadowing. These tests must pass before deployment.
 
-**Residual Risk:** LOW — Tests cover known attack patterns. Novel supply chain attacks not matching these patterns may evade detection. Mitigation: pin all dependencies to exact versions with hashes in `requirements.txt`.
+**Residual Risk:** OPEN — These checks cover named repository patterns only;
+they are not a malware detector and cannot establish supply-chain integrity by
+themselves. Deployment also requires reviewed lock artifacts, hash verification,
+artifact provenance, vulnerability handling, and controlled build/publish
+credentials.
 
 ---
 
@@ -133,12 +171,21 @@ Modeled on the March 2026 axios/Sapphire Sleet attack. A compromised dependency 
 **Actor:** Agent operator claiming an injection was performed by a different agent  
 **Vector:** Claim the `agent_id` was shared, or that the DPAPI blob was stolen  
 **Attack Detail:**  
-Without non-repudiation, an agent could deny performing an injection by claiming another process used the same identity.
+An operator could dispute attribution by claiming another process used the same
+user-accessible identity.
 
 **Mitigated By:**  
-`agent_id` is derived from `SHA-256(public_key_bytes)[:8]` — it is unique to the specific ed25519 key pair. The private key is DPAPI-encrypted and bound to the user SID + machine SID. A valid signature on an action record can only have been produced by the process holding that DPAPI-encrypted private key on that specific machine as that specific user. The `AgentIdentity.sign()` output is stored in the audit ledger with timestamp.
+The full Ed25519 public key verifies possession of the corresponding private
+key at signing time. The short `agent_id` derived from the public-key digest is
+a lookup label, not a globally collision-proof identity. The private key is
+stored in a DPAPI-protected blob, and signed action records may be retained in
+the audit ledger.
 
-**Residual Risk:** LOW — If an attacker gains SYSTEM-level access, they could potentially extract DPAPI root keys via Mimikatz (documented Gap 3). TPM backing eliminates this residual risk.
+**Residual Risk:** OPEN — A signature proves key possession, not which human or
+process used a same-user-accessible key. DPAPI does not provide process
+isolation or non-repudiation. TPM presence does not eliminate this risk because
+the current AgentIdentity signing key is not shown to be generated and used as
+a non-exportable TPM key.
 
 ---
 
@@ -152,7 +199,10 @@ Emergency bypass downgrades security posture. Without a clear record, an operato
 **Mitigated By:**  
 `emergency_bypass()` emits a `CRITICAL` log with PID and timestamp. The DPAPI Registry token records the activation timestamp (encrypted). `_check_tpm_available()` emits a `CRITICAL` log if TPM is absent. The 1-hour token TTL creates a time-bounded audit window.
 
-**Residual Risk:** LOW — Requires tamper-evident log storage to be configured by the operator (out of scope for this codebase, required by deployment policy).
+**Residual Risk:** OPEN — A local log and same-user DPAPI token do not establish
+operator non-repudiation. A deployment needs independently protected audit
+storage and an approval identity outside the requesting process before this
+event can support stronger attribution claims.
 
 ---
 
@@ -168,9 +218,16 @@ Emergency bypass downgrades security posture. Without a clear record, an operato
 DPAPI root keys can be extracted from LSASS by a SYSTEM-privileged attacker using tools like Mimikatz. If the DPAPI master key is extracted offline, all `identity.dpapi` blobs for that user on that machine can be decrypted, and all agent keys can be derived.
 
 **Mitigated By:**  
-`_check_tpm_available()` emits a CRITICAL log at startup when no TPM is detected, requiring operator acknowledgement (`DPAPI_RISK_ACKNOWLEDGED=1`). When TPM 2.0 is present, DPAPI root keys are backed by the TPM and cannot be extracted offline. The Gap 3 roadmap item calls for migrating to TPM-backed key storage (`tpm_identity.py` via Platform KSP).
+`_check_tpm_available()` records whether the local TPM capability probe is
+available. The separate `tpm_identity.py` experiment exercises Platform KSP
+operations where supported. Endpoint controls such as LSASS protection,
+Credential Guard, least privilege, and EDR may reduce exposure.
 
-**Residual Risk:** MEDIUM (no TPM) / LOW (with TPM) — Systems without TPM must treat this as an accepted risk with compensating controls (endpoint EDR, LSASS protection, Windows Credential Guard).
+**Residual Risk:** OPEN — TPM presence does not prove that DPAPI master keys or
+the current AgentIdentity key are non-exportable hardware keys. No risk is
+accepted by this document. The deployment owner must document actual key
+provisioning, export policy, module/configuration evidence, and compensating
+controls.
 
 ---
 
@@ -182,9 +239,15 @@ DPAPI root keys can be extracted from LSASS by a SYSTEM-privileged attacker usin
 UI Automation is accessible to any process running in the same Windows session with UIAccess. An attacker could enumerate terminal windows and subscribe to `TextChanged` events to eavesdrop on agent communications.
 
 **Mitigated By:**  
-Throwaway consoles used in testing and probing are created with `SW_HIDE` (`STARTF_USESHOWWINDOW + SW_HIDE`) so that `EnumWindows` (which filters by visibility) will not enumerate them for other processes. For production windows, this threat is inherent to the Windows UIA model and requires UIAccess restrictions at the OS configuration level.
+Throwaway consoles used in testing and probing are created with `SW_HIDE`
+(`STARTF_USESHOWWINDOW + SW_HIDE`), which avoids a visible test window. This is
+not an access-control boundary and does not prove the underlying UIA element is
+undiscoverable. Production windows require OS/session isolation and minimization
+of sensitive terminal output.
 
-**Residual Risk:** MEDIUM — Production terminal windows are visible. Full mitigation requires UIAccess process isolation at the OS level, which is outside the scope of this codebase.
+**Residual Risk:** OPEN — Same-session UIA and process-inspection capabilities
+remain a confidentiality concern. `SW_HIDE` changes presentation, not the
+security boundary.
 
 ---
 
@@ -200,13 +263,14 @@ Throwaway consoles used in testing and probing are created with `SW_HIDE` (`STAR
 If Level 0 fails with an `OSError` (network failure), the cascade degrades to Level 2. An attacker who can block the Ultra Server connection forces permanent Level 2 operation, reducing verification strength without triggering an outright block.
 
 **Mitigated By:**  
-`SC_STRICT_ENFORCE=1` causes `OSError` exceptions at Level 0 to fail CLOSED instead of degrading. The cascade returns `(False, "strict_enforce: Ultra Server unreachable: ...", 0)` and `gated_send_string()` raises `InjectionDeniedError`.
-```python
-if _STRICT_ENFORCE and self.mode == MODE_ENFORCE:
-    return False, f"strict_enforce: Ultra Server unreachable: {exc}", 0
-```
+The governed send wrapper requires the Ultra server. Strict enforcement defaults
+on, and every Level-0 rejection, including unreachability, denies the governed
+send instead of degrading to a lower level.
 
-**Residual Risk:** LOW (with `SC_STRICT_ENFORCE=1`) / MEDIUM (without) — Default deployment should enable `SC_STRICT_ENFORCE=1` in high-assurance environments.
+**Residual Risk:** OPEN — Availability depends on the Ultra service, and direct
+or legacy send paths outside the governed wrapper need independent inventory
+and tests. Fail-closed behavior protects authorization but can be used to deny
+service; operational recovery must not introduce a permissive bypass.
 
 ---
 
@@ -269,24 +333,29 @@ if pub != expected_pub:
 | ID | Category | Finding | Fixed In | Residual Risk |
 |----|----------|---------|----------|---------------|
 | WRAITH-001 | Spoofing | Class name spoof — any process can register fake terminal class | `target_guard.py:TERMINAL_CLASS_TO_EXE` | LOW |
-| WRAITH-003 | Spoofing | Default mode was `bypass`; unconfigured systems allowed unverified injection | `identity_gate.py:get_current_mode()` default = `audit` | LOW |
-| Gap 1 | Spoofing | Unprivileged mutex sufficient to trigger emergency bypass downgrade | `identity_gate.py:_emergency_mutex_active()` dual-factor | LOW |
-| Gap 3 | Info Disclosure | DPAPI root key offline extraction without TPM | TPM roadmap; CRITICAL log emitted at startup | MEDIUM (no TPM) |
-| Gap 4 | DoS | Ultra Server blocking forces cascade degradation | `identity_gate.py:_STRICT_ENFORCE` | LOW |
+| WRAITH-003 | Spoofing | Default mode was `bypass`; unconfigured systems allowed unverified injection | governed wrapper requires strict Ultra verification | OPEN: lower-level callers |
+| Gap 1 | Spoofing | Unprivileged mutex sufficient to trigger emergency bypass downgrade | mutex + expiring DPAPI-protected token interlock | OPEN: same-user creation |
+| Gap 3 | Info Disclosure | DPAPI-protected identity key exposed to same-user/SYSTEM compromise | capability logging and deployment compensating controls | OPEN: no proven TPM binding |
+| Gap 4 | DoS | Ultra Server blocking could force cascade degradation | governed wrapper fails closed on every Level-0 rejection | OPEN: availability/direct paths |
 | WR-001 | Elevation | Self-signed key substitution in Named Pipe transport | `chained_channel.py:role_b()` pre-registered `expected_pub` | LOW |
 | WR-003 | DoS | Named pipe name prediction race | `_unique_pipe_name()` + `FILE_FLAG_FIRST_PIPE_INSTANCE` | LOW |
-| WR-005 | Info Disclosure | UIA TextChanged eavesdrop on hidden console | `SW_HIDE` on throwaway consoles | MEDIUM (prod) |
+| WR-005 | Info Disclosure | UIA TextChanged eavesdrop on console | `SW_HIDE` reduces visible test UI only | OPEN |
 | WR-009 | Spoofing/Replay | Replay attack — pre-captured (sig, delta_hash, pub) replayed to server | Challenge-response nonce in `chained_channel.py:role_b()` | LOW |
 
 ---
 
 ## Residual Risk Summary
 
-| Risk Level | Count | Items |
-|------------|-------|-------|
-| LOW | 7 | WRAITH-001, WRAITH-003, Gap 1, Gap 4, WR-001, WR-003, WR-009 |
-| MEDIUM | 2 | Gap 3 (no TPM), WR-005 (production UIA) |
-| HIGH | 0 | — |
-| CRITICAL | 0 | — |
+This internal review does not assign an accepted aggregate risk rating. Several
+findings have useful engineering mitigations, but the following remain open for
+deployment-specific assessment:
 
-**Overall residual risk: MEDIUM** (driven by the TPM gap on systems without hardware TPM).
+- same-user emergency-bypass authority;
+- inventory and prevention of direct/legacy send paths;
+- AgentIdentity key isolation and attribution;
+- independently protected bypass and action audit records;
+- UIA/session confidentiality; and
+- Ultra availability without a permissive recovery path.
+
+An Authorizing Official, assessor, or deployment owner may assign and accept
+risk only after reviewing the configured boundary and current evidence.

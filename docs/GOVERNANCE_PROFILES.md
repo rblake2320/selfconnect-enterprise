@@ -50,8 +50,9 @@ evidence.
 
 Default posture:
 
-- fail closed where identity or audit guarantees are missing;
-- TPM-backed signing and session stamping required for sensitive identity paths;
+- fail closed where required identity or audit evidence is missing;
+- hardware-backed signing and session evidence required only when a deployment
+  has selected and live-validated that control;
 - WORM/off-host audit replication required for AU-9 style evidence;
 - service identity, service SID, ETW, least privilege, strict target guard, and
   explicit policy enforcement are expected;
@@ -98,7 +99,11 @@ Important boundary:
   profile;
 - normal day-to-day SelfConnect should use the normal SDK/product path instead
   of pretending the enterprise MCP control plane is a casual-use surface;
-- government profile denies software-only identity signing and software-only
-  session stamping until TPM support is wired.
+- the compatibility `government` profile rejects requests that do not ask for
+  TPM evidence, but its current signing tool still combines a software Ed25519
+  signature with a separate TPM platform claim. That is not TPM-backed payload
+  signing or remote attestation and is insufficient evidence for the separate
+  Government product until the signing key, payload, and verified claim are
+  bound by a reviewed protocol.
 
 This split protects both product usability and enterprise/government credibility.

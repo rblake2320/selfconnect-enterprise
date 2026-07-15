@@ -9,12 +9,12 @@ PCR evidence; binding that evidence to a specific agent key is a higher-level
 protocol composition, not something this function falsely claims when the
 platform claim itself is unavailable.
 
-Patent note
------------
-This is a stronger embodiment of "machine-bound agent identity" than either the
-DPAPI path (identity.py) or the NCrypt software KSP path (identity_cng.py) when
-the platform can produce a claim. The function never returns a fake PASS:
-unsupported machines return supported=False with the Windows status code.
+Scope note
+----------
+This is a platform-state claim probe. It is not a machine-bound agent identity:
+the ordinary agent signature is produced by a separate software key, and the
+current protocol does not bind that key or payload into this claim. Unsupported
+machines return supported=False with the Windows status code.
 
 API
 ---
@@ -229,11 +229,14 @@ class TpmAttestationResult:
     Fields
     ------
     nonce           — the random nonce used to create the claim
-    public_key_blob — ECCPUBLICBLOB (raw Windows CNG format) of the subject key
+    public_key_blob — diagnostic ECCPUBLICBLOB from the platform provider;
+                      not bound to the separate software identity key
     claim_blob      — opaque attestation blob from NCryptCreateClaim; empty bytes
                       when supported=False
     algorithm       — CNG algorithm string (default "ECDSA_P256")
     supported       — True if hardware-backed claim was produced
+    identity_key_bound — False for the current platform-state claim; it does
+                         not attest the separate software identity signing key
     error           — human-readable reason when supported=False; None on success
     """
 
@@ -243,6 +246,7 @@ class TpmAttestationResult:
     algorithm: str = "ECDSA_P256"
     pcr_mask: int = 0x00FFFFFF
     supported: bool = False
+    identity_key_bound: bool = False
     error: Optional[str] = None
 
 
@@ -297,10 +301,10 @@ def _platform_claim_params(nonce: bytes, pcr_mask: int) -> tuple[NCryptBufferDes
 def create_tpm_platform_claim(nonce: bytes, pcr_mask: int = 0x00FFFFFF) -> TpmAttestationResult:
     """Create a hardware-backed platform attestation claim.
 
-    A fresh ECDSA_P256 key is created under the Microsoft Platform Crypto
-    Provider (TPM-backed), then NCryptCreateClaim binds it to the current TPM
-    PCR state using ``nonce`` for freshness.  The key is deleted before
-    returning — only the public key blob and claim blob are retained.
+    The Microsoft Platform Crypto Provider is probed with an ephemeral
+    ECDSA_P256 key, then NCryptCreateClaim requests current platform PCR state
+    using ``nonce`` for freshness. The platform claim is not bound to the
+    ephemeral key or to SelfConnect's software identity signing key.
 
     Parameters
     ----------
@@ -311,9 +315,9 @@ def create_tpm_platform_claim(nonce: bytes, pcr_mask: int = 0x00FFFFFF) -> TpmAt
     Returns
     -------
     TpmAttestationResult
-        ``supported=True`` when a claim was produced.  ``supported=False`` with
-        ``error`` set when the Platform Crypto Provider or NCryptCreateClaim
-        feature is unavailable on this machine (treated as NA, not failure).
+        ``supported=True`` when a claim was produced; callers must still invoke
+        ``verify_tpm_platform_claim``. ``supported=False`` with ``error`` set
+        when the provider or claim feature is unavailable.
     """
     if not _WIN32_AVAILABLE:
         return TpmAttestationResult(
@@ -348,7 +352,8 @@ def create_tpm_platform_claim(nonce: bytes, pcr_mask: int = 0x00FFFFFF) -> TpmAt
                 error=f"Microsoft Platform Crypto Provider unavailable: {exc}",
             )
 
-        # 2. Create an ephemeral ECDSA_P256 key (TPMs universally support P-256).
+        # 2. Create an ephemeral ECDSA_P256 provider probe key. This key is not
+        # bound into the platform claim or the separate SelfConnect identity.
         hkey = ctypes.c_void_p()
         st = NCRYPT.NCryptCreatePersistedKey(
             prov, ctypes.byref(hkey), "ECDSA_P256", _TPM_KEY_NAME, 0,
@@ -484,10 +489,9 @@ def create_tpm_platform_claim(nonce: bytes, pcr_mask: int = 0x00FFFFFF) -> TpmAt
 
         claim_bytes = bytes(claim_bytes_arr)
 
-        # Final anti-downgrade check: a valid hardware platform claim must be
-        # non-trivially sized.  MSDN does not document a minimum, but in practice
-        # a legitimate NCRYPT_CLAIM_PLATFORM blob is always > 64 bytes.  If we
-        # received fewer than 16 bytes, something is wrong.
+        # Defensive shape floor. Microsoft does not specify a minimum size, so
+        # this is a fail-closed local acceptance rule, not proof of hardware
+        # origin. NCryptVerifyClaim remains mandatory before use as evidence.
         if len(claim_bytes) < 16:
             return TpmAttestationResult(
                 nonce=nonce,
@@ -629,7 +633,9 @@ def tpm_probe() -> dict:
     Returns
     -------
     dict with keys:
-        supported   — bool: True only when hardware-backed claim was created
+        supported   — bool: True only when a claim was created and verified
+        verified    — bool: local NCryptVerifyClaim result
+        identity_key_bound — always False for this platform-state probe
         claim_size  — int: size in bytes of the claim blob (0 if not supported)
         nonce_hex   — str: hex of the random nonce used
         pubkey_hex  — str: hex of the ECCPUBLICBLOB (empty string if unsupported)
@@ -641,18 +647,23 @@ def tpm_probe() -> dict:
     except Exception as exc:  # noqa: BLE001
         return {
             "supported": False,
+            "verified": False,
+            "identity_key_bound": False,
             "claim_size": 0,
             "nonce_hex": nonce.hex(),
             "pubkey_hex": "",
             "error": f"tpm_probe: unexpected exception: {exc}",
         }
 
+    verified = bool(result.supported and verify_tpm_platform_claim(result))
     return {
-        "supported": result.supported,
+        "supported": verified,
+        "verified": verified,
+        "identity_key_bound": result.identity_key_bound,
         "claim_size": len(result.claim_blob),
         "nonce_hex": result.nonce.hex(),
         "pubkey_hex": result.public_key_blob.hex(),
-        "error": result.error,
+        "error": result.error if verified or not result.supported else "local claim verification failed",
     }
 
 

@@ -23,7 +23,7 @@ Key differences from AgentIdentity:
     agent_id       — "SC-" + SHA-384(pub_key)[:8].upper() (8-char fingerprint)
 
 Storage:
-    NCrypt key name:    "SelfConnect.{agent_name}"  (per-user, machine-bound)
+    NCrypt key name:    "SelfConnect.{agent_name}"  (per-user software KSP)
     Public key file:    {data_dir}/{agent_name}/identity_cng.pub   (raw X||Y hex)
     Default data_dir:   %APPDATA%\\SelfConnect  (same as AgentIdentity)
 
@@ -61,7 +61,7 @@ GENESIS_HASH_CNG = "0" * 96
 # ── CngIdentity ────────────────────────────────────────────────────────────────
 
 class CngIdentity:
-    """Persistent, machine-bound ECDSA P-384 agent identity via Windows NCrypt.
+    """Persistent ECDSA P-384 agent identity via Windows NCrypt software KSP.
 
     Identical interface to AgentIdentity — callers can swap the import without
     changing any other code.  The cryptographic backend is entirely different:
@@ -70,8 +70,9 @@ class CngIdentity:
         CngIdentity     — ECDSA P-384 via NCrypt KSP, no plaintext key file, SHA-384 agent_id
 
     The NCrypt software KSP stores the private key under the current Windows user
-    profile.  It cannot be decrypted by any other user or moved to another machine
-    without re-enrollment.  Binding is enforced by the OS, not by application code.
+    profile. Export, migration, recovery, and access behavior depend on the
+    provider, key policy, host, and account configuration. This component does
+    not claim TPM/hardware binding or non-repudiation.
 
     Use init() on first boot, load() on every subsequent boot.
     """

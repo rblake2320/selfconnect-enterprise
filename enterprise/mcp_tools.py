@@ -422,7 +422,7 @@ _TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "sc_identity_sign",
-        "description": "Sign a payload hash with the agent's CNG/TPM-backed identity key. Returns signature (base64) and public key.",
+        "description": "Sign payload bytes with the configured identity key. A requested TPM platform claim is separate evidence and does not make the software Ed25519 signature TPM-backed.",
         "inputSchema": {
             "type": "object",
             "required": ["payload_hex"],
@@ -467,8 +467,9 @@ _TOOLS: list[dict[str, Any]] = [
                 },
                 "algorithm": {
                     "type": "string",
-                    "enum": ["ECDSA-P256", "ECDSA-P384", "Ed25519"],
-                    "default": "ECDSA-P256",
+                    "description": "Verification algorithm implemented by this tool",
+                    "enum": ["Ed25519"],
+                    "default": "Ed25519",
                 },
             },
         },
@@ -476,8 +477,9 @@ _TOOLS: list[dict[str, Any]] = [
     {
         "name": "sc_session_stamp",
         "description": (
-            "Stamp a new session with a hardware birth_id. The stamp binds: process PID, HWND, "
-            "window class, executable path hash, and a timestamp. Used as the anchor for generation tracking."
+            "Stamp a new session with a software-capable birth_id record over process PID, HWND, "
+            "window class, executable path hash, and timestamp. This supports generation tracking; "
+            "it does not inherently prove hardware-backed identity."
         ),
         "inputSchema": {
             "type": "object",

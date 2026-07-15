@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 SERVICE_NAME = "SelfConnectEnterprise"
 SERVICE_DISPLAY_NAME = "SelfConnect Enterprise Control Plane"
 SERVICE_DESCRIPTION = (
-    "Governed OS-native AI peer mesh. Provides TPM-backed identity leases, "
-    "DACL-guarded pipe transport, fail-closed target verification, and per-action audit receipts."
+    "Governed OS-native AI peer mesh with identity-bound leases, "
+    "guarded local transport, target verification, and action audit receipts."
 )
 
 # ---------------------------------------------------------------------------

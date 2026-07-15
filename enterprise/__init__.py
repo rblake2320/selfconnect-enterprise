@@ -84,6 +84,7 @@ from enterprise.ultra_gate import (  # noqa: F401
     UltraGate,
     InjectionDeniedError,
     UltraGateNotBootstrappedError,
+    UltraGateServerUnavailableError,
 )
 from enterprise.identity_gate import (  # noqa: F401
     get_current_mode,

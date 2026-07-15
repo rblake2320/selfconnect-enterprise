@@ -161,14 +161,19 @@ Optional flags:
 - Look for `CA_PipInstallWheel` errors in `install.log`.
 - Ensure the target machine has internet access (or provide a pre-seeded pip cache).
 
-### TPM identity lease unavailable
+### Hardware-key capability unavailable
 
-The service will log a warning and fall back to software-backed identity. This is
-acceptable for non-compliance deployments. For regulated environments, ensure:
+The service can use software-backed identity and separately reports local TPM
+capability. The current installer does not establish hardware-bound agent
+identity, remote attestation, compliance, or authorization. If a deployment
+requires a Platform-KSP key path, first ensure:
 
 - TPM 2.0 is enabled in BIOS
 - The `TBS` (TPM Base Services) Windows service is running
 - The service account (`LocalSystem`) has TPM access
+
+Then verify the exact key provider and key hardware property in the deployed
+service context. TPM presence alone is not sufficient evidence.
 
 ### Upgrade from a previous version
 

@@ -55,10 +55,11 @@ Call `UltraGate.rotate_tsk()` on a bootstrapped identity. The method performs:
 Both routes require a body-bound agent signature. Production also requires the
 operator bearer. A lost prepare response returns the same prepared key on retry.
 A lost commit response is safe to retry because the binding swap is idempotent.
-`POST /resume-identity` returns the currently bound active key to the proven
-owner after a process restart; production also requires operator authorization.
+`POST /resume-identity` returns the currently bound active key to the
+authenticated bound principal after a process restart; production also
+requires operator authorization.
 
-After rotation, prove all of the following:
+After rotation, verify all of the following:
 
 - the client ID changed;
 - the old key status is `revoked`;

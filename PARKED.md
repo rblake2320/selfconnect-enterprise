@@ -91,6 +91,130 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260715-017 - Local self-verification presented as full Ultra authorization
+
+**Status:** Parked
+**Category:** security property, configuration, runtime behavior
+**Former location:** `enterprise/ultra_gate.py`,
+`enterprise/identity_gate.py`, and related tests
+**Source commit:** `e071d745a5c87aaa0d008e35d2bd0928dea384e0`
+**Affected paths:** Ultra injection authorization, degradation cascade,
+server-required wrapper behavior, mesh-secret configuration, and tests
+**Action log:** [LOG-20260715-008](LOG.md#log-20260715-008)
+**Why changed:** [WHY-20260715-008](WHY.md#why-20260715-008)
+**Parked by:** commit containing this record
+
+**Former wording:** `UltraGate.authorize_injection()` called
+`_self_verify()` and returned success without requiring the Ultra server.
+`SC_STRICT_ENFORCE` defaulted off and only network errors were considered for
+strict failure. Tests for `SC_REQUIRE_ULTRA_SERVER` reproduced intended logic
+without exercising the production wrapper. A repository-known mesh secret
+could be used when no deployment secret was provided.
+
+**Recovery source:** The named files at Git object
+`e071d745a5c87aaa0d008e35d2bd0928dea384e0`.
+
+**Reason parked:** The local path did not evaluate durable server replay,
+anomaly, full TSK lifecycle, or authoritative peer-binding state and therefore
+could not support the Level 0 description.
+
+**Replacement:** Authoritative `verify_server()` authorization, strict
+fail-closed enforcement by default, real wrapper tests, atomic local nonce
+handling, and explicit high-assurance mesh-secret provisioning.
+
+**Restore when:** Do not restore as an authorization path. A local diagnostic
+may be reintroduced only with a name and return type that cannot be mistaken
+for server authorization.
+
+**Restore procedure:** If needed for diagnostics, implement a separate
+non-authorizing probe on a new branch; do not alter the authoritative gate.
+
+**Validation after restore:** Assert that diagnostic success cannot dispatch an
+action, bypass `SC_REQUIRE_ULTRA_SERVER`, or produce a governed receipt.
+
+**Recovery rehearsal:** Not rehearsed; restoration as authorization is not
+approved.
+
+**Restoration risks:** Silent policy downgrade, replay acceptance across
+processes, bypass of anomaly/identity state, and false whole-system claims.
+
+**Evidence and links:** [LOG-20260715-008](LOG.md#log-20260715-008),
+[WHY-20260715-008](WHY.md#why-20260715-008), and the named production tests.
+
+## PARK-20260715-016 - Hardware, secrecy, readiness, and control-satisfaction overclaims
+
+**Status:** Parked
+**Category:** security property, authorization, compliance, release
+**Former location:** `README.md`, `SECURITY.md`, `CHANGELOG.md`, `GAPS.md`,
+`enterprise/identity.py`, `enterprise/identity_cng.py`,
+`enterprise/tsk_client.py`, `enterprise/observer.py`,
+`enterprise/mcp_tools.py`, `enterprise/service.py`,
+`bench/tpm_sign_bench.py`,
+`experiments/win32_probe/chained_channel.py`,
+`experiments/win32_probe/target_guard.py`,
+`experiments/win32_probe/tpm_identity.py`, `installer/selfconnect-enterprise.wxs`,
+`installer/INSTALL.md`, and the affected files under
+`docs/ato`, `docs/briefing`, `docs/compliance`, `docs/operations`, and
+`docs/ROLLBACK.md`
+**Source commit:** `e071d745a5c87aaa0d008e35d2bd0928dea384e0`
+**Affected paths:** The former locations above
+**Action log:** [LOG-20260715-007](LOG.md#log-20260715-007)
+**Why changed:** [WHY-20260715-007](WHY.md#why-20260715-007)
+**Parked by:** commit containing this record
+
+**Former wording:** Examples included `machine-bound`, `hardware-bound`,
+`cannot be faked`, `structural secrecy`, `hardware birth_id`,
+`Ed25519+TPM`, `TPM-backed identity leases`, `dual-factor emergency bypass`,
+`TPM identity` for the bounded Platform-KSP chain probe, `Satisfied`, `Ready`,
+a universal three-year AU-11 retention period, and claims
+that filtered data means a model cannot learn forbidden behavior.
+
+**Recovery source:** The named paths at Git object
+`e071d745a5c87aaa0d008e35d2bd0928dea384e0`.
+
+**Reason parked:** DPAPI protects data in the current-user Windows context but
+is not a process or hardware identity. The NCrypt software KSP is not a TPM.
+The current TSK client can derive the layout needed to assemble its keys. The
+MCP signing path used software Ed25519 with a separate platform claim rather
+than TPM-bound payload signing. Component tests and candidate mappings do not
+establish control satisfaction, authorization, legal non-repudiation, or model
+behavior outside the tested data path.
+
+**Replacement:** Bounded implementation statements, candidate-control mapping,
+explicit open risks, run-specific test evidence, and precise distinctions
+between key possession, OS protection, local platform claims, hardware-key
+custody, remote attestation, and authorization status.
+
+**Restore when:** Restore only an exact, narrow statement after the required
+implementation and current evidence exist. Hardware wording requires a named
+non-exportable hardware key and binding protocol. FIPS wording requires the
+validated module, version, mode, configuration, and service-indicator evidence.
+Control/readiness wording requires deployment assessment and accountable
+authorization. Structural-secrecy wording requires a redesigned protocol whose
+owning client cannot reconstruct the claimed secret structure.
+
+**Restore procedure:** Start from the current bounded statement, add the exact
+artifact/test/deployment evidence next to it, obtain the required assessor or
+legal review where applicable, and add a new LOG/WHY record. Do not restore the
+blanket former wording.
+
+**Validation after restore:** Run the executable control catalog, documentation
+claim regressions, relevant cryptographic/adversarial tests, and the live
+deployment probe. Confirm the assertion states its scope and blind spots.
+
+**Recovery rehearsal:** Not rehearsed; restoring unsupported wording is not an
+approved recovery action.
+
+**Restoration risks:** False hardware/security attribution, misleading buyers
+or assessors, contaminated patent evidence, and unsupported authorization or
+compliance claims.
+
+**Evidence and links:** [LOG-20260715-007](LOG.md#log-20260715-007),
+[WHY-20260715-007](WHY.md#why-20260715-007), Microsoft
+[`CryptProtectData`](https://learn.microsoft.com/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata),
+NIST [FIPS 140-3 standards and guidance](https://csrc.nist.gov/projects/cryptographic-module-validation-program/fips-140-3-standards),
+and NIST [SP 800-53 Rev. 5](https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final).
+
 ## PARK-20260715-015 - Blanket guarantee and proof labels for component tests
 
 **Status:** Parked
