@@ -97,7 +97,6 @@ from enterprise.identity_gate import (  # noqa: F401
     MODE_ENFORCE,
 )
 from enterprise.mcp_dispatch import MCPDispatcher, dispatch_tool, get_default_dispatcher  # noqa: F401
-from enterprise.governed_runtime import GovernedRuntime, RuntimeConfigurationError  # noqa: F401
 from enterprise.irs_evidence import (  # noqa: F401
     HighImpactDetermination,
     IRSActionRecordKind,
@@ -137,6 +136,7 @@ from enterprise.session_index import SessionIndex, SessionIndexError  # noqa: F4
 # ---------------------------------------------------------------------------
 
 if _sys.platform == "win32":
+    from enterprise.governed_runtime import GovernedRuntime, RuntimeConfigurationError  # noqa: F401
     from enterprise.birth_tag_v2 import (  # noqa: F401
         stamp_signed_birth_tag,
         verify_signed_birth_tag,

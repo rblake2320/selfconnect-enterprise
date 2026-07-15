@@ -47,7 +47,7 @@ jobs:
           import subprocess, sys, re
 
           result = subprocess.run(
-              ["python", "-m", "pytest", "-q", "--tb=no"],
+              ["python", "-m", "pytest", "-q", "--tb=no", "-rs"],
               capture_output=True, text=True
           )
           output = result.stdout + result.stderr
@@ -66,26 +66,43 @@ jobs:
           skipped_m = re.search(r'(\d+) skipped', output)
           skipped = int(skipped_m.group(1)) if skipped_m else 0
 
-          # These tests require live Windows/Ultra infrastructure or the private
-          # SDK submodule and are separately exercised by live conformance runs.
-          WIN32_SESSION_SKIPS = 30
-
           print(f"Results: {passed} passed, {failed} failed, {skipped} skipped")
 
           if failed > 0:
               print(f"FAIL: {failed} test(s) failed")
               sys.exit(1)
 
-          unexpected_skips = skipped - WIN32_SESSION_SKIPS
-          if unexpected_skips > 0:
-              print(f"FAIL: {unexpected_skips} unexpected skip(s) beyond the {WIN32_SESSION_SKIPS} known CI-environment skips")
+          # Only live-Ultra tests may skip in this unit lane. They are executed
+          # against a real sidecar in the dedicated Windows contract job.
+          skip_lines = [line for line in output.splitlines() if line.startswith("SKIPPED [")]
+          allowed = (
+              "tests/test_e2e_ultra_gate.py" in line
+              or (
+                  "tests/test_identity_gate.py" in line
+                  and (
+                      "Ultra Server not available" in line
+                      or "ULTRA_ADMIN_TOKEN is not configured" in line
+                  )
+              )
+              for line in skip_lines
+          )
+          if not all(allowed):
+              print("FAIL: unexpected skipped test or reason")
+              print("\n".join(skip_lines))
+              sys.exit(1)
+          reported_skip_count = sum(
+              int(re.match(r"SKIPPED \[(\d+)\]", line).group(1))
+              for line in skip_lines
+          )
+          if reported_skip_count != skipped:
+              print(f"FAIL: {skipped} skips reported but only {reported_skip_count} are allowlisted")
               sys.exit(1)
 
           if passed < 880:
               print(f"FAIL: only {passed} tests passed (expected >= 880)")
               sys.exit(1)
 
-          print(f"OK: {passed} passed, {failed} failed, {skipped} skipped ({WIN32_SESSION_SKIPS} are expected CI-environment skips)")
+          print(f"OK: {passed} passed, {failed} failed, {skipped} named live-Ultra skips")
 
   ultra-contract-windows:
     name: Ultra live contract (Windows)

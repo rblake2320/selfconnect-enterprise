@@ -54,6 +54,40 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260715-011 - Make CI skip evidence and platform imports explicit
+
+**Timestamp (UTC):** 2026-07-15T11:50:48Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, test, audit
+**Base commit:** `5f55c931877e39fe39715989ee99c180f64c7b64`
+**Change reference:** commit containing this entry and draft PR #20
+**Why:** [WHY-20260715-008](WHY.md#why-20260715-008)
+**Parked records:** None
+
+**Changed:** Replaced the generic Windows test lane's hard-coded skip count
+with a node/reason allowlist for the live Ultra tests exercised by the dedicated
+contract job. Moved `GovernedRuntime` behind the package's existing Windows
+import boundary so the portable Ultra client and restart conformance probe load
+on Linux without installing a Windows API shim.
+
+**Reason:** Hosted CI passed all 1,421 generic Windows tests but correctly
+reported 35 live-service skips rather than the stale count of 30. The production
+durability job then reached the restart probe and found package initialization
+eagerly imported the Windows-only DPAPI identity module on Linux.
+
+**Full actions and links:** `.github/workflows/ci.yml`,
+`enterprise/__init__.py`, draft PR #20, GitHub Actions run `29412807803`,
+jobs `87343644017` and `87343643970`.
+
+**Validation:** The complete Windows suite passed 1,456 tests with two expected
+negative-test warnings. The exact hosted actionlint v1.7.12 and `git diff
+--check` passed. A clean Linux Python 3.12 container imported and executed the
+real `tools.ultra_restart_conformance` CLI using real cryptography without a
+ctypes/Win32 mock. Hosted live CI must rerun on the containing commit.
+
+**Notes:** Skip authorization is now tied to named live-test files and reasons,
+not a number. Any different skip still fails the release gate.
+
 ## LOG-20260715-010 - Complete the PostgreSQL TSK validation transaction
 
 **Timestamp (UTC):** 2026-07-15T11:46:01Z
