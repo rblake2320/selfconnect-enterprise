@@ -2,16 +2,16 @@
 
 enterprise/crypto.py persists ECDSA P-384 keys in the *software* KSP
 ("Microsoft Software Key Storage Provider"). This probe swaps the provider to the
-TPM-backed "Microsoft Platform Crypto Provider" and proves a full
-create -> sign -> verify cycle with a key whose private material is sealed to this
-machine's TPM and never leaves it.
+TPM-backed "Microsoft Platform Crypto Provider" and exercises a full
+create -> sign -> verify cycle. A PASS is evidence that this provider reported a
+hardware implementation for the ephemeral probe key in that run; it is not remote
+attestation, payload-to-PCR binding, or proof that other SelfConnect keys use it.
 
 Patent relevance
 ----------------
-Hardware-attested agent identity: the agentId/sessionId signing key is bound to the
-TPM, so a captured ledger or identity file cannot be used to forge signatures on a
-different machine (defeats cross-machine replay). This is a distinct, stronger
-embodiment of the "machine-bound agent identity" claim than software/DPAPI keys.
+This probe is reduction-to-practice evidence for hardware-backed local signing.
+The ephemeral probe key is not the ordinary AgentIdentity/CngIdentity key and the
+probe does not establish remote attestation or deployed key custody.
 
 Run:  python experiments/win32_probe/tpm_identity.py
 Exit: 0 = PASS (hardware-backed), 1 = key worked but NOT hardware-backed,
@@ -121,15 +121,15 @@ def main() -> int:
             continue
         try:
             # Impl-Type query is best-effort: some TPM providers return NTE_NOT_SUPPORTED.
-            # A key that the Platform Crypto Provider successfully created/finalized is
-            # TPM-backed by definition (that provider requires a TPM), so infer hardware.
+            # Some provider versions do not return Impl Type. Do not infer a PASS
+            # from the provider name alone when hardware status is unavailable.
             try:
                 impl = _impl_type(hkey)
                 hw = bool(impl & NCRYPT_IMPL_HARDWARE_FLAG)
                 impl_str = f"0x{impl:X}"
             except OSError:
-                impl_str = "n/a (NTE_NOT_SUPPORTED; inferred from Platform provider)"
-                hw = True
+                impl_str = "n/a (NTE_NOT_SUPPORTED)"
+                hw = False
             digest = (hashlib.sha256 if coord == 32 else hashlib.sha384)(payload).digest()
             sig = _sign(hkey, digest)
             pub = _export_pub_blob(hkey)

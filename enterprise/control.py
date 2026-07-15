@@ -283,12 +283,12 @@ class ControlPlane:
             result=f"agent {record.agent_id} {record.new_state}",
             metadata={
                 "command":     record.command,
-                "agent_id":    record.agent_id,
+                "subject_agent_id": record.agent_id,
                 "operator_id": record.operator_id,
                 "reason":      record.reason,
                 "prev_state":  record.prev_state,
                 "new_state":   record.new_state,
-                "ts":          record.ts,
+                "event_ts":    record.ts,
             },
         )
 

@@ -160,6 +160,8 @@ class TestRoute:
         assert isinstance(receipt, ActionReceipt)
         assert receipt.hwnd == 8008
         assert receipt.channel == ChannelType.WM_CHAR
+        assert receipt.transport_enqueued is True
+        assert receipt.delivery_confirmed is False
 
     def test_route_receipt_has_payload_hash(self):
         import hashlib
@@ -200,6 +202,53 @@ class TestRoute:
         ):
             receipt = router.route(2222, "hello")
         assert receipt.success is False
+
+    def test_windows_terminal_delivery_targets_input_site_child(self):
+        router = ChannelRouter()
+        posted: list[tuple[int, int, int, int]] = []
+
+        def enumerate_child(_parent, callback, context):
+            callback(222, context)
+
+        def class_for(hwnd):
+            return (
+                "CASCADIA_HOSTING_WINDOW_CLASS"
+                if hwnd == 111
+                else "Windows.UI.Input.InputSite.WindowClass"
+            )
+
+        with (
+            patch("experiments.win32_probe.channel_router._WIN32_AVAILABLE", True),
+            patch("experiments.win32_probe.channel_router._get_window_class", side_effect=class_for),
+            patch(
+                "experiments.win32_probe.channel_router.win32gui.EnumChildWindows",
+                side_effect=enumerate_child,
+            ),
+            patch(
+                "experiments.win32_probe.channel_router.win32api.PostMessage",
+                side_effect=lambda *args: posted.append(args),
+            ),
+        ):
+            assert router._inject_wm_char(111, "A\r") is True
+
+        assert posted[0][0] == 222
+        assert posted[0][2] == ord("A")
+        assert all(message[0] == 222 for message in posted)
+        assert len(posted) == 3
+
+    def test_windows_terminal_without_input_site_fails_closed(self):
+        router = ChannelRouter()
+        with (
+            patch("experiments.win32_probe.channel_router._WIN32_AVAILABLE", True),
+            patch(
+                "experiments.win32_probe.channel_router._get_window_class",
+                return_value="CASCADIA_HOSTING_WINDOW_CLASS",
+            ),
+            patch("experiments.win32_probe.channel_router.win32gui.EnumChildWindows"),
+            patch("experiments.win32_probe.channel_router.win32api.PostMessage") as post,
+        ):
+            assert router._inject_wm_char(111, "A") is False
+        post.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

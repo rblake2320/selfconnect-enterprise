@@ -1,27 +1,30 @@
-"""enterprise/crypto.py — FIPS-Validated Cryptographic Primitives via Windows CNG
+"""enterprise/crypto.py — ECDSA P-384/SHA-384 primitives via Windows CNG
 
 Replaces the Python 'cryptography' library with direct Windows CNG (BCrypt/NCrypt)
-calls for FIPS 140-2 validated cryptographic operations.  All key material is
+can use Windows CNG cryptographic operations. Whether a deployment uses a
+currently validated module depends on the exact OS build, mode, module, and
+operating environment. All key material is
 stored in the NCrypt Software Key Storage Provider — never in a Python object or
 DPAPI blob.
 
-Algorithm suite (CNSA 2.0 compliant):
+Algorithm selection (used by CNSA guidance, but not a compliance claim):
     Signature: ECDSA P-384 (BCRYPT_ECDSA_P384_ALGORITHM)
     Digest:    SHA-384 (BCRYPT_SHA384_ALGORITHM)
     Key store: Microsoft Software Key Storage Provider (NCrypt software KSP)
 
 Crypto-agility design:
     ALGO_SIGN_W and ALGO_HASH_W are the only algorithm identifiers in this file.
-    When FIPS 140-3 ML-DSA-87 support lands in Windows CNG (~2027), update
-    those two constants, adjust P384_COORD_BYTES / P384_SIG_BYTES for the new
-    key size, and nothing else in AgentIdentity or AgentLedger changes.
+    A future post-quantum migration requires a separately reviewed provider,
+    key/signature encoding, identity migration, and verifier-compatibility
+    design. Changing two constants is not sufficient evidence of migration.
     ALGO_ID is stored in identity files so old signatures remain verifiable
     after a migration.
 
-FIPS status:
-    Windows CNG (bcrypt.dll / ncrypt.dll) holds FIPS 140-2 certificate #4825,
-    valid through 21 September 2026.  Microsoft is actively pursuing FIPS 140-3
-    renewal.  All operations in this module go through the CNG code path.
+Validation status:
+    Calling Windows CNG does not itself establish FIPS validation. The exact
+    module, certificate status, tested operating environment, OS build,
+    configuration, and policy mode must be verified for the deployment. The
+    portable test backend is never validation evidence.
 
 Public key format:
     Raw concatenated X || Y coordinates from BCRYPT_ECCPUBLIC_BLOB (header
@@ -69,6 +72,7 @@ import os as _os
 # cryptography-backed implementation at the end of this module so the CNG suite
 # runs cross-platform. The portable backend is NOT FIPS-validated.
 _USE_PORTABLE_CRYPTO = _sys.platform != 'win32' or _os.environ.get('SELFCONNECT_CRYPTO_BACKEND') == 'portable'
+CRYPTO_BACKEND_ID = "portable-test" if _USE_PORTABLE_CRYPTO else "windows-cng"
 # True when a usable ECDSA-P384/SHA-384 signing backend is present:
 # Windows CNG natively, or the cryptography-backed portable backend off-Windows.
 # CNG crypto tests gate on this instead of sys.platform so they run cross-platform.
@@ -142,7 +146,8 @@ def _ck_ncrypt(status: int, op: str) -> None:
 def cng_sha384(data: bytes) -> bytes:
     """Hash data with SHA-384 via Windows BCrypt.  Returns 48-byte digest.
 
-    Uses the FIPS 140-2 certified code path in bcrypt.dll.
+    Uses the Windows CNG bcrypt.dll path. No validation status is implied by
+    calling this function alone.
     """
     h_algo = ctypes.c_void_p()
     st = _bcrypt.BCryptOpenAlgorithmProvider(
@@ -230,7 +235,7 @@ def _ncrypt_sign_hash(h_key, digest: bytes) -> bytes:
 # ── CngSigner ─────────────────────────────────────────────────────────────────
 
 class CngSigner:
-    """FIPS-validated ECDSA P-384 signer backed by Windows NCrypt software KSP.
+    """ECDSA P-384 signer backed by the Windows NCrypt software KSP.
 
     Holds open NCrypt handles for the lifetime of the instance — one
     StorageProvider handle and one key handle — to avoid per-sign KSP open cost.
@@ -507,6 +512,7 @@ __all__ = [
     "P384_COORD_BYTES",
     "SHA384_BYTES",
     "CNG_BACKEND_AVAILABLE",
+    "CRYPTO_BACKEND_ID",
 ]
 
 

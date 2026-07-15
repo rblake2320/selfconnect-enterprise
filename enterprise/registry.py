@@ -8,7 +8,8 @@ both and use whichever capabilities each situation requires.
     from enterprise.registry import stamp_birth_tag, discover_mesh, BirthTag
 
 Layer map:
-    Tier 1 (self_connect.py)  — WM_CHAR injection, UIA readback [proven, production]
+    Tier 1 (self_connect.py)  — WM_CHAR enqueue and UIA read primitives; live
+                                delivery requires target-bound readback evidence
     Tier 2 (this file)        — SetProp registry, WM_COPYDATA transport, Named Events
     Tier 3 (future)           — CreateDesktop, Named Pipes, SetWinEventHook
 
@@ -470,7 +471,8 @@ def send_data(
 ) -> bool:
     """Send a structured JSON payload to another agent via WM_COPYDATA.
 
-    OS-verified: the recipient reads wParam to confirm sender HWND.
+    Sender hint: the recipient reads the caller-supplied wParam HWND. Treat it
+    as untrusted until separate target and identity validation succeeds.
     Atomic: the entire payload is delivered in one message, no chunking.
     Up to 64KB per message. Sender does not need focus.
 

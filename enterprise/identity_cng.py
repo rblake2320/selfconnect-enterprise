@@ -1,4 +1,4 @@
-"""enterprise/identity_cng.py — CNSA 2.0-Compliant Agent Identity via Windows CNG
+"""enterprise/identity_cng.py — ECDSA P-384 agent identity via Windows CNG
 
 Drop-in replacement for AgentIdentity backed by Windows NCrypt software KSP
 instead of DPAPI + Python ed25519.
@@ -6,7 +6,7 @@ instead of DPAPI + Python ed25519.
     # v0.3.0 path (DPAPI, ed25519)   — unchanged, still available
     from enterprise.identity import AgentIdentity
 
-    # v0.4.0 path (NCrypt, ECDSA P-384, FIPS 140-2 certified)
+    # v0.4.0 path (NCrypt, ECDSA P-384). FIPS status is deployment-conditional.
     from enterprise.identity_cng import CngIdentity, CngLedger
 
     # Interface is identical:
@@ -23,13 +23,14 @@ Key differences from AgentIdentity:
     agent_id       — "SC-" + SHA-384(pub_key)[:8].upper() (8-char fingerprint)
 
 Storage:
-    NCrypt key name:    "SelfConnect.{agent_name}"  (per-user, machine-bound)
+    NCrypt key name:    "SelfConnect.{agent_name}"  (per-user software KSP)
     Public key file:    {data_dir}/{agent_name}/identity_cng.pub   (raw X||Y hex)
     Default data_dir:   %APPDATA%\\SelfConnect  (same as AgentIdentity)
 
 CngLedger:
     Subcomponent with the same API as AgentLedger but uses SHA-384 for the hash
-    chain.  Use with CngIdentity for a fully CNSA 2.0 compliant audit trail.
+    chain. Algorithm choice alone does not establish CNSA, FIPS, or deployment
+    compliance.
 
 Version: 1.0.0-enterprise  Session 16
 """
@@ -42,6 +43,7 @@ from typing import Optional
 
 from enterprise.crypto import (
     ALGO_ID,
+    CRYPTO_BACKEND_ID,
     CngSigner,
     cng_key_exists,
     cng_sha384,
@@ -59,7 +61,7 @@ GENESIS_HASH_CNG = "0" * 96
 # ── CngIdentity ────────────────────────────────────────────────────────────────
 
 class CngIdentity:
-    """Persistent, machine-bound ECDSA P-384 agent identity via Windows NCrypt.
+    """Persistent ECDSA P-384 agent identity via Windows NCrypt software KSP.
 
     Identical interface to AgentIdentity — callers can swap the import without
     changing any other code.  The cryptographic backend is entirely different:
@@ -68,8 +70,9 @@ class CngIdentity:
         CngIdentity     — ECDSA P-384 via NCrypt KSP, no plaintext key file, SHA-384 agent_id
 
     The NCrypt software KSP stores the private key under the current Windows user
-    profile.  It cannot be decrypted by any other user or moved to another machine
-    without re-enrollment.  Binding is enforced by the OS, not by application code.
+    profile. Export, migration, recovery, and access behavior depend on the
+    provider, key policy, host, and account configuration. This component does
+    not claim TPM/hardware binding or non-repudiation.
 
     Use init() on first boot, load() on every subsequent boot.
     """
@@ -121,6 +124,7 @@ class CngIdentity:
         storage["pub"].write_text(signer.public_key_bytes.hex(), encoding="ascii")
         # Store algorithm ID alongside public key for crypto-agility
         storage["algo"].write_text(ALGO_ID, encoding="ascii")
+        storage["backend"].write_text(CRYPTO_BACKEND_ID, encoding="ascii")
 
         return cls(signer, agent_name)
 
@@ -145,6 +149,22 @@ class CngIdentity:
 
         key_name = cls._ncrypt_key_name(agent_name)
         signer   = CngSigner.load(key_name)
+        stored_public = bytes.fromhex(storage["pub"].read_text(encoding="ascii").strip())
+        if stored_public != signer.public_key_bytes:
+            signer.close()
+            raise OSError("stored CNG public identity does not match the loaded key")
+        if storage["algo"].exists():
+            stored_algo = storage["algo"].read_text(encoding="ascii").strip()
+            if stored_algo != ALGO_ID:
+                signer.close()
+                raise OSError(f"unsupported stored CNG algorithm: {stored_algo!r}")
+        if storage["backend"].exists():
+            stored_backend = storage["backend"].read_text(encoding="ascii").strip()
+            if stored_backend != CRYPTO_BACKEND_ID:
+                signer.close()
+                raise OSError(
+                    "stored CNG backend does not match the active cryptographic backend"
+                )
         return cls(signer, agent_name)
 
     @classmethod
@@ -174,6 +194,11 @@ class CngIdentity:
     def algo_id(self) -> str:
         """Algorithm identifier — embed in any identity record for crypto-agility."""
         return self._signer.algo_id
+
+    @property
+    def backend_id(self) -> str:
+        """Runtime cryptographic backend; this is evidence metadata, not validation."""
+        return CRYPTO_BACKEND_ID
 
     # ── Cryptographic operations ──────────────────────────────────────────────
 
@@ -229,6 +254,7 @@ class CngIdentity:
             "dir":  base,
             "pub":  base / "identity_cng.pub",
             "algo": base / "identity_cng.algo",
+            "backend": base / "identity_cng.backend",
         }
 
     @staticmethod
@@ -243,7 +269,8 @@ class CngLedger:
     """Append-only, signed, SHA-384 hash-chained action log for CngIdentity agents.
 
     Identical interface to AgentLedger but uses SHA-384 for the hash chain
-    (CNSA 2.0 compliant) and is intended for use with CngIdentity.  The two
+    and is intended for use with CngIdentity. The selected algorithms appear in
+    CNSA guidance, but this component does not claim system compliance. The two
     ledger types produce incompatible chains and must not be mixed for the same
     log file.
 
@@ -287,12 +314,24 @@ class CngLedger:
 
         Returns the full entry dict as written (including sig and algo fields).
         """
+        reserved = {
+            "seq", "agent_id", "action", "result", "ts", "prev_hash",
+            "sig", "algo", "crypto_backend",
+        }
+        collisions = reserved.intersection(metadata or {})
+        if collisions:
+            raise ValueError(
+                "metadata cannot overwrite reserved ledger fields: "
+                + ", ".join(sorted(collisions))
+            )
+
         self._seq += 1
 
         entry: dict = {
             "seq":       self._seq,
             "agent_id":  self._identity.agent_id,
             "algo":      ALGO_ID,
+            "crypto_backend": self._identity.backend_id,
             "action":    action,
             "result":    result,
             "ts":        time.time(),

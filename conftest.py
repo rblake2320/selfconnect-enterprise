@@ -13,7 +13,10 @@ Platform shim (non-Windows):
 from __future__ import annotations
 import sys
 import ctypes
+import json
+import os
 import pathlib
+import secrets
 import shutil
 import subprocess
 import time
@@ -28,7 +31,9 @@ _ULTRA_SERVER_DIR = pathlib.Path(__file__).parent / "ultra_server"
 
 def _server_reachable(timeout: float = 1.0) -> bool:
     try:
-        urllib.request.urlopen(f"{_ULTRA_SERVER_URL}/status", timeout=timeout)
+        # /status is operator-authenticated. /health is the intentionally public
+        # liveness endpoint and is the only valid readiness probe here.
+        urllib.request.urlopen(f"{_ULTRA_SERVER_URL}/health", timeout=timeout)
         return True
     except Exception:
         return False
@@ -43,6 +48,23 @@ def _wait_for_server(timeout: float = 12.0) -> bool:
     return False
 
 
+def _server_test_ready(timeout: float = 1.0) -> bool:
+    """Require the authenticated test contract, not public liveness alone."""
+    token = os.environ.get("ULTRA_ADMIN_TOKEN", "")
+    if not token:
+        return False
+    request = urllib.request.Request(
+        f"{_ULTRA_SERVER_URL}/status",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read())
+        return response.status == 200 and payload.get("ok") is True
+    except Exception:
+        return False
+
+
 def pytest_sessionstart(session) -> None:  # noqa: ANN001
     """Start Ultra Server before test collection so pytestmark skip checks see it."""
     global _ultra_server_proc
@@ -53,16 +75,25 @@ def pytest_sessionstart(session) -> None:  # noqa: ANN001
     if not bpc_dist.exists():
         return
     if _server_reachable():
-        return  # already running (e.g. developer has it open manually)
+        # Do not attach security tests to an arbitrary or differently configured
+        # process just because its public liveness route answers on port 7777.
+        os.environ["SC_ULTRA_TEST_SERVER_READY"] = "1" if _server_test_ready() else "0"
+        return
+    if not os.environ.get("ULTRA_ADMIN_TOKEN"):
+        os.environ["ULTRA_ADMIN_TOKEN"] = secrets.token_urlsafe(32)
     _ultra_server_proc = subprocess.Popen(
         ["node", "server.js"],
         cwd=str(_ULTRA_SERVER_DIR),
+        env=os.environ.copy(),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     if not _wait_for_server():
         _ultra_server_proc.kill()
         _ultra_server_proc = None
+        os.environ["SC_ULTRA_TEST_SERVER_READY"] = "0"
+        return
+    os.environ["SC_ULTRA_TEST_SERVER_READY"] = "1" if _server_test_ready() else "0"
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:  # noqa: ANN001

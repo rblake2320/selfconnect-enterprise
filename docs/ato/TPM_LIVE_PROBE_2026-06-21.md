@@ -48,4 +48,8 @@ does not produce a platform claim blob.
 
 ## Boundary
 
-This probe proves the Windows ABI and downgrade behavior are correct on this host. It does not prove a hardware attestation PASS because this machine did not produce a platform claim blob. A separate machine with provisioned TPM platform attestation material is still required for a PASS artifact.
+This probe exercised the Windows ABI and recorded the fail-closed NA behavior on
+this host. It did not validate the successful claim path or establish a hardware
+attestation PASS because this machine produced no platform claim blob. A machine
+with provisioned TPM platform-attestation material is still required for that
+separate result.

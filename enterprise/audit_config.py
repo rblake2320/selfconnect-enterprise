@@ -97,6 +97,10 @@ class AuditConfig:
         worm_region: str = "us-east-1",
         worm_endpoint: str = "",
         worm_file_dir: str = "",
+        worm_min_retention_days: int = 365,
+        r2_account_id: str = "",
+        r2_api_token: str = "",
+        r2_jurisdiction: str = "default",
     ) -> None:
         self.audit_mode = audit_mode
         self.worm_sink = worm_sink
@@ -105,6 +109,10 @@ class AuditConfig:
         self.worm_region = worm_region
         self.worm_endpoint = worm_endpoint
         self.worm_file_dir = worm_file_dir
+        self.worm_min_retention_days = worm_min_retention_days
+        self.r2_account_id = r2_account_id
+        self.r2_api_token = r2_api_token
+        self.r2_jurisdiction = r2_jurisdiction
 
     @classmethod
     def from_env(cls) -> "AuditConfig":
@@ -136,6 +144,26 @@ class AuditConfig:
             )
             worm_prefix = "scent/audit/"
 
+        raw_retention = os.environ.get("SCENT_WORM_MIN_RETENTION_DAYS", "365")
+        try:
+            minimum_retention_days = int(raw_retention)
+            if not 1 <= minimum_retention_days <= 36_500:
+                raise ValueError
+        except ValueError:
+            logger.error(
+                "SCENT_WORM_MIN_RETENTION_DAYS=%r rejected; using 365.",
+                raw_retention,
+            )
+            minimum_retention_days = 365
+
+        jurisdiction = os.environ.get("SCENT_R2_JURISDICTION", "default").lower()
+        if jurisdiction not in {"default", "eu", "fedramp"}:
+            logger.error(
+                "SCENT_R2_JURISDICTION=%r rejected; using default.",
+                jurisdiction,
+            )
+            jurisdiction = "default"
+
         return cls(
             audit_mode=audit_mode,
             worm_sink=worm_sink,
@@ -144,6 +172,10 @@ class AuditConfig:
             worm_region=os.environ.get("SCENT_WORM_REGION", "us-east-1"),
             worm_endpoint=os.environ.get("SCENT_WORM_ENDPOINT", ""),
             worm_file_dir=os.environ.get("SCENT_WORM_FILE_DIR", ""),
+            worm_min_retention_days=minimum_retention_days,
+            r2_account_id=os.environ.get("SCENT_R2_ACCOUNT_ID", ""),
+            r2_api_token=os.environ.get("SCENT_R2_API_TOKEN", ""),
+            r2_jurisdiction=jurisdiction,
         )
 
     def requires_worm(self) -> bool:
@@ -158,4 +190,5 @@ class AuditConfig:
             parts.append(f"bucket={self.worm_bucket}")
         if self.worm_file_dir:
             parts.append(f"dir={self.worm_file_dir}")
+        parts.append(f"minimum_retention_days={self.worm_min_retention_days}")
         return " ".join(parts)

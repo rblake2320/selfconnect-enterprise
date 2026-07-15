@@ -12,6 +12,7 @@ PARKED_PATH = ROOT / "PARKED.md"
 WHY_PATH = ROOT / "WHY.md"
 CHANGELOG_PATH = ROOT / "CHANGELOG.md"
 README_PATH = ROOT / "README.md"
+CATALOG_PATH = ROOT / "docs" / "assurance" / "control_catalog.json"
 
 LOG_ID_RE = re.compile(r"^## (LOG-\d{8}-\d{3})\b", re.MULTILINE)
 PARK_ID_RE = re.compile(r"^## (PARK-\d{8}-\d{3})\b", re.MULTILINE)
@@ -157,3 +158,55 @@ def test_cross_record_references_resolve() -> None:
         assert parked_ids <= set(PARK_REF_RE.findall(log_text))
         assert parked_ids <= set(PARK_REF_RE.findall(why_text))
         assert parked_ids <= set(PARK_REF_RE.findall(changelog_text))
+
+
+def test_known_overclaims_and_partner_docs_remain_absent() -> None:
+    assert not (ROOT / "docs" / "partnerships").exists()
+    current_surfaces = [
+        README_PATH,
+        ROOT / "SECURITY.md",
+        ROOT / "enterprise" / "crypto.py",
+        ROOT / "enterprise" / "identity_cng.py",
+        ROOT / "enterprise" / "identity_gate.py",
+        ROOT / "enterprise" / "tpm_attestation.py",
+        ROOT / "enterprise" / "ultra_gate.py",
+        ROOT / "ultra_server" / "README.md",
+        ROOT / "docs" / "assurance" / "SECTOR_PROFILES.md",
+        ROOT / "TEST_REGISTRY.md",
+    ]
+    combined = "\n".join(_read(path).lower() for path in current_surfaces)
+    prohibited = (
+        "os-verified sender",
+        "claims are documented and proved",
+        "tumbler keys with structural secrecy",
+        "il4-il7",
+        "il4/il7",
+        "every test ever written",
+        "tests are real — no mocks",
+        "fips-validated cryptographic primitives",
+        "algorithm suite (cnsa 2.0 compliant)",
+        "fully cnsa 2.0 compliant audit trail",
+        "what this system guarantees",
+        "**proven by:**",
+        "concurrent safety proven by",
+    )
+    for phrase in prohibited:
+        assert phrase not in combined
+
+
+def test_control_catalog_has_required_control_fields() -> None:
+    import json
+
+    catalog = json.loads(_read(CATALOG_PATH))
+    assert catalog["schema_version"] == 1
+    controls = catalog["controls"]
+    ids = [control["id"] for control in controls]
+    _assert_unique(ids, "control")
+    required = {"id", "title", "scope", "assertion", "expected", "evidence", "blind_spots", "tier"}
+    for control in controls:
+        assert not (required - control.keys()), control["id"]
+        if control["tier"] == "description":
+            assert "command" not in control
+        else:
+            assert control["tier"] in {"quick", "release", "live"}
+            assert isinstance(control.get("command"), list) and control["command"]

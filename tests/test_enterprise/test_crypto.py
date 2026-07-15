@@ -1,8 +1,8 @@
 """tests/test_enterprise/test_crypto.py — Integration tests for enterprise.crypto
 
-These tests call real Windows CNG (BCrypt/NCrypt software KSP).  No mocking.
-Each test that creates a persisted key uses a unique key name prefixed with
-"sc-test-" and deletes it in teardown — the NCrypt software KSP is cleaned.
+On Windows without the portable override, these tests call BCrypt/NCrypt. Other
+environments exercise the explicitly identified portable test backend. Each
+test creates a unique key name and deletes it in teardown.
 
 SHA-384 test vectors from NIST FIPS 180-4 / NIST CAVP:
     SHA-384("")  = 38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b
@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from enterprise.crypto import CNG_BACKEND_AVAILABLE
+from enterprise.crypto import CNG_BACKEND_AVAILABLE, CRYPTO_BACKEND_ID
 
 from enterprise.crypto import (
 
@@ -83,6 +83,9 @@ class TestSha384:
 # ── Key lifecycle ──────────────────────────────────────────────────────────────
 
 class TestKeyLifecycle:
+    def test_backend_is_explicit(self):
+        assert CRYPTO_BACKEND_ID in {"windows-cng", "portable-test"}
+
     def test_create_returns_96_byte_public_key(self, key_name):
         with CngSigner.create(key_name) as s:
             assert len(s.public_key_bytes) == P384_COORD_BYTES * 2

@@ -1,21 +1,25 @@
 # SelfConnect Enterprise
 
-**Win32-native AI agent infrastructure for government and regulated enterprise deployment.**
+**Win32-native AI governance components for regulated enterprise integration.**
 
 Built on the [SelfConnect SDK](https://github.com/rblake2320/selfconnect) — the OS-native bridge
 between AI agents and Windows desktop applications using Win32 IPC primitives.
 
-**v1.2.1 — 716 tests passing — 0 failures — Continuously audited posture release**
+**v1.2.3 — engineering prototype; test and runtime evidence are commit- and deployment-specific**
 
 ---
 
 ## What This Is
 
-A production-grade policy enforcement and audit substrate for AI agent meshes running on
-Windows. Every agent action passes through a deny-by-default policy evaluator. Every decision
-is logged to a tamper-evident hash chain. Evidence is filtered by classification label before
-it reaches the training data pipeline. Classified deployments enforce egress restrictions,
-export gating, and CNG identity requirements through an immutable deployment profile.
+SelfConnect Enterprise provides policy, identity, operator-control, target-validation, and
+audit components for AI agent meshes on Windows. `GovernedRuntime` composes those controls so
+MCP text actuation fails closed unless a live target binding, externally pinned signed policy,
+required operator approval, and persistent signed ledger are present. Direct use of lower-level
+modules is not automatically intercepted by that runtime.
+
+This repository is not an IRS authorization, ATO, IATT, FIPS validation, or legal compliance
+determination. Deployment claims require live conformance evidence and review in the actual
+system boundary.
 
 ---
 
@@ -24,15 +28,19 @@ export gating, and CNG identity requirements through an immutable deployment pro
 | Module | Purpose |
 |--------|---------|
 | `enterprise/registry.py` | SetProp/GetProp agent registry, BirthTag, `discover_mesh()`, heartbeat |
-| `enterprise/transport.py` | WM_COPYDATA structured payload transport (64KB atomic JSON, OS-verified sender) |
-| `enterprise/identity.py` | Persistent machine-bound ed25519 agent identity (DPAPI) |
-| `enterprise/identity_cng.py` | CNG-backed identity + CngLedger (ECDSA P-384, SHA-384, FIPS 140-2) |
-| `enterprise/ledger.py` | AgentLedger — tamper-evident action log (SHA-256 hash chain) |
+| `enterprise/transport.py` | WM_COPYDATA structured payload transport (64KB atomic JSON; sender HWND is caller-supplied and requires separate validation) |
+| `enterprise/identity.py` | Persistent ed25519 identity with current-user DPAPI protection at rest; not hardware-bound |
+| `enterprise/identity_cng.py` | CNG-backed identity + CngLedger (ECDSA P-384, SHA-384); FIPS status depends on the validated Windows module and configuration |
+| `enterprise/ledger.py` | AgentLedger — signed, tamper-evident SHA-256 chain with verified local segment lifecycle; external witnessing remains separate |
 | `enterprise/crypto.py` | NCrypt ECDSA P-384 / SHA-384 primitives via Windows CNG |
-| `enterprise/policy.py` | PolicyEnforcer — 9-step deny-by-default decision pipeline |
-| `enterprise/policy_sign.py` | ECDSA P-384 policy bundle signing and verification (100% coverage) |
-| `enterprise/operator.py` | Thread-safe operator approval queue for human-in-the-loop gates |
+| `enterprise/policy.py` | PolicyEnforcer — deny-by-default decision pipeline plus composition gate |
+| `enterprise/policy_sign.py` | ECDSA P-384 policy bundle signing and verification; coverage is run-specific |
+| `enterprise/operator.py` | One-time context-bound approvals; SQLite WAL durable queue for governed runtime |
 | `enterprise/control.py` | ControlPlane — pause / quarantine / revoke / kill_all state machine |
+| `enterprise/governed_runtime.py` | Mandatory enterprise composition for policy, approval, target binding, identity, and signed audit |
+| `enterprise/irs_evidence.py` | Structured IRS integration evidence records; not an IRS system-of-record submission |
+| `enterprise/uia_output.py` | Fail-closed UIA TextPattern output adapter used by governed MCP readback |
+| `ultra_server/` | Signed BPC+TSK lifecycle sidecar; fail-closed shadow boundary, bounded rate limits, key rotation, development memory mode, and PostgreSQL/Redis production mode |
 | `enterprise/observer.py` | LedgerObserver, ObserverFilter, EvidenceExporter, training pipeline |
 | `enterprise/labels.py` | Classification enum, LabelEnvelope, rank(), le(), ALLOWED_CAVEATS |
 | `enterprise/classified_mode.py` | ClassifiedModeProfile — immutable deployment profile |
@@ -107,7 +115,7 @@ enforcer = PolicyEnforcer(bundle, require_signature=True, profile=profile)
 egress   = EgressGuard(profile, ledger=ledger)
 export   = ExportGuard(profile, ledger=ledger)
 
-# All actions, egress, and exports are now profile-gated
+# These calls are profile-gated; direct paths remain outside this boundary.
 decision = enforcer.check("SC-AGENT1", "read_text", identity_type="cng")
 ok       = egress.check_outbound("api.anthropic.com", "SC-AGENT1")
 can_exp  = export.check_and_log(label, "SC-AGENT1")
@@ -117,9 +125,13 @@ can_exp  = export.check_and_log(label, "SC-AGENT1")
 
 ## Test Suite
 
+```bash
+python -m ruff check .
+python -m pytest -q
 ```
-716 tests   0 failures   0 skipped   ruff clean
-```
+
+Results are evidence for the exact commit and environment in which they ran. Do not reuse a
+historical count as a release-wide or deployed-runtime claim.
 
 | Test file | Count | What it covers |
 |-----------|-------|----------------|
@@ -149,19 +161,33 @@ submit_claude_input()      →         Used by agent briefing scripts
 
 The SDK is the foundation. This repo builds the enterprise governance layer on top of it.
 
+### Ultra identity sidecar
+
+Ultra Server 1.3 verifies body-bound Ed25519 lifecycle proofs, derived agent
+identity, timestamp/nonce freshness, ownership, and operator-authorized first
+enrollment. Its production mode refuses to start without PostgreSQL, Redis,
+operator authorization, and a distinct recovery HMAC key. Live CI builds exact
+BPC/TSK source commits, exercises Python-to-Node verification, tests concurrent
+HOTP replay protection, restarts the process, and verifies identity continuity.
+See [`ultra_server/README.md`](ultra_server/README.md).
+
+This establishes the tested sidecar propositions only. It does not establish
+TPM attestation, approved secret custody, a partner deployment, an ATO, or a DoD
+Impact Level authorization.
+
 ---
 
-## Patent Coverage
+## Implementation Evidence
 
 | Claim Set | Primitive | Status |
 |---|---|---|
-| Claim 1 (core) | WM_CHAR background injection → ConPTY | PROVED (selfconnect) |
-| Claim 2 (new) | SetProp/GetProp zero-infra agent registry | PROVED (this repo) |
-| Claim 3 (upgraded) | HWND + BirthTag structured self-discovery | PROVED (this repo) |
-| Claim 4 (new) | WM_COPYDATA OS-verified structured transport | PROVED (this repo) |
-| Claim 5 (new) | Deny-by-default signed policy enforcement | PROVED (v0.5.0+) |
-| Claim 6 (new) | Policy-filtered training data pipeline | PROVED (v0.6.0+) |
-| Claim 7 (new) | Classification-gated evidence export | PROVED (v0.8.0+) |
+| Claim 1 (core) | WM_CHAR background injection → ConPTY | Implemented in SelfConnect; cite a dated live artifact for reduction-to-practice |
+| Claim 2 (new) | SetProp/GetProp zero-infra agent registry | Implemented and exercised by named registry tests |
+| Claim 3 (upgraded) | HWND + BirthTag structured self-discovery | Implemented and exercised by named discovery tests |
+| Claim 4 (new) | WM_COPYDATA structured transport | Implemented and exercised; OS sender identity alone does not make application-level spoofing impossible |
+| Claim 5 (new) | Deny-by-default signed policy enforcement | Narrowly established for `PolicyEnforcer` and mandatory `GovernedRuntime` paths by named tests |
+| Claim 6 (new) | Policy-filtered training data pipeline | Narrowly established for primary records and filtered context windows by named tests |
+| Claim 7 (new) | Classification-gated evidence export | Narrowly established for calls routed through `ExportGuard` |
 
 ---
 
@@ -175,15 +201,19 @@ python -m pytest tests/ -q
 ```
 
 SDK submodule pinned to commit hash: `8cf151dbc5f312ce888e51aa429f62960e1a2ee6`
+That source declares package version `0.10.0`. Release conformance verifies the
+installed distribution's `direct_url.json` commit against the full pin; it does
+not infer a newer SDK version from later source tags or feature documents.
 
 ---
 
 ## Security & Testing Overview
 
-The security posture is verified continuously — not claimed. Every guarantee
-listed in [SECURITY.md](SECURITY.md) has a named test that proves it.
+Named tests establish specific component propositions. They do not establish an authorization,
+an entire deployed-system posture, or behavior on paths outside their scope. Live Windows
+actuation can be assessed with `tools/irs_runtime_conformance.py` without mock targets.
 
-### Test pyramid (716 tests, 0 failures)
+### Test pyramid
 
 | Layer | File(s) | What it covers |
 |-------|---------|----------------|
@@ -191,7 +221,7 @@ listed in [SECURITY.md](SECURITY.md) has a named test that proves it.
 | Red team (adversarial) | `test_redteam.py` (RT-01–RT-20, 59 tests) | 20 attack categories: policy bypass, sig tamper, classification spoof, training poisoning, control plane bypass, hash chain forgery, race conditions |
 | Adversarial AI | `test_adversarial_ai.py` (17 tests) | AI-specific attacks: training data poisoning via LedgerObserver, classification ceiling bypass via signed policy escalation, ControlPlane race conditions, approval token replay, agent self-revival |
 | Dependency integrity | `test_dependency_integrity.py` (21 tests) | Axios-style supply chain (IOC registry, install hooks), module shadow attack, MCP tool metadata injection scanner, git dep commit-hash pinning |
-| Supply chain / zero-day | `test_supply_chain.py` (10 tests) | LiteLLM backdoor gate, `cryptography>=46.0.6` floor, SECT curve static scan, `x509.verification` static scan, WFP script determinism + tamper detection, pip-audit hard gate on direct deps |
+| Supply chain / zero-day | `test_supply_chain.py` | LiteLLM backdoor gate, declared `cryptography>=48.0.1` environment gate, SECT curve static scan, `x509.verification` static scan, WFP script determinism + tamper detection, pip-audit hard gate on direct deps |
 | Property-based fuzz | `test_fuzz.py` (15 tests, Hypothesis) | 200+ examples per boundary across `AllowEntry.parse()`, `PolicyBundle.from_dict()`, `WfpProfile._sanitize_ps_string()` |
 | Concurrency stress | `test_stress_concurrent.py` (8 tests) | 50–100 thread stress on ControlPlane, OperatorQueue, AgentLedger; documents single-writer contract |
 | Resource exhaustion | `test_resource_exhaustion.py` (10 tests) | 10k ledger entries, 1k queue, 500-agent bundles, 200 WFP rules — timing budgets enforced |
@@ -200,19 +230,22 @@ listed in [SECURITY.md](SECURITY.md) has a named test that proves it.
 
 | Document | What it contains |
 |----------|-----------------|
-| [`docs/compliance/gap-analysis.md`](docs/compliance/gap-analysis.md) | POA&M: 7 gaps identified, G-2/G-3/G-5/G-7/G-8 closed, G-1/G-4/G-6 scheduled for v1.3.0 |
-| [`SECURITY.md`](SECURITY.md) | Guarantees, explicit non-guarantees, test citations |
+| [`GAPS.md`](GAPS.md) | Canonical cross-component gap and limitation registry |
+| [`docs/compliance/gap-analysis.md`](docs/compliance/gap-analysis.md) | Preliminary control mapping and remediation record; not an assessed POA&M |
+| [`docs/assurance/SECTOR_PROFILES.md`](docs/assurance/SECTOR_PROFILES.md) | Product-neutral government, tax, healthcare, and financial-services claim boundaries |
+| [`docs/assurance/CONTROL_CATALOG.md`](docs/assurance/CONTROL_CATALOG.md) | Tiered executable assertions, evidence locations, and named blind spots |
+| [`SECURITY.md`](SECURITY.md) | Bounded component properties, explicit non-guarantees, test citations |
 | [`CHANGELOG.md`](CHANGELOG.md) | Per-version security deliverables and gap status |
 | [`LOG.md`](LOG.md) | Chronological, commit-specific work and validation evidence |
 | [`WHY.md`](WHY.md) | Decision rationale, alternatives, consequences, and rollback triggers |
 | [`PARKED.md`](PARKED.md) | Restorable prior wording, code, configuration, and behavior |
 
-### Key invariants (each proved by a named test)
+### Key invariants (each narrowly established by a named test)
 
-| Guarantee | Proved by |
+| Tested proposition | Established by |
 |-----------|-----------|
-| Training data isolation — denied decisions never reach training pipeline | `test_only_allow_decisions_reach_training_data` |
-| Classification ceiling — entries above max never reach EvidenceExporter | `test_observer_never_passes_above_max_classification` |
+| Observer export filtering — denied primary records and denied context are excluded on this path | `test_only_allow_decisions_reach_training_data`, `test_context_window_does_not_include_denied_in_output` |
+| Observer classification ceiling — entries above max do not reach EvidenceExporter on this path | `test_observer_never_passes_above_max_classification` |
 | Hash chain integrity — retroactive modification detected | RT-11, RT-12 |
 | Control plane thread safety — exactly one revoke wins under contention | RT-09 |
 | Classification ceiling bypass via signed policy blocked | `TestClassificationCeilingBypass` |

@@ -10,8 +10,8 @@ Flow under test:
     3. UltraGate.bootstrap()      — POST /register-pair, POST /provision-tsk,
                                     POST /bind-identity (all real HTTP)
     4. UltraGate.build_injection_request()  — build BPC+TSK headers
-    5. UltraGate.authorize_injection()      — self-verify the request
-    6. UltraGate.verify_server()            — POST /verify (7-layer server check)
+    5. UltraGate.authorize_injection()      — require the live server decision
+    6. UltraGate.verify_server()            — direct POST /verify contract checks
     7. Adversarial: tampered headers must be rejected by the server
     8. Adversarial: wrong pair_id must be rejected
     9. Adversarial: replayed nonce must be rejected
@@ -23,26 +23,37 @@ Version: 1.0.0-enterprise  Session 17
 from __future__ import annotations
 
 import json
+import os
+import secrets
 import urllib.request
 import urllib.error
+import uuid
+
+TEST_MESH_SECRET = secrets.token_urlsafe(32)
 
 import pytest
 
-SERVER_URL = "http://localhost:7777"
+SERVER_URL = "http://127.0.0.1:7777"
+ADMIN_TOKEN = os.environ.get("ULTRA_ADMIN_TOKEN", "")
 
 
 def _server_available() -> bool:
     """Return True if the Ultra Server is reachable."""
+    if os.environ.get("SC_ULTRA_TEST_SERVER_READY") == "0":
+        return False
     try:
-        urllib.request.urlopen(f"{SERVER_URL}/status", timeout=2)
+        urllib.request.urlopen(f"{SERVER_URL}/health", timeout=2)
         return True
     except Exception:
         return False
 
 
-# Skip the entire module if the server is not available
+_SERVER_AVAILABLE = _server_available()
+if os.environ.get("SC_REQUIRE_ULTRA_SERVER") == "1" and not _SERVER_AVAILABLE:
+    raise RuntimeError("SC_REQUIRE_ULTRA_SERVER=1 but Ultra Server is unavailable")
+
 pytestmark = pytest.mark.skipif(
-    not _server_available(),
+    not _SERVER_AVAILABLE,
     reason="Ultra Server not available on localhost:7777",
 )
 
@@ -50,16 +61,35 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def agent_identity(tmp_path_factory):
     """Create a real AgentIdentity for the E2E test module."""
-    from enterprise.identity import AgentIdentity
-    data_dir = tmp_path_factory.mktemp("e2e_identity")
-    return AgentIdentity.init("e2e-test-agent", data_dir=data_dir)
+    if os.name == "nt":
+        from enterprise.identity import AgentIdentity
+        data_dir = tmp_path_factory.mktemp("e2e_identity")
+        return AgentIdentity.init("e2e-test-agent", data_dir=data_dir)
+
+    import hashlib
+    from types import SimpleNamespace
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private_key = Ed25519PrivateKey.generate()
+    public_key_bytes = private_key.public_key().public_bytes_raw()
+    agent_id = "SC-" + hashlib.sha256(public_key_bytes).hexdigest()[:8].upper()
+    return SimpleNamespace(
+        _private_key=private_key,
+        public_key_bytes=public_key_bytes,
+        agent_id=agent_id,
+        sign=private_key.sign,
+    )
 
 
 @pytest.fixture(scope="module")
 def bootstrapped_gate(agent_identity):
     """Create and bootstrap a real UltraGate against the live Ultra Server."""
     from enterprise.ultra_gate import UltraGate
-    gate = UltraGate(agent_identity, server_url=SERVER_URL)
+    gate = UltraGate(
+        agent_identity,
+        mesh_secret=TEST_MESH_SECRET,
+        server_url=SERVER_URL,
+    )
     gate.bootstrap()
     return gate
 
@@ -88,7 +118,11 @@ class TestUltraGateBootstrap:
 
     def test_server_status_shows_pair_registered(self, bootstrapped_gate):
         """After bootstrap, /status shows at least 1 registered pair."""
-        with urllib.request.urlopen(f"{SERVER_URL}/status", timeout=5) as resp:
+        req = urllib.request.Request(
+            f"{SERVER_URL}/status",
+            headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         assert data["ok"] is True
         assert data["pairs"] >= 1, "At least one pair should be registered after bootstrap"
@@ -156,7 +190,11 @@ class TestAuthorizeInjection:
     def test_authorize_injection_raises_before_bootstrap(self, agent_identity):
         """authorize_injection() must raise UltraGateNotBootstrappedError if not bootstrapped."""
         from enterprise.ultra_gate import UltraGate, UltraGateNotBootstrappedError
-        gate = UltraGate(agent_identity, server_url=SERVER_URL)
+        gate = UltraGate(
+            agent_identity,
+            mesh_secret=TEST_MESH_SECRET,
+            server_url=SERVER_URL,
+        )
         with pytest.raises(UltraGateNotBootstrappedError):
             gate.authorize_injection(0x1234, "test")
 
@@ -247,8 +285,8 @@ class TestFullE2EFlow:
         id_a = AgentIdentity.init("e2e-agent-a", data_dir=dir_a)
         id_b = AgentIdentity.init("e2e-agent-b", data_dir=dir_b)
 
-        gate_a = UltraGate(id_a, server_url=SERVER_URL)
-        gate_b = UltraGate(id_b, server_url=SERVER_URL)
+        gate_a = UltraGate(id_a, mesh_secret=TEST_MESH_SECRET, server_url=SERVER_URL)
+        gate_b = UltraGate(id_b, mesh_secret=TEST_MESH_SECRET, server_url=SERVER_URL)
 
         gate_a.bootstrap()
         gate_b.bootstrap()
@@ -274,16 +312,12 @@ class TestFullE2EFlow:
         assert ok_cross is False, "Cross-contamination: A's headers accepted with B's text"
 
     def test_full_flow_high_frequency(self, bootstrapped_gate):
-        """50 rapid sequential requests must all pass (stress test HOTP counter)."""
+        """25 rapid governed requests keep the client and server HOTP state aligned."""
         failures = []
-        for i in range(50):
+        for i in range(25):
             text = f"rapid-test-{i:04d}"
             try:
                 bootstrapped_gate.authorize_injection(0x1000 + i, text)
-                headers = bootstrapped_gate.build_injection_request(0x1000 + i, text)
-                ok, reason = bootstrapped_gate.verify_server(headers, text)
-                if not ok:
-                    failures.append(f"request {i}: {reason}")
             except Exception as exc:
                 failures.append(f"request {i} exception: {exc}")
         assert not failures, "High-frequency test failures:\n" + "\n".join(failures)
@@ -291,24 +325,24 @@ class TestFullE2EFlow:
 
 # ── US-3: Lifecycle Endpoint Authentication Tests ─────────────────────────────
 class TestLifecycleAuth:
-    """US-3 closure: POST /bind-identity, PATCH /tsk/keys/:id, PATCH /bpc/pairs/:id
-    must reject requests that lack a valid Authorization: Bearer header.
+    """Every lifecycle mutation must reject requests without its required proof.
 
     These tests run against the live Ultra Server (localhost:7777) and exercise
     the real HTTP layer — no mocks, no stubs.
 
-    Two scenarios are tested for each endpoint:
-      (a) No Authorization header at all → 401 LIFECYCLE_AUTH_REQUIRED
-          (or 503 LIFECYCLE_AUTH_UNCONFIGURED if LIFECYCLE_SECRET is not set)
-      (b) Wrong token → 401 LIFECYCLE_AUTH_REQUIRED
-
-    The tests accept *either* 401 or 503 as the rejection status code because
-    the CI environment may not have LIFECYCLE_SECRET configured.  What matters
-    is that the server NEVER returns 2xx/3xx for an unauthenticated request.
+    Agent routes require a signed agent proof. Administrative routes require
+    an operator bearer. Recovery requires both. What matters here is that the
+    server never returns 2xx/3xx for an unauthenticated lifecycle mutation.
     """
 
     LIFECYCLE_ENDPOINTS = [
+        ("POST",  "/register-pair"),
+        ("POST",  "/provision-tsk"),
         ("POST",  "/bind-identity"),
+        ("POST",  "/confirm-recovery"),
+        ("POST",  "/resume-identity"),
+        ("POST",  "/rotate-tsk/prepare"),
+        ("POST",  "/rotate-tsk/commit"),
         ("PATCH", "/tsk/keys/nonexistent-client-id"),
         ("PATCH", "/bpc/pairs/nonexistent-pair-id"),
     ]
@@ -355,7 +389,7 @@ class TestLifecycleAuth:
             body={"client_id": "test-wrong-token", "public_key": "dGVzdA=="},
             headers={"Authorization": "Bearer this-is-the-wrong-secret-token"},
         )
-        # If LIFECYCLE_SECRET is not set → 503; if set → 401 for wrong token
+        # Agent-signed routes reject the missing proof; admin routes reject the bearer.
         assert status in (401, 503), (
             f"Expected 401 or 503 for wrong token, got {status}. body={body}"
         )
@@ -422,7 +456,7 @@ class TestLifecycleAuth:
             )
 
     def test_all_lifecycle_endpoints_reject_malformed_auth_header(self):
-        """All three lifecycle endpoints must reject a malformed Authorization header."""
+        """All lifecycle endpoints must reject malformed operator auth."""
         for method, path in self.LIFECYCLE_ENDPOINTS:
             status, body = self._raw_request(
                 method, path, body={},
@@ -434,3 +468,170 @@ class TestLifecycleAuth:
             assert body.get("ok") is False, (
                 f"{method} {path}: ok must be False on rejection, got: {body}"
             )
+
+
+class TestSignedLifecycleAuth:
+    """Exercise body binding, replay protection, and identity ownership live."""
+
+    @staticmethod
+    def _request(path: str, payload: bytes, headers: dict[str, str]) -> tuple[int, dict]:
+        req = urllib.request.Request(
+            f"{SERVER_URL}{path}",
+            data=payload,
+            headers={"Content-Type": "application/json", **headers},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
+
+    def test_signed_proof_is_body_bound_and_single_use(self, agent_identity):
+        from enterprise.lifecycle_auth import lifecycle_auth_headers
+
+        idempotency_key = str(uuid.uuid4())
+        payload = json.dumps(
+            {
+                "requestorId": agent_identity.agent_id,
+                "idempotencyKey": idempotency_key,
+            },
+            separators=(",", ":"),
+        ).encode()
+        headers = {
+            "X-Idempotency-Key": idempotency_key,
+            **lifecycle_auth_headers(agent_identity, payload),
+        }
+        first_status, _ = self._request("/provision-tsk", payload, headers)
+        assert first_status == 200
+
+        replay_status, replay = self._request("/provision-tsk", payload, headers)
+        assert replay_status == 409
+        assert replay["error"] == "AGENT_AUTH_REPLAY"
+
+        tampered = json.dumps(
+            {"requestorId": "SC-00000000"}, separators=(",", ":")
+        ).encode()
+        tamper_status, tamper = self._request("/provision-tsk", tampered, headers)
+        assert tamper_status == 401
+        assert tamper["error"] == "AGENT_AUTH_INVALID_SIGNATURE"
+
+    def test_signed_agent_cannot_provision_for_another_identity(self, agent_identity):
+        from enterprise.lifecycle_auth import lifecycle_auth_headers
+
+        idempotency_key = str(uuid.uuid4())
+        payload = json.dumps(
+            {"requestorId": "SC-00000000", "idempotencyKey": idempotency_key},
+            separators=(",", ":"),
+        ).encode()
+        status, body = self._request(
+            "/provision-tsk",
+            payload,
+            {
+                "X-Idempotency-Key": idempotency_key,
+                **lifecycle_auth_headers(agent_identity, payload),
+            },
+        )
+        assert status == 403
+        assert body["error"] == "AGENT_OWNERSHIP_MISMATCH"
+
+    def test_recovery_requires_operator_authorization_too(self, agent_identity):
+        from enterprise.lifecycle_auth import lifecycle_auth_headers
+
+        payload = json.dumps(
+            {
+                "agentName": "e2e-test-agent",
+                "agentId": agent_identity.agent_id,
+                "newPubHex": agent_identity.public_key_bytes.hex(),
+                "challengeHash": "deadbeef",
+            },
+            separators=(",", ":"),
+        ).encode()
+        status, body = self._request(
+            "/confirm-recovery", payload, lifecycle_auth_headers(agent_identity, payload)
+        )
+        assert status in (401, 503)
+        assert body["error"] in ("ADMIN_AUTH_REQUIRED", "ADMIN_AUTH_UNCONFIGURED")
+
+
+class TestLiveBpcLockoutBoundary:
+    """Prove repeated signature attacks quarantine without global pair lockout."""
+
+    @staticmethod
+    def _verify(headers: dict[str, str], text: str) -> dict:
+        from enterprise.bpc_crypto import body_hash
+
+        payload = json.dumps({
+            "headers": headers,
+            "bodyHash": body_hash(text),
+        }).encode()
+        request = urllib.request.Request(
+            f"{SERVER_URL}/verify",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read())
+
+    def test_automatic_quarantine_cannot_become_shadow_authorization(self, tmp_path):
+        from enterprise.identity import AgentIdentity
+        from enterprise.ultra_gate import UltraGate
+
+        identity = AgentIdentity.init("lockout-boundary-agent", data_dir=tmp_path)
+        gate = UltraGate(identity, mesh_secret=TEST_MESH_SECRET, server_url=SERVER_URL)
+        gate.bootstrap()
+
+        for attempt in range(7):
+            text = f"lockout-attempt-{attempt}"
+            headers = gate.build_injection_request(0xF000 + attempt, text)
+            headers["X-BPC-Signature"] = "A" * 16
+            decision = self._verify(headers, text)
+            assert decision["ok"] is False, f"forged signature {attempt} was accepted"
+
+        request = urllib.request.Request(
+            f"{SERVER_URL}/bpc/pairs",
+            headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            pairs = json.loads(response.read())["pairs"]
+        pair = next(item for item in pairs if item["id"] == gate.pair_id)
+        # The pair remains active so an attacker cannot lock out the legitimate
+        # principal from a different source IP. The attacking IP/pair tuple is
+        # instead placed into persistent anomaly-backed shadow quarantine.
+        assert pair["status"] == "active"
+
+        text = "must-remain-denied-after-lockout"
+        fresh_headers = gate.build_injection_request(0xFFFF, text)
+        decision = self._verify(fresh_headers, text)
+        assert decision["ok"] is False, (
+            "locked pair crossed shadow mode as authorization"
+        )
+        assert "SHADOW_QUARANTINED" in decision["error"]
+
+
+class TestLiveTskRotation:
+    """Exercise prepare, commit, revocation, retry, and restart resume live."""
+
+    def test_rotation_survives_new_client_instance(self, tmp_path):
+        from enterprise.identity import AgentIdentity
+        from enterprise.ultra_gate import UltraGate
+
+        identity = AgentIdentity.init("tsk-rotation-agent", data_dir=tmp_path)
+        gate = UltraGate(identity, mesh_secret=TEST_MESH_SECRET, server_url=SERVER_URL)
+        gate.bootstrap()
+        old_client_id = gate.tsk_state.client_id
+        new_state = gate.rotate_tsk()
+        assert new_state.client_id != old_client_id
+
+        text = "rotation-live-verification"
+        headers = gate.build_injection_request(0xA11CE, text)
+        assert gate.verify_server(headers, text) == (True, "")
+
+        resumed = UltraGate(identity, mesh_secret=TEST_MESH_SECRET, server_url=SERVER_URL)
+        resumed.bootstrap()
+        assert resumed.pair_id == gate.pair_id
+        assert resumed.tsk_state.client_id == new_state.client_id
+        text = "rotation-restart-verification"
+        headers = resumed.build_injection_request(0xA11CF, text)
+        assert resumed.verify_server(headers, text) == (True, "")

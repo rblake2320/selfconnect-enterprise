@@ -1,0 +1,234 @@
+{
+  "schema_version": 1,
+  "controls": [
+    {
+      "id": "DOC-001",
+      "title": "Evidence records are structurally linked",
+      "scope": "LOG.md, WHY.md, PARKED.md, CHANGELOG.md, and README.md in this repository",
+      "assertion": "Run the documentation-record structural tests.",
+      "expected": "All record IDs are unique, required fields exist, and every cross-reference resolves.",
+      "evidence": "pytest output and the release conformance JSON report",
+      "blind_spots": "Does not determine whether narrative content is substantively true.",
+      "tier": "quick",
+      "command": ["{python}", "-m", "pytest", "tests/test_documentation_records.py", "-q"]
+    },
+    {
+      "id": "CLAIM-001",
+      "title": "Known prohibited claim forms remain absent",
+      "scope": "Current product README, SECURITY, Enterprise Python, Ultra JavaScript, and current assurance profiles",
+      "assertion": "Run the bounded claim-language regression test.",
+      "expected": "No known banned phrase or prospective-partner documentation directory is present.",
+      "evidence": "pytest output and the release conformance JSON report",
+      "blind_spots": "Natural-language claim detection is partial and does not understand every possible paraphrase.",
+      "tier": "quick",
+      "command": ["{python}", "-m", "pytest", "tests/test_documentation_records.py", "-q"]
+    },
+    {
+      "id": "CLASS-001",
+      "title": "Unknown classifications fail closed",
+      "scope": "Classification labels, policy/profile construction, and LedgerObserver ingress",
+      "assertion": "Run label, policy, classified-mode, observer, and red-team suites.",
+      "expected": "All named suites pass, including malformed-classification denial tests.",
+      "evidence": "pytest output and the release conformance JSON report",
+      "blind_spots": "Does not intercept markings parsed by code outside these modules.",
+      "tier": "release",
+      "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_labels.py", "tests/test_enterprise/test_policy.py", "tests/test_enterprise/test_classified_mode.py", "tests/test_enterprise/test_observer.py", "tests/test_enterprise/test_redteam.py", "-q"]
+    },
+    {
+      "id": "GOV-MCP-001",
+      "title": "Governed MCP actuation composes mandatory gates",
+      "scope": "GovernedRuntime and Enterprise MCP dispatcher actuation paths",
+      "assertion": "Run governed-runtime and MCP dispatcher tests.",
+      "expected": "Policy trust root, live target, approval context, control plane, persistent ledger, transport enqueue, and new UIA readback gates pass or fail closed.",
+      "evidence": "pytest output and the release conformance JSON report",
+      "blind_spots": "Direct SDK calls and other repositories are not globally intercepted; deterministic tests do not establish a live Windows target.",
+      "tier": "release",
+      "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_governed_runtime.py", "tests/test_enterprise/test_mcp_dispatch.py", "-q"]
+    },
+    {
+      "id": "WIN32-TARGET-001",
+      "title": "Terminal target identity uses protected image paths",
+      "scope": "Current target_guard mappings for Windows Terminal and classic Windows console classes",
+      "assertion": "Run the target-guard load and class-spoof test.",
+      "expected": "Live HWND enumeration completes deterministically, user-writable lookalike image paths are refused, and protected Windows/package paths are accepted.",
+      "evidence": "Target-guard load-test output and the release conformance JSON report",
+      "blind_spots": "Does not validate Authenticode signers or protect a compromised trusted binary, administrator, or kernel; unmapped terminal classes fail closed.",
+      "tier": "release",
+      "command": ["{python}", "experiments/win32_probe/target_guard_load_test.py"]
+    },
+    {
+      "id": "WIN32-LIVE-001",
+      "title": "Live governed terminal delivery and execution effect",
+      "scope": "One inspected live Windows terminal HWND, one signed policy/identity, one bounded command, and its signed action ledger",
+      "assertion": "Run tools.irs_runtime_conformance with --execute and an --expect-output token that is absent from --text, then independently read the target.",
+      "expected": "Target binding and policy pass; UIA confirms a new payload occurrence; the separate output token newly appears; the signed ledger verifies.",
+      "evidence": "Conformance JSON, independent UIA readback, screenshot hash if retained, exact target metadata, and ledger verification result",
+      "blind_spots": "A result applies only to the tested terminal version, shell, policy, identity, action, session, and machine. It is not external-workflow, WORM, government-authorization, or scale evidence.",
+      "tier": "description"
+    },
+    {
+      "id": "ULTRA-AUTH-001",
+      "title": "Ultra lifecycle proofs reject tamper and replay",
+      "scope": "Ultra agent-auth verifier and production-store unit/integration tests available in the current environment",
+      "assertion": "Run the Ultra Node test suite.",
+      "expected": "Authentication tests pass; PostgreSQL tests pass when DATABASE_URL is supplied and otherwise report an explicit skip.",
+      "evidence": "Node test output and the release conformance JSON report",
+      "blind_spots": "A skipped PostgreSQL suite is not production durability evidence.",
+      "tier": "release",
+      "cwd": "ultra_server",
+      "command": ["npm", "test"]
+    },
+    {
+      "id": "ULTRA-BOUNDARY-001",
+      "title": "BPC abuse and shadow responses fail closed",
+      "scope": "Ultra BPC verification composition, source-IP and pair rate-limit wiring, and shadow/ghost authorization conversion",
+      "assertion": "Run the Ultra Node unit suite and the live Python adversarial suite when a production sidecar is available.",
+      "expected": "Unit tests reject shadow and ghost responses; live tests show a quarantined source-IP/pair tuple cannot authorize with a fresh valid credential.",
+      "evidence": "Node/Python test output and the release or live conformance report",
+      "blind_spots": "Repository tests do not select production thresholds, establish deployment capacity, or prevent abuse arriving through another unregistered service path.",
+      "tier": "release",
+      "cwd": "ultra_server",
+      "command": ["npm", "test"]
+    },
+    {
+      "id": "ULTRA-ROTATE-001",
+      "title": "Ultra recovery and TSK rotation are bound and retry-safe",
+      "scope": "Recovery-token claim binding, one-generation verification overlap, TSK prepare/commit/resume, and identity-binding compare-and-swap",
+      "assertion": "Run Ultra Node tests and the Python lifecycle suite; perform the production overlap/restart/retirement ceremony for deployment evidence.",
+      "expected": "Token claim tampering fails, one previous verification key is bounded, TSK retries preserve one committed binding, and the old client is revoked.",
+      "evidence": "Node/Python test output, rotation conformance output, and production restart evidence",
+      "blind_spots": "Unit success does not establish secret-manager custody, service-account ACLs, operator separation, or an executed deployment ceremony.",
+      "tier": "release",
+      "cwd": "ultra_server",
+      "command": ["npm", "test"]
+    },
+    {
+      "id": "LEDGER-LIFECYCLE-001",
+      "title": "Signed local ledger segments retain one verified sequence",
+      "scope": "AgentLedger local append, segment sealing, restart continuation, archive ordering, and corruption refusal",
+      "assertion": "Run the AgentLedger test suite.",
+      "expected": "Entry/byte threshold rotation, cross-segment verification, restart continuation, missing-middle detection, and corrupt-startup refusal all pass.",
+      "evidence": "pytest output and the release conformance report",
+      "blind_spots": "Local segmentation cannot detect removal of the complete ledger or final tail without a separately trusted checkpoint and is not centralized retention evidence.",
+      "tier": "release",
+      "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_ledger.py", "-q"]
+    },
+    {
+      "id": "IRS-EVIDENCE-001",
+      "title": "IRS-neutral evidence validates inventory, review, and record kind",
+      "scope": "Local IRS use-case/model/data/action evidence schema and its signed AgentLedger recorder",
+      "assertion": "Run the IRS evidence contract tests.",
+      "expected": "Deployed inventory references model/data records, executed high-impact actions require completed review, and prompt/test/incident kinds derive their stated retention labels.",
+      "evidence": "pytest output, signed test ledger verification, and the release conformance report",
+      "blind_spots": "A retention label does not enforce storage retention, submit an IRS inventory, approve a use case, complete a PCLIA, or establish an agency system of record.",
+      "tier": "release",
+      "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_irs_evidence.py", "-q"]
+    },
+    {
+      "id": "CRYPTO-BACKEND-001",
+      "title": "CNG identity evidence names and binds its active backend",
+      "scope": "CngIdentity stored public/algo/backend metadata and CngLedger signed entry fields",
+      "assertion": "Run crypto and CNG identity suites.",
+      "expected": "Stored public-key and backend mismatches fail; signed entries include the active backend; cryptographic vectors and signatures pass.",
+      "evidence": "pytest output, signed test entries, and the release conformance report",
+      "blind_spots": "A backend label and algorithm test do not establish FIPS validation, CNSA compliance, hardware protection, or certificate conditions for a deployment.",
+      "tier": "release",
+      "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_crypto.py", "tests/test_enterprise/test_identity_cng.py", "-q"]
+    },
+    {
+      "id": "ULTRA-PACKAGE-001",
+      "title": "Ultra package excludes local state and test artifacts",
+      "scope": "The npm artifact produced from ultra_server/package.json",
+      "assertion": "Run the package-content Node test, which inspects the actual npm pack dry-run manifest.",
+      "expected": "Only the explicit runtime allowlist plus package.json is present; no logs, restart state, keys, JSON state, or test files are packed.",
+      "evidence": "Node test output, npm pack manifest, and the release conformance report",
+      "blind_spots": "This does not make source-relative file dependencies publishable or prove a registry signing/provenance policy.",
+      "tier": "release",
+      "cwd": "ultra_server",
+      "command": ["node", "--test", "package-content.test.mjs"]
+    },
+    {
+      "id": "SDK-PIN-001",
+      "title": "Installed SelfConnect source matches the declared commit pin",
+      "scope": "The SelfConnect distribution installed in the conformance interpreter and the exact VCS dependency in pyproject.toml",
+      "assertion": "Read installed direct_url.json and compare its Git commit with the full declared dependency commit.",
+      "expected": "The installed and declared 40-character commits are identical; the installed package version is reported as metadata, not used as source identity.",
+      "evidence": "dependency_provenance JSON and the release conformance report",
+      "blind_spots": "Commit equality does not prove upstream release tagging, package completeness, signature provenance, SBOM attestation, or that a newer commit is compatible.",
+      "tier": "release",
+      "command": ["{python}", "-m", "tools.dependency_provenance", "--json"]
+    },
+    {
+      "id": "ULTRA-OP-RECOVERY-001",
+      "title": "Production lifecycle operations recover stranded idempotency state",
+      "scope": "Pair registration, initial TSK provisioning, identity binding, and TSK rotation prepare using PostgreSQL idempotency/resource state",
+      "assertion": "Run the production live contract with DATABASE_URL, deliberately change each completed idempotency row to processing after its side effect, and retry the signed request.",
+      "expected": "Each active response is reconstructed under its resource lock, no duplicate pair or TSK resource is created, and ambiguous or inactive durable state fails closed without replacement.",
+      "evidence": "Live Node output, PostgreSQL resource counts, dependency versions, and deployment commit",
+      "blind_spots": "The result covers only the four named lifecycle routes and the tested PostgreSQL deployment; new side-effecting routes require their own reconciliation rule and crash-window test.",
+      "tier": "description"
+    },
+    {
+      "id": "ULTRA-LIVE-001",
+      "title": "Live Python-to-Node lifecycle contract",
+      "scope": "A running Ultra Server at the configured endpoint using current Python and Node code",
+      "assertion": "Start the intended sidecar and run both live contract suites with unavailable-server skipping disabled.",
+      "expected": "Node live checks and Python tests pass with real HTTP and cryptographic operations.",
+      "evidence": "Live command output and retained conformance report",
+      "blind_spots": "Development-mode success does not establish production persistence or restart durability.",
+      "tier": "live",
+      "cwd": "ultra_server",
+      "command": ["npm", "run", "test:live"]
+    },
+    {
+      "id": "ULTRA-RESTART-001",
+      "title": "Production identity and HOTP state survive restart",
+      "scope": "Production Ultra composition with PostgreSQL, Redis, operator secret, recovery secret, and a killed/restarted Node process",
+      "assertion": "Run tools.ultra_restart_conformance seed, stop the exact server process, restart it, then run verify against the same state file.",
+      "expected": "Agent ID, BPC pair, TSK client, HOTP-bearing map, and a post-restart verification remain valid.",
+      "evidence": "Seed/verify JSON output, service logs, dependency versions, and deployment commit",
+      "blind_spots": "Cannot be reduced to one safe generic command because process ownership and secret injection are deployment-specific.",
+      "tier": "description"
+    },
+    {
+      "id": "ULTRA-KEY-CEREMONY-001",
+      "title": "Production key overlap and retirement ceremony",
+      "scope": "The selected production Ultra service, its current/previous operator and recovery secrets, PostgreSQL, Redis, and authorized operator clients",
+      "assertion": "Issue an ephemeral recovery token, rotate to new current plus one previous key, restart and verify overlap, then remove previous keys and verify retirement.",
+      "expected": "Only the current and immediately previous values work during overlap; after retirement only the new current values work; no secret appears in retained evidence.",
+      "evidence": "Non-secret status codes, verification booleans, timestamps, service version, dependency versions, and deployment commit",
+      "blind_spots": "The repository cannot prove an undeployed secret manager, service ACL, personnel custody, or emergency approval process.",
+      "tier": "description"
+    },
+    {
+      "id": "ULTRA-DR-001",
+      "title": "Ultra disaster recovery is restored, not merely restarted",
+      "scope": "PostgreSQL, Redis continuity decision, Ultra secrets, agent identity material, signed ledger segments, immutable evidence objects, and the selected deployment boundary",
+      "assertion": "Restore backups into an isolated environment and execute docs/operations/ULTRA_DISASTER_RECOVERY.md, including restart and immutable-object verification.",
+      "expected": "Identity, pair, rotated TSK binding, counters, ledger chain, retained provenance, and documented RPO/RTO all verify before service return.",
+      "evidence": "Restore report, non-secret object identifiers, verification output, recovery point, elapsed time, versions, and commit SHA",
+      "blind_spots": "A runbook, application restart, or local test database does not prove recoverability of an actual deployment backup.",
+      "tier": "description"
+    },
+    {
+      "id": "WORM-DEPLOY-001",
+      "title": "Off-host immutable evidence deployment",
+      "scope": "Selected provider bucket, retention/legal-hold configuration, credentials, custody, and restore procedure",
+      "assertion": "Perform provider API retention readback, write/seal/readback, denied overwrite/delete tests, and an isolated restore drill.",
+      "expected": "Every provider and recovery check passes against the actual deployment boundary.",
+      "evidence": "Provider API responses without secrets, object/version IDs, receipt hashes, and restore report",
+      "blind_spots": "Repository tests cannot authorize or inspect an undeployed provider account.",
+      "tier": "description"
+    },
+    {
+      "id": "GOV-AUTH-001",
+      "title": "Government authorization status",
+      "scope": "The selected cloud service offering, Mission Owner system, data classification, personnel, and authorization boundary",
+      "assertion": "Review the authoritative PA/ATO/IATT and RMF package for the exact deployment.",
+      "expected": "The responsible external authority documents the applicable authorization and conditions.",
+      "evidence": "Externally issued authorization artifacts and assessor records",
+      "blind_spots": "No software test can create an ATO, Impact Level authorization, clearance, or classified operating approval.",
+      "tier": "description"
+    }
+  ]
+}

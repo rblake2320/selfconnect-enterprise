@@ -16,10 +16,25 @@
  *
  * Security: binds to 127.0.0.1 only. Not exposed to LAN/WAN.
  *
- * Version: 1.1.0  BPC+TSK integration — API-correct rewrite
+ * Version: 1.3.0  Signed lifecycle and durable production runtime
  */
 import express from 'express';
-import { createHmac, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
+import { createAdminAuthMiddleware, createAgentAuthMiddleware } from './agent-auth.js';
+import {
+  createRecoveryKeyring,
+  issueRecoveryToken,
+  verifyRecoveryToken,
+} from './recovery-token.js';
+import { enforceBpcAuthorization } from './security-boundary.js';
+import {
+  MemoryIdempotencyStore,
+  MemoryIdentityBindingStore,
+  PgIdempotencyStore,
+  PgIdentityBindingStore,
+  PgTumblerStore,
+  ULTRA_PG_SCHEMA,
+} from './runtime-stores.js';
 
 // ── BPC imports ───────────────────────────────────────────────────────────────
 import {
@@ -29,7 +44,12 @@ import {
   MemoryPairStore,
   MemoryNonceBackend,
   MemoryAnomalyStore,
+  PgPairStore,
+  PG_SCHEMA,
+  RedisAnomalyStore,
   RedisNonceStore,
+  RedisRateLimiter,
+  MemoryRateLimiter,
   verifyBPCRequest,
 } from '@bpc/server';
 
@@ -61,96 +81,118 @@ import {
   MemoryTumblerStore,
   TSKProvisioner,
 } from '@tsk/server';
+import { toProvisionPayload } from '@tsk/core';
 
 // ── Bridge import ─────────────────────────────────────────────────────────────
 import { verifyUltraRequest } from '@tsk/bpc-bridge';
 
 const PORT = parseInt(process.env.ULTRA_SERVER_PORT ?? '7777', 10);
 const SIG_WINDOW_MS = 60_000;
-
-// ── Lifecycle auth (Gap US-3 fix) ─────────────────────────────────────────────
-// LIFECYCLE_SECRET must be set in production. If absent, lifecycle endpoints
-// are blocked entirely (fail-closed) to prevent unauthenticated key revocation.
-//
-// Set via env: LIFECYCLE_SECRET=<strong-random-string>
-// Pass in requests: Authorization: Bearer <LIFECYCLE_SECRET>
-//
-// For local dev / CI, set LIFECYCLE_SECRET=dev-only-not-for-production.
-const LIFECYCLE_SECRET = process.env.LIFECYCLE_SECRET ?? null;
-
-function requireLifecycleAuth(req, res, next) {
-  if (!LIFECYCLE_SECRET) {
-    // No secret configured — fail closed. Log a loud warning.
-    console.error(JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: 'CRITICAL',
-      event: 'lifecycle_auth_unconfigured',
-      message: 'LIFECYCLE_SECRET not set — lifecycle endpoints are disabled. Set LIFECYCLE_SECRET env var.',
-      path: req.path,
-    }));
-    return res.status(503).json({
-      ok: false,
-      error: 'LIFECYCLE_AUTH_UNCONFIGURED',
-      message: 'LIFECYCLE_SECRET env var is not set. Lifecycle endpoints are disabled until it is configured.',
-    });
-  }
-  const authHeader = req.headers['authorization'] ?? '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  // Constant-time comparison to prevent timing attacks
-  const expected = Buffer.from(LIFECYCLE_SECRET);
-  const provided = Buffer.from(token.padEnd(LIFECYCLE_SECRET.length, '\x00').slice(0, LIFECYCLE_SECRET.length));
-  const match = token.length === LIFECYCLE_SECRET.length &&
-    createHmac('sha256', RECOVERY_HMAC_KEY).update(expected).digest().equals(
-      createHmac('sha256', RECOVERY_HMAC_KEY).update(provided).digest()
-    );
-  if (!match) {
-    console.warn(JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: 'WARN',
-      event: 'lifecycle_auth_failed',
-      path: req.path,
-      ip: req.ip,
-    }));
-    return res.status(401).json({ ok: false, error: 'LIFECYCLE_AUTH_REQUIRED' });
-  }
-  next();
+const ULTRA_VERSION = '1.3.0';
+const RUNTIME_MODE = process.env.ULTRA_RUNTIME_MODE ?? 'development';
+if (!['development', 'production'].includes(RUNTIME_MODE)) {
+  throw new Error('ULTRA_RUNTIME_MODE must be development or production');
 }
 
-// ── Stores — Redis nonce backend when REDIS_URL is set ───────────────────────
-const pairStore    = new MemoryPairStore();
-const anomalyStore = new MemoryAnomalyStore();
+// Operator authorization is separate from the per-agent Ed25519 proof.
+// LIFECYCLE_SECRET remains a development compatibility alias only.
+const ADMIN_TOKEN = process.env.ULTRA_ADMIN_TOKEN ?? process.env.LIFECYCLE_SECRET ?? null;
+const ADMIN_TOKEN_PREVIOUS = process.env.ULTRA_ADMIN_TOKEN_PREVIOUS ?? null;
 
+// ── Stores ───────────────────────────────────────────────────────────────────
+let pairStore;
+let anomalyStore;
 let nonceBackend;
-let nonceBackendType = 'memory';
-if (process.env.REDIS_URL) {
-  try {
-    const { default: Redis } = await import('ioredis');
-    const redisClient = new Redis(process.env.REDIS_URL, { lazyConnect: true });
-    await redisClient.connect();
-    nonceBackend = new RedisNonceStore(redisClient);
-    nonceBackendType = 'redis';
-    console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'redis_nonce_backend', url: process.env.REDIS_URL }));
-  } catch (err) {
-    console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'ERROR', event: 'redis_connect_failed', error: String(err), fallback: 'memory' }));
-    nonceBackend = new MemoryNonceBackend();
+let tskStore;
+let identityBinding;
+let idempotencyStore;
+let nonceBackendType;
+let rateLimiter;
+let ipRateLimiter;
+
+const RATE_LIMIT_WINDOW_MS = parseInt(process.env.BPC_RATE_LIMIT_WINDOW_MS ?? '60000', 10);
+const IP_RATE_LIMIT = parseInt(process.env.BPC_IP_RATE_LIMIT ?? '200', 10);
+const PAIR_RATE_LIMIT = parseInt(process.env.BPC_PAIR_RATE_LIMIT ?? '100', 10);
+for (const [name, value] of [
+  ['BPC_RATE_LIMIT_WINDOW_MS', RATE_LIMIT_WINDOW_MS],
+  ['BPC_IP_RATE_LIMIT', IP_RATE_LIMIT],
+  ['BPC_PAIR_RATE_LIMIT', PAIR_RATE_LIMIT],
+]) {
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
+}
+
+if (RUNTIME_MODE === 'production') {
+  const required = ['DATABASE_URL', 'REDIS_URL', 'ULTRA_ADMIN_TOKEN', 'ULTRA_RECOVERY_HMAC_KEY'];
+  const missing = required.filter((name) => !process.env[name]);
+  if (missing.length > 0) throw new Error(`production mode missing required settings: ${missing.join(', ')}`);
+  if (Buffer.byteLength(process.env.ULTRA_ADMIN_TOKEN, 'utf8') < 32) {
+    throw new Error('ULTRA_ADMIN_TOKEN must contain at least 32 bytes in production');
   }
+  if (Buffer.byteLength(process.env.ULTRA_RECOVERY_HMAC_KEY, 'utf8') < 32) {
+    throw new Error('ULTRA_RECOVERY_HMAC_KEY must contain at least 32 bytes in production');
+  }
+  for (const name of ['ULTRA_ADMIN_TOKEN_PREVIOUS', 'ULTRA_RECOVERY_HMAC_KEY_PREVIOUS']) {
+    if (process.env[name] && Buffer.byteLength(process.env[name], 'utf8') < 32) {
+      throw new Error(`${name} must contain at least 32 bytes when configured in production`);
+    }
+  }
+  if (process.env.ULTRA_ADMIN_TOKEN_PREVIOUS === process.env.ULTRA_ADMIN_TOKEN) {
+    throw new Error('ULTRA_ADMIN_TOKEN_PREVIOUS must differ from ULTRA_ADMIN_TOKEN');
+  }
+
+  const [{ Pool }, { default: Redis }] = await Promise.all([import('pg'), import('ioredis')]);
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  await pool.query('SELECT 1');
+  await pool.query(PG_SCHEMA);
+  await pool.query(ULTRA_PG_SCHEMA);
+
+  const redisClient = new Redis(process.env.REDIS_URL, { lazyConnect: true });
+  await redisClient.connect();
+  pairStore = new PgPairStore(pool);
+  anomalyStore = new RedisAnomalyStore(redisClient, 'ultra:anomaly:');
+  nonceBackend = new RedisNonceStore(redisClient, 'ultra:nonce:');
+  tskStore = new PgTumblerStore(pool);
+  identityBinding = new PgIdentityBindingStore(pool);
+  idempotencyStore = new PgIdempotencyStore(pool);
+  nonceBackendType = 'redis';
+  ipRateLimiter = new RedisRateLimiter(redisClient, IP_RATE_LIMIT, RATE_LIMIT_WINDOW_MS, 'ultra:rate:ip:');
+  rateLimiter = new RedisRateLimiter(redisClient, PAIR_RATE_LIMIT, RATE_LIMIT_WINDOW_MS, 'ultra:rate:pair:');
 } else {
+  pairStore = new MemoryPairStore();
+  anomalyStore = new MemoryAnomalyStore();
   nonceBackend = new MemoryNonceBackend();
+  tskStore = new MemoryTumblerStore();
+  identityBinding = new MemoryIdentityBindingStore();
+  idempotencyStore = new MemoryIdempotencyStore();
+  nonceBackendType = 'memory';
+  ipRateLimiter = new MemoryRateLimiter(IP_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
+  rateLimiter = new MemoryRateLimiter(PAIR_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
 }
 
 const registry   = new PairRegistry(pairStore);
 const nonceStore = new ServerNonceStore(nonceBackend, SIG_WINDOW_MS * 2 + 10_000);
 const anomaly    = new AnomalyEngine(anomalyStore);
-const tskStore   = new MemoryTumblerStore();
-const provisioner = new TSKProvisioner(tskStore);
+const provisioner = new TSKProvisioner(tskStore, {
+  lifecycleAuthorizer: async ({ clientId, requestorId, reason, action }) => {
+    if (action !== 'update') return false;
+    if (requestorId === 'ultra-admin' && reason === 'operator-admin-lifecycle') {
+      return true;
+    }
+    if (reason !== 'rotation-commit') return false;
+    const map = await tskStore.get(clientId);
+    return map?.label === `agent:${requestorId}` && map.status === 'active';
+  },
+});
 
-// Identity binding: pairId → tskClientId
-const identityBinding = new Map();
-
-// ── Recovery HMAC key (Gap 2 fix) ────────────────────────────────────────────
-// Generated fresh at startup. Never written to disk. Rotated on restart.
-// Only this server process can sign or verify recovery tokens.
-const RECOVERY_HMAC_KEY = randomBytes(32);
+// Only this server process can issue recovery tokens. Production supports one
+// bounded previous key so operators can rotate without invalidating in-flight
+// tokens; removing the previous key retires it immediately.
+const RECOVERY_SECRET_CURRENT = process.env.ULTRA_RECOVERY_HMAC_KEY
+  ?? randomBytes(32).toString('hex');
+const recoveryKeyring = createRecoveryKeyring(
+  RECOVERY_SECRET_CURRENT,
+  process.env.ULTRA_RECOVERY_HMAC_KEY_PREVIOUS ?? null,
+);
 const RECOVERY_TOKEN_TTL_SEC = parseInt(process.env.SC_RECOVERY_WINDOW_SEC ?? '60', 10);
 
 const bpcConfig = {
@@ -158,11 +200,62 @@ const bpcConfig = {
   lockoutCount:     10,
   enableShadowMode: true,
   enableTarpit:     true,
+  ipRateLimiter,
+  rateLimiter,
 };
 
 // ── Express app ───────────────────────────────────────────────────────────────
 const app = express();
-app.use(express.json({ limit: '64kb' }));
+app.use(express.json({
+  limit: '64kb',
+  verify: (req, _res, buffer) => { req.rawBody = Buffer.from(buffer); },
+}));
+const requireAgentAuth = createAgentAuthMiddleware({ nonceStore, windowMs: 30_000 });
+const requireAdminAuth = createAdminAuthMiddleware([ADMIN_TOKEN, ADMIN_TOKEN_PREVIOUS]);
+const registrationGuards = RUNTIME_MODE === 'production'
+  ? [requireAdminAuth, requireAgentAuth]
+  : [requireAgentAuth];
+
+async function claimIdempotency(req, res, operation) {
+  const headerKey = req.get('X-Idempotency-Key') ?? '';
+  const bodyKey = req.body?.idempotencyKey ?? '';
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(headerKey) ||
+      headerKey !== bodyKey) {
+    res.status(400).json({ ok: false, error: 'INVALID_IDEMPOTENCY_KEY' });
+    return null;
+  }
+  const claim = await idempotencyStore.claim(headerKey, operation, req.scAgent.agentId);
+  if (claim.kind === 'conflict') {
+    res.status(409).json({ ok: false, error: 'IDEMPOTENCY_KEY_CONFLICT' });
+    return null;
+  }
+  return {
+    key: headerKey,
+    cached: claim.kind === 'complete' ? claim.response : null,
+    recovering: claim.kind === 'processing',
+  };
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(
+      (key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`,
+    ).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function findTskMaps(predicate) {
+  const ids = await tskStore.list();
+  const maps = await Promise.all(ids.map((id) => tskStore.get(id)));
+  return maps.filter((map) => map && predicate(map));
+}
+
+async function finishIdempotent(idem, response) {
+  await idempotencyStore.complete(idem.key, response);
+  return response;
+}
 
 // Count every request after response is sent
 app.use((req, res, next) => {
@@ -174,25 +267,54 @@ app.use((req, res, next) => {
 });
 
 // ── Route: POST /register-pair ────────────────────────────────────────────────
-app.post('/register-pair', async (req, res) => {
+app.post('/register-pair', ...registrationGuards, async (req, res) => {
   try {
     const { name, pubJwk, secretHash, scope, fingerprint } = req.body;
     if (!name || !pubJwk || !secretHash) {
       return res.status(400).json({ error: 'missing name, pubJwk, or secretHash' });
     }
+    if (name !== req.scAgent.agentId) {
+      return res.status(403).json({ ok: false, error: 'AGENT_OWNERSHIP_MISMATCH' });
+    }
+    const idem = await claimIdempotency(req, res, 'register-pair');
+    if (!idem) return;
+    if (idem.cached) return res.json(idem.cached);
+    return idempotencyStore.withLock(`register-pair:${name}`, async () => {
+      const forAgent = (await registry.list()).filter((pair) => pair.name === name);
+      const activeForAgent = forAgent.filter((pair) => pair.status === 'active');
+      const exact = forAgent.filter(
+        (pair) =>
+          pair.scope === (scope ?? 'read-write') &&
+          pair.mode === RUNTIME_MODE &&
+          pair.secretHash === secretHash &&
+          canonicalJson(pair.pubJwk) === canonicalJson(pubJwk),
+      );
+      if (exact.length > 1) {
+        return res.status(409).json({ ok: false, error: 'AMBIGUOUS_PAIR_RECOVERY' });
+      }
+      if (exact.length === 1) {
+        if (exact[0].status !== 'active') {
+          return res.status(409).json({ ok: false, error: 'PAIR_RECOVERY_STATE_NOT_ACTIVE' });
+        }
+        return res.json(await finishIdempotent(idem, { pairId: exact[0].id }));
+      }
+      if (activeForAgent.length > 0) {
+        return res.status(409).json({ ok: false, error: 'ACTIVE_AGENT_PAIR_CONFLICT' });
+      }
 
-    // registerDirect(PairRegistration) — returns the assigned pairId
-    const pairId = await registry.registerDirect({
-      name,
-      scope: scope ?? 'read-write',
-      mode:  'development',
-      secretHash,
-      pubJwk,
+      // registerDirect(PairRegistration) — returns the assigned pairId
+      const pairId = await registry.registerDirect({
+        name,
+        scope: scope ?? 'read-write',
+        mode: RUNTIME_MODE,
+        secretHash,
+        pubJwk,
+      });
+
+      console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'pair_registered', pairId, name }));
+      cBpcRegistrations.inc();
+      return res.json(await finishIdempotent(idem, { pairId }));
     });
-
-    console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'pair_registered', pairId, name }));
-    cBpcRegistrations.inc();
-    return res.json({ pairId });
   } catch (err) {
     console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'ERROR', event: 'register_pair_error', error: String(err) }));
     return res.status(500).json({ error: String(err) });
@@ -200,57 +322,266 @@ app.post('/register-pair', async (req, res) => {
 });
 
 // ── Route: POST /provision-tsk ────────────────────────────────────────────────
-app.post('/provision-tsk', async (req, res) => {
+app.post('/provision-tsk', requireAgentAuth, async (req, res) => {
   try {
     const { requestorId, minTumblers, maxTumblers, keyLength } = req.body;
     if (!requestorId) {
       return res.status(400).json({ error: 'missing requestorId' });
     }
-
-    // provision(TumblerMapOptions, requestorId?) — options has no segmentCount/totpWindowSec
-    const result = await provisioner.provision(
-      {
-        ...(keyLength   ? { keyLength }   : {}),
-        ...(minTumblers ? { minTumblers } : {}),
-        ...(maxTumblers ? { maxTumblers } : {}),
-      },
-      requestorId,
-    );
-
-    if (!result.ok) {
-      return res.status(500).json({ error: result.error ?? 'PROVISION_FAILED' });
+    if (requestorId !== req.scAgent.agentId) {
+      return res.status(403).json({ ok: false, error: 'AGENT_OWNERSHIP_MISMATCH' });
+    }
+    if (RUNTIME_MODE === 'production') {
+      const enrolled = (await registry.list()).some(
+        (pair) => pair.name === requestorId && pair.status === 'active',
+      );
+      if (!enrolled) {
+        return res.status(403).json({ ok: false, error: 'AGENT_NOT_ENROLLED' });
+      }
+    }
+    const idem = await claimIdempotency(req, res, 'provision-tsk');
+    if (!idem) return;
+    if (idem.cached) {
+      const currentMap = await tskStore.get(idem.cached.clientId);
+      if (!currentMap || currentMap.label !== `agent:${requestorId}`) {
+        return res.status(409).json({ ok: false, error: 'IDEMPOTENT_TSK_STATE_MISSING' });
+      }
+      return res.json({
+        clientId: currentMap.clientId,
+        sharedSecret: currentMap.sharedSecret,
+        provisionPayload: toProvisionPayload(currentMap),
+      });
     }
 
-    // sharedSecret is on result.tumblerMap.
-    // The provisionPayload is the safe public payload (no positions, no secret).
-    // We DO send sharedSecret to the owning client (the requestor) because:
-    //   1. The connection is localhost-only (sidecar architecture, not public API)
-    //   2. The client MUST have the secret to generate valid TSK keys
-    //   3. The client MUST have the secret to compute the checksum for self-verification
-    // We do NOT embed it in provisionPayload because that struct may be shared with
-    // third-party verifiers who should not have the secret.
-    const { clientId, provisionPayload, tumblerMap } = result;
-    const sharedSecret = tumblerMap?.sharedSecret ?? '';
+    return idempotencyStore.withLock(`provision-tsk:${requestorId}`, async () => {
+      const existing = await findTskMaps((map) => map.label === `agent:${requestorId}`);
+      if (existing.length > 1) {
+        return res.status(409).json({ ok: false, error: 'AMBIGUOUS_TSK_RECOVERY' });
+      }
+      if (existing.length === 1) {
+        if (existing[0].status !== 'active') {
+          return res.status(409).json({ ok: false, error: 'TSK_RECOVERY_STATE_NOT_ACTIVE' });
+        }
+        return res.json(await finishIdempotent(idem, owningClientResponse(existing[0])));
+      }
 
-    console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'tsk_provisioned', clientId, requestorId }));
-    cTskProvisions.inc();
-    return res.json({ clientId, sharedSecret, provisionPayload });
+      // provision(TumblerMapOptions, requestorId?) — options has no segmentCount/totpWindowSec
+      const result = await provisioner.provision(
+        {
+          ...(keyLength   ? { keyLength }   : {}),
+          ...(minTumblers ? { minTumblers } : {}),
+          ...(maxTumblers ? { maxTumblers } : {}),
+        },
+        requestorId,
+        { label: `agent:${requestorId}` },
+      );
+
+      if (!result.ok) {
+        return res.status(500).json({ error: result.error ?? 'PROVISION_FAILED' });
+      }
+
+      // sharedSecret is returned only to the authenticated owning client. The
+      // reusable provisionPayload remains reduced and contains no secret.
+      const { clientId, provisionPayload, tumblerMap } = result;
+      const sharedSecret = tumblerMap?.sharedSecret ?? '';
+
+      console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'tsk_provisioned', clientId, requestorId }));
+      cTskProvisions.inc();
+      return res.json(await finishIdempotent(idem, { clientId, sharedSecret, provisionPayload }));
+    });
   } catch (err) {
     console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'ERROR', event: 'provision_tsk_error', error: String(err) }));
     return res.status(500).json({ error: String(err) });
   }
 });
 
+function owningClientResponse(map) {
+  return {
+    clientId: map.clientId,
+    sharedSecret: map.sharedSecret,
+    provisionPayload: toProvisionPayload(map),
+  };
+}
+
+function rotationLabel(agentId, pairId, oldClientId) {
+  return `rotation:${agentId}:${pairId}:${oldClientId}`;
+}
+
+// Resume the currently bound TSK client after a process restart. Production
+// requires both the agent's body-bound proof and the operator authorization
+// because the response contains the owning client's shared secret.
+app.post('/resume-identity', ...registrationGuards, async (req, res) => {
+  try {
+    const { pairId, agentId } = req.body ?? {};
+    if (!pairId || agentId !== req.scAgent.agentId) {
+      return res.status(400).json({ ok: false, error: 'INVALID_RESUME_REQUEST' });
+    }
+    const pair = await registry.get(pairId);
+    const binding = await identityBinding.get(pairId);
+    if (!pair || pair.name !== agentId || !binding || binding.agentId !== agentId) {
+      return res.status(404).json({ ok: false, error: 'BOUND_IDENTITY_NOT_FOUND' });
+    }
+    const map = await tskStore.get(binding.tskClientId);
+    const ownedLabel = map?.label === `agent:${agentId}`
+      || map?.label?.startsWith(`rotation:${agentId}:${pairId}:`);
+    if (!map || !ownedLabel || map.status !== 'active') {
+      return res.status(409).json({ ok: false, error: 'BOUND_TSK_STATE_INVALID' });
+    }
+    return res.json({ ok: true, ...owningClientResponse(map) });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// Phase 1 of TSK rotation: create and return a new unbound key. Idempotency
+// makes a lost response safe to retry without producing multiple candidates.
+app.post('/rotate-tsk/prepare', ...registrationGuards, async (req, res) => {
+  try {
+    const { pairId, oldClientId, agentId } = req.body ?? {};
+    if (!pairId || !oldClientId || agentId !== req.scAgent.agentId) {
+      return res.status(400).json({ ok: false, error: 'INVALID_ROTATION_REQUEST' });
+    }
+    const pair = await registry.get(pairId);
+    const binding = await identityBinding.get(pairId);
+    if (
+      !pair || pair.name !== agentId || !binding ||
+      binding.agentId !== agentId || binding.tskClientId !== oldClientId
+    ) {
+      return res.status(409).json({ ok: false, error: 'ROTATION_SOURCE_MISMATCH' });
+    }
+    const idem = await claimIdempotency(req, res, 'rotate-tsk-prepare');
+    if (!idem) return;
+    const expectedLabel = rotationLabel(agentId, pairId, oldClientId);
+    if (idem.cached) {
+      const cachedMap = await tskStore.get(idem.cached.clientId);
+      if (!cachedMap || cachedMap.label !== expectedLabel || cachedMap.status !== 'active') {
+        return res.status(409).json({ ok: false, error: 'ROTATION_CANDIDATE_MISSING' });
+      }
+      return res.json({ ok: true, ...owningClientResponse(cachedMap) });
+    }
+    return idempotencyStore.withLock(`rotate-tsk:${pairId}:${oldClientId}`, async () => {
+      const existing = await findTskMaps((map) => map.label === expectedLabel);
+      if (existing.length > 1) {
+        return res.status(409).json({ ok: false, error: 'AMBIGUOUS_ROTATION_RECOVERY' });
+      }
+      if (existing.length === 1) {
+        if (existing[0].status !== 'active') {
+          return res.status(409).json({ ok: false, error: 'ROTATION_RECOVERY_STATE_NOT_ACTIVE' });
+        }
+        const recovered = { ok: true, ...owningClientResponse(existing[0]) };
+        return res.json(await finishIdempotent(idem, recovered));
+      }
+
+      const result = await provisioner.provision({}, agentId, { label: expectedLabel });
+      if (!result.ok || !result.tumblerMap) {
+        return res.status(500).json({ ok: false, error: result.error ?? 'ROTATION_PREPARE_FAILED' });
+      }
+      const response = { ok: true, ...owningClientResponse(result.tumblerMap) };
+      await finishIdempotent(idem, response);
+      console.log(JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'INFO',
+        event: 'tsk_rotation_prepared',
+        pairId,
+        oldClientId,
+        newClientId: result.tumblerMap.clientId,
+        agentId,
+      }));
+      return res.json(response);
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// Phase 2: atomically move the pair binding to the prepared key, then revoke
+// the old key. The binding CAS makes retries safe after a lost response.
+app.post('/rotate-tsk/commit', ...registrationGuards, async (req, res) => {
+  try {
+    const { pairId, oldClientId, newClientId, agentId } = req.body ?? {};
+    if (
+      !pairId || !oldClientId || !newClientId || oldClientId === newClientId ||
+      agentId !== req.scAgent.agentId
+    ) {
+      return res.status(400).json({ ok: false, error: 'INVALID_ROTATION_REQUEST' });
+    }
+    const pair = await registry.get(pairId);
+    const oldMap = await tskStore.get(oldClientId);
+    const newMap = await tskStore.get(newClientId);
+    if (
+      !pair || pair.name !== agentId || !oldMap || !newMap ||
+      newMap.label !== rotationLabel(agentId, pairId, oldClientId) ||
+      newMap.status !== 'active'
+    ) {
+      return res.status(409).json({ ok: false, error: 'ROTATION_CANDIDATE_MISMATCH' });
+    }
+    const swap = await identityBinding.compareAndSwap(
+      pairId,
+      oldClientId,
+      { tskClientId: newClientId, agentId },
+    );
+    if (swap === 'missing' || swap === 'conflict') {
+      return res.status(409).json({ ok: false, error: 'ROTATION_BINDING_CONFLICT' });
+    }
+    const revoked = oldMap.status === 'revoked'
+      || await provisioner.updateKey(
+        oldClientId,
+        { status: 'revoked' },
+        agentId,
+        'rotation-commit',
+      );
+    if (!revoked) {
+      return res.status(500).json({ ok: false, error: 'ROTATION_OLD_KEY_REVOCATION_FAILED' });
+    }
+    console.log(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'INFO',
+      event: 'tsk_rotation_committed',
+      pairId,
+      oldClientId,
+      newClientId,
+      agentId,
+      idempotent: swap === 'already',
+    }));
+    return res.json({ ok: true, pairId, oldClientId, newClientId, idempotent: swap === 'already' });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
 // ── Route: POST /bind-identity ────────────────────────────────────────────────
-app.post('/bind-identity', requireLifecycleAuth, (req, res) => {
+app.post('/bind-identity', requireAgentAuth, async (req, res) => {
   try {
     const { pairId, tskClientId, agentId } = req.body;
     if (!pairId || !tskClientId) {
       return res.status(400).json({ error: 'missing pairId or tskClientId' });
     }
-    identityBinding.set(pairId, { tskClientId, agentId: agentId ?? '' });
-    console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'identity_bound', pairId, clientId: tskClientId }));
-    return res.json({ ok: true });
+    if (agentId !== req.scAgent.agentId) {
+      return res.status(403).json({ ok: false, error: 'AGENT_OWNERSHIP_MISMATCH' });
+    }
+    const idem = await claimIdempotency(req, res, 'bind-identity');
+    if (!idem) return;
+    if (idem.cached) return res.json(idem.cached);
+    return idempotencyStore.withLock(`bind-identity:${pairId}`, async () => {
+      const pair = await registry.get(pairId);
+      const tskMap = await tskStore.get(tskClientId);
+      if (
+        !pair || pair.name !== agentId || pair.status !== 'active' || !tskMap ||
+        tskMap.label !== `agent:${agentId}` || tskMap.status !== 'active'
+      ) {
+        return res.status(403).json({ ok: false, error: 'IDENTITY_BINDING_MISMATCH' });
+      }
+      const existing = await identityBinding.get(pairId);
+      if (existing) {
+        if (existing.tskClientId !== tskClientId || existing.agentId !== agentId) {
+          return res.status(409).json({ ok: false, error: 'IDENTITY_BINDING_CONFLICT' });
+        }
+        return res.json(await finishIdempotent(idem, { ok: true }));
+      }
+      await identityBinding.set(pairId, { tskClientId, agentId });
+      console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'identity_bound', pairId, clientId: tskClientId }));
+      return res.json(await finishIdempotent(idem, { ok: true }));
+    });
   } catch (err) {
     return res.status(500).json({ error: String(err) });
   }
@@ -303,13 +634,13 @@ app.post('/verify', async (req, res) => {
           nonceStore,
           anomaly,
           bpcConfig,
-        );
+        ).then(enforceBpcAuthorization);
       },
       {
         tskStore,
         identityBinding: {
           resolve: async (pairId) => {
-            const b = identityBinding.get(pairId);
+            const b = await identityBinding.get(pairId);
             return b ? b.tskClientId : null;
           },
         },
@@ -329,7 +660,7 @@ app.post('/verify', async (req, res) => {
 });
 
 // ── Route: GET /pubkeys/:pairId ───────────────────────────────────────────────
-app.get('/pubkeys/:pairId', async (req, res) => {
+app.get('/pubkeys/:pairId', requireAdminAuth, async (req, res) => {
   try {
     const pair = await registry.get(req.params.pairId);
     if (!pair) {
@@ -344,22 +675,27 @@ app.get('/pubkeys/:pairId', async (req, res) => {
 // ── Route: POST /confirm-recovery (Gap 2 fix) ───────────────────────────────
 // Called by RecoveryManager after generating a new keypair.
 // Returns a server-signed HMAC token that peers must verify before accepting.
-app.post('/confirm-recovery', (req, res) => {
+app.post('/confirm-recovery', requireAdminAuth, requireAgentAuth, (req, res) => {
   try {
-    const { agentName, newPubHex, challengeHash } = req.body ?? {};
-    if (!agentName || !newPubHex || !challengeHash) {
+    const { agentName, agentId, newPubHex, challengeHash } = req.body ?? {};
+    if (!agentName || !agentId || !newPubHex || !challengeHash) {
       return res.status(400).json({ error: 'missing required fields' });
     }
     if (typeof agentName !== 'string' || agentName.length > 128) {
       return res.status(400).json({ error: 'invalid agentName' });
     }
-    if (typeof newPubHex !== 'string' || !/^[0-9a-f]{64,132}$/i.test(newPubHex)) {
+    if (typeof newPubHex !== 'string' || !/^[0-9a-f]{64}$/i.test(newPubHex)) {
       return res.status(400).json({ error: 'invalid newPubHex' });
     }
-    const issuedAt = Math.floor(Date.now() / 1000);
-    const sigData  = `${agentName}:${newPubHex}:${issuedAt}`;
-    const sig = createHmac('sha256', RECOVERY_HMAC_KEY).update(sigData).digest('hex');
-    const token = { agentName, newPubHex, issuedAt, sig };
+    if (agentId !== req.scAgent.agentId || newPubHex.toLowerCase() !== req.scAgent.publicKeyHex) {
+      return res.status(403).json({ ok: false, error: 'RECOVERY_IDENTITY_MISMATCH' });
+    }
+    const token = issueRecoveryToken({
+      agentName,
+      agentId,
+      newPubHex,
+      challengeHash,
+    }, recoveryKeyring);
     console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'recovery_confirmed', agentName, pubkeyPrefix: newPubHex.slice(0,16) }));
     return res.json({ ok: true, token });
   } catch (err) {
@@ -376,22 +712,9 @@ app.post('/verify-recovery-token', (req, res) => {
     if (!token || typeof token !== 'object') {
       return res.status(400).json({ valid: false, error: 'missing token' });
     }
-    const { agentName, newPubHex, issuedAt, sig } = token;
-    if (!agentName || !newPubHex || !issuedAt || !sig) {
-      return res.status(400).json({ valid: false, error: 'incomplete token' });
-    }
-    const age = Math.floor(Date.now() / 1000) - issuedAt;
-    if (age > RECOVERY_TOKEN_TTL_SEC) {
-      return res.json({ valid: false, error: 'token expired' });
-    }
-    const sigData  = `${agentName}:${newPubHex}:${issuedAt}`;
-    const expected = createHmac('sha256', RECOVERY_HMAC_KEY).update(sigData).digest('hex');
-    const eBuf = Buffer.from(expected, 'hex');
-    const aBuf = Buffer.from(sig,      'hex');
-    if (eBuf.length !== aBuf.length) return res.json({ valid: false, error: 'sig length mismatch' });
-    let diff = 0;
-    for (let i = 0; i < eBuf.length; i++) diff |= eBuf[i] ^ aBuf[i];
-    return res.json({ valid: diff === 0 });
+    return res.json(verifyRecoveryToken(token, recoveryKeyring, {
+      ttlSec: RECOVERY_TOKEN_TTL_SEC,
+    }));
   } catch (err) {
     return res.status(500).json({ valid: false, error: String(err) });
   }
@@ -400,12 +723,12 @@ app.post('/verify-recovery-token', (req, res) => {
 // ── Route: GET /health ────────────────────────────────────────────────────────
 // Simple liveness probe for load balancers and monitoring systems.
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'ultra-server', version: '1.1.0', ts: Date.now() });
+  res.json({ ok: true, service: 'ultra-server', version: ULTRA_VERSION, ts: Date.now() });
 });
 
 // ── Route: GET /tsk/keys ─────────────────────────────────────────────────────
 // List all provisioned TSK keys with lifecycle metadata. No secrets returned.
-app.get('/tsk/keys', async (_req, res) => {
+app.get('/tsk/keys', requireAdminAuth, async (_req, res) => {
   try {
     const keys = await provisioner.listKeys();
     return res.json({ ok: true, count: keys.length, keys });
@@ -416,7 +739,7 @@ app.get('/tsk/keys', async (_req, res) => {
 
 // ── Route: GET /tsk/keys/:clientId ───────────────────────────────────────────
 // Get a single TSK key's lifecycle metadata.
-app.get('/tsk/keys/:clientId', async (req, res) => {
+app.get('/tsk/keys/:clientId', requireAdminAuth, async (req, res) => {
   try {
     const key = await provisioner.getKey(req.params.clientId);
     if (!key) return res.status(404).json({ ok: false, error: 'KEY_NOT_FOUND' });
@@ -429,7 +752,7 @@ app.get('/tsk/keys/:clientId', async (req, res) => {
 // ── Route: PATCH /tsk/keys/:clientId ─────────────────────────────────────────
 // Update TSK key lifecycle: label, expiresAt, maxRequests, status.
 // Does NOT modify cryptographic material — re-provision to change keys.
-app.patch('/tsk/keys/:clientId', requireLifecycleAuth, async (req, res) => {
+app.patch('/tsk/keys/:clientId', requireAdminAuth, async (req, res) => {
   try {
     const { label, expiresAt, maxRequests, status } = req.body ?? {};
     const updates = {};
@@ -445,7 +768,12 @@ app.patch('/tsk/keys/:clientId', requireLifecycleAuth, async (req, res) => {
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ ok: false, error: 'NO_UPDATES_PROVIDED' });
     }
-    const found = await provisioner.updateKey(req.params.clientId, updates);
+    const found = await provisioner.updateKey(
+      req.params.clientId,
+      updates,
+      'ultra-admin',
+      'operator-admin-lifecycle',
+    );
     if (!found) return res.status(404).json({ ok: false, error: 'KEY_NOT_FOUND' });
     const updated = await provisioner.getKey(req.params.clientId);
     console.log(`[ultra-server] TSK key ${req.params.clientId} updated: ${JSON.stringify(updates)}`);
@@ -457,7 +785,7 @@ app.patch('/tsk/keys/:clientId', requireLifecycleAuth, async (req, res) => {
 
 // ── Route: GET /bpc/pairs ─────────────────────────────────────────────────────
 // List all BPC pairs with redacted lifecycle metadata (no secrets, no keys).
-app.get('/bpc/pairs', async (_req, res) => {
+app.get('/bpc/pairs', requireAdminAuth, async (_req, res) => {
   try {
     const pairs = await registry.listRedacted();
     return res.json({ ok: true, count: pairs.length, pairs });
@@ -468,7 +796,7 @@ app.get('/bpc/pairs', async (_req, res) => {
 
 // ── Route: PATCH /bpc/pairs/:pairId ──────────────────────────────────────────
 // Update BPC pair lifecycle: scope, expiresAt, maxRequests, name.
-app.patch('/bpc/pairs/:pairId', requireLifecycleAuth, async (req, res) => {
+app.patch('/bpc/pairs/:pairId', requireAdminAuth, async (req, res) => {
   try {
     const { scope, expiresAt, maxRequests, name } = req.body ?? {};
     const updates = {};
@@ -489,25 +817,36 @@ app.patch('/bpc/pairs/:pairId', requireLifecycleAuth, async (req, res) => {
 });
 
 // ── Route: GET /metrics ───────────────────────────────────────────────────────
-app.get('/metrics', async (_req, res) => {
+app.get('/metrics', requireAdminAuth, async (_req, res) => {
   res.set('Content-Type', register.contentType);
   res.end(await register.metrics());
 });
 
 // ── Route: GET /status ────────────────────────────────────────────────────────
-app.get('/status', async (req, res) => {
+app.get('/status', requireAdminAuth, async (req, res) => {
   try {
     const pairs = await registry.list();
     return res.json({
       ok:           true,
-      version:      '1.2.0',
+      version:      ULTRA_VERSION,
       pairs:        pairs.length,
-      bindings:     identityBinding.size,
+      bindings:     await identityBinding.count(),
       sigWindowMs:  SIG_WINDOW_MS,
       nonceBackend: nonceBackendType,
+      runtimeMode:  RUNTIME_MODE,
+      keyRotation: {
+        adminVerificationKeys: [ADMIN_TOKEN, ADMIN_TOKEN_PREVIOUS].filter(Boolean).length,
+        recoveryVerificationKeys: recoveryKeyring.verificationKeys.size,
+      },
       layer8: {
         shadowMode: bpcConfig.enableShadowMode,
         tarpit:     bpcConfig.enableTarpit,
+        authorizationBoundary: 'fail-closed',
+      },
+      rateLimits: {
+        windowMs: RATE_LIMIT_WINDOW_MS,
+        perIp: IP_RATE_LIMIT,
+        perPair: PAIR_RATE_LIMIT,
       },
     });
   } catch (err) {
@@ -517,11 +856,23 @@ app.get('/status', async (req, res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'server_start', port: PORT }));
-  console.warn(JSON.stringify({
-    timestamp: new Date().toISOString(),
-    level: 'WARN',
-    event: 'production_warning',
-    message: `Using MemoryPairStore, MemoryTumblerStore, and ${nonceBackendType === 'redis' ? 'RedisNonceStore (nonce dedup shared across instances)' : 'MemoryNonceBackend (set REDIS_URL for HA deployments)'}. Pair/TSK data will be lost on restart without PostgreSQL.`
+  console.log(JSON.stringify({
+    timestamp: new Date().toISOString(), level: 'INFO', event: 'server_start', port: PORT,
+    runtimeMode: RUNTIME_MODE,
   }));
+  if (RUNTIME_MODE === 'development') {
+    console.warn(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'WARN',
+      event: 'development_store_warning',
+      message: 'Development memory stores are active; lifecycle state is not restart-durable.',
+    }));
+  } else {
+    console.log(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'INFO',
+      event: 'durable_stores_active',
+      stores: ['postgresql-pair', 'postgresql-tumbler', 'postgresql-binding', 'postgresql-idempotency', 'redis-nonce', 'redis-anomaly'],
+    }));
+  }
 });

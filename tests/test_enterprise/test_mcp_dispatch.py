@@ -7,12 +7,16 @@ from types import SimpleNamespace
 from enterprise.cli import main
 from enterprise.mcp_dispatch import MCPDispatcher, SchemaValidator
 from enterprise.mcp_tools import get_tool_registry
+from enterprise.operator import OperatorQueue
+from enterprise.policy import PolicyDecision
 
 
 class FakeRouter:
     def __init__(self) -> None:
         self.routes: list[tuple[int, str, str | None]] = []
         self.classified: list[int] = []
+        self.rendered = "fake terminal output"
+        self.route_success = True
 
     def classify(self, hwnd: int):
         self.classified.append(hwnd)
@@ -28,6 +32,8 @@ class FakeRouter:
 
     def route(self, hwnd: int, text: str, lease_id: str | None = None):
         self.routes.append((hwnd, text, lease_id))
+        if self.route_success:
+            self.rendered += text
         return SimpleNamespace(
             receipt_id="receipt-1",
             hwnd=hwnd,
@@ -35,12 +41,79 @@ class FakeRouter:
             payload_hash="payload-hash",
             readback_hash="",
             timestamp=1001.0,
-            success=True,
+            success=self.route_success,
         )
 
 
+class RecordingLedger:
+    def __init__(self) -> None:
+        self.entries: list[dict] = []
+
+    def log(self, action: str, result: str = "", metadata: dict | None = None, **_kwargs):
+        entry = {"action": action, "result": result, "metadata": metadata or {}}
+        self.entries.append(entry)
+        return entry
+
+
+class AllowPolicyEnforcer:
+    def __init__(self, *, allowed: bool = True, requires_approval: bool = False) -> None:
+        self.allowed = allowed
+        self.requires_approval = requires_approval
+
+    def check(self, agent_id: str, action: str, **kwargs) -> PolicyDecision:
+        return PolicyDecision(
+            allowed=self.allowed,
+            reason="test policy decision",
+            requires_approval=self.requires_approval,
+            policy_id="policy-test",
+            classification=kwargs.get("classification", "UNCLASSIFIED"),
+            approval_mode="human_approved" if self.requires_approval else "autonomous",
+            agent_id=agent_id,
+            action=action,
+        )
+
+
+def verified_target(hwnd: int, **kwargs) -> dict:
+    target = {
+        "hwnd": hwnd,
+        "valid": True,
+        "ok": True,
+        "reasons": [],
+        "pid": 4242,
+        "exe": "WindowsTerminal.exe",
+        "exe_path": (
+            r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_test"
+            r"\WindowsTerminal.exe"
+        ),
+        "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+        "title": "Fake Terminal",
+        "is_terminal": True,
+    }
+    comparisons = {
+        "expect_pid": "pid",
+        "expect_exe": "exe",
+        "expect_exe_path": "exe_path",
+        "expect_class": "class",
+    }
+    for expected_key, target_key in comparisons.items():
+        expected = kwargs.get(expected_key)
+        if expected is not None and target[target_key] != expected:
+            target["ok"] = False
+            target["reasons"].append(f"{target_key} changed")
+    return target
+
 def make_dispatcher(now_value: float = 1000.0) -> MCPDispatcher:
-    return MCPDispatcher(router=FakeRouter(), now=lambda: now_value)
+    router = FakeRouter()
+    return MCPDispatcher(
+        router=router,
+        ledger=RecordingLedger(),
+        policy_enforcer=AllowPolicyEnforcer(),
+        operator_queue=OperatorQueue(),
+        target_verifier=verified_target,
+        output_reader=lambda _hwnd: router.rendered,
+        identity_type="dpapi",
+        now=lambda: now_value,
+    )
 
 
 def issue_lease(dispatcher: MCPDispatcher, *, hwnd: int = 1234, agent_id: str = "SC-AGENT") -> str:
@@ -191,7 +264,16 @@ class TestLeaseRuntime:
 
     def test_inject_calls_router_with_lease_id(self):
         router = FakeRouter()
-        dispatcher = MCPDispatcher(router=router, now=lambda: 1000.0)
+        dispatcher = MCPDispatcher(
+            router=router,
+            ledger=RecordingLedger(),
+            policy_enforcer=AllowPolicyEnforcer(),
+            operator_queue=OperatorQueue(),
+            target_verifier=verified_target,
+            output_reader=lambda _hwnd: router.rendered,
+            identity_type="dpapi",
+            now=lambda: 1000.0,
+        )
         lease_id = issue_lease(dispatcher, hwnd=1010)
         result = dispatcher.call_tool(
             "sc_inject_text",
@@ -199,6 +281,223 @@ class TestLeaseRuntime:
         )
         assert result["ok"] is True
         assert router.routes == [(1010, "hello", lease_id)]
+        assert result["result"]["delivery_confirmation"] == "uia_echo_confirmed"
+        assert result["result"]["readback_hash"]
+
+    def test_inject_fails_closed_without_signed_policy_enforcer(self):
+        dispatcher = MCPDispatcher(
+            router=FakeRouter(),
+            ledger=RecordingLedger(),
+            target_verifier=verified_target,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1011)
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 1011, "text": "hello"},
+        )
+        assert result["ok"] is False
+        assert "signed policy enforcer" in result["error"]
+
+    def test_inject_rejects_transport_enqueue_failure(self):
+        router = FakeRouter()
+        router.route_success = False
+        dispatcher = MCPDispatcher(
+            router=router,
+            ledger=RecordingLedger(),
+            policy_enforcer=AllowPolicyEnforcer(),
+            operator_queue=OperatorQueue(),
+            target_verifier=verified_target,
+            output_reader=lambda _hwnd: router.rendered,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1017)
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 1017, "text": "hello"},
+        )
+        assert result["ok"] is False
+        assert "failed to enqueue" in result["error"]
+
+    def test_inject_rejects_enqueue_without_new_readback(self):
+        router = FakeRouter()
+        dispatcher = MCPDispatcher(
+            router=router,
+            ledger=RecordingLedger(),
+            policy_enforcer=AllowPolicyEnforcer(),
+            operator_queue=OperatorQueue(),
+            target_verifier=verified_target,
+            output_reader=lambda _hwnd: "unchanged terminal output",
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1018)
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {
+                "lease_id": lease_id,
+                "hwnd": 1018,
+                "text": "hello",
+                "delivery_timeout_ms": 100,
+            },
+        )
+        assert result["ok"] is False
+        assert "delivery unconfirmed" in result["error"]
+        assert "do not retry automatically" in result["error"]
+
+    def test_inject_does_not_accept_stale_matching_text(self):
+        router = FakeRouter()
+        dispatcher = MCPDispatcher(
+            router=router,
+            ledger=RecordingLedger(),
+            policy_enforcer=AllowPolicyEnforcer(),
+            operator_queue=OperatorQueue(),
+            target_verifier=verified_target,
+            output_reader=lambda _hwnd: "prompt> hello",
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1019)
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {
+                "lease_id": lease_id,
+                "hwnd": 1019,
+                "text": "hello",
+                "delivery_timeout_ms": 100,
+            },
+        )
+        assert result["ok"] is False
+        assert "delivery unconfirmed" in result["error"]
+
+    def test_inject_fails_closed_without_persistent_ledger(self):
+        dispatcher = MCPDispatcher(
+            router=FakeRouter(),
+            policy_enforcer=AllowPolicyEnforcer(),
+            target_verifier=verified_target,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1012)
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 1012, "text": "hello"},
+        )
+        assert result["ok"] is False
+        assert "persistent signed audit ledger" in result["error"]
+
+    def test_inject_revalidates_bound_target_identity(self):
+        state = {"pid": 4242}
+
+        def changing_target(hwnd: int, **kwargs) -> dict:
+            report = verified_target(hwnd, **kwargs)
+            report["pid"] = state["pid"]
+            if kwargs.get("expect_pid") not in (None, state["pid"]):
+                report["ok"] = False
+                report["reasons"] = ["pid changed"]
+            return report
+
+        dispatcher = MCPDispatcher(
+            router=FakeRouter(),
+            ledger=RecordingLedger(),
+            policy_enforcer=AllowPolicyEnforcer(),
+            target_verifier=changing_target,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1013)
+        state["pid"] = 5252
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 1013, "text": "hello"},
+        )
+        assert result["ok"] is False
+        assert "pid changed" in result["error"]
+
+    def test_inject_revalidates_bound_target_image_path(self):
+        state = {
+            "exe_path": (
+                r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_test"
+                r"\WindowsTerminal.exe"
+            )
+        }
+
+        def changing_target(hwnd: int, **kwargs) -> dict:
+            report = verified_target(hwnd, **kwargs)
+            report["exe_path"] = state["exe_path"]
+            if kwargs.get("expect_exe_path") not in (None, state["exe_path"]):
+                report["ok"] = False
+                report["reasons"] = ["exe_path changed"]
+            return report
+
+        router = FakeRouter()
+        dispatcher = MCPDispatcher(
+            router=router,
+            ledger=RecordingLedger(),
+            policy_enforcer=AllowPolicyEnforcer(),
+            operator_queue=OperatorQueue(),
+            target_verifier=changing_target,
+            output_reader=lambda _hwnd: router.rendered,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1020)
+        state["exe_path"] = r"C:\Users\Public\WindowsTerminal.exe"
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 1020, "text": "hello"},
+        )
+        assert result["ok"] is False
+        assert "exe_path changed" in result["error"]
+
+    def test_required_approval_is_bound_to_agent_and_action(self):
+        queue = OperatorQueue()
+        router = FakeRouter()
+        dispatcher = MCPDispatcher(
+            router=router,
+            ledger=RecordingLedger(),
+            policy_enforcer=AllowPolicyEnforcer(requires_approval=True),
+            operator_queue=queue,
+            target_verifier=verified_target,
+            output_reader=lambda _hwnd: router.rendered,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1014)
+        missing = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 1014, "text": "hello"},
+        )
+        assert missing["ok"] is False
+        approval_context = dispatcher.approval_context_for(
+            lease_id,
+            {
+                "hwnd": 1014,
+                "text": "hello",
+                "classification": "UNCLASSIFIED",
+            },
+            action="sc_inject_text",
+        )
+        approval_id = queue.submit("SC-AGENT", "sc_inject_text", approval_context)
+        assert queue.approve(approval_id, "operator-1")
+        allowed = dispatcher.call_tool(
+            "sc_inject_text",
+            {
+                "lease_id": lease_id,
+                "hwnd": 1014,
+                "text": "hello",
+                "approval_id": approval_id,
+            },
+        )
+        assert allowed["ok"] is True
+        assert allowed["result"]["governance"]["operator_id"] == "operator-1"
+        assert queue.get_status(approval_id) == "consumed"
+
+        replay = dispatcher.call_tool(
+            "sc_inject_text",
+            {
+                "lease_id": lease_id,
+                "hwnd": 1014,
+                "text": "hello",
+                "approval_id": approval_id,
+            },
+        )
+        assert replay["ok"] is False
+        assert "consumed" in replay["error"]
 
     def test_read_output_is_lease_gated(self):
         dispatcher = make_dispatcher()
@@ -208,6 +507,54 @@ class TestLeaseRuntime:
         )
         assert result["ok"] is False
         assert "not found" in result["error"]
+
+    def test_read_output_uses_real_adapter_contract_and_delta(self):
+        snapshots = iter(["prompt> hello", "prompt> hello\nmodel reply"])
+        dispatcher = MCPDispatcher(
+            router=FakeRouter(),
+            ledger=RecordingLedger(),
+            policy_enforcer=AllowPolicyEnforcer(),
+            operator_queue=OperatorQueue(),
+            target_verifier=verified_target,
+            output_reader=lambda _hwnd: next(snapshots),
+            identity_type="dpapi",
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1015)
+        first = dispatcher.call_tool(
+            "sc_read_output",
+            {"lease_id": lease_id, "hwnd": 1015, "timeout_ms": 100},
+        )
+        second = dispatcher.call_tool(
+            "sc_read_output",
+            {"lease_id": lease_id, "hwnd": 1015, "timeout_ms": 100},
+        )
+        assert first["ok"] is True
+        assert first["result"]["text"] == "prompt> hello"
+        assert first["result"]["method"] == "uia_textpattern"
+        assert second["ok"] is True
+        assert second["result"]["text"] == "model reply"
+
+    def test_read_output_fails_closed_when_reader_errors(self):
+        def broken_reader(_hwnd: int) -> str:
+            raise RuntimeError("no TextPattern")
+
+        dispatcher = MCPDispatcher(
+            router=FakeRouter(),
+            ledger=RecordingLedger(),
+            policy_enforcer=AllowPolicyEnforcer(),
+            operator_queue=OperatorQueue(),
+            target_verifier=verified_target,
+            output_reader=broken_reader,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1016)
+        result = dispatcher.call_tool(
+            "sc_read_output",
+            {"lease_id": lease_id, "hwnd": 1016, "timeout_ms": 100},
+        )
+        assert result["ok"] is False
+        assert "no TextPattern" in result["error"]
 
 
 class TestRuntimeTools:
@@ -260,6 +607,53 @@ class TestRuntimeTools:
         assert verified["ok"] is True
         assert verified["result"]["verified"] is False
 
+    def test_identity_verify_rejects_unimplemented_algorithm(self):
+        dispatcher = make_dispatcher()
+        signed = dispatcher.call_tool("sc_identity_sign", {"payload_hex": "aabbcc"})
+        verified = dispatcher._sc_identity_verify(
+            {
+                "payload_hex": "aabbcc",
+                "signature_b64": signed["result"]["signature_b64"],
+                "public_key_b64": signed["result"]["public_key_b64"],
+                "algorithm": "ECDSA-P384",
+            }
+        )
+        assert verified["verified"] is False
+        assert verified["algorithm"] == "Ed25519"
+        assert "unsupported" in verified["reason"]
+
+    def test_tpm_option_returns_verified_platform_claim_separate_from_signature(
+        self,
+        monkeypatch,
+    ):
+        from enterprise.tpm_attestation import TpmAttestationResult
+        import enterprise.mcp_dispatch as dispatch_module
+
+        claim = TpmAttestationResult(
+            nonce=b"n" * 32,
+            public_key_blob=b"p" * 72,
+            claim_blob=b"claim" * 16,
+            supported=True,
+            identity_key_bound=False,
+        )
+        monkeypatch.setattr(dispatch_module, "_TPM_ATTESTATION_AVAILABLE", True)
+        monkeypatch.setattr(dispatch_module, "create_tpm_platform_claim", lambda _nonce: claim)
+        monkeypatch.setattr(dispatch_module, "verify_tpm_platform_claim", lambda _claim: True)
+
+        result = MCPDispatcher(profile="government", router=FakeRouter()).call_tool(
+            "sc_identity_sign",
+            {"payload_hex": "aabbcc", "key_provider": "tpm"},
+        )
+
+        assert result["ok"] is True
+        assert result["result"]["algorithm"] == "Ed25519"
+        assert result["result"]["signature_key_provider"] == "software"
+        attestation = result["result"]["tpm_attestation"]
+        assert attestation["verified_locally"] is True
+        assert attestation["identity_key_bound"] is False
+        assert attestation["claim_b64"]
+        assert len(attestation["claim_sha256"]) == 64
+
     def test_receipt_verify_refuses_unsigned_receipt(self):
         dispatcher = make_dispatcher()
         result = dispatcher.call_tool(
@@ -294,7 +688,7 @@ class TestRuntimeTools:
         dispatcher = MCPDispatcher(profile="government", router=FakeRouter())
         result = dispatcher.call_tool("sc_identity_sign", {"payload_hex": "aabbcc"})
         assert result["ok"] is False
-        assert "requires TPM-backed identity" in result["error"]
+        assert "requires a verified TPM platform claim" in result["error"]
 
     def test_government_profile_requires_tpm_session_stamp(self):
         dispatcher = MCPDispatcher(profile="government", router=FakeRouter())

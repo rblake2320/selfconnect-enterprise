@@ -29,14 +29,18 @@ _NPM = "npm.cmd" if sys.platform == "win32" else "npm"
 REPOS = {
     "bpc-protocol":          (os.environ.get("REPO_BPC_DIR",  "../bpc-protocol"),          [_NPM, "test", "--workspaces"]),
     "tsk-protocol":          (os.environ.get("REPO_TSK_DIR",  "../tsk-protocol"),          [_NPM, "test"]),
+    "tsk-protocol-ha":       (os.environ.get("REPO_TSK_DIR",  "../tsk-protocol"),          [_NPM, "run", "test:ha"]),
     "selfconnect-enterprise": (os.environ.get("REPO_SC_DIR",  "."),                         [sys.executable, "-m", "pytest", "-q"]),
 }
 
 LOG_PATH = pathlib.Path(os.environ.get("TEST_RUN_LOG", "logs/test_runs.jsonl"))
 
-_PYTEST_RE = re.compile(r"(\d+)\s+passed(?:,\s*(\d+)\s+skipped)?(?:,\s*(\d+)\s+failed)?")
+_PYTEST_PASS_RE = re.compile(r"(\d+)\s+passed\b")
+_PYTEST_SKIP_RE = re.compile(r"(\d+)\s+skipped\b")
+_PYTEST_FAIL_RE = re.compile(r"(\d+)\s+failed\b")
 _VITEST_RE = re.compile(r"Tests\s+(\d+)\s+passed")
 _VITEST_FAIL_RE = re.compile(r"Tests\s+(?:\d+\s+passed.*?)?(\d+)\s+failed")
+_RATIO_RE = re.compile(r":\s*(\d+)\s*/\s*(\d+)\s+passed\b", re.IGNORECASE)
 
 
 def git_head(path: pathlib.Path) -> str:
@@ -58,10 +62,17 @@ def parse_counts(output: str) -> dict:
         passed = sum(int(n) for n in vitest_pass)
         failed = sum(int(m) for m in _VITEST_FAIL_RE.findall(output))
         return {"passed": passed, "skipped": 0, "failed": failed}
-    for m in _PYTEST_RE.finditer(output):
-        passed += int(m.group(1))
-        skipped += int(m.group(2) or 0)
-        failed += int(m.group(3) or 0)
+    ratio_counts = _RATIO_RE.findall(output)
+    if ratio_counts:
+        passed = sum(int(successes) for successes, _total in ratio_counts)
+        failed = sum(int(total) - int(successes) for successes, total in ratio_counts)
+        return {"passed": passed, "skipped": 0, "failed": failed}
+    pytest_passes = _PYTEST_PASS_RE.findall(output)
+    pytest_skips = _PYTEST_SKIP_RE.findall(output)
+    pytest_failures = _PYTEST_FAIL_RE.findall(output)
+    passed = int(pytest_passes[-1]) if pytest_passes else 0
+    skipped = int(pytest_skips[-1]) if pytest_skips else 0
+    failed = int(pytest_failures[-1]) if pytest_failures else 0
     return {"passed": passed, "skipped": skipped, "failed": failed}
 
 

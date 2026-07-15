@@ -1,10 +1,11 @@
-"""chained_channel.py — the composed embodiment, gap-free (Claude 1 / selfconnect-enterprise).
+"""chained_channel.py — a bounded local composition experiment.
 
-One governed loop binding the three proven legs (all live in THIS repo):
+One experimental loop binding three locally exercised legs:
   READ      : UIA TextChanged on a terminal text surface -> delta   (uia_textpattern)
-  IDENTITY  : sign SHA-256(delta) with a TPM-backed key             (tpm_identity, Platform KSP)
+  IDENTITY  : sign SHA-256(delta) with a Platform-KSP key when the
+              hardware-property probe confirms the provider boundary
   TRANSPORT : send over a DACL-guarded named pipe; the server impersonates the client and
-              records the OS-verified caller SID, THEN verifies the TPM signature
+              records the OS-reported caller SID, THEN verifies the signature
                                                                      (named_pipe_identity)
 
 Self-contained end-to-end self-test (Role B server thread + Role A client in one process)
@@ -12,8 +13,9 @@ against a THROWAWAY console this process spawns — never a live agent window.
 
 Why this differs from the selfconnect-repo draft (see REVIEW_chained_channel.md):
   - real DACL pipe + ImpersonateNamedPipeClient  -> the OS-identity leg is actually exercised
-  - TPM signing (hardware-attested), not Ed25519 software identity
-  - uses the proven GetModule / comtypes-handler / 64-bit-handle paths (no ABI truncation)
+  - Platform-KSP signing with a fail-closed hardware-property probe; this is
+    not remote attestation or a production identity-binding protocol
+  - uses the exercised GetModule / comtypes-handler / 64-bit-handle paths (no ABI truncation)
 
 Run:  python experiments/win32_probe/chained_channel.py
 Exit: 0 = CHAIN COMPLETE (all four legs), 1 = a leg failed
@@ -77,8 +79,9 @@ def _unique_pipe_name() -> str:
 
 TERM_CLASSES = {"ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS"}
 CREATE_NEW_CONSOLE = 0x00000010
-# WR-005: hide the throwaway console so UIA accessibility enumeration by other
-# processes cannot see (or subscribe TextChanged on) the window.
+# WR-005: avoid presenting a visible throwaway test window. SW_HIDE is not an
+# access-control boundary and does not prevent same-session discovery by every
+# process-inspection or accessibility path.
 STARTF_USESHOWWINDOW = 0x00000001
 SW_HIDE = 0
 
@@ -105,11 +108,9 @@ def role_b(result: dict, expected_pub: bytes, pipe: str) -> None:
 
         # WR-009 FIX: challenge-response — server generates a nonce and sends it to
         # the client BEFORE the client reads UIA or signs anything.  The client must
-        # include this nonce in the signed material (sha256(delta + nonce)), so the
-        # server can verify that the UIA read happened during THIS interaction and was
-        # not fabricated.  Without this step the server only verified that the client
-        # produced a self-consistent (sig, delta_hash, pub) tuple — not that any real
-        # UIA read occurred.
+        # include this nonce in the signed material (sha256(delta + nonce)). This
+        # establishes response freshness for the signed bytes, not that those bytes
+        # necessarily originated from UIA; source attestation remains out of scope.
         challenge_nonce = secrets.token_bytes(32)
         win32file.WriteFile(h, challenge_nonce)              # send challenge to client
 
@@ -160,8 +161,9 @@ def _new_terminal_hwnds(before: set[int]) -> set[int]:
 
     def cb(hh, _):
         try:
-            # WR-005: do NOT filter by IsWindowVisible — the throwaway console is
-            # intentionally hidden (SW_HIDE) to prevent cross-process UIA enumeration.
+            # Do not filter by IsWindowVisible: this experiment itself must locate
+            # the non-visible throwaway console. This also demonstrates that SW_HIDE
+            # alone is not a discovery-prevention boundary.
             if win32gui.GetClassName(hh) in TERM_CLASSES:
                 out.add(hh)
         except Exception:  # noqa: BLE001
@@ -179,9 +181,8 @@ def main() -> int:
 
     # READ leg: spawn a throwaway console that prints the token after a short delay
     # (delay lets us register the TextChanged handler before the line appears).
-    # WR-005: hide the console window (SW_HIDE + STARTF_USESHOWWINDOW) so that no
-    # other same-session process can discover the HWND via UIAccess enumeration and
-    # subscribe a TextChanged handler to eavesdrop the nonce before we process it.
+    # Use SW_HIDE to avoid presenting a visible test console. Same-session UIA or
+    # process-inspection confidentiality is not established by this setting.
     before = _new_terminal_hwnds(set())
     cmd = f"ping -n 3 127.0.0.1 >nul & echo {token} & ping -n 4 127.0.0.1 >nul"
     si = subprocess.STARTUPINFO()
@@ -289,8 +290,10 @@ def main() -> int:
     challenge_nonce = bytes(challenge_nonce_raw)
     print(f"[TRANSPORT] received server challenge nonce ({len(challenge_nonce)} bytes)")
 
-    # IDENTITY leg: sign SHA-256(delta_bytes + challenge_nonce) with the TPM key
-    # created above (same hkey, same pub the server already has pinned).
+    # IDENTITY leg: sign SHA-256(delta_bytes + challenge_nonce) with the
+    # hardware-confirmed Platform-KSP key created above. This is a local
+    # proof-of-possession experiment, not ordinary AgentIdentity or remote
+    # attestation.
     delta_bytes = delta.encode()
     digest = hashlib.sha256(delta_bytes + challenge_nonce).digest()
     try:
@@ -298,7 +301,7 @@ def main() -> int:
     finally:
         NCRYPT.NCryptDeleteKey(hkey, 0)
         NCRYPT.NCryptFreeObject(prov)
-    print(f"[IDENTITY] signed SHA-256(delta+nonce) with TPM key; sig_len={len(sig)}")
+    print(f"[IDENTITY] signed SHA-256(delta+nonce) with Platform-KSP key; sig_len={len(sig)}")
 
     # TRANSPORT leg (client side, step 2): send the signed payload.
     # delta_bytes is included so the server can independently reconstruct the digest
@@ -323,9 +326,9 @@ def main() -> int:
     pipe_ok = bool(result.get("caller_sid"))
     token_ok = result.get("token") == token
     print(f"[TRANSPORT] OS-verified caller={result.get('caller')} SID={result.get('caller_sid')}")
-    print(f"[IDENTITY ] TPM signature valid={id_ok}")
+    print(f"[IDENTITY ] Platform-KSP signature valid={id_ok}")
     if read_ok and id_ok and pipe_ok and token_ok:
-        print("CHAIN COMPLETE — UIA read + TPM identity + OS-verified DACL pipe all verified.")
+        print("CHAIN COMPLETE — UIA read + Platform-KSP key proof + OS-verified DACL pipe verified.")
         return 0
     print(f"INCOMPLETE: read={read_ok} id={id_ok} pipe={pipe_ok} token={token_ok}")
     return 1

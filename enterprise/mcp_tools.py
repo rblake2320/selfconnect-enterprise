@@ -72,7 +72,7 @@ _TOOLS: list[dict[str, Any]] = [
         "description": (
             "Inject text to a verified terminal target via WM_CHAR PostMessage. "
             "Requires an active channel lease. Target must pass fail-closed HWND/PID/class checks. "
-            "Returns an ActionReceipt with payload_hash and readback_hash."
+            "Returns success only after UIA readback confirms a new visible payload occurrence."
         ),
         "inputSchema": {
             "type": "object",
@@ -94,7 +94,26 @@ _TOOLS: list[dict[str, Any]] = [
                 "text": {
                     "type": "string",
                     "description": f"Text to inject (max {_TEXT_MAX} chars)",
+                    "minLength": 1,
                     "maxLength": _TEXT_MAX,
+                },
+                "delivery_timeout_ms": {
+                    "type": "integer",
+                    "default": 3000,
+                    "description": "Maximum wait for UIA echo confirmation",
+                    "minimum": 100,
+                    "maximum": 10000,
+                },
+                "classification": {
+                    "type": "string",
+                    "enum": ["UNCLASSIFIED", "CUI", "SECRET", "TOP_SECRET"],
+                    "description": "Classification label for the payload; required in government profile",
+                },
+                "approval_id": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "pattern": r"^[A-Za-z0-9-]+$",
+                    "description": "Approved OperatorQueue request bound to this agent and action",
                 },
                 "echo_filter": {
                     "type": "boolean",
@@ -133,6 +152,18 @@ _TOOLS: list[dict[str, Any]] = [
                     "maximum": 30000,
                 },
                 "strip_ansi": {"type": "boolean", "default": True},
+                "classification": {
+                    "type": "string",
+                    "enum": ["UNCLASSIFIED", "CUI", "SECRET", "TOP_SECRET"],
+                    "default": "UNCLASSIFIED",
+                    "description": "Classification label used by the mandatory policy gate",
+                },
+                "approval_id": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "pattern": r"^[A-Za-z0-9-]+$",
+                    "description": "One-time approved request bound to this exact read context",
+                },
             },
         },
     },
@@ -391,7 +422,7 @@ _TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "sc_identity_sign",
-        "description": "Sign a payload hash with the agent's CNG/TPM-backed identity key. Returns signature (base64) and public key.",
+        "description": "Sign payload bytes with the configured identity key. A requested TPM platform claim is separate evidence and does not make the software Ed25519 signature TPM-backed.",
         "inputSchema": {
             "type": "object",
             "required": ["payload_hex"],
@@ -436,8 +467,9 @@ _TOOLS: list[dict[str, Any]] = [
                 },
                 "algorithm": {
                     "type": "string",
-                    "enum": ["ECDSA-P256", "ECDSA-P384", "Ed25519"],
-                    "default": "ECDSA-P256",
+                    "description": "Verification algorithm implemented by this tool",
+                    "enum": ["Ed25519"],
+                    "default": "Ed25519",
                 },
             },
         },
@@ -445,8 +477,9 @@ _TOOLS: list[dict[str, Any]] = [
     {
         "name": "sc_session_stamp",
         "description": (
-            "Stamp a new session with a hardware birth_id. The stamp binds: process PID, HWND, "
-            "window class, executable path hash, and a timestamp. Used as the anchor for generation tracking."
+            "Stamp a new session with a software-capable birth_id record over process PID, HWND, "
+            "window class, executable path hash, and timestamp. This supports generation tracking; "
+            "it does not inherently prove hardware-backed identity."
         ),
         "inputSchema": {
             "type": "object",
@@ -576,7 +609,7 @@ _TOOLS: list[dict[str, Any]] = [
                 "classification": {
                     "type": "string",
                     "description": "Data classification label",
-                    "maxLength": 64,
+                    "enum": ["UNCLASSIFIED", "CUI", "SECRET", "TOP_SECRET"],
                 },
             },
         },
@@ -584,8 +617,8 @@ _TOOLS: list[dict[str, Any]] = [
     {
         "name": "sc_receipt_verify",
         "description": (
-            "Verify a delivery receipt chain. Confirms receipt_id, timestamp, payload_hash, "
-            "readback_hash, and agent signature are consistent and unmodified. "
+            "Verify an agent signature over the receipt's payload_hex. This does not establish "
+            "delivery, UIA readback, or semantic consistency of other receipt fields. "
             "expected_agent_pub_b64 is required — omitting it would skip signature verification "
             "and cause this tool to fail open."
         ),
@@ -599,7 +632,7 @@ _TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "receipt_json": {
                     "type": "string",
-                    "description": "JSON-serialized ActionReceipt",
+                    "description": "JSON object containing payload_hex and its agent signature",
                     "maxLength": _RECEIPT_MAX,
                 },
                 "expected_agent_pub_b64": {

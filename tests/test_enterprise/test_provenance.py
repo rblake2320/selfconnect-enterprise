@@ -20,6 +20,7 @@ import uuid
 
 import pytest
 
+from enterprise.identity import AgentIdentity
 from enterprise.provenance import (
     GENESIS_HASH,
     AuditMode,
@@ -1167,3 +1168,53 @@ class TestReplicationAck:
         result = verify_log(r.log_path, sid)
         assert result.ok
         assert result.count >= 5
+
+
+class TestRecorderSignatureVerification:
+    def _signed_recorder(self, tmp_path):
+        identity = AgentIdentity.init("provenance-recorder", data_dir=tmp_path / "identity")
+        recorder = ProvenanceRecorder(
+            session_id="signed-session",
+            agent_id=identity.agent_id,
+            audit_mode=AuditMode.ENTERPRISE,
+            log_dir=tmp_path / "logs",
+            heartbeat_interval=0,
+            identity=identity,
+            orchestrator_token="close-token",
+            replication_sink=InMemoryWitnessSink(),
+        )
+        recorder.start()
+        recorder.record(SessionEventType.TOOL_CALL, payload={"tool": "bounded-test"})
+        recorder.close(orchestrator_token="close-token")
+        return recorder, identity
+
+    def test_external_public_key_verifies_every_recorder_signature(self, tmp_path):
+        recorder, identity = self._signed_recorder(tmp_path)
+        result = verify_log(
+            recorder.log_path,
+            recorder.session_id,
+            recorder_public_key=identity.public_key_bytes,
+            require_recorder_signatures=True,
+        )
+        assert result.ok
+        assert result.signatures_verified is True
+
+    def test_signature_tamper_fails_even_when_hash_chain_is_unchanged(self, tmp_path):
+        recorder, identity = self._signed_recorder(tmp_path)
+        records = [json.loads(line) for line in recorder.log_path.read_text().splitlines()]
+        target = next(record for record in records if record.get("event_type") == "tool_call")
+        target["recorder_sig"] = "00" * 64
+        recorder.log_path.write_text(
+            "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records),
+            encoding="utf-8",
+        )
+        chain_only = verify_log(recorder.log_path, recorder.session_id)
+        signed = verify_log(
+            recorder.log_path,
+            recorder.session_id,
+            recorder_public_key=identity.public_key_bytes,
+            require_recorder_signatures=True,
+        )
+        assert chain_only.ok
+        assert signed.ok is False
+        assert "signature invalid" in signed.message

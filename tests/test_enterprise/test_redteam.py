@@ -261,14 +261,11 @@ class TestRT04ClassificationSpoofing:
         assert e.check(AGENT_A, "assign_task").allowed is True
 
     def test_unknown_classification_string_blocked(self):
-        """An unknown classification string gets rank -1 ≤ any ceiling → passes.
-        This is by design — unknown labels are treated as lower-than-unclassified."""
+        """An unknown classification must fail closed rather than sort below UNCLASSIFIED."""
         e = _enforcer(max_classification="UNCLASSIFIED")
-        # rank -1 <= rank 0 → allowed (unknown is not escalation)
         result = e.check(AGENT_A, "assign_task", classification="FOR_OFFICIAL_USE_ONLY")
-        # Document the behavior: unknown levels pass the ceiling check
-        # (they cannot forge a higher classification)
-        assert result.allowed is True  # passes ceiling — does not grant escalation
+        assert result.allowed is False
+        assert "unknown classification" in result.reason
 
 
 # ── RT-05 / RT-06: Training data poisoning ────────────────────────────────────

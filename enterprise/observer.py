@@ -3,16 +3,17 @@
 Reads policy-governed ledger entries and extracts them as structured training
 evidence for LoRA fine-tuning of local models (Ollama, HuggingFace PEFT, etc.)
 
-The observer operates ONLY on entries where decision=allow — actions that were
-explicitly permitted by a signed PolicyEnforcer evaluation.  This guarantees
-that any model trained on this evidence cannot learn behaviors that the policy
-forbade.
+The verified observer path exports only entries where decision=allow — actions
+that were explicitly permitted by the configured policy evaluation. The same
+filter is applied to exported context. This establishes a dataset-filtering
+property only; it cannot guarantee what a model may infer, generate, or learn
+from other data.
 
 Patent claim coverage:
     "A system in which an AI agent observes its own policy-approved action
     history to produce structured training data for a constrained fine-tuning
-    process, such that the resulting fine-tuned model cannot learn behaviors
-    outside the original policy boundary because it was never exposed to them."
+    process, with denied primary records and context excluded from this exported
+    dataset."
 
 Architecture:
     ObserverFilter    — criteria: decision, policy_id, classification, action
@@ -75,6 +76,7 @@ class ObserverFilter:
 
     def __post_init__(self) -> None:
         """Coerce any list/set/tuple fields to frozenset for O(1) lookups."""
+        _rank(self.max_classification)
         self.allowed_decisions      = frozenset(self.allowed_decisions)
         self.allowed_policy_ids     = frozenset(self.allowed_policy_ids)
         self.allowed_actions        = frozenset(self.allowed_actions)
@@ -97,7 +99,11 @@ class ObserverFilter:
             return False
 
         # Classification ceiling
-        if _rank(entry.get("classification", "UNCLASSIFIED")) > _rank(self.max_classification):
+        try:
+            entry_rank = _rank(entry.get("classification", "UNCLASSIFIED"))
+        except (TypeError, ValueError):
+            return False
+        if entry_rank > _rank(self.max_classification):
             return False
 
         # Caveat filter (only when a restriction is configured)
@@ -318,9 +324,15 @@ class LedgerObserver:
             if not self._filter.matches(entry):
                 continue
 
-            # Context window: N entries immediately before this one in the raw log
-            ctx_start      = max(0, i - self._context_window)
-            context_before = [self._redaction.apply(e) for e in all_entries[ctx_start:i]]
+            # Context is itself training data. Apply the same policy filter used
+            # for primary records so denied/quarantined/paused entries cannot be
+            # reintroduced through a preceding context window.
+            ctx_start = max(0, i - self._context_window)
+            context_before = [
+                self._redaction.apply(candidate)
+                for candidate in all_entries[ctx_start:i]
+                if self._filter.matches(candidate)
+            ]
 
             redacted = self._redaction.apply(entry)
             records.append(EvidenceRecord(

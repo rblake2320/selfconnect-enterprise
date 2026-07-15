@@ -1,8 +1,34 @@
-# Complete Test Registry — Every Test Ever Written
+# Test Registry — Named Coverage Inventory
 
-This document lists every test across all repos. Tests are real — no mocks, no stubs that return True.
+This document is a maintained inventory of named test coverage across related
+repositories. It is not automatically exhaustive and its totals are historical
+until regenerated for a specific commit. Unit tests may use deterministic test
+doubles or monkeypatching; integration and live-conformance sections state
+explicitly when they exercise real processes, stores, cryptography, or Windows
+targets. A unit-test count is never a substitute for live acceptance evidence.
 
 ## Grand Total
+
+### Current SelfConnect Enterprise Checkout
+
+The 2026-07-15 hardening checkout (commit containing
+[LOG-20260715-006](LOG.md#log-20260715-006)) collected and passed **1,429 Python
+tests on Windows with zero skips**. Pytest auto-started the real development
+Ultra Node process and the Python live contract used real HTTP and
+cryptography. Two expected warnings stated that no live-verified immutable sink
+was configured in the relevant negative tests. Separate production-mode
+evidence used real local PostgreSQL 17.5 and Redis 7.4.5: **16/16 Node tests,
+39 live Node checks, and 84 live Python tests**, followed by rotated-TSK process
+restart continuity. The live Node contract rewound four completed lifecycle
+rows to `processing` and recovered them without duplicating their resources.
+It also refused recovery after the underlying key became inactive and did not
+create a replacement.
+These results do not establish external storage,
+authorization, or partner-adapter behavior.
+
+The tables below retain historical per-repository inventories and should not be
+summed as a current release total because some SDK coverage appears in more
+than one checkout.
 
 | Repo | Test Files | Named Tests | Notes |
 | :--- | :--- | :--- | :--- |
@@ -1356,7 +1382,7 @@ This document lists every test across all repos. Tests are real — no mocks, no
 - `should allow requests within limit`
 - `should detect replay nonces`
 
-### Security Hardening (IL4-7) — `packages/server/tests/security.test.ts` (45 tests)
+### Security Hardening — `packages/server/tests/security.test.ts` (45 tests)
 
 - `rejects registration with empty secretHash`
 - `rejects registration with short secretHash (< 43 chars)`
@@ -1399,7 +1425,9 @@ This document lists every test across all repos. Tests are real — no mocks, no
 - `rejects registration with invalid mode`
 - `rejects secrets shorter than 16 characters`
 - `rejects secrets with only one special character`
-- `accepts a valid IL4-7 compliant secret`
+- `accepts a valid hardened secret` *(normalized registry label; this test
+  checks the package's secret-format rule and does not establish a DoD Impact
+  Level authorization or compliance status)*
 - `MIN_SECRET_LENGTH is 16`
 - `completes a full request lifecycle with all hardening active`
 - `dual-track rate limiters work together without interfering`

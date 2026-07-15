@@ -1,26 +1,32 @@
 # Gap Analysis — Open Security Items
-## SelfConnect Enterprise v1.0.0
+## SelfConnect Enterprise v1.2.3
 
-**Date:** 2026-05-08  
+**Date:** 2026-07-15
 **Prepared against:** NIST SP 800-53 Rev 5 Moderate Baseline  
-**Status:** 4 open gaps. All acknowledged in `SECURITY.md`. All scheduled for remediation.
+**Status:** Self-assessment in progress. `GAPS.md` is the canonical cross-component registry.
 
-This document is the system's Plan of Action and Milestones (POA&M) precursor.
+This document is a Plan of Action and Milestones (POA&M) precursor, not an
+approved POA&M or assessor determination.
 Each gap is documented with: what the gap is, why it exists, what controls it
 affects, the risk posture, and the remediation plan.
 
-The existence of this document is itself a security signal. A system that cannot
-name its gaps cannot remediate them. These four gaps are known, bounded, and
-scheduled. They are not surprises.
+**Control mapping qualifier:** Candidate controls affected are preliminary and
+pending review by a qualified assessor. They do not constitute a legal or
+compliance determination.
+
+Known gaps must be named, tested where possible, and linked to remediation or an
+explicitly accepted limitation. This file is not evidence that undiscovered
+gaps do not exist.
 
 ---
 
 ## G-1 — Training Data Isolation: Deny Entries Visible in Ledger
 
 **What the gap is:**  
-Denied and quarantined ledger entries are excluded from the training data
-pipeline by `ObserverFilter` — this is a proven invariant
-(`test_only_allow_decisions_reach_training_data`). However, the raw ledger
+Denied and quarantined ledger entries are excluded from primary training
+records and `context_before` windows by `ObserverFilter`, as narrowly
+established by `test_only_allow_decisions_reach_training_data` and
+`test_context_window_does_not_include_denied_in_output`. However, the raw ledger
 JSONL file contains all entries including denied decisions. An operator with
 read access to the ledger file can observe what actions were denied and for
 whom, potentially revealing policy configuration details.
@@ -88,13 +94,13 @@ primary perimeter.
 ## G-3 — Ledger Write Protection Not Enforced
 
 **What the gap is:**  
-`AgentLedger` and `CngLedger` detect retroactive tampering via hash chain
-verification — any modified entry breaks all subsequent entry hashes.
-Tampering is detectable but not prevented. A malicious process with write
-access to the JSONL ledger file can modify, delete, or truncate entries.
-The modification will be detected by the next `verify()` call, but if all
-copies of the ledger are compromised before verification, the chain is broken
-without recovery.
+`AgentLedger` and `CngLedger` detect interior modification, insertion, and
+deletion of retained entries through signature and hash-chain verification.
+Tampering is detectable but not prevented. Tail truncation and complete-file
+deletion are not detectable from the local file alone because no later retained
+entry remains to expose the missing tail. Those cases require a trusted external
+checkpoint or off-host immutable copy. The earlier statement that every
+truncate/delete would be detected by the next `verify()` call was incorrect.
 
 **Why it exists:**  
 Filesystem write protection is an OS/storage concern. The Python ledger
@@ -107,16 +113,21 @@ physical write protection.
 an ACL-restricted path (e.g., accessible only to the agent process UID and the
 audit review role). Physical modification is an insider threat scenario.
 
-**Remediation plan:**  
-- v1.1.0: WORM backend adapter — abstract the ledger write path behind a
-  `LedgerBackend` protocol; provide a `WormFileLedgerBackend` that opens the
-  file with `FILE_FLAG_WRITE_THROUGH` and appends to an OS-level append-only
-  log. On Windows, this maps to NTFS append-only attribute or Event Log backend.
-- Separately: Document NTFS ACL configuration for the ledger directory in the
-  deployment guide (least-privilege path — read/append for agent, read-only for
-  audit reviewer, no delete permission for either)
+**Remediation implemented:** S3 Object Lock and R2 bucket-lock adapters verify
+provider retention configuration and per-object retention readback. Local file
+replication is explicitly a replica, not WORM, and government mode rejects it
+as the immutable sink. `AgentLedger` additionally fsyncs appends, seals verified
+local segments at configurable entry/byte limits, verifies archives plus the
+active file as one sequence, and refuses corrupt startup. Segmentation controls
+file lifecycle but cannot witness removal of the final tail or all files.
 
-**Milestone:** v1.1.0
+**Remaining deployment proof:** Select an independently controlled provider,
+configure credentials and retention/legal-hold policy, run a live write/readback,
+delete/corrupt local state, restore from the independent copy, verify signatures
+and the chain, and retain the provider configuration evidence. Until then this
+gap remains open for a deployed system.
+
+**Milestone:** Deployment-specific
 
 ---
 
@@ -128,6 +139,10 @@ provisioning (`init()`) and used indefinitely. There is no key rotation
 workflow, no key expiry, no certificate-based lifecycle management. Revocation
 via `ControlPlane.revoke()` terminates the agent's ability to act but does not
 rotate the underlying cryptographic key.
+
+Ultra's operator/recovery secrets and TSK client keys now have separate tested
+rotation procedures. That closes the sidecar-key portion only; it does not
+rotate the `CngIdentity` or `AgentIdentity` signing key described by this gap.
 
 **Why it exists:**  
 Key lifecycle management (rotation schedules, expiry enforcement, OCSP/CRL
@@ -195,10 +210,10 @@ pipeline or where `--process` is not strictly operator-controlled.  Generated
 
 ## G-6 — AgentLedger Concurrent Write Safety (Design Boundary)
 
-**What the gap is:**
-`AgentLedger.log()` (and `CngLedger.log()`) have no threading lock. The `_seq`,
-`_prev_hash`, and JSONL file write are not protected against concurrent callers.
-Concurrent writes corrupt the hash chain.
+**What the boundary is:**
+Base `AgentLedger.log()` and `CngLedger.log()` retain a documented single-writer
+contract. `ThreadSafeAgentLedger` provides the locked adapter, and
+`GovernedRuntime` requires that adapter for its persistent action path.
 
 **Why it exists:**
 The ledger is designed as a single-writer component — one agent process, one ledger
@@ -207,54 +222,62 @@ the code level.
 
 **Controls affected:** AU-9 (protection of audit information), AU-10 (non-repudiation)
 
-**Risk posture:** Low. Exploitation requires two threads sharing the same AgentLedger
-instance and calling log() simultaneously — a usage pattern that violates the stated
-single-writer contract. `verify()` correctly detects corruption after the fact.
+**Risk posture:** Low on `GovernedRuntime`; caller-controlled on direct base-class
+use. `verify()` detects resulting corruption but does not prevent it.
 
-**Remediation plan:**
-- v1.3.0: Optional `threading.Lock` wrapper — `ThreadSafeAgentLedger(AgentLedger)`
-  that wraps log() with a lock, for callers who cannot guarantee single-writer usage.
-  The base class stays lockless (fast path for the common case).
-- Document single-writer contract explicitly in class docstring.
+**Status:** Mitigated for the governed runtime; direct base-class use remains a
+documented design boundary and cannot inherit the thread-safe claim.
 
-**Status:** Documented (v1.2.0). Discovered by concurrency stress test `test_concurrent_writes_documented_unsafe`.
-
-**Milestone:** v1.3.0
+**Milestone:** Governed path implemented 2026-07-15
 
 ---
 
-## G-7 — May 2026 Zero-Day CVE Audit ✓ CLOSED (v1.2.0)
+## G-7 — Dependency and Vulnerability Release Gate
 
-**What the audit covered:**
-Proactive sweep of the May 2026 zero-day threat landscape against the SelfConnect
-Enterprise codebase and dependency tree.
+**What is implemented:** `pyproject.toml` declares `cryptography>=48.0.1`.
+Supply-chain tests check the installed environment, direct dependencies, pinned
+Git dependencies, prohibited code patterns, and selected historical indicators.
+CI pins third-party GitHub Actions by full commit and Ultra protocol sources by
+full commit.
 
-**Threats assessed:**
+**What this does not establish:** A historical scan is not a current
+vulnerability determination. A dependency declaration does not prove the
+deployed environment installed it. Claims about a specific CVE or installed
+version are valid only for the report, lock/input set, and timestamp attached to
+that run.
 
-| CVE / Threat | Attack Class | Our Exposure | Disposition |
-|---|---|---|---|
-| sonatype-2026-001357 (LiteLLM 1.82.7–1.82.8) | Supply chain — credential stealer + backdoor | litellm not a direct dep; env has 1.82.5 (safe) | CI gate added in `test_supply_chain.py` |
-| CVE-2026-26007 (cryptography < 46.0.5) | ECDH small-subgroup — SECT curves | We use P-384/ed25519 (not exploitable via our paths) | Version floor raised to >=46.0.6; static scan added |
-| CVE-2026-34073 (cryptography < 46.0.6) | X.509 name constraint bypass | We use Windows NCrypt/CNG, not x509.verification (not exploitable) | Version floor >=46.0.6; static x509.verification scan added |
-| CVE-2026-33825 / BlueHammer (Defender TOCTOU) | NTFS junction redirect → SYSTEM | Affects Defender's internal staging paths, not .ps1 output paths | SHA-256 integrity hash added to wfp_policy.py output |
-| CVE-2026-32202 (Windows NTLM coercion) | Net-NTLMv2 hash capture | We use NCrypt ECDSA, no NTLM auth paths | OS patch control (not in-app) |
-| CVE-2026-41089 (Windows Netlogon heap RCE) | Unauthenticated domain controller RCE | No Netlogon usage | OS patch control (not in-app) |
+**Controls affected:** SA-10, SA-15, SI-2, SR-11
 
-**Controls affected:** SA-10 (developer security testing), SA-15 (development process), SI-2 (flaw remediation), SR-11 (component authenticity)
+**Release rule:** The isolated release environment must install the declared
+floor, run the full suite and Ruff, and pass a current dependency audit. A
+shared developer environment below the floor is a release-gate failure, not
+evidence that the declaration is absent.
 
-**Deliverables (v1.2.0):**
-- `tests/test_enterprise/test_supply_chain.py` — 10 tests: LiteLLM backdoor version gate,
-  cryptography version floor, SECT curve static scan, x509.verification static scan,
-  WFP script determinism and tamper detection.
-- `pyproject.toml` — `cryptography>=46.0.6` (was `>=42`)
-- `tools/wfp_policy.py` — SHA-256 hash printed to console at script generation time
-- Installed version upgraded to `cryptography==48.0.0`
+**Status:** Control implemented; result is build-specific and must be rerun.
 
-**Residual:** OS CVEs (CVE-2026-32202, CVE-2026-41089) are environment/OS patch controls.
-Not tracked as SelfConnect code gaps — tracked as deployment requirements in the operator
-guide.
+---
 
-**Milestone:** v1.2.0 — CLOSED
+## G-8 through G-20 — Deployment and Composition Register
+
+These entries prevent component evidence from being mistaken for deployment or
+authorization evidence. Each control mapping below is a candidate control
+affected, pending qualified assessor review.
+
+| Gap | Description | Candidate controls | Risk | Status |
+|---|---|---|---|---|
+| G-8 | No selected authorization track, authorization boundary, PA/ATO/IATT package, or accountable authorizing official. A cloud service offering path and a Mission Owner component path are different. | CA-1, CA-2, CA-6, CA-7 | Blocker | Open |
+| G-9 | Installed dependency state is environment-specific. The declared `cryptography>=48.0.1` floor must be enforced in every release/deployment environment. | SI-2, SR-11 | High | Release gate |
+| G-10 | No verified SelfConnect-specific FIPS 140-3 deployment path, approved module/configuration inventory, or certificate-condition evidence exists. CNG algorithm use alone is not a FIPS claim. | SC-13, IA-7 | High | Open |
+| G-11 | Unknown classifications previously sorted below UNCLASSIFIED. All current label, profile, policy, and observer ingress now fails closed and named adversarial tests cover the prior bypass. | AC-4, SC-16 | High | **Closed in code 2026-07-15** |
+| G-12 | `EgressGuard` and `ExportGuard` govern calls routed through them; they are not OS/network interception boundaries. WFP/infrastructure controls and live route enumeration remain required. | SC-7, AC-4 | High | Open deployment boundary |
+| G-13 | `GovernedRuntime` requires an external policy trust root. Lower-level `PolicyEnforcer` can still use an embedded signing key for compatibility and is outside that stronger claim. | IA-3, SC-12 | High | Open compatibility boundary |
+| G-14 | Interior ledger changes are detectable; local tail truncation or complete deletion is not. Provider-verified immutable adapters exist, but no partner deployment/restore evidence exists. | AU-9, AU-10 | High | Open; same root issue as G-3 |
+| G-15 | TPM/CNG capability probes and software identities do not establish mandatory TPM attestation on every governed frame or remote attestation. | IA-3, SC-17 | Medium | Open |
+| G-16 | Core SelfConnect raw-send, cross-machine relay, and other repositories are separate boundaries. Enterprise composition does not globally intercept them. | AC-3, SC-8 | Medium | Open cross-repository conformance |
+| G-17 | No completed STIG/SRG assessment, inheritance matrix, configuration baseline, POA&M approval, continuous-monitoring plan, incident evidence, or independent assessment exists. | CA-2, CA-7, CM-2, IR-1 | Blocker | Open |
+| G-18 | Ultra lifecycle authentication and durability were inconsistent across Python and Node. Signed body-bound agent proofs, operator-authorized production enrollment, dual-control recovery, PostgreSQL/Redis stores, source-IP/pair rate limits, fail-closed shadow handling, bounded secret overlap/retirement, and restart-safe TSK rotation now cover the tested composition. Deployment custody remains G-20/US-7. | IA-3, IA-5, AU-9 | High | **Closed in code and live local test 2026-07-15; CI publication pending** |
+| G-19 | No external workflow adapter has completed a live approved-tenant test with a versioned callback contract, rollback evidence, and integrator acceptance. | SA-9, CA-3, AC-20 | High | Open |
+| G-20 | No live off-host immutable evidence deployment, independent custody decision, retention/legal-hold policy, or restore drill has been completed for the proposed partner boundary. | AU-9, CP-9, CP-10 | Blocker | Open |
 
 ---
 
@@ -267,13 +290,16 @@ guide.
 | G-3 | Ledger write not protected | AU-9, AU-10 | Low-Medium | Open — v1.3.0 |
 | G-4 | No key rotation protocol | IA-5, AC-2, SC-12 | Low | Open — v1.3.0 |
 | G-5 | WFP generator PS injection (CWE-93) | SI-3, SA-11, CM-7 | High | **CLOSED v1.1.1** |
-| G-6 | AgentLedger single-writer contract undocumented | AU-9, AU-10 | Low | Open — v1.3.0 |
-| G-7 | May 2026 CVE audit | SA-10, SA-15, SI-2, SR-11 | — | **CLOSED v1.2.0** |
+| G-6 | Base ledger single-writer boundary | AU-9, AU-10 | Low | Mitigated on GovernedRuntime |
+| G-7 | Dependency/vulnerability release gate | SA-10, SA-15, SI-2, SR-11 | High | Implemented; rerun per build |
+| G-8–G-20 | Deployment, authorization, FIPS, cross-path, Ultra, partner, and immutable-evidence boundaries | See register above | Medium–Blocker | Mixed; G-11 and code portion of G-18 closed |
 
-G-2, G-5, and G-7 are closed. G-1, G-3, G-4, G-6 remain open for v1.3.0.
-None of the open gaps represent an exploitable vulnerability in the primary
-security controls — classification ceiling enforcement, deny-by-default policy,
-signed policy verification, and training data isolation are all fully satisfied.
+G-2, G-5, G-11, and the implementation portion of G-18 are closed. G-7 is a
+recurring release gate, not a permanent closure. Other open items require code,
+deployment evidence, partner integration, assessment, or authorization. Additional
+cross-component, deployment, and IRS-integration details are tracked in `GAPS.md`.
+Component tests do not establish that every runtime path or deployment boundary
+uses those components.
 
 ---
 

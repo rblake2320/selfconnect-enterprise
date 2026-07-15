@@ -107,9 +107,9 @@ class TestClassifiedModeProfile:
         assert restored.allowed_caveats == original.allowed_caveats
         assert restored.profile_id == original.profile_id
 
-    def test_from_dict_unknown_classification_defaults_unclassified(self):
-        profile = ClassifiedModeProfile.from_dict({"max_classification": "BOGUS"})
-        assert profile.max_classification == Classification.UNCLASSIFIED
+    def test_from_dict_unknown_classification_is_rejected(self):
+        with pytest.raises(ValueError, match="unknown max_classification"):
+            ClassifiedModeProfile.from_dict({"max_classification": "BOGUS"})
 
     def test_to_policy_constraints_keys(self):
         profile = ClassifiedModeProfile(max_classification=Classification.SECRET)

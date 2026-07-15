@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 import pytest
 
@@ -27,6 +28,16 @@ class FakeNotFound(Exception):
 
 class FakePrecondition(Exception):
     response = {"Error": {"Code": "PreconditionFailed"}}
+
+
+def locked_head(*, root: str = "", etag: str = "locked-etag") -> dict:
+    metadata = {"root": root} if root else {}
+    return {
+        "ETag": f'"{etag}"',
+        "Metadata": metadata,
+        "ObjectLockMode": "COMPLIANCE",
+        "ObjectLockRetainUntilDate": datetime.now(timezone.utc) + timedelta(days=365),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +123,7 @@ class TestMakeReplicationSinkS3:
 
     def test_s3_push_writes_object_lock_headers(self):
         mock_client = MagicMock()
-        mock_client.head_object.side_effect = FakeNotFound()
+        mock_client.head_object.side_effect = [FakeNotFound(), locked_head()]
         mock_client.put_object.return_value = {"ETag": '"etag-123"'}
         mock_boto3 = MagicMock()
         mock_boto3.client.return_value = mock_client
@@ -138,7 +149,7 @@ class TestMakeReplicationSinkS3:
 
     def test_s3_push_is_idempotent_when_object_exists(self):
         mock_client = MagicMock()
-        mock_client.head_object.return_value = {"ETag": '"existing-etag"'}
+        mock_client.head_object.return_value = locked_head(etag="existing-etag")
         mock_boto3 = MagicMock()
         mock_boto3.client.return_value = mock_client
 
@@ -152,8 +163,14 @@ class TestMakeReplicationSinkS3:
         mock_client.put_object.assert_not_called()
 
     def test_s3_push_rejects_conflicting_seal_root(self):
+        root = "a" * 96
         mock_client = MagicMock()
-        mock_client.head_object.side_effect = FakeNotFound()
+        mock_client.head_object.side_effect = [
+            FakeNotFound(),
+            locked_head(root=root, etag="index-etag"),
+            FakeNotFound(),
+            locked_head(etag="record-etag"),
+        ]
         mock_client.put_object.return_value = {"ETag": '"etag"'}
         mock_boto3 = MagicMock()
         mock_boto3.client.return_value = mock_client
@@ -161,7 +178,7 @@ class TestMakeReplicationSinkS3:
         with patch.dict("sys.modules", {"boto3": mock_boto3}):
             sink = S3ObjectLockSink(bucket="audit-bucket", prefix="scent/audit/")
 
-        first = {"seq": 100, "event_type": "merkle_seal", "payload": {"merkle_root": "a" * 96}}
+        first = {"seq": 100, "event_type": "merkle_seal", "payload": {"merkle_root": root}}
         second = {"seq": 101, "event_type": "merkle_seal", "payload": {"merkle_root": "b" * 96}}
         sink.push("session-003", 7, first)
 
@@ -174,8 +191,11 @@ class TestMakeReplicationSinkS3:
 
         def head_object(**kwargs):
             if kwargs["Key"].endswith("seal-index.json"):
-                return {"Metadata": {"root": root}, "ETag": '"index-etag"'}
-            raise FakeNotFound()
+                return locked_head(root=root, etag="index-etag")
+            if not getattr(head_object, "record_seen", False):
+                head_object.record_seen = True
+                raise FakeNotFound()
+            return locked_head(etag="record-etag")
 
         mock_client.head_object.side_effect = head_object
         mock_client.put_object.return_value = {"ETag": '"record-etag"'}
@@ -194,7 +214,7 @@ class TestMakeReplicationSinkS3:
 
     def test_s3_push_rejects_existing_remote_seal_index_different_root(self):
         mock_client = MagicMock()
-        mock_client.head_object.return_value = {"Metadata": {"root": "a" * 96}}
+        mock_client.head_object.return_value = locked_head(root="a" * 96)
         mock_boto3 = MagicMock()
         mock_boto3.client.return_value = mock_client
 
@@ -218,8 +238,11 @@ class TestMakeReplicationSinkS3:
                 seal_heads += 1
                 if seal_heads == 1:
                     raise FakeNotFound()
-                return {"Metadata": {"root": root}, "ETag": '"index-etag"'}
-            raise FakeNotFound()
+                return locked_head(root=root, etag="index-etag")
+            if not getattr(head_object, "record_seen", False):
+                head_object.record_seen = True
+                raise FakeNotFound()
+            return locked_head(etag="record-etag")
 
         mock_client.head_object.side_effect = head_object
         mock_client.put_object.side_effect = [FakePrecondition(), {"ETag": '"record-etag"'}]
@@ -234,6 +257,30 @@ class TestMakeReplicationSinkS3:
 
         assert receipt.endswith("#record-etag")
         assert mock_client.put_object.call_count == 2
+
+    def test_s3_retention_configuration_is_live_verified(self):
+        mock_client = MagicMock()
+        mock_client.get_object_lock_configuration.return_value = {
+            "ObjectLockConfiguration": {"ObjectLockEnabled": "Enabled"}
+        }
+        mock_boto3 = MagicMock()
+        mock_boto3.client.return_value = mock_client
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
+            sink = S3ObjectLockSink(bucket="audit-bucket")
+        evidence = sink.verify_retention_configuration()
+        assert evidence["object_lock_enabled"] is True
+
+    def test_s3_retention_configuration_fails_closed_when_disabled(self):
+        mock_client = MagicMock()
+        mock_client.get_object_lock_configuration.return_value = {
+            "ObjectLockConfiguration": {}
+        }
+        mock_boto3 = MagicMock()
+        mock_boto3.client.return_value = mock_client
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
+            sink = S3ObjectLockSink(bucket="audit-bucket")
+        with pytest.raises(ReplicationError, match="not_enabled"):
+            sink.verify_retention_configuration()
 
 
 class TestMakeReplicationSinkR2:
@@ -290,6 +337,69 @@ class TestMakeReplicationSinkR2:
         assert "ObjectLockMode" not in kwargs
         assert "ObjectLockRetainUntilDate" not in kwargs
 
+    def test_r2_bucket_lock_configuration_is_live_verified(self):
+        mock_boto3 = MagicMock()
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(
+            {
+                "success": True,
+                "result": {
+                    "rules": [
+                        {
+                            "id": "audit-365d",
+                            "enabled": True,
+                            "prefix": "r2",
+                            "condition": {"type": "Age", "maxAgeSeconds": 31_536_000},
+                        }
+                    ]
+                },
+            }
+        ).encode()
+        with (
+            patch.dict("sys.modules", {"boto3": mock_boto3}),
+            patch("urllib.request.urlopen", return_value=response),
+        ):
+            sink = CloudflareR2Sink(
+                bucket="r2-audit",
+                prefix="r2/",
+                account_id="account-1",
+                api_token="secret-token",
+                minimum_retention_days=365,
+            )
+            evidence = sink.verify_retention_configuration()
+        assert evidence["rule_id"] == "audit-365d"
+
+    def test_r2_bucket_lock_rejects_short_or_wrong_prefix_rule(self):
+        mock_boto3 = MagicMock()
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(
+            {
+                "success": True,
+                "result": {
+                    "rules": [
+                        {
+                            "id": "short",
+                            "enabled": True,
+                            "prefix": "other",
+                            "condition": {"type": "Age", "maxAgeSeconds": 60},
+                        }
+                    ]
+                },
+            }
+        ).encode()
+        with (
+            patch.dict("sys.modules", {"boto3": mock_boto3}),
+            patch("urllib.request.urlopen", return_value=response),
+        ):
+            sink = CloudflareR2Sink(
+                bucket="r2-audit",
+                prefix="r2/",
+                account_id="account-1",
+                api_token="secret-token",
+            )
+            with pytest.raises(ReplicationError, match="no_enabled_rule"):
+                sink.verify_retention_configuration()
+
 
 # ---------------------------------------------------------------------------
 # build_provenance_recorder
@@ -322,15 +432,13 @@ class TestBuildProvenanceRecorder:
         cfg = AuditConfig(audit_mode=AuditMode.ENTERPRISE, worm_sink=WormSinkType.MEMORY)
         with caplog.at_level(logging.WARNING, logger="enterprise.worm_service"):
             recorder = build_provenance_recorder(cfg, "test-session-005")
-        assert any("AU-9" in r.message for r in caplog.records)
+        assert any("no live-verified immutable retention" in r.message for r in caplog.records)
         assert isinstance(recorder, ProvenanceRecorder)
 
-    def test_government_mode_with_memory_sink_succeeds(self):
-        """Government + memory sink should succeed (memory is a valid sink, not NONE)."""
+    def test_government_mode_with_memory_sink_fails_closed(self):
         cfg = AuditConfig(audit_mode=AuditMode.GOVERNMENT, worm_sink=WormSinkType.MEMORY)
-        recorder = build_provenance_recorder(cfg, "test-session-006")
-        assert isinstance(recorder, ProvenanceRecorder)
-        assert isinstance(recorder._replication_sink, InMemoryWitnessSink)
+        with pytest.raises(WormServiceError, match="memory and file are not WORM"):
+            build_provenance_recorder(cfg, "test-session-006")
 
     def test_recorder_agent_id_set(self):
         cfg = AuditConfig(audit_mode=AuditMode.CONSUMER, worm_sink=WormSinkType.MEMORY)
@@ -351,9 +459,8 @@ class TestBuildProvenanceRecorder:
 
     def test_recorder_audit_mode_government_mapped_to_military(self):
         from enterprise.provenance import AuditMode as PAuditMode
-        cfg = AuditConfig(audit_mode=AuditMode.GOVERNMENT, worm_sink=WormSinkType.MEMORY)
-        recorder = build_provenance_recorder(cfg, "test-session-010")
-        assert recorder._audit_mode == PAuditMode.MILITARY
+        from enterprise.worm_service import _to_provenance_mode
+        assert _to_provenance_mode(AuditMode.GOVERNMENT) == PAuditMode.MILITARY
 
 
 # ---------------------------------------------------------------------------

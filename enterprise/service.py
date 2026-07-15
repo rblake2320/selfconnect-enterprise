@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 SERVICE_NAME = "SelfConnectEnterprise"
 SERVICE_DISPLAY_NAME = "SelfConnect Enterprise Control Plane"
 SERVICE_DESCRIPTION = (
-    "Governed OS-native AI peer mesh. Provides TPM-backed identity leases, "
-    "DACL-guarded pipe transport, fail-closed target verification, and per-action audit receipts."
+    "Governed OS-native AI peer mesh with identity-bound leases, "
+    "guarded local transport, target verification, and action audit receipts."
 )
 
 # ---------------------------------------------------------------------------
@@ -143,7 +143,10 @@ class ControlPlaneThread(threading.Thread):
         self.provenance_recorder = None
 
     def run(self) -> None:
+        recorder = None
+        orchestrator_token = None
         try:
+            import secrets
             import uuid
             from enterprise.audit_config import AuditMode as CfgAuditMode
             from enterprise.audit_config import WormSinkType, load_audit_config
@@ -165,19 +168,35 @@ class ControlPlaneThread(threading.Thread):
                 self._stop_signal.set()
                 return
 
-            # Enterprise mode with memory sink — AU-9 compliance warning.
+            # Enterprise mode with memory sink — no immutable retention proof.
             if (
                 audit_config.audit_mode == CfgAuditMode.ENTERPRISE
                 and audit_config.worm_sink == WormSinkType.MEMORY
             ):
                 logger.warning(
-                    "AU-9 compliance warning: enterprise mode is configured with "
-                    "InMemoryWitnessSink. Configure file, s3, or r2 for AU-9."
+                    "Enterprise mode is configured with InMemoryWitnessSink. "
+                    "This is not immutable retention; configure and live-verify "
+                    "S3 Object Lock or Cloudflare R2 bucket lock."
                 )
 
+            from enterprise.identity import AgentIdentity
+
             session_id = str(uuid.uuid4())
+            identity_name = "scent-service"
+            identity = (
+                AgentIdentity.load(identity_name)
+                if AgentIdentity.exists(identity_name)
+                else AgentIdentity.init(identity_name)
+            )
+            orchestrator_token = secrets.token_urlsafe(32)
             try:
-                recorder = build_provenance_recorder(audit_config, session_id)
+                recorder = build_provenance_recorder(
+                    audit_config,
+                    session_id,
+                    identity=identity,
+                    orchestrator_token=orchestrator_token,
+                )
+                recorder.start()
                 self.provenance_recorder = recorder
                 logger.info(
                     "ProvenanceRecorder initialised: session=%s mode=%s",
@@ -190,11 +209,15 @@ class ControlPlaneThread(threading.Thread):
                 return
 
             from enterprise.control import ControlPlane
-            cp = ControlPlane()
+            cp = ControlPlane(ledger=_ProvenanceLedgerAdapter(recorder))
             logger.info("ControlPlane started")
             while not self._stop_signal.wait(timeout=5.0):
                 pass
             cp.shutdown() if hasattr(cp, "shutdown") else None
+            recorder.close(
+                summary={"reason": "service_stop"},
+                orchestrator_token=orchestrator_token,
+            )
             logger.info("ControlPlane stopped")
         except Exception:  # noqa: BLE001
             logger.exception("ControlPlane thread crashed — service will stop to avoid fail-open")
@@ -202,6 +225,36 @@ class ControlPlaneThread(threading.Thread):
             # Signal the service main loop to stop so the SCM can restart it
             # rather than leaving the service alive with no enforcement.
             self._stop_signal.set()
+        finally:
+            if recorder is not None and recorder.is_started and not recorder.is_closed:
+                try:
+                    recorder.close(
+                        summary={"reason": "service_failure" if self.crashed else "service_stop"},
+                        orchestrator_token=orchestrator_token,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to seal provenance recorder during shutdown")
+                    self.crashed = True
+                    self._stop_signal.set()
+
+
+class _ProvenanceLedgerAdapter:
+    """Expose ProvenanceRecorder as the ledger interface used by ControlPlane."""
+
+    def __init__(self, recorder) -> None:
+        self._recorder = recorder
+
+    def log(self, action: str, result: str = "", metadata: dict | None = None, **_kwargs):
+        from enterprise.provenance import SessionEventType
+
+        return self._recorder.record(
+            SessionEventType.TOOL_CALL,
+            payload={
+                "action": action,
+                "result": result,
+                "metadata": metadata or {},
+            },
+        )
 
 
 if _WIN32_AVAILABLE:

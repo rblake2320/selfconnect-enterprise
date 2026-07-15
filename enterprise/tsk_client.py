@@ -14,11 +14,12 @@ TSK segment types:
   - totp:   HMAC(secret, "totp:<segmentId>:<T>")  — T = floor(nowMs/1000/windowSec)
   - hotp:   HMAC(secret, "hotp:<segmentId>:<counter>")  — counter per use
 
-SECURITY NOTE: The positional map (which positions in the key string map to
-which segments) is a SERVER-ONLY SECRET (Structural Secrecy, Layer 7). The
-client only knows the segment IDs, types, and lengths — not where they land
-in the final key string. This Python client assembles segments in the order
-the server specifies in the provision payload's `clientSegments` list.
+DISCLOSURE BOUNDARY: The complete stored server record is not returned verbatim,
+and literal `position` fields are absent from the provisioning response. The
+owning client nevertheless receives the shared secret plus segment IDs, types,
+lengths, ordered `clientSegments`, initial HOTP counters, and total key length
+needed to construct the key. Therefore this client does not claim structural
+secrecy of the effective layout from its owner.
 
 Version: 1.0.0  BPC+TSK integration
 """

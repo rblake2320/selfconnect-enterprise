@@ -6,11 +6,10 @@ This module implements the evidence foundation for SelfConnect agent sessions.
 The core principle: the audited process is NOT the auditor.
 
 Agents submit events via ProvenanceRecorder.record(). They never hold a direct
-file handle to the ledger. In the full hardened deployment (Phase 2) the recorder
-runs as a separate Windows service identity (service SID) — the only process with
-FILE_APPEND_DATA rights to the ledger file. The in-process implementation here
-provides the same cryptographic guarantees; process-separation requires the
-Windows service deployment.
+file handle to the ledger. A hardened deployment must run the recorder under a
+separate Windows service identity and enforce filesystem/service ACLs. The
+in-process implementation exercises record signing and chain verification; it
+does not establish that process-isolation boundary.
 
 THREAT MODEL — 13 adversarial fixes implemented
 -------------------------------------------------
@@ -51,8 +50,8 @@ Fix 12: TELEMETRY_GAP event when OS corroboration sensor is disabled/stops.
 Fix 13: Bounded input queue with backpressure + AU-5 audit-failure alert on
         disk exhaustion.
 
-COMPLIANCE: NIST AU-9 (audit log protection), AU-10 (non-repudiation),
-            AU-12 (audit record generation), AU-5 (response to audit failures).
+Candidate control mappings: NIST AU-9, AU-10, AU-12, and AU-5. These are
+preliminary engineering mappings pending qualified assessor review.
 
 LANGUAGE: EFS = confidentiality-at-rest only (not immutability).
           VSS = snapshot/recovery only (not evidence-grade immutability).
@@ -68,6 +67,8 @@ import os
 import platform
 import secrets
 import threading
+import urllib.parse
+import urllib.request
 import uuid
 import warnings
 from abc import ABC, abstractmethod
@@ -248,9 +249,9 @@ class ReplicationSink(ABC):
 class S3ObjectLockSink(ReplicationSink):
     """AWS S3 Object Lock WORM replication sink.
 
-    S3 Object Lock in COMPLIANCE mode prevents overwrite/delete during
-    the retention period even by the bucket owner. Use COMPLIANCE mode,
-    not GOVERNANCE mode, for IL4+ deployments.
+    S3 Object Lock in COMPLIANCE mode provides a non-bypassable retention
+    mechanism for the configured period. Suitability for a regulated or
+    government deployment remains configuration- and assessment-dependent.
 
     Fork detection: the S3 key includes (session_id, segment_no, root_hash[:16]).
     A conflicting root for the same (session_id, segment_no) will produce a
@@ -305,6 +306,23 @@ class S3ObjectLockSink(ReplicationSink):
     def get_latest_receipt(self, session_id: str) -> Optional[dict]:
         return self._receipts.get(session_id)
 
+    def verify_retention_configuration(self) -> dict[str, Any]:
+        """Verify that the live bucket has S3 Object Lock enabled."""
+        try:
+            response = self._client.get_object_lock_configuration(Bucket=self.bucket)
+        except Exception as exc:
+            raise ReplicationError(f"s3_object_lock_configuration_failed: {exc}") from exc
+        config = response.get("ObjectLockConfiguration", {})
+        if config.get("ObjectLockEnabled") != "Enabled":
+            raise ReplicationError("s3_object_lock_not_enabled")
+        return {
+            "backend": "s3",
+            "bucket": self.bucket,
+            "object_lock_enabled": True,
+            "object_lock_mode": self.object_lock_mode,
+            "minimum_retention_days": self.retention_days,
+        }
+
 
 class CloudflareR2Sink(ReplicationSink):
     """Cloudflare R2 S3-compatible replication sink.
@@ -321,11 +339,19 @@ class CloudflareR2Sink(ReplicationSink):
         *,
         endpoint_url: str | None = None,
         region_name: str | None = None,
+        account_id: str = "",
+        api_token: str = "",
+        jurisdiction: str = "default",
+        minimum_retention_days: int = 365,
     ) -> None:
         import boto3
 
         self.bucket = bucket
         self.prefix = prefix.strip("/")
+        self.account_id = account_id
+        self._api_token = api_token
+        self.jurisdiction = jurisdiction
+        self.minimum_retention_days = minimum_retention_days
         self._client = boto3.client(
             "s3",
             endpoint_url=endpoint_url or None,
@@ -352,6 +378,66 @@ class CloudflareR2Sink(ReplicationSink):
 
     def get_latest_receipt(self, session_id: str) -> Optional[dict]:
         return self._receipts.get(session_id)
+
+    def verify_retention_configuration(self) -> dict[str, Any]:
+        """Verify a live Cloudflare R2 bucket-lock rule covers this prefix."""
+        if not self.account_id or not self._api_token:
+            raise ReplicationError(
+                "r2_bucket_lock_verification_requires_account_id_and_api_token"
+            )
+        account = urllib.parse.quote(self.account_id, safe="")
+        bucket = urllib.parse.quote(self.bucket, safe="")
+        request = urllib.request.Request(
+            "https://api.cloudflare.com/client/v4/accounts/"
+            f"{account}/r2/buckets/{bucket}/lock",
+            headers={
+                "Authorization": f"Bearer {self._api_token}",
+                "Accept": "application/json",
+                "cf-r2-jurisdiction": self.jurisdiction,
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:  # noqa: S310
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            raise ReplicationError(f"r2_bucket_lock_query_failed: {exc}") from exc
+        if not payload.get("success"):
+            raise ReplicationError("r2_bucket_lock_query_not_successful")
+        rules = payload.get("result", {}).get("rules", [])
+        required_seconds = self.minimum_retention_days * 86_400
+        now = datetime.now(timezone.utc)
+        for rule in rules:
+            if not rule.get("enabled"):
+                continue
+            rule_prefix = str(rule.get("prefix") or "").strip("/")
+            if rule_prefix and not self.prefix.startswith(rule_prefix):
+                continue
+            condition = rule.get("condition", {})
+            condition_type = condition.get("type")
+            sufficient = condition_type == "Indefinite"
+            if condition_type == "Age":
+                sufficient = int(condition.get("maxAgeSeconds", 0)) >= required_seconds
+            elif condition_type == "Date":
+                try:
+                    retain_until = datetime.fromisoformat(
+                        str(condition.get("date", "")).replace("Z", "+00:00")
+                    )
+                    sufficient = (retain_until - now).total_seconds() >= required_seconds
+                except ValueError:
+                    sufficient = False
+            if sufficient:
+                return {
+                    "backend": "r2",
+                    "bucket": self.bucket,
+                    "rule_id": str(rule.get("id", "")),
+                    "rule_prefix": rule_prefix,
+                    "minimum_retention_days": self.minimum_retention_days,
+                    "condition_type": condition_type,
+                }
+        raise ReplicationError(
+            "r2_bucket_lock_has_no_enabled_rule_covering_prefix_and_retention"
+        )
 
 
 def _safe_s3_component(value: str) -> str:
@@ -414,6 +500,23 @@ def _s3_object_lock_args(object_lock_mode: str, retention_days: int) -> dict[str
     }
 
 
+def _verify_s3_object_retention(
+    head: dict[str, Any],
+    *,
+    mode: str,
+    minimum_retain_until: datetime,
+) -> None:
+    if head.get("ObjectLockMode") != mode:
+        raise ReplicationError("s3_object_retention_mode_not_confirmed")
+    retain_until = head.get("ObjectLockRetainUntilDate")
+    if not isinstance(retain_until, datetime):
+        raise ReplicationError("s3_object_retention_date_not_confirmed")
+    if retain_until.tzinfo is None:
+        retain_until = retain_until.replace(tzinfo=timezone.utc)
+    if retain_until < minimum_retain_until:
+        raise ReplicationError("s3_object_retention_period_shorter_than_requested")
+
+
 def _confirm_remote_seal_root(
     *,
     client: Any,
@@ -422,12 +525,22 @@ def _confirm_remote_seal_root(
     session_id: str,
     segment_no: int,
     root: str,
+    object_lock_mode: str,
+    retention_days: int,
 ) -> None:
     try:
         head = client.head_object(Bucket=bucket, Key=key)
     except Exception as exc:
         raise ReplicationError(f"s3_seal_index_head_failed: {exc}") from exc
     remote_root = _root_from_head(head)
+    if object_lock_mode:
+        _verify_s3_object_retention(
+            head,
+            mode=object_lock_mode,
+            minimum_retain_until=datetime.now(timezone.utc) + timedelta(
+                days=max(1, retention_days) - 1
+            ),
+        )
     if not remote_root:
         raise ReplicationError(
             f"s3_seal_index_missing_root: session={session_id} segment={segment_no}"
@@ -453,6 +566,14 @@ def _ensure_s3_seal_index(
     key = _s3_seal_index_key(prefix, session_id, segment_no)
     try:
         head = client.head_object(Bucket=bucket, Key=key)
+        if object_lock_mode:
+            _verify_s3_object_retention(
+                head,
+                mode=object_lock_mode,
+                minimum_retain_until=datetime.now(timezone.utc) + timedelta(
+                    days=max(1, retention_days) - 1
+                ),
+            )
         remote_root = _root_from_head(head)
         if not remote_root:
             raise ReplicationError(
@@ -506,9 +627,22 @@ def _ensure_s3_seal_index(
                 session_id=session_id,
                 segment_no=segment_no,
                 root=root,
+                object_lock_mode=object_lock_mode,
+                retention_days=retention_days,
             )
             return
         raise ReplicationError(f"s3_seal_index_put_failed: {exc}") from exc
+    if object_lock_mode:
+        _confirm_remote_seal_root(
+            client=client,
+            bucket=bucket,
+            key=key,
+            session_id=session_id,
+            segment_no=segment_no,
+            root=root,
+            object_lock_mode=object_lock_mode,
+            retention_days=retention_days,
+        )
 
 
 def _push_s3_record(
@@ -553,6 +687,14 @@ def _push_s3_record(
 
         try:
             head = client.head_object(Bucket=bucket, Key=key)
+            if object_lock_mode:
+                _verify_s3_object_retention(
+                    head,
+                    mode=object_lock_mode,
+                    minimum_retain_until=datetime.now(timezone.utc) + timedelta(
+                        days=max(1, retention_days) - 1
+                    ),
+                )
             receipt = {
                 "backend": "s3",
                 "bucket": bucket,
@@ -586,6 +728,19 @@ def _push_s3_record(
             response = client.put_object(**put_args)
         except Exception as exc:
             raise ReplicationError(f"s3_put_failed: {exc}") from exc
+
+        if object_lock_mode:
+            try:
+                retention_head = client.head_object(Bucket=bucket, Key=key)
+            except Exception as exc:
+                raise ReplicationError(f"s3_retention_readback_failed: {exc}") from exc
+            _verify_s3_object_retention(
+                retention_head,
+                mode=object_lock_mode,
+                minimum_retain_until=datetime.now(timezone.utc) + timedelta(
+                    days=max(1, retention_days) - 1
+                ),
+            )
 
         receipt = {
             "backend": "s3",
@@ -771,7 +926,7 @@ class ProvenanceRecorder:
             ):
                 warnings.warn(
                     "enterprise audit mode: no ReplicationSink configured. "
-                    "Off-host WORM replication is required for AU-9 compliance. "
+                    "No live-verified immutable retention sink is configured. "
                     "Configure S3ObjectLockSink or CloudflareR2Sink.",
                     stacklevel=2,
                 )
@@ -1006,7 +1161,13 @@ class ProvenanceRecorder:
         Returns a VerificationResult with ok, count, state, and message.
         """
         with self._lock:
-            return _verify_chain(self._log_path, self._session_id)
+            public_key = self._identity.public_key_bytes if self._identity is not None else None
+            return _verify_chain(
+                self._log_path,
+                self._session_id,
+                recorder_public_key=public_key,
+                require_recorder_signatures=public_key is not None,
+            )
 
     def tail(self, n: int = 10) -> list[dict]:
         """Return the last n event records."""
@@ -1078,12 +1239,14 @@ class ProvenanceRecorder:
             record["os_corroboration"] = os_corroboration
 
         # Per-event signature from the recorder's own identity (Fix 6)
-        if self._identity is not None and _internal:
+        if self._identity is not None:
             try:
                 record["recorder_sig"] = self._identity.sign(
                     canonical_bytes(record)
                 ).hex()
             except Exception as exc:
+                if self._audit_mode in (AuditMode.ENTERPRISE, AuditMode.MILITARY):
+                    raise ProvenanceRecorderError(f"Recorder signing failed: {exc}") from exc
                 logger.warning("Recorder signing failed: %s", exc)
 
         # Include agent-provided signature if present
@@ -1340,25 +1503,78 @@ class VerificationResult:
     message: str
     high_water_seq: int = 0
     last_heartbeat_ts: Optional[str] = None
+    signatures_verified: bool = False
 
 
 # ---------------------------------------------------------------------------
 # Standalone verify function
 # ---------------------------------------------------------------------------
 
-def verify_log(log_path: Path, session_id: Optional[str] = None) -> VerificationResult:
-    """Verify a provenance log file. Can be called without a recorder instance."""
-    return _verify_chain(log_path, session_id)
+def verify_log(
+    log_path: Path,
+    session_id: Optional[str] = None,
+    *,
+    recorder_public_key: bytes | None = None,
+    require_recorder_signatures: bool = False,
+) -> VerificationResult:
+    """Verify a provenance log without trusting the recorder process.
+
+    Chain-only verification remains available for legacy logs. Attribution
+    claims require a separately trusted public key and signature verification.
+    """
+    return _verify_chain(
+        log_path,
+        session_id,
+        recorder_public_key=recorder_public_key,
+        require_recorder_signatures=require_recorder_signatures,
+    )
+
+
+def _verify_recorder_signature(record: dict, public_key: bytes) -> bool:
+    try:
+        signature = bytes.fromhex(str(record.get("recorder_sig", "")))
+    except ValueError:
+        return False
+    if not signature:
+        return False
+    payload = canonical_bytes(record)
+    if len(public_key) == 32:
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+            Ed25519PublicKey.from_public_bytes(public_key).verify(signature, payload)
+            return True
+        except Exception:
+            return False
+    if len(public_key) == 96:
+        try:
+            from enterprise.crypto import cng_verify
+
+            return bool(cng_verify(payload, signature, public_key))
+        except Exception:
+            return False
+    return False
 
 
 def _verify_chain(
-    log_path: Path, session_id: Optional[str] = None
+    log_path: Path,
+    session_id: Optional[str] = None,
+    *,
+    recorder_public_key: bytes | None = None,
+    require_recorder_signatures: bool = False,
 ) -> VerificationResult:
     """Internal chain verification with all Fix 1/2/10 checks."""
     if not log_path.exists():
         return VerificationResult(
             ok=True, count=0, session_state=None,
             message="no log file — nothing to verify"
+        )
+    if require_recorder_signatures and recorder_public_key is None:
+        return VerificationResult(
+            ok=False,
+            count=0,
+            session_state=None,
+            message="recorder public key is required for signature verification",
         )
 
     prev = GENESIS_HASH
@@ -1398,6 +1614,19 @@ def _verify_chain(
                             f"(line {lineno}): "
                             f"expected {prev[:16]}… got {stored_prev[:16]}…"
                         )
+                    )
+
+                if require_recorder_signatures and not _verify_recorder_signature(
+                    record, recorder_public_key or b""
+                ):
+                    return VerificationResult(
+                        ok=False,
+                        count=count,
+                        session_state=session_state,
+                        message=(
+                            "recorder signature invalid or missing at seq "
+                            f"{record.get('seq', '?')} (line {lineno})"
+                        ),
                     )
 
                 # Timestamp monotonicity check (Fix 1)
@@ -1453,6 +1682,7 @@ def _verify_chain(
         ),
         high_water_seq=high_water_seq,
         last_heartbeat_ts=last_heartbeat_ts,
+        signatures_verified=require_recorder_signatures,
     )
 
 

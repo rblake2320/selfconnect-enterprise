@@ -94,10 +94,10 @@ class TestRank:
         assert rank("CUI")    == 1
         assert rank("cui")    == 1
 
-    def test_rank_unknown_string_returns_minus_one(self):
-        assert rank("BOGUS") == -1
-        assert rank("")      == -1
-        assert rank("TS")    == -1
+    def test_rank_unknown_string_is_rejected(self):
+        for value in ("BOGUS", "", "TS"):
+            with pytest.raises(ValueError, match="unknown classification"):
+                rank(value)
 
     def test_rank_all_levels_strictly_ordered(self):
         levels = list(Classification)
@@ -198,6 +198,12 @@ class TestLabelEnvelope:
         assert label.classification == Classification.SECRET
         assert label.caveats == frozenset()
 
+    def test_unknown_classification_factories_are_rejected(self):
+        with pytest.raises(ValueError, match="unknown classification"):
+            LabelEnvelope.from_classification("BOGUS")
+        with pytest.raises(ValueError, match="unknown classification"):
+            LabelEnvelope.from_dict({"classification": "BOGUS"})
+
     def test_validate_valid_caveats(self):
         label = LabelEnvelope(
             classification=Classification.SECRET,
@@ -297,14 +303,16 @@ class TestBackwardCompat:
         # access it via the module's namespace
         policy_rank = pol._rank  # type: ignore[attr-defined]
         assert policy_rank("SECRET") == 2
-        assert policy_rank("BOGUS")  == -1
+        with pytest.raises(ValueError):
+            policy_rank("BOGUS")
 
     def test_observer_rank_uses_labels_module(self):
         """observer._rank is now an alias of labels.rank — same behavior."""
         import enterprise.observer as obs
         observer_rank = obs._rank  # type: ignore[attr-defined]
         assert observer_rank("TOP_SECRET") == 3
-        assert observer_rank("unknown")    == -1
+        with pytest.raises(ValueError):
+            observer_rank("unknown")
 
     def test_classification_levels_from_policy(self):
         from enterprise.policy import CLASSIFICATION_LEVELS as CL

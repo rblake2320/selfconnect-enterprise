@@ -12,9 +12,15 @@ observer_logs/
 *.png
 *.jpg
 .pytest_tmp/
+.pytest_*/
 .coverage
 .hypothesis/
+.venv/
 ultra_server/node_modules/
+ultra_server/.ultra-*.log
+ultra_server/.ultra-*.json
+!.env.example
+!**/.env.example
 .claude/
 .sessions/
 .tools/

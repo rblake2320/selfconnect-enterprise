@@ -2,12 +2,12 @@
 TPM/NCrypt ECDSA P-384 signing benchmark for SelfConnect Enterprise.
 
 Tests BOTH storage providers explicitly and reports results separately:
-  - Microsoft Platform Crypto Provider (hardware TPM — the actual target)
+  - Microsoft Platform Crypto Provider (TPM-oriented provider target)
   - Microsoft Software Key Storage Provider (software fallback — NOT the target)
 
-These are DIFFERENT security boundaries. Platform KSP = hardware-bound,
-non-exportable, process-RAM-never-sees-key-bytes. Software KSP = DPAPI-wrapped
-files in %APPDATA% extractable by any same-user process.
+These are DIFFERENT provider boundaries. A successful Platform-KSP operation
+must still be paired with the exact key's hardware-property evidence before a
+hardware-custody claim is made. Software KSP is a software-backed boundary.
 
 Usage:
     python bench/tpm_sign_bench.py [--iterations 200]
@@ -195,7 +195,7 @@ def main() -> None:
     print(f"Platform: {sys.platform} | Python: {sys.version.split()[0]}")
     print(f"Iterations: {args.iterations}")
     print("\nIMPORTANT: Platform KSP and Software KSP have different security properties.")
-    print("Only Platform KSP provides hardware-bound, non-exportable keys.")
+    print("Platform KSP is the TPM-oriented target; verify the exact key's hardware property separately.")
 
     tpm_state = _check_tpm()
     print(f"\nTPM Driver present: {tpm_state['tpm_driver']}")
@@ -249,7 +249,7 @@ def main() -> None:
         print("")
         print("  Branch B options (pick one explicitly):")
         print("  B1 — Ship Software KSP, document reduced guarantee in SECURITY.md")
-        print("       Risk: 'TPM-backed' claims would be inaccurate for Citizant/DoD")
+        print("       Risk: 'TPM-backed' claims would be inaccurate for regulated deployment")
         print("  B2 — Find dev machine with provisioned TPM 2.0 for all signing work")
         print("       Best for federal trajectory")
         print("  B3 — Software KSP in dev/CI, Platform KSP enforced at deploy via startup check")

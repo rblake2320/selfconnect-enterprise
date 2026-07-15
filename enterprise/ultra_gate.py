@@ -6,25 +6,34 @@ UltraGate is the main integration class that:
   2. At each send_string() call: builds BPC+TSK request headers, verifies locally
      (fast path) or via Ultra Server (full 7-layer), and authorizes or denies.
 
-The BPC layers 1-5 provide device-bound identity, pair registry, secret HMAC,
-anti-replay, and behavioral anomaly. TSK layers 6-7 add tumbler keys with
-structural secrecy. An attacker who compromises ALL BPC credentials still cannot
-forge a TSK key without knowing the server-only positional map.
+The BPC layers 1-5 provide registered pair-key possession, pair registry, secret HMAC,
+anti-replay, and behavioral anomaly. TSK layers 6-7 add a separately provisioned
+shared secret, rotating segments, a checksum, and server-enforced HOTP state.
+The server retains the complete tumbler record. The owning client receives the
+secret and a reduced provisioning view containing segment types, lengths, and
+order, so this module does not claim that the effective layout is hidden from
+that client.
 
-Ultra Server sidecar: Node.js process on localhost:7777, imports @bpc/server and
+Ultra Server sidecar: Node.js process on 127.0.0.1:7777, imports @bpc/server and
 @tsk/server packages directly. Python calls it via HTTP for provisioning and
 full-server verification. Local fast-path verification runs in-process.
 
-Version: 1.0.0  BPC+TSK integration
+Version: 1.3.0  BPC+TSK integration
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
+import threading
 import time
 import uuid
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.error import HTTPError, URLError
+
+from cryptography.hazmat.primitives.asymmetric import ec
 
 from enterprise.bpc_crypto import (
     b64url,
@@ -58,7 +67,7 @@ _log = logging.getLogger(__name__)
 # ── Constants ─────────────────────────────────────────────────────────────────
 BPC_VERSION = "1.0"
 TSK_VERSION = "1"
-DEFAULT_SERVER_URL = "http://localhost:7777"
+DEFAULT_SERVER_URL = "http://127.0.0.1:7777"
 NONCE_WINDOW_SEC = 120  # nonces older than this are rejected
 DEFAULT_MESH_SECRET = "SelfConnect-Mesh-Dev-Secret-2026!"  # override via %APPDATA%\SelfConnect\mesh.key
 
@@ -72,6 +81,20 @@ class InjectionDeniedError(Exception):
 
 class UltraGateNotBootstrappedError(Exception):
     """Raised when gate methods are called before bootstrap()."""
+
+
+class UltraGateServerUnavailableError(OSError):
+    """Raised when a required Ultra Server decision cannot be obtained."""
+
+
+@dataclass(frozen=True)
+class _PeerBinding:
+    """Locally trusted, complete BPC-to-TSK verification binding."""
+
+    pub_jwk: dict[str, Any]
+    fingerprint: str
+    tsk_client_id: str
+    tsk_state: TSKClientState
 
 
 class UltraGate:
@@ -96,7 +119,7 @@ class UltraGate:
         _pub_jwk: P-256 public key JWK (for local verification).
         _secret_hash: HKDF-derived HMAC key for BPC Layer 3.
         _seen_nonces: Local nonce cache for anti-replay (Layer 4).
-        _peer_pubkeys: Cache of registered peer public key JWKs by pair_id.
+        _peer_bindings: Complete BPC public-key and TSK-state bindings by pair_id.
         _bootstrapped: True after bootstrap() has succeeded.
     """
 
@@ -105,11 +128,25 @@ class UltraGate:
         identity: "AgentIdentity",
         mesh_secret: str | None = None,
         server_url: str = DEFAULT_SERVER_URL,
+        admin_token: str | None = None,
     ) -> None:
         self.identity = identity
         self.agent_id: str = identity.agent_id
         self.server_url = server_url.rstrip("/")
+        self._admin_token = admin_token or os.environ.get("ULTRA_ADMIN_TOKEN", "")
         self._mesh_secret = mesh_secret or self._load_mesh_secret()
+        high_assurance = (
+            os.environ.get("SC_IDENTITY_MODE", "").strip().lower() == "enforce"
+            or os.environ.get("SC_REQUIRE_ULTRA_SERVER", "0").strip() == "1"
+            or os.environ.get("ULTRA_RUNTIME_MODE", "").strip().lower() == "production"
+        )
+        if high_assurance and (
+            self._mesh_secret == DEFAULT_MESH_SECRET
+            or len(self._mesh_secret.encode("utf-8")) < 32
+        ):
+            raise ValueError(
+                "high-assurance UltraGate requires an explicit mesh secret of at least 32 bytes"
+            )
         self._p256_private = derive_p256_from_ed25519(identity._private_key, self.agent_id)
         self._pub_jwk = p256_public_key_to_jwk(self._p256_private)
         self._fingerprint = compute_fingerprint(self._pub_jwk)
@@ -117,7 +154,8 @@ class UltraGate:
         self.pair_id: str = ""
         self.tsk_state: TSKClientState | None = None
         self._seen_nonces: dict[str, float] = {}  # nonce → timestamp
-        self._peer_pubkeys: dict[str, dict[str, Any]] = {}  # pair_id → JWK
+        self._peer_bindings: dict[str, _PeerBinding] = {}
+        self._state_lock = threading.RLock()
         self._bootstrapped = False
 
     # ── Bootstrap ─────────────────────────────────────────────────────────────
@@ -133,9 +171,11 @@ class UltraGate:
         try:
             pair_id = self._register_bpc_pair()
             self.pair_id = pair_id
-            tsk_state = self._provision_tsk()
+            tsk_state = self._resume_tsk(pair_id)
+            if tsk_state is None:
+                tsk_state = self._provision_tsk()
+                self._bind_identity(pair_id, tsk_state.client_id)
             self.tsk_state = tsk_state
-            self._bind_identity(pair_id, tsk_state.client_id)
             self._bootstrapped = True
             _log.info("UltraGate bootstrapped: agent=%s pair=%s tsk=%s",
                       self.agent_id, self.pair_id, self.tsk_state.client_id)
@@ -164,34 +204,19 @@ class UltraGate:
 
         The server-side guard (Ultra Server) must:
           1. Parse the header block from the JSON body or HTTP header.
-          2. Verify the Ed25519 signature using the provided pubkey_hex.
+          2. Verify the Ed25519 signature using the enrolled pubkey_hex.
           3. Check ts is within ±30 seconds of server time.
           4. Check nonce has not been seen before (store in Redis/memory).
-          5. Optionally: verify agent_id matches SHA-256(pubkey_bytes)[:8].
+          5. Verify agent_id matches the enrolled key fingerprint.
 
-        This is a challenge-response-free scheme — the client proves identity
-        by signing a fresh (ts, nonce, payload_hash) tuple. It is stateless
+        This is a challenge-response-free scheme — the client proves possession
+        of the enrolled key by signing a fresh (ts, nonce, payload_hash) tuple. It is stateless
         from the client's perspective and requires no pre-shared secret beyond
         the identity keypair that the agent already holds.
         """
-        import base64
-        import hashlib
-        import uuid
-        ts = str(time.time())
-        nonce = str(uuid.uuid4())
-        # Sign: SHA-256(payload_bytes) || ts || nonce
-        payload_hash = hashlib.sha256(payload_bytes).digest()
-        signed_material = payload_hash + ts.encode() + nonce.encode()
-        sig = self.identity.sign(signed_material)
-        return {
-            "X-SC-Agent-Auth": json.dumps({
-                "agent_id": self.agent_id,
-                "pubkey_hex": self.identity.public_key_bytes.hex(),
-                "ts": ts,
-                "nonce": nonce,
-                "sig": base64.b64encode(sig).decode(),
-            }, separators=(",", ":")),
-        }
+        from enterprise.lifecycle_auth import lifecycle_auth_headers
+
+        return lifecycle_auth_headers(self.identity, payload_bytes)
 
     def _register_bpc_pair(self) -> str:
         """POST /register-pair → returns pairId.
@@ -221,6 +246,7 @@ class UltraGate:
             headers={
                 "Content-Type": "application/json",
                 "X-Idempotency-Key": idem_key,
+                **({"Authorization": f"Bearer {self._admin_token}"} if self._admin_token else {}),
                 **auth_headers,
             },
             method="POST",
@@ -270,6 +296,128 @@ class UltraGate:
         _log.debug("UltraGate: provisioned TSK client %s (%d segments)",
                    client_id, len(state.segments))
         return state
+
+    def _resume_tsk(self, pair_id: str) -> TSKClientState | None:
+        """Resume the server's currently bound TSK state after restart.
+
+        The response is released only after the server verifies this agent's
+        body-bound identity proof and, in production, operator authorization.
+        A missing binding is the normal first-enrollment path and returns None.
+        """
+        import urllib.request
+
+        payload = json.dumps({
+            "pairId": pair_id,
+            "agentId": self.agent_id,
+        }, separators=(",", ":")).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.server_url}/resume-identity",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                **(
+                    {"Authorization": f"Bearer {self._admin_token}"}
+                    if self._admin_token else {}
+                ),
+                **self._lifecycle_auth_headers(payload),
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise
+        client_id = data.get("clientId")
+        shared_secret = data.get("sharedSecret")
+        if not client_id or not shared_secret:
+            raise RuntimeError(f"UltraGate: resume-identity returned incomplete data: {data}")
+        return parse_provision_payload(
+            client_id,
+            shared_secret,
+            data.get("provisionPayload", {}),
+        )
+
+    def rotate_tsk(self) -> TSKClientState:
+        """Rotate the active TSK with a retry-safe two-phase server ceremony."""
+        import urllib.request
+
+        if not self._bootstrapped or not self.pair_id or self.tsk_state is None:
+            raise UltraGateNotBootstrappedError("Call UltraGate.bootstrap() first")
+        old_client_id = self.tsk_state.client_id
+        idempotency_key = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"rotate-tsk:{self.pair_id}:{old_client_id}",
+        ))
+        prepare_body = {
+            "pairId": self.pair_id,
+            "oldClientId": old_client_id,
+            "agentId": self.agent_id,
+            "idempotencyKey": idempotency_key,
+        }
+        prepare_payload = json.dumps(
+            prepare_body, separators=(",", ":")
+        ).encode("utf-8")
+        prepare_request = urllib.request.Request(
+            f"{self.server_url}/rotate-tsk/prepare",
+            data=prepare_payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Idempotency-Key": idempotency_key,
+                **(
+                    {"Authorization": f"Bearer {self._admin_token}"}
+                    if self._admin_token else {}
+                ),
+                **self._lifecycle_auth_headers(prepare_payload),
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(prepare_request, timeout=10) as response:
+            prepared = json.loads(response.read().decode("utf-8"))
+        new_client_id = prepared.get("clientId")
+        shared_secret = prepared.get("sharedSecret")
+        if not new_client_id or not shared_secret:
+            raise RuntimeError(f"UltraGate: rotation prepare was incomplete: {prepared}")
+        new_state = parse_provision_payload(
+            new_client_id,
+            shared_secret,
+            prepared.get("provisionPayload", {}),
+        )
+
+        commit_payload = json.dumps({
+            "pairId": self.pair_id,
+            "oldClientId": old_client_id,
+            "newClientId": new_client_id,
+            "agentId": self.agent_id,
+        }, separators=(",", ":")).encode("utf-8")
+        commit_request = urllib.request.Request(
+            f"{self.server_url}/rotate-tsk/commit",
+            data=commit_payload,
+            headers={
+                "Content-Type": "application/json",
+                **(
+                    {"Authorization": f"Bearer {self._admin_token}"}
+                    if self._admin_token else {}
+                ),
+                **self._lifecycle_auth_headers(commit_payload),
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(commit_request, timeout=10) as response:
+            committed = json.loads(response.read().decode("utf-8"))
+        if not committed.get("ok") or committed.get("newClientId") != new_client_id:
+            raise RuntimeError(f"UltraGate: rotation commit failed: {committed}")
+        self.tsk_state = new_state
+        _log.info(
+            "UltraGate TSK rotated: agent=%s pair=%s old=%s new=%s",
+            self.agent_id,
+            self.pair_id,
+            old_client_id,
+            new_client_id,
+        )
+        return new_state
 
     def _bind_identity(self, pair_id: str, tsk_client_id: str) -> None:
         """POST /bind-identity — links BPC pair to TSK client on server.
@@ -388,16 +536,41 @@ class UltraGate:
             tsk_key = headers.get("X-TSK-Key", "")
             tsk_client_id = headers.get("X-TSK-Client-ID", "")
 
-            if not all([signed_data_b64, signature, pair_id, tsk_key]):
+            if not all([signed_data_b64, signature, pair_id, tsk_key, tsk_client_id]):
                 return False, "missing required headers"
 
             # 2. Pair ID must match registered peer
             if pair_id != peer_pair_id:
                 return False, f"pair_id mismatch: got {pair_id!r}"
 
+            # Local verification is permitted only for explicitly registered
+            # peers and the exact TSK state held by this gate.  Missing state or
+            # an unknown client ID must never degrade into signature/checksum
+            # bypasses.
+            with self._state_lock:
+                binding = self._peer_bindings.get(peer_pair_id)
+            if binding is None:
+                return False, f"no complete cached binding for peer {peer_pair_id!r}"
+            if binding.tsk_state is None:
+                return False, "peer TSK state unavailable"
+            if tsk_client_id != binding.tsk_client_id:
+                return False, f"TSK client_id mismatch: got {tsk_client_id!r}"
+
+            expected_tsk_length = (
+                sum(segment.seg_len for segment in binding.tsk_state.segments)
+                + CHECKSUM_LENGTH
+            )
+            if len(tsk_key) != expected_tsk_length:
+                return False, (
+                    "TSK key length mismatch: "
+                    f"got {len(tsk_key)}, expected {expected_tsk_length}"
+                )
+
             # 3. Decode canonical payload
             payload_json = b64url_decode(signed_data_b64).decode("utf-8")
             payload = json.loads(payload_json)
+            if payload.get("pair_id") != pair_id:
+                return False, "signed pair_id mismatch"
 
             # 4. Timestamp window (±60 seconds)
             ts = payload.get("timestamp", 0)
@@ -405,35 +578,32 @@ class UltraGate:
             if abs(now_ms - ts) > 60_000:
                 return False, f"timestamp out of window: {abs(now_ms - ts)}ms"
 
-            # 5. Nonce freshness (sliding window, no replay within NONCE_WINDOW_SEC)
-            nonce = payload.get("nonce", "")
-            self._expire_nonces()
-            if nonce in self._seen_nonces:
-                return False, "nonce replay detected"
-            self._seen_nonces[nonce] = now_ms / 1000
-
-            # 6. Body hash
+            # 5. Body hash
             expected_bh = body_hash(text)
             if not constant_time_equal(payload.get("body_hash", ""), expected_bh):
                 return False, "body_hash mismatch"
 
-            # 7. ECDSA P-256 signature (requires peer's public key cached)
-            peer_jwk = self._peer_pubkeys.get(peer_pair_id)
-            if peer_jwk:
-                if not verify_payload_with_jwk(peer_jwk, payload, signature):
-                    return False, "ECDSA signature invalid"
-            else:
-                _log.warning("UltraGate: no cached pubkey for peer %s, skipping sig verify", peer_pair_id)
+            # 6. ECDSA P-256 signature from the explicitly registered peer.
+            if not verify_payload_with_jwk(binding.pub_jwk, payload, signature):
+                return False, "ECDSA signature invalid"
 
-            # 8. TSK checksum (fast pre-filter: rejects 99.99% of forgeries)
-            if self.tsk_state and tsk_client_id == self.tsk_state.client_id:
-                # For same-client verification (loopback test)
-                expected_cksum = compute_checksum(
-                    self.tsk_state.shared_secret,
-                    tsk_key[:-CHECKSUM_LENGTH] if len(tsk_key) > CHECKSUM_LENGTH else tsk_key,
-                )
-                if not constant_time_equal(tsk_key[-CHECKSUM_LENGTH:], expected_cksum):
-                    return False, "TSK checksum mismatch"
+            # 7. TSK checksum. The exact length check above prevents a truncated
+            # body from being reinterpreted as a shorter valid key.
+            expected_cksum = compute_checksum(
+                binding.tsk_state.shared_secret,
+                tsk_key[:-CHECKSUM_LENGTH],
+            )
+            if not constant_time_equal(tsk_key[-CHECKSUM_LENGTH:], expected_cksum):
+                return False, "TSK checksum mismatch"
+
+            # 8. Commit nonce only after all cryptographic checks pass. Recording
+            # it earlier lets a forged request race the valid request and poison
+            # the local replay cache.
+            nonce = payload.get("nonce", "")
+            if not isinstance(nonce, str) or not nonce:
+                return False, "missing signed nonce"
+            if not self._consume_nonce(nonce, now_ms / 1000):
+                return False, "nonce replay detected"
 
             return True, ""
 
@@ -483,16 +653,26 @@ class UltraGate:
                             commit_hotp_counter(self.tsk_state, seg.segment_id)
                 return True, ""
             return False, data.get("error", "server verification failed")
+        except HTTPError as exc:
+            try:
+                data = json.loads(exc.read().decode("utf-8"))
+                reason = data.get("error") or data.get("message") or str(exc)
+            except Exception:
+                reason = str(exc)
+            return False, f"server rejected verification: {reason}"
+        except (URLError, TimeoutError, ConnectionError, OSError) as exc:
+            return False, f"server unavailable: {exc}"
         except Exception as exc:
-            return False, f"server unreachable: {exc}"
+            return False, f"server verification error: {exc}"
 
     # ── Injection authorization ───────────────────────────────────────────────
 
     def authorize_injection(self, target_hwnd: int, text: str) -> None:
         """Authorize a send_string() call. Called from the identity gate.
 
-        This method is the hot-path gate. It builds the request and verifies
-        it locally. On failure, raises InjectionDeniedError and logs to ledger.
+        This method is the hot-path gate. It builds the request and requires a
+        live Ultra Server decision. On failure, it raises before the caller can
+        reach the Win32 transport.
 
         Args:
             target_hwnd: HWND integer of the target terminal.
@@ -506,10 +686,11 @@ class UltraGate:
             raise UltraGateNotBootstrappedError("Call UltraGate.bootstrap() first")
 
         headers = self.build_injection_request(target_hwnd, text)
-        # Self-verify (sender verifies own request — proves crypto pipeline works)
-        ok, reason = self._self_verify(headers, text)
+        ok, reason = self.verify_server(headers, text)
         if not ok:
-            _log.error("UltraGate: self-verification failed for hwnd=%#x: %s", target_hwnd, reason)
+            _log.error("UltraGate: server verification failed for hwnd=%#x: %s", target_hwnd, reason)
+            if reason.startswith("server unavailable:"):
+                raise UltraGateServerUnavailableError(reason)
             raise InjectionDeniedError(reason)
         _log.debug("UltraGate: authorized injection → hwnd=%#x (%d chars)", target_hwnd, len(text))
 
@@ -545,19 +726,113 @@ class UltraGate:
 
     # ── Peer registry ─────────────────────────────────────────────────────────
 
-    def register_peer(self, pair_id: str, pub_jwk: dict[str, Any]) -> None:
-        """Cache a peer's public key JWK for local fast-path signature verification."""
-        self._peer_pubkeys[pair_id] = pub_jwk
-        _log.debug("UltraGate: registered peer %s", pair_id)
+    def register_peer_binding(
+        self,
+        pair_id: str,
+        pub_jwk: dict[str, Any],
+        expected_tsk_client_id: str,
+        tsk_state: TSKClientState,
+    ) -> None:
+        """Register a complete peer binding for local fast-path verification.
+
+        The caller must obtain every value from the same authenticated binding
+        transaction. Partial registration is unsupported by design.
+        """
+        if not isinstance(pair_id, str) or not pair_id.strip():
+            raise ValueError("peer pair_id must be a non-empty string")
+        if not isinstance(expected_tsk_client_id, str) or not expected_tsk_client_id.strip():
+            raise ValueError("expected TSK client_id must be a non-empty string")
+        if not isinstance(tsk_state, TSKClientState):
+            raise TypeError("peer TSK state must be TSKClientState")
+        if tsk_state.client_id != expected_tsk_client_id:
+            raise ValueError("peer TSK state client_id does not match expected binding")
+        if not tsk_state.segments:
+            raise ValueError("peer TSK state must contain at least one segment")
+
+        segment_ids: set[str] = set()
+        for segment in tsk_state.segments:
+            if (
+                not segment.segment_id
+                or segment.segment_id in segment_ids
+                or segment.type not in {"static", "totp", "hotp"}
+                or not isinstance(segment.seg_len, int)
+                or segment.seg_len < 1
+            ):
+                raise ValueError("peer TSK state contains an invalid or duplicate segment")
+            segment_ids.add(segment.segment_id)
+
+        if (
+            not isinstance(pub_jwk, dict)
+            or pub_jwk.get("kty") != "EC"
+            or pub_jwk.get("crv") != "P-256"
+        ):
+            raise ValueError("peer public key must be an EC P-256 JWK")
+        try:
+            x_bytes = b64url_decode(str(pub_jwk["x"]))
+            y_bytes = b64url_decode(str(pub_jwk["y"]))
+            if len(x_bytes) != 32 or len(y_bytes) != 32:
+                raise ValueError("invalid coordinate length")
+            ec.EllipticCurvePublicNumbers(
+                int.from_bytes(x_bytes, "big"),
+                int.from_bytes(y_bytes, "big"),
+                ec.SECP256R1(),
+            ).public_key()
+        except Exception as exc:
+            raise ValueError("peer public key is not a valid P-256 point") from exc
+
+        normalized_jwk = {
+            "kty": "EC",
+            "crv": "P-256",
+            "x": str(pub_jwk["x"]),
+            "y": str(pub_jwk["y"]),
+        }
+        fingerprint = compute_fingerprint(normalized_jwk)
+        with self._state_lock:
+            existing = self._peer_bindings.get(pair_id)
+            if existing is not None and (
+                existing.fingerprint != fingerprint
+                or existing.tsk_client_id != expected_tsk_client_id
+                or not constant_time_equal(
+                    existing.tsk_state.shared_secret,
+                    tsk_state.shared_secret,
+                )
+                or existing.tsk_state.segments != tsk_state.segments
+            ):
+                raise ValueError("peer binding conflict; use an authenticated rotation ceremony")
+
+            self._peer_bindings[pair_id] = _PeerBinding(
+                pub_jwk=normalized_jwk,
+                fingerprint=fingerprint,
+                tsk_client_id=expected_tsk_client_id,
+                tsk_state=copy.deepcopy(tsk_state),
+            )
+        _log.debug(
+            "UltraGate: registered complete peer binding pair=%s tsk=%s",
+            pair_id,
+            expected_tsk_client_id,
+        )
 
     # ── Nonce management ──────────────────────────────────────────────────────
 
     def _expire_nonces(self) -> None:
         """Remove nonces older than NONCE_WINDOW_SEC from the local cache."""
-        cutoff = time.time() - NONCE_WINDOW_SEC
-        expired = [k for k, ts in self._seen_nonces.items() if ts < cutoff]
-        for k in expired:
-            del self._seen_nonces[k]
+        with self._state_lock:
+            cutoff = time.time() - NONCE_WINDOW_SEC
+            expired = [k for k, ts in self._seen_nonces.items() if ts < cutoff]
+            for k in expired:
+                del self._seen_nonces[k]
+
+    def _consume_nonce(self, nonce: str, verified_at: float) -> bool:
+        """Atomically expire, check, and record one locally verified nonce."""
+        with self._state_lock:
+            cutoff = time.time() - NONCE_WINDOW_SEC
+            expired = [k for k, ts in self._seen_nonces.items() if ts < cutoff]
+            for key in expired:
+                del self._seen_nonces[key]
+            if nonce in self._seen_nonces:
+                return False
+            self._seen_nonces[nonce] = verified_at
+            return True
 
     # ── Mesh secret ───────────────────────────────────────────────────────────
 
@@ -589,7 +864,15 @@ class UltraGate:
             "pair_id": self.pair_id,
             "tsk_client_id": self.tsk_state.client_id if self.tsk_state else None,
             "fingerprint": self._fingerprint,
-            "peer_count": len(self._peer_pubkeys),
-            "nonce_cache_size": len(self._seen_nonces),
+            "peer_count": self._binding_count(),
+            "nonce_cache_size": self._nonce_count(),
             "server_url": self.server_url,
         }
+
+    def _binding_count(self) -> int:
+        with self._state_lock:
+            return len(self._peer_bindings)
+
+    def _nonce_count(self) -> int:
+        with self._state_lock:
+            return len(self._seen_nonces)

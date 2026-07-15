@@ -281,9 +281,12 @@ class TestDependencyAudit:
         import json as _json
         try:
             data = _json.loads(result.stdout)
-            return result.returncode, data.get("dependencies", [])
-        except _json.JSONDecodeError:
-            return result.returncode, []
+            dependencies = data.get("dependencies")
+            if not isinstance(dependencies, list):
+                return 2, []
+            return result.returncode, dependencies
+        except (_json.JSONDecodeError, AttributeError):
+            return 2, []
 
     def test_direct_deps_no_known_cves(self):
         """HARD GATE: direct dependencies (cryptography, selfconnect) must have
@@ -295,7 +298,10 @@ class TestDependencyAudit:
         """
         returncode, deps = self._run_pip_audit()
         if returncode not in (0, 1):
-            pytest.skip("pip-audit unavailable or failed; skipping hard gate")
+            pytest.fail(
+                "pip-audit hard gate did not produce a valid audit result; "
+                "install pip-audit and correct the scanner failure"
+            )
 
         findings = [
             dep for dep in deps
@@ -318,7 +324,7 @@ class TestDependencyAudit:
         Scans all installed packages and prints a CVE inventory to stdout so it
         appears in the test log for operator review.  This fixture intentionally
         never fails: hard enforcement of CVEs in *direct* dependencies is done by
-        ``test_direct_dependencies_have_no_known_cves``.  This one exists solely
+        ``test_direct_deps_no_known_cves``.  This one exists solely
         to capture the transitive-dependency picture as an audit trail.
 
         The assertion below verifies only that the reporting code executed and

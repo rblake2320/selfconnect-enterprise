@@ -75,12 +75,17 @@ def rank(level: Union[str, Classification]) -> int:
     """Return numeric rank for a classification value.
 
     Accepts both string names (case-insensitive) and Classification enum values.
-    Unknown strings return -1 (same contract as the old _rank() in policy.py
-    and observer.py).
+    Unknown strings raise ValueError so an unrecognized marking cannot sort
+    below UNCLASSIFIED and bypass a ceiling.
     """
     if isinstance(level, Classification):
         return level.value
-    return _RANK_MAP.get(level.upper(), -1)
+    if not isinstance(level, str):
+        raise TypeError(f"classification must be str or Classification, got {type(level).__name__}")
+    normalized = level.upper()
+    if normalized not in _RANK_MAP:
+        raise ValueError(f"unknown classification: {level!r}")
+    return _RANK_MAP[normalized]
 
 
 def le(a: Union[str, Classification], b: Union[str, Classification]) -> bool:
@@ -132,8 +137,10 @@ class LabelEnvelope:
         if isinstance(level, str):
             try:
                 level = Classification[level.upper()]
-            except KeyError:
-                level = Classification.UNCLASSIFIED
+            except KeyError as exc:
+                raise ValueError(f"unknown classification: {level!r}") from exc
+        if not isinstance(level, Classification):
+            raise TypeError("classification must be str or Classification")
         return cls(classification=level, ts=time.time())
 
     @classmethod
@@ -146,15 +153,15 @@ class LabelEnvelope:
         if isinstance(raw_cls, str):
             try:
                 classification = Classification[raw_cls.upper()]
-            except KeyError:
-                classification = Classification.UNCLASSIFIED
+            except KeyError as exc:
+                raise ValueError(f"unknown classification: {raw_cls!r}") from exc
         elif isinstance(raw_cls, int):
             try:
                 classification = Classification(raw_cls)
-            except ValueError:
-                classification = Classification.UNCLASSIFIED
+            except ValueError as exc:
+                raise ValueError(f"unknown classification rank: {raw_cls!r}") from exc
         else:
-            classification = Classification.UNCLASSIFIED
+            raise TypeError("classification must be a string or integer rank")
 
         raw_caveats = d.get("caveats", [])
         caveats = frozenset(raw_caveats) if raw_caveats else frozenset()

@@ -1,6 +1,6 @@
 """POC: OS-enforced caller identity over a DACL-guarded named pipe.
 
-enterprise/transport.py uses WM_COPYDATA (OS-verified *sender HWND*). This probe
+enterprise/transport.py uses WM_COPYDATA (caller-supplied *sender HWND*). This probe
 demonstrates the complementary primitive: a named pipe created with an explicit DACL,
 where the server calls ImpersonateNamedPipeClient() and reads the connecting client's
 identity (SID) *from the OS token*, not from anything the client asserted in the payload.

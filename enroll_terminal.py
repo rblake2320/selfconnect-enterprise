@@ -27,8 +27,8 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from enterprise.identity import AgentIdentity, _default_data_dir
-from enterprise.ledger import AgentLedger
+from enterprise.identity import AgentIdentity, _default_data_dir  # noqa: E402
+from enterprise.ledger import AgentLedger  # noqa: E402
 
 # ── constants ─────────────────────────────────────────────────────────────────
 AGENT_NAME   = "cc-windows-terminal"
@@ -139,7 +139,7 @@ def main():
             )
         else:
             print("\n=== Terminal Birth Certificate ===")
-            print(f"  BPC identity restored/rotated : YES")
+            print("  BPC identity restored/rotated : YES")
             print(f"  BPC public key fingerprint    : {cert['bpc_public_key_fp']}")
             print(f"  BPC algo                      : {cert['bpc_algo']}")
             print(f"  Terminal birth cert path      : {CERT_PATH}")

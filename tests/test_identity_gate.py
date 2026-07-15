@@ -16,6 +16,7 @@ Run: python -m pytest tests/test_identity_gate.py -v
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -244,7 +245,7 @@ class TestUltraGate:
         from enterprise.ultra_gate import UltraGate
         from enterprise.tsk_client import TSKClientState, SegmentConfig
         identity = _make_fake_identity()
-        gate = UltraGate(identity, mesh_secret="Mesh-Secret-Test-2026!!")
+        gate = UltraGate(identity, mesh_secret="Mesh-Secret-Test-2026!!-32-bytes")
 
         # Manually bootstrap without a server
         segs = [SegmentConfig(segment_id="seg_x", type="static", seg_len=10)]
@@ -256,6 +257,16 @@ class TestUltraGate:
         )
         gate._bootstrapped = True
         return gate
+
+    @staticmethod
+    def _register_self_binding(gate):
+        assert gate.tsk_state is not None
+        gate.register_peer_binding(
+            gate.pair_id,
+            gate._pub_jwk,
+            gate.tsk_state.client_id,
+            gate.tsk_state,
+        )
 
     def test_build_injection_request_structure(self):
         gate = self._make_gate()
@@ -274,19 +285,222 @@ class TestUltraGate:
         ok, reason = gate._self_verify(headers, text)
         assert ok, f"Self-verify failed: {reason}"
 
-    def test_verify_local_uses_protocol_checksum_length(self):
-        """Local fast path must use the 12-char protocol checksum, not stale 10-char slicing."""
+    def test_verify_local_accepts_fresh_fully_bound_request(self):
+        """The local fast path accepts a fresh request only after peer registration."""
         from enterprise.tsk_client import CHECKSUM_LENGTH
 
         assert CHECKSUM_LENGTH == 12
         gate = self._make_gate()
         text = "hello local verify\r"
         headers = gate.build_injection_request(0x1234, text)
-        gate.register_peer(gate.pair_id, gate._pub_jwk)
+        self._register_self_binding(gate)
 
         ok, reason = gate.verify_local(headers, text, gate.pair_id)
 
         assert ok, f"Local verify failed with valid {CHECKSUM_LENGTH}-char checksum: {reason}"
+
+    def test_verify_local_rejects_missing_peer_public_key(self):
+        gate = self._make_gate()
+        text = "missing peer key\r"
+        headers = gate.build_injection_request(0x1234, text)
+
+        ok, reason = gate.verify_local(headers, text, gate.pair_id)
+
+        assert not ok
+        assert "no complete cached binding" in reason
+
+    def test_verify_local_rejects_missing_tsk_state(self):
+        gate = self._make_gate()
+        text = "missing TSK state\r"
+        headers = gate.build_injection_request(0x1234, text)
+        self._register_self_binding(gate)
+        gate._peer_bindings[gate.pair_id] = mock.MagicMock(
+            pub_jwk=gate._pub_jwk,
+            tsk_client_id=gate.tsk_state.client_id,
+            tsk_state=None,
+        )
+
+        ok, reason = gate.verify_local(headers, text, gate.pair_id)
+
+        assert not ok
+        assert reason == "peer TSK state unavailable"
+
+    def test_verify_local_rejects_missing_tsk_client_id(self):
+        gate = self._make_gate()
+        text = "missing TSK client ID\r"
+        headers = gate.build_injection_request(0x1234, text)
+        self._register_self_binding(gate)
+        del headers["X-TSK-Client-ID"]
+
+        ok, reason = gate.verify_local(headers, text, gate.pair_id)
+
+        assert not ok
+        assert reason == "missing required headers"
+
+    def test_verify_local_rejects_tsk_client_id_mismatch(self):
+        gate = self._make_gate()
+        text = "mismatched TSK client ID\r"
+        headers = gate.build_injection_request(0x1234, text)
+        self._register_self_binding(gate)
+        headers["X-TSK-Client-ID"] = "tsk_attacker"
+
+        ok, reason = gate.verify_local(headers, text, gate.pair_id)
+
+        assert not ok
+        assert "TSK client_id mismatch" in reason
+
+    def test_verify_local_rejects_header_pair_not_bound_in_signed_payload(self):
+        gate = self._make_gate()
+        text = "signed pair binding\r"
+        headers = gate.build_injection_request(0x1234, text)
+        original_pair_id = gate.pair_id
+        alternate_pair_id = "pair_alternate"
+        assert gate.tsk_state is not None
+        gate.register_peer_binding(
+            alternate_pair_id,
+            gate._pub_jwk,
+            gate.tsk_state.client_id,
+            gate.tsk_state,
+        )
+        headers["X-BPC-Pair-ID"] = alternate_pair_id
+
+        ok, reason = gate.verify_local(headers, text, alternate_pair_id)
+
+        assert original_pair_id != alternate_pair_id
+        assert not ok
+        assert reason == "signed pair_id mismatch"
+
+    def test_verify_local_rejects_truncated_tsk_key(self):
+        gate = self._make_gate()
+        text = "truncated TSK key\r"
+        headers = gate.build_injection_request(0x1234, text)
+        self._register_self_binding(gate)
+        headers["X-TSK-Key"] = headers["X-TSK-Key"][:-1]
+
+        ok, reason = gate.verify_local(headers, text, gate.pair_id)
+
+        assert not ok
+        assert "TSK key length mismatch" in reason
+
+    def test_verify_local_rejects_malformed_tsk_key(self):
+        gate = self._make_gate()
+        text = "malformed TSK key\r"
+        headers = gate.build_injection_request(0x1234, text)
+        self._register_self_binding(gate)
+        key = headers["X-TSK-Key"]
+        headers["X-TSK-Key"] = ("A" if key[0] != "A" else "B") + key[1:]
+
+        ok, reason = gate.verify_local(headers, text, gate.pair_id)
+
+        assert not ok
+        assert reason == "TSK checksum mismatch"
+
+    def test_verify_local_invalid_signature_does_not_consume_nonce(self):
+        gate = self._make_gate()
+        text = "signature race\r"
+        headers = gate.build_injection_request(0x1234, text)
+        self._register_self_binding(gate)
+        forged = dict(headers)
+        forged["X-BPC-Signature"] = "AAAA"
+
+        forged_ok, forged_reason = gate.verify_local(forged, text, gate.pair_id)
+        valid_ok, valid_reason = gate.verify_local(headers, text, gate.pair_id)
+
+        assert not forged_ok
+        assert forged_reason == "ECDSA signature invalid"
+        assert valid_ok, valid_reason
+
+    def test_verify_local_cross_peer_uses_registered_peer_tsk_state(self):
+        sender = self._make_gate()
+        receiver = self._make_gate()
+        text = "cross-peer local verification\r"
+        headers = sender.build_injection_request(0x1234, text)
+        assert sender.tsk_state is not None
+        receiver.register_peer_binding(
+            sender.pair_id,
+            sender._pub_jwk,
+            sender.tsk_state.client_id,
+            sender.tsk_state,
+        )
+
+        ok, reason = receiver.verify_local(headers, text, sender.pair_id)
+
+        assert ok, reason
+
+    def test_verify_local_cross_peer_rejects_wrong_registered_tsk_identity(self):
+        from enterprise.tsk_client import TSKClientState
+
+        sender = self._make_gate()
+        receiver = self._make_gate()
+        text = "cross-peer wrong TSK identity\r"
+        headers = sender.build_injection_request(0x1234, text)
+        assert sender.tsk_state is not None
+        wrong_state = TSKClientState(
+            client_id="tsk_wrong_peer",
+            shared_secret=sender.tsk_state.shared_secret,
+            segments=sender.tsk_state.segments,
+        )
+        receiver.register_peer_binding(
+            sender.pair_id,
+            sender._pub_jwk,
+            wrong_state.client_id,
+            wrong_state,
+        )
+
+        ok, reason = receiver.verify_local(headers, text, sender.pair_id)
+
+        assert not ok
+        assert "TSK client_id mismatch" in reason
+
+    def test_register_peer_binding_rejects_state_identity_mismatch(self):
+        gate = self._make_gate()
+        assert gate.tsk_state is not None
+
+        with pytest.raises(ValueError, match="does not match expected binding"):
+            gate.register_peer_binding(
+                gate.pair_id,
+                gate._pub_jwk,
+                "tsk_expected_other",
+                gate.tsk_state,
+            )
+
+    def test_register_peer_binding_rejects_conflicting_rebind(self):
+        gate = self._make_gate()
+        other = self._make_gate()
+        self._register_self_binding(gate)
+        assert gate.tsk_state is not None
+
+        with pytest.raises(ValueError, match="binding conflict"):
+            gate.register_peer_binding(
+                gate.pair_id,
+                other._pub_jwk,
+                gate.tsk_state.client_id,
+                gate.tsk_state,
+            )
+
+    def test_register_peer_binding_snapshots_and_rejects_secret_rebind(self):
+        from enterprise.tsk_client import TSKClientState
+
+        gate = self._make_gate()
+        assert gate.tsk_state is not None
+        original_secret = gate.tsk_state.shared_secret
+        self._register_self_binding(gate)
+        gate.tsk_state.shared_secret = "b" * 64
+
+        cached = gate._peer_bindings[gate.pair_id]
+        assert cached.tsk_state.shared_secret == original_secret
+        replacement = TSKClientState(
+            client_id=cached.tsk_client_id,
+            shared_secret="b" * 64,
+            segments=cached.tsk_state.segments,
+        )
+        with pytest.raises(ValueError, match="binding conflict"):
+            gate.register_peer_binding(
+                gate.pair_id,
+                gate._pub_jwk,
+                replacement.client_id,
+                replacement,
+            )
 
     def test_self_verify_fails_on_tampered_text(self):
         gate = self._make_gate()
@@ -298,15 +512,79 @@ class TestUltraGate:
 
     def test_authorize_injection_success(self):
         gate = self._make_gate()
-        # Should not raise
-        gate.authorize_injection(0x1234, "test injection\r")
+        with mock.patch.object(gate, "verify_server", return_value=(True, "")) as verify:
+            gate.authorize_injection(0x1234, "test injection\r")
+        verify.assert_called_once()
+
+    def test_authorize_injection_denies_server_rejection(self):
+        from enterprise.ultra_gate import InjectionDeniedError
+
+        gate = self._make_gate()
+        with mock.patch.object(
+            gate,
+            "verify_server",
+            return_value=(False, "TSK verification failed"),
+        ):
+            with pytest.raises(InjectionDeniedError, match="TSK verification failed"):
+                gate.authorize_injection(0x1234, "test injection\r")
+
+    def test_authorize_injection_surfaces_server_unavailability(self):
+        from enterprise.ultra_gate import UltraGateServerUnavailableError
+
+        gate = self._make_gate()
+        with mock.patch.object(
+            gate,
+            "verify_server",
+            return_value=(False, "server unavailable: connection refused"),
+        ):
+            with pytest.raises(UltraGateServerUnavailableError):
+                gate.authorize_injection(0x1234, "test injection\r")
+
+    def test_verify_local_consumes_duplicate_nonce_atomically(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        gate = self._make_gate()
+        text = "concurrent replay\r"
+        headers = gate.build_injection_request(0x1234, text)
+        self._register_self_binding(gate)
+
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            results = list(
+                pool.map(
+                    lambda _index: gate.verify_local(headers, text, gate.pair_id),
+                    range(64),
+                )
+            )
+
+        assert sum(1 for ok, _reason in results if ok) == 1
+        assert sum(1 for ok, reason in results if not ok and reason == "nonce replay detected") == 63
 
     def test_not_bootstrapped_raises(self):
         from enterprise.ultra_gate import UltraGate, UltraGateNotBootstrappedError
         identity = _make_fake_identity()
-        gate = UltraGate(identity, mesh_secret="Mesh-Secret-Test-2026!!")
+        gate = UltraGate(identity, mesh_secret="Mesh-Secret-Test-2026!!-32-bytes")
         with pytest.raises(UltraGateNotBootstrappedError):
             gate.build_injection_request(0x1234, "text")
+
+    def test_high_assurance_rejects_known_development_mesh_secret(self, monkeypatch):
+        from enterprise.ultra_gate import DEFAULT_MESH_SECRET, UltraGate
+
+        monkeypatch.setenv("SC_REQUIRE_ULTRA_SERVER", "1")
+        identity = _make_fake_identity()
+        with mock.patch.object(
+            UltraGate,
+            "_load_mesh_secret",
+            return_value=DEFAULT_MESH_SECRET,
+        ):
+            with pytest.raises(ValueError, match="explicit mesh secret"):
+                UltraGate(identity)
+
+    def test_high_assurance_rejects_short_explicit_mesh_secret(self, monkeypatch):
+        from enterprise.ultra_gate import UltraGate
+
+        monkeypatch.setenv("SC_IDENTITY_MODE", "enforce")
+        with pytest.raises(ValueError, match="at least 32 bytes"):
+            UltraGate(_make_fake_identity(), mesh_secret="too-short")
 
     def test_status_dict(self):
         gate = self._make_gate()
@@ -370,6 +648,7 @@ class TestIdentityGateMode:
 
     def test_bypass_mode_skips_gate(self, monkeypatch):
         """In bypass mode (with confirmation), gated_send_string() calls original without gate check."""
+        monkeypatch.delenv("SC_REQUIRE_ULTRA_SERVER", raising=False)
         monkeypatch.setenv("SC_IDENTITY_MODE", "bypass")
         monkeypatch.setenv("SC_IDENTITY_BYPASS_CONFIRMED", "1")
         from enterprise.identity_gate import gated_send_string
@@ -398,6 +677,7 @@ class TestIdentityGateMode:
 
     def test_audit_mode_proceeds_on_failure(self, monkeypatch):
         """In audit mode, injection proceeds even when verification fails."""
+        monkeypatch.delenv("SC_REQUIRE_ULTRA_SERVER", raising=False)
         monkeypatch.setenv("SC_IDENTITY_MODE", "audit")
         from enterprise.identity_gate import gated_send_string
         calls = []
@@ -444,6 +724,31 @@ class TestDegradationCascade:
             ok, reason, level = cascade.verify(0x1234, "text")
         assert ok  # audit mode: pass even at Level 4
         assert level == 4
+
+    def test_strict_enforce_defaults_to_level0_fail_closed(self, monkeypatch):
+        monkeypatch.delenv("SC_STRICT_ENFORCE", raising=False)
+        gate = mock.MagicMock()
+        gate._bootstrapped = True
+        cascade = self._make_cascade("enforce", gate=gate)
+        with mock.patch.object(cascade, "_level0_full", return_value=(False, "TSK rejected")), \
+             mock.patch.object(cascade, "_level1_bpc_only", return_value=(True, "")) as level1:
+            ok, reason, level = cascade.verify(0x1234, "text")
+        assert not ok
+        assert level == 0
+        assert "strict_enforce" in reason
+        level1.assert_not_called()
+
+    def test_operator_can_explicitly_allow_bounded_degradation(self, monkeypatch):
+        monkeypatch.setenv("SC_STRICT_ENFORCE", "0")
+        gate = mock.MagicMock()
+        gate._bootstrapped = True
+        cascade = self._make_cascade("enforce", gate=gate)
+        with mock.patch.object(cascade, "_level0_full", return_value=(False, "TSK rejected")), \
+             mock.patch.object(cascade, "_level1_bpc_only", return_value=(True, "")):
+            ok, reason, level = cascade.verify(0x1234, "text")
+        assert ok
+        assert reason == ""
+        assert level == 1
 
     # ── WRAITH-001 regression tests ───────────────────────────────────────────
 
@@ -517,25 +822,40 @@ class TestKeyRecovery:
         from enterprise.key_recovery import check_peer_recovery
 
         # Skip if Ultra Server is not running
-        server_url = "http://localhost:7777"
+        server_url = "http://127.0.0.1:7777"
         try:
-            urllib.request.urlopen(f"{server_url}/status", timeout=2)
+            urllib.request.urlopen(f"{server_url}/health", timeout=2)
         except Exception:
             pytest.skip("Ultra Server not available on localhost:7777")
 
+        admin_token = os.environ.get("ULTRA_ADMIN_TOKEN", "")
+        if not admin_token:
+            if os.environ.get("SC_REQUIRE_ULTRA_SERVER") == "1":
+                pytest.fail("ULTRA_ADMIN_TOKEN is required by the live Ultra conformance run")
+            pytest.skip("ULTRA_ADMIN_TOKEN is not configured")
+
+        from enterprise.identity import AgentIdentity
+        from enterprise.lifecycle_auth import lifecycle_auth_headers
+
         agent_name = "test-agent-gap2"
-        fake_pubkey_hex = "ab" * 32  # 32 bytes = 64 hex chars
+        identity = AgentIdentity.init(agent_name, data_dir=tmp_path / "identity")
+        pubkey_hex = identity.public_key_bytes.hex()
 
         # Get a real server-signed token from the Ultra Server
         payload = json.dumps({
             "agentName": agent_name,
-            "newPubHex": fake_pubkey_hex,
-            "challengeHash": "deadbeef",
-        }).encode("utf-8")
+            "agentId": identity.agent_id,
+            "newPubHex": pubkey_hex,
+            "challengeHash": hashlib.sha256(b"gap2-live-recovery").hexdigest(),
+        }, separators=(",", ":")).encode("utf-8")
         req = urllib.request.Request(
             f"{server_url}/confirm-recovery",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {admin_token}",
+                **lifecycle_auth_headers(identity, payload),
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -546,14 +866,14 @@ class TestKeyRecovery:
         # Write recovery.pub and recovery.token
         pub_path = tmp_path / "SelfConnect" / agent_name
         pub_path.mkdir(parents=True, exist_ok=True)
-        (pub_path / "recovery.pub").write_text(fake_pubkey_hex + "\n", encoding="utf-8")
+        (pub_path / "recovery.pub").write_text(pubkey_hex + "\n", encoding="utf-8")
         (pub_path / "recovery.token").write_text(
             json.dumps(token), encoding="utf-8"
         )
 
         result = check_peer_recovery(0x1234, agent_name, server_url=server_url)
         assert result is not None, "check_peer_recovery returned None despite valid token"
-        assert result.hex() == fake_pubkey_hex
+        assert result.hex() == pubkey_hex
 
     def test_recovery_pub_without_token_is_rejected(self, tmp_path, monkeypatch):
         """Gap 2: recovery.pub without recovery.token MUST be rejected.
@@ -606,24 +926,56 @@ class TestKeyRecovery:
 
 class TestSCRequireUltra:
     def test_require_ultra_without_gate_raises(self, monkeypatch):
-        """SC_REQUIRE_ULTRA=1 without a gate must raise RuntimeError."""
-        monkeypatch.setenv("SC_REQUIRE_ULTRA", "1")
-        # We test the guard logic directly since we can't call real send_string
-        # without Win32 dependencies in CI.
-        import os
-        assert os.environ.get("SC_REQUIRE_ULTRA") == "1"
-        # Simulate the guard:
-        gate = None
-        if os.environ.get("SC_REQUIRE_ULTRA") == "1" and gate is None:
-            with pytest.raises(RuntimeError):
-                raise RuntimeError("SC_REQUIRE_ULTRA=1 is set but no UltraGate was provided")
+        """The real send wrapper must reject any non-Level-0 result."""
+        from enterprise.identity_gate import InjectionDeniedError, gated_send_string
+
+        monkeypatch.setenv("SC_REQUIRE_ULTRA_SERVER", "1")
+        monkeypatch.setenv("SC_IDENTITY_MODE", "audit")
+        target = mock.MagicMock(hwnd=0x1234)
+        sent: list[str] = []
+        with mock.patch(
+            "enterprise.identity_gate.DegradationCascade.verify",
+            return_value=(True, "", 2),
+        ):
+            with pytest.raises(InjectionDeniedError, match="requires Level 0"):
+                gated_send_string(
+                    target,
+                    "text",
+                    gate=None,
+                    _original_send_string=lambda _target, text: sent.append(text),
+                )
+        assert sent == []
 
     def test_require_ultra_with_gate_passes(self, monkeypatch):
-        """SC_REQUIRE_ULTRA=1 with a bootstrapped gate should not raise."""
-        monkeypatch.setenv("SC_REQUIRE_ULTRA", "1")
-        gate = mock.MagicMock()
-        gate.authorize_injection = mock.MagicMock()  # no raise
-        import os
-        if os.environ.get("SC_REQUIRE_ULTRA") == "1" and gate is not None:
-            gate.authorize_injection(0x1234, "text")
-        gate.authorize_injection.assert_called_once_with(0x1234, "text")
+        """The real send wrapper permits a verified Level-0 result."""
+        from enterprise.identity_gate import gated_send_string
+
+        monkeypatch.setenv("SC_REQUIRE_ULTRA_SERVER", "1")
+        monkeypatch.setenv("SC_IDENTITY_MODE", "audit")
+        target = mock.MagicMock(hwnd=0x1234)
+        sent: list[str] = []
+        with mock.patch(
+            "enterprise.identity_gate.DegradationCascade.verify",
+            return_value=(True, "", 0),
+        ):
+            gated_send_string(
+                target,
+                "text",
+                gate=mock.MagicMock(),
+                _original_send_string=lambda _target, text: sent.append(text),
+            )
+        assert sent == ["text"]
+
+    def test_require_ultra_rejects_bypass_mode(self, monkeypatch):
+        from enterprise.identity_gate import InjectionDeniedError, gated_send_string
+
+        monkeypatch.setenv("SC_REQUIRE_ULTRA_SERVER", "1")
+        monkeypatch.setenv("SC_IDENTITY_MODE", "bypass")
+        monkeypatch.setenv("SC_IDENTITY_BYPASS_CONFIRMED", "1")
+        with pytest.raises(InjectionDeniedError, match="incompatible with bypass"):
+            gated_send_string(
+                mock.MagicMock(hwnd=0x1234),
+                "text",
+                gate=None,
+                _original_send_string=lambda *_args, **_kwargs: None,
+            )

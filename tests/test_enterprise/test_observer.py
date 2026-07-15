@@ -149,13 +149,11 @@ class TestObserverFilter:
         )
         assert f.matches(_entry(1)) is True
 
-    def test_unknown_classification_treated_as_rank_minus1(self):
-        # Unknown classification has rank -1 < UNCLASSIFIED rank 0 → always passes ceiling
+    def test_unknown_classification_is_rejected(self):
         f = ObserverFilter(max_classification="UNCLASSIFIED")
         e = _entry(1)
         e["classification"] = "UNKNOWN_LEVEL"
-        # rank -1 <= rank 0 → passes
-        assert f.matches(e) is True
+        assert f.matches(e) is False
 
 
 # ── RedactionConfig ────────────────────────────────────────────────────────────
@@ -721,7 +719,7 @@ class TestObserverIntegration:
         assert len(lines) == 15
 
     def test_context_window_does_not_include_denied_in_output(self, tmp_path):
-        """Context window pulls raw log entries (including denied); they are not training records."""
+        """Denied entries cannot re-enter training data through context_before."""
         ledger_path = tmp_path / "ledger.jsonl"
         _write_ledger(ledger_path, [
             _entry(1, decision="deny"),
@@ -730,8 +728,8 @@ class TestObserverIntegration:
         obs = LedgerObserver(ledger_path, context_window=3, unsafe_unverified=True)
         records = obs.extract()
         assert len(records) == 1  # only seq=2 is a training record
-        # Context may include the denied entry (it's just context, not training output)
         assert records[0].seq == 2
+        assert records[0].context_before == []
 
     def test_trigger_fires_after_enough_exports(self, tmp_path):
         ledger_path = tmp_path / "ledger.jsonl"

@@ -27,6 +27,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from enterprise.control import ControlPlane
 from enterprise.mcp_tools import get_tool, get_tool_registry
+from enterprise.operator import OperatorQueue
 
 try:
     from experiments.win32_probe.channel_router import ChannelRouter, ChannelRoutingError
@@ -35,16 +36,24 @@ except Exception:  # noqa: BLE001
     ChannelRoutingError = RuntimeError  # type: ignore[assignment]
 
 try:
-    from enterprise.tpm_attestation import create_tpm_platform_claim, tpm_probe
+    from enterprise.tpm_attestation import (
+        create_tpm_platform_claim,
+        tpm_probe,
+        verify_tpm_platform_claim,
+    )
     _TPM_ATTESTATION_AVAILABLE = True
 except Exception:  # noqa: BLE001
     _TPM_ATTESTATION_AVAILABLE = False
     create_tpm_platform_claim = None  # type: ignore[assignment]
     tpm_probe = None  # type: ignore[assignment]
+    verify_tpm_platform_claim = None  # type: ignore[assignment]
 
 
 _AUDIT_LIMIT = 2_000
 _MAX_ERROR_LEN = 512
+_MAX_READ_CHARS = 65_536
+_DEFAULT_DELIVERY_TIMEOUT_MS = 3_000
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 _VALID_PROFILES = frozenset({"normal", "enterprise", "government"})
 
 
@@ -65,6 +74,11 @@ class RuntimeLease:
     issued_at: float
     expires_at: float
     revoked: bool = False
+    target_pid: int = 0
+    target_exe: str = ""
+    target_exe_path: str = ""
+    target_class: str = ""
+    target_title_hash: str = ""
 
     @property
     def ttl_seconds(self) -> float:
@@ -106,6 +120,19 @@ def _hash_text(value: str) -> str:
 
 def _bound_error(value: str) -> str:
     return value[:_MAX_ERROR_LEN]
+
+
+def _normalise_terminal_text(value: str) -> str:
+    """Normalize only representation differences that UIA may introduce."""
+    return _ANSI_ESCAPE_RE.sub("", value).replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _delivery_probe(value: str) -> str:
+    """Return the visible portion that must newly appear after injection."""
+    probe = _normalise_terminal_text(value).strip("\n")
+    if not probe.strip():
+        raise MCPDispatchError("text must contain a visible non-whitespace character")
+    return probe
 
 
 def _normalise_b64(value: str) -> bytes:
@@ -185,6 +212,9 @@ class SchemaValidator:
             raise MCPValidationError(f"{field} must be object")
 
         if isinstance(value, str):
+            min_len = definition.get("minLength")
+            if min_len is not None and len(value) < int(min_len):
+                raise MCPValidationError(f"{field} below minLength {min_len}")
             max_len = definition.get("maxLength")
             if max_len is not None and len(value) > int(max_len):
                 raise MCPValidationError(f"{field} exceeds maxLength {max_len}")
@@ -214,6 +244,11 @@ class MCPDispatcher:
         router: Any | None = None,
         control_plane: ControlPlane | None = None,
         ledger: Any | None = None,
+        policy_enforcer: Any | None = None,
+        operator_queue: OperatorQueue | None = None,
+        target_verifier: Callable[..., dict[str, Any]] | None = None,
+        output_reader: Callable[[int], str] | None = None,
+        identity_type: str = "software",
         now: Callable[[], float] = _now,
     ) -> None:
         if profile not in _VALID_PROFILES:
@@ -221,11 +256,21 @@ class MCPDispatcher:
         self.profile = profile
         self._validator = SchemaValidator()
         self._router = router if router is not None else (ChannelRouter() if ChannelRouter else None)
-        self._control = control_plane or ControlPlane(ledger=ledger)
+        self._operator_queue = operator_queue
+        self._control = control_plane or ControlPlane(
+            ledger=ledger,
+            operator_queue=operator_queue,
+        )
         self._ledger = ledger
+        self._policy_enforcer = policy_enforcer
+        self._target_verifier = target_verifier or self._load_target_verifier()
+        self._output_reader = output_reader or self._load_output_reader()
+        self._identity_type = identity_type
         self._now = now
         self._leases: dict[str, RuntimeLease] = {}
         self._audit: list[AuditEvent] = []
+        self._read_snapshots: dict[str, str] = {}
+        self._injected_text: dict[str, str] = {}
         self._private_key = Ed25519PrivateKey.generate()
         self._public_key = self._private_key.public_key()
 
@@ -325,7 +370,7 @@ class MCPDispatcher:
             self._ledger.log(
                 "mcp_tool_call",
                 result="ok" if ok else "denied",
-                metadata=event.to_dict(),
+                metadata={"audit_event": event.to_dict()},
             )
         return event
 
@@ -339,6 +384,168 @@ class MCPDispatcher:
             raise MCPDispatchError("lease is not bound to requested HWND")
         return lease
 
+    @staticmethod
+    def _load_target_verifier() -> Callable[..., dict[str, Any]] | None:
+        try:
+            from experiments.win32_probe.target_guard import verify_target
+        except Exception:  # noqa: BLE001
+            return None
+        return verify_target
+
+    @staticmethod
+    def _load_output_reader() -> Callable[[int], str] | None:
+        try:
+            from enterprise.uia_output import read_terminal_text
+        except Exception:  # noqa: BLE001
+            return None
+        return read_terminal_text
+
+    def _verify_live_target(
+        self,
+        hwnd: int,
+        *,
+        expected: RuntimeLease | None = None,
+    ) -> dict[str, Any]:
+        if self._target_verifier is None:
+            raise MCPDispatchError("governed target verifier is unavailable")
+        kwargs: dict[str, Any] = {"require_terminal": True}
+        if expected is not None:
+            kwargs.update(
+                expect_pid=expected.target_pid,
+                expect_exe=expected.target_exe,
+                expect_exe_path=expected.target_exe_path,
+                expect_class=expected.target_class,
+            )
+        report = self._target_verifier(int(hwnd), **kwargs)
+        if not report.get("ok"):
+            reasons = report.get("reasons") or ["target verification failed"]
+            raise MCPDispatchError("unsafe target: " + "; ".join(str(item) for item in reasons))
+        required = {
+            "pid": report.get("pid"),
+            "exe": report.get("exe"),
+            "class": report.get("class"),
+        }
+        if not required["pid"] or not required["exe"] or not required["class"]:
+            raise MCPDispatchError("target verifier returned an incomplete identity binding")
+        return report
+
+    def _require_execution_authorization(
+        self,
+        lease: RuntimeLease,
+        args: dict[str, Any],
+        target: dict[str, Any],
+        *,
+        action: str,
+    ) -> dict[str, Any]:
+        if self._ledger is None:
+            raise MCPDispatchError("governed execution requires a persistent signed audit ledger")
+        if self._policy_enforcer is None:
+            raise MCPDispatchError("governed execution requires a signed policy enforcer")
+        if not self._control.is_active(lease.agent_id):
+            raise MCPDispatchError(f"agent {lease.agent_id!r} is not active in the control plane")
+
+        classification = args.get("classification")
+        if self.profile == "government" and not classification:
+            raise MCPDispatchError("government profile requires an explicit classification label")
+        decision = self._policy_enforcer.check(
+            lease.agent_id,
+            action,
+            app=str(target["exe"]),
+            classification=classification or "UNCLASSIFIED",
+            identity_type=self._identity_type,
+        )
+        metadata = decision.to_ledger_metadata()
+        metadata.update(
+            {
+                "subject_agent_id": lease.agent_id,
+                "requested_action": action,
+                "target_hwnd": lease.hwnd,
+                "target_pid": target["pid"],
+                "target_exe": target["exe"],
+                "target_class": target["class"],
+                "requires_approval": bool(decision.requires_approval),
+            }
+        )
+        self._ledger.log(
+            "policy_decision",
+            result="allowed" if decision.allowed else "denied",
+            metadata=metadata,
+        )
+        if not decision.allowed:
+            raise MCPDispatchError(f"policy denied {action}: {decision.reason}")
+
+        operator_id = ""
+        if decision.requires_approval:
+            approval_id = args.get("approval_id")
+            if not approval_id:
+                raise MCPDispatchError(f"operator approval is required for {action}")
+            if self._operator_queue is None:
+                raise MCPDispatchError("operator approval queue is not configured")
+            approval_context = self.build_approval_context(
+                lease,
+                args,
+                target,
+                action=action,
+            )
+            approval = self._operator_queue.consume_approved(
+                approval_id,
+                agent_id=lease.agent_id,
+                action=action,
+                required_context=approval_context,
+            )
+            if approval is None:
+                raise MCPDispatchError(
+                    "operator approval is missing, expired, consumed, or not bound "
+                    "to the exact action context"
+                )
+            operator_id = approval.operator_id
+
+        return {
+            "policy_id": decision.policy_id,
+            "classification": decision.classification,
+            "approval_mode": "human_approved" if operator_id else "autonomous",
+            "operator_id": operator_id,
+        }
+
+    def build_approval_context(
+        self,
+        lease: RuntimeLease,
+        args: dict[str, Any],
+        target: dict[str, Any],
+        *,
+        action: str,
+    ) -> dict[str, Any]:
+        """Build the non-secret context to which a one-time approval is bound."""
+        context: dict[str, Any] = {
+            "action": action,
+            "lease_id": lease.lease_id,
+            "target_hwnd": lease.hwnd,
+            "target_pid": int(target["pid"]),
+            "target_exe": str(target["exe"]),
+            "target_class": str(target["class"]),
+            "classification": args.get("classification") or "UNCLASSIFIED",
+        }
+        if action == "sc_inject_text":
+            context["payload_sha256"] = _hash_text(str(args.get("text", "")))
+        return context
+
+    def approval_context_for(
+        self,
+        lease_id: str,
+        arguments: dict[str, Any],
+        *,
+        action: str,
+    ) -> dict[str, Any]:
+        """Return a freshly target-verified context for operator review."""
+        lease = self._require_lease(lease_id, int(arguments["hwnd"]))
+        target = self._verify_live_target(lease.hwnd, expected=lease)
+        return self.build_approval_context(
+            lease,
+            arguments,
+            target,
+            action=action,
+        )
+
     # ------------------------------------------------------------------
     # Tool handlers
     # ------------------------------------------------------------------
@@ -346,6 +553,7 @@ class MCPDispatcher:
     def _sc_request_lease(self, args: dict[str, Any]) -> dict[str, Any]:
         ttl = int(args.get("ttl_seconds", 300))
         now = self._now()
+        target = self._verify_live_target(int(args["hwnd"]))
         lease = RuntimeLease(
             lease_id="lease-" + uuid.uuid4().hex[:24],
             agent_id=args["agent_id"],
@@ -353,6 +561,11 @@ class MCPDispatcher:
             role=args["role"],
             issued_at=now,
             expires_at=now + ttl,
+            target_pid=int(target["pid"]),
+            target_exe=str(target["exe"]),
+            target_exe_path=str(target.get("exe_path", "")),
+            target_class=str(target["class"]),
+            target_title_hash=_hash_text(str(target.get("title", ""))),
         )
         self._leases[lease.lease_id] = lease
         self._control.register(lease.agent_id)
@@ -370,6 +583,11 @@ class MCPDispatcher:
             issued_at=lease.issued_at,
             expires_at=lease.expires_at,
             revoked=True,
+            target_pid=lease.target_pid,
+            target_exe=lease.target_exe,
+            target_exe_path=lease.target_exe_path,
+            target_class=lease.target_class,
+            target_title_hash=lease.target_title_hash,
         )
         self._leases[lease.lease_id] = revoked
         return {"lease_id": lease.lease_id, "revoked": True, "reason": args.get("reason", "")}
@@ -398,28 +616,116 @@ class MCPDispatcher:
 
     def _sc_inject_text(self, args: dict[str, Any]) -> dict[str, Any]:
         lease = self._require_lease(args["lease_id"], int(args["hwnd"]))
+        target = self._verify_live_target(int(args["hwnd"]), expected=lease)
+        governance = self._require_execution_authorization(
+            lease,
+            args,
+            target,
+            action="sc_inject_text",
+        )
         if self._router is None:
             raise MCPDispatchError("channel router unavailable")
+        if self._output_reader is None:
+            raise MCPDispatchError(
+                "delivery cannot be confirmed because UIA TextPattern output is unavailable"
+            )
+
+        probe = _delivery_probe(args["text"])
+        before = self._read_output_once(lease.hwnd)
+        before_count = _normalise_terminal_text(before).count(probe)
         try:
             receipt = self._router.route(int(args["hwnd"]), args["text"], lease_id=lease.lease_id)
         except ChannelRoutingError as exc:
             raise MCPDispatchError(str(exc)) from exc
+        if not bool(getattr(receipt, "success", False)):
+            raise MCPDispatchError("transport refused or failed to enqueue the payload")
+
+        timeout_ms = int(args.get("delivery_timeout_ms", _DEFAULT_DELIVERY_TIMEOUT_MS))
+        deadline = time.monotonic() + (timeout_ms / 1000.0)
+        confirmed_snapshot = ""
+        while True:
+            current = self._read_output_once(lease.hwnd)
+            if _normalise_terminal_text(current).count(probe) > before_count:
+                confirmed_snapshot = current
+                break
+            if time.monotonic() >= deadline:
+                raise MCPDispatchError(
+                    "delivery unconfirmed by UIA readback; the target may have received the "
+                    "payload, so do not retry automatically"
+                )
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+
         data = _jsonable(receipt)
+        data["success"] = True
+        data["transport_enqueued"] = True
+        data["delivery_confirmed"] = True
+        data["readback_hash"] = _hash_text(confirmed_snapshot)
+        data["delivery_confirmation"] = "uia_echo_confirmed"
+        data["delivery_probe_hash"] = _hash_text(probe)
+        data["confirmed_at"] = self._now()
         data["lease_id"] = lease.lease_id
         data["agent_id"] = lease.agent_id
+        data["governance"] = governance
+        self._injected_text[lease.lease_id] = args["text"]
+        self._read_snapshots[lease.lease_id] = confirmed_snapshot
         return data
 
     def _sc_read_output(self, args: dict[str, Any]) -> dict[str, Any]:
         lease = self._require_lease(args["lease_id"], int(args["hwnd"]))
+        target = self._verify_live_target(int(args["hwnd"]), expected=lease)
+        governance = self._require_execution_authorization(
+            lease,
+            args,
+            target,
+            action="sc_read_output",
+        )
+        if self._output_reader is None:
+            raise MCPDispatchError("UIA TextPattern output reader is unavailable")
+
+        timeout_seconds = int(args.get("timeout_ms", 5000)) / 1000.0
+        deadline = time.monotonic() + timeout_seconds
+        previous = self._read_snapshots.get(lease.lease_id)
+        current = self._read_output_once(lease.hwnd)
+        while previous is not None and current == previous and time.monotonic() < deadline:
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+            current = self._read_output_once(lease.hwnd)
+
+        self._read_snapshots[lease.lease_id] = current
+        raw_delta = current if previous is None else (
+            current[len(previous):] if current.startswith(previous) else current
+        )
+        injected = self._injected_text.pop(lease.lease_id, "")
+        echo_removed = False
+        if injected and injected in raw_delta:
+            raw_delta = raw_delta.replace(injected, "", 1)
+            echo_removed = True
+        if args.get("strip_ansi", True):
+            raw_delta = _ANSI_ESCAPE_RE.sub("", raw_delta)
+        output = raw_delta.strip()
+        truncated = len(output) > _MAX_READ_CHARS
+        if truncated:
+            output = output[-_MAX_READ_CHARS:]
         return {
             "lease_id": lease.lease_id,
             "hwnd": lease.hwnd,
-            "method": "uia_textpattern_runtime_placeholder",
-            "classification": "no_signal",
-            "text": "",
-            "text_hash": _hash_text(""),
-            "note": "runtime dispatch wired; live UIA adapter remains a platform probe",
+            "method": "uia_textpattern",
+            "classification": "no_signal" if not output else "output",
+            "text": output,
+            "text_hash": _hash_text(output),
+            "snapshot_hash": _hash_text(current),
+            "echo_removed": echo_removed,
+            "truncated": truncated,
+            "governance": governance,
         }
+
+    def _read_output_once(self, hwnd: int) -> str:
+        try:
+            text = self._output_reader(hwnd) if self._output_reader is not None else None
+        except Exception as exc:  # noqa: BLE001
+            raise MCPDispatchError(f"UIA TextPattern output read failed: {exc}") from exc
+        if not isinstance(text, str):
+            raise MCPDispatchError("UIA TextPattern output reader returned no text value")
+        return text
 
     def _sc_verify_target(self, args: dict[str, Any]) -> dict[str, Any]:
         return self._run_target_guard(args)
@@ -485,10 +791,14 @@ class MCPDispatcher:
     def _sc_identity_sign(self, args: dict[str, Any]) -> dict[str, Any]:
         if self.profile == "government" and args.get("key_provider", "software") != "tpm":
             raise MCPDispatchError(
-                "government profile requires TPM-backed identity for signing"
+                "government profile requires a verified TPM platform claim alongside signing"
             )
         if args.get("key_provider", "software") == "tpm":
-            if not _TPM_ATTESTATION_AVAILABLE or create_tpm_platform_claim is None:
+            if (
+                not _TPM_ATTESTATION_AVAILABLE
+                or create_tpm_platform_claim is None
+                or verify_tpm_platform_claim is None
+            ):
                 raise MCPDispatchError("TPM attestation not available on this machine")
             nonce = os.urandom(32)
             tpm_result = create_tpm_platform_claim(nonce)
@@ -496,19 +806,26 @@ class MCPDispatcher:
                 raise MCPDispatchError(
                     f"TPM attestation not available on this machine: {tpm_result.error}"
                 )
+            if not verify_tpm_platform_claim(tpm_result):
+                raise MCPDispatchError("TPM platform claim failed local verification")
             payload = bytes.fromhex(args["payload_hex"])
             sig = self._private_key.sign(payload)
             pub = self._public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
             return {
-                "algorithm": "Ed25519+TPM",
+                "algorithm": "Ed25519",
+                "signature_key_provider": "software",
                 "signature_b64": base64.b64encode(sig).decode("ascii"),
                 "public_key_b64": base64.b64encode(pub).decode("ascii"),
                 "payload_hash": hashlib.sha256(payload).hexdigest(),
                 "tpm_attestation": {
                     "supported": tpm_result.supported,
+                    "verified_locally": True,
+                    "identity_key_bound": tpm_result.identity_key_bound,
                     "algorithm": tpm_result.algorithm,
                     "nonce_hex": tpm_result.nonce.hex(),
                     "pubkey_hex": tpm_result.public_key_blob.hex(),
+                    "claim_b64": base64.b64encode(tpm_result.claim_blob).decode("ascii"),
+                    "claim_sha256": hashlib.sha256(tpm_result.claim_blob).hexdigest(),
                     "claim_size": len(tpm_result.claim_blob),
                 },
             }
@@ -523,6 +840,13 @@ class MCPDispatcher:
         }
 
     def _sc_identity_verify(self, args: dict[str, Any]) -> dict[str, Any]:
+        algorithm = args.get("algorithm", "Ed25519")
+        if algorithm != "Ed25519":
+            return {
+                "verified": False,
+                "algorithm": "Ed25519",
+                "reason": f"unsupported signature algorithm: {algorithm}",
+            }
         try:
             payload = bytes.fromhex(args["payload_hex"])
             sig = _normalise_b64(args["signature_b64"])
@@ -531,7 +855,7 @@ class MCPDispatcher:
             verified = True
         except Exception:
             verified = False
-        return {"verified": verified, "algorithm": args.get("algorithm", "Ed25519")}
+        return {"verified": verified, "algorithm": "Ed25519"}
 
     def _sc_session_stamp(self, args: dict[str, Any]) -> dict[str, Any]:
         if self.profile == "government" and not bool(args.get("use_tpm", False)):
@@ -608,14 +932,56 @@ class MCPDispatcher:
 
     def _sc_policy_check(self, args: dict[str, Any]) -> dict[str, Any]:
         agent_id = args["agent_id"]
-        active = self._control.is_active(agent_id)
+        if not self._control.is_active(agent_id):
+            return {
+                "allowed": False,
+                "agent_id": agent_id,
+                "action_type": args["action_type"],
+                "target_hwnd": args["target_hwnd"],
+                "governance_profile": self.profile,
+                "rule": "control_plane_not_active",
+            }
+        if self._policy_enforcer is None:
+            return {
+                "allowed": False,
+                "agent_id": agent_id,
+                "action_type": args["action_type"],
+                "target_hwnd": args["target_hwnd"],
+                "governance_profile": self.profile,
+                "rule": "signed_policy_enforcer_not_configured",
+            }
+        target = self._verify_live_target(int(args["target_hwnd"]))
+        action_map = {
+            "inject": "sc_inject_text",
+            "read": "sc_read_output",
+            "lease": "sc_request_lease",
+            "revoke": "sc_revoke_lease",
+            "admin": "sc_admin",
+        }
+        requested_action = action_map[args["action_type"]]
+        decision = self._policy_enforcer.check(
+            agent_id,
+            requested_action,
+            app=str(target["exe"]),
+            classification=args.get("classification", "UNCLASSIFIED"),
+            identity_type=self._identity_type,
+        )
         return {
-            "allowed": active,
+            "allowed": decision.allowed,
             "agent_id": agent_id,
             "action_type": args["action_type"],
+            "requested_action": requested_action,
             "target_hwnd": args["target_hwnd"],
             "governance_profile": self.profile,
-            "rule": "control_plane_active" if active else "control_plane_not_active",
+            "rule": decision.reason,
+            "policy_id": decision.policy_id,
+            "classification": decision.classification,
+            "requires_approval": decision.requires_approval,
+            "target": {
+                "pid": target["pid"],
+                "exe": target["exe"],
+                "class": target["class"],
+            },
         }
 
     def _sc_receipt_verify(self, args: dict[str, Any]) -> dict[str, Any]:
