@@ -33,6 +33,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install "pytest>=8" "ruff>=0.4" "hypothesis>=6.0" "pip-audit>=2.7" pywin32 "cryptography>=48.0.1" comtypes "rich>=13.0"
+          pip install "selfconnect @ git+https://github.com/rblake2320/selfconnect.git@8cf151dbc5f312ce888e51aa429f62960e1a2ee6"
           pip install -e . --no-deps
 
       - name: Lint (ruff — complete repository)
@@ -75,6 +76,7 @@ jobs:
           # Only live-Ultra tests may skip in this unit lane. They are executed
           # against a real sidecar in the dedicated Windows contract job.
           skip_lines = [line for line in output.splitlines() if line.startswith("SKIPPED [")]
+          normalized_skip_lines = [line.replace("\\", "/") for line in skip_lines]
           allowed = (
               "tests/test_e2e_ultra_gate.py" in line
               or (
@@ -84,7 +86,7 @@ jobs:
                       or "ULTRA_ADMIN_TOKEN is not configured" in line
                   )
               )
-              for line in skip_lines
+              for line in normalized_skip_lines
           )
           if not all(allowed):
               print("FAIL: unexpected skipped test or reason")

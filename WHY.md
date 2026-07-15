@@ -59,7 +59,8 @@ related records.
 **Action log:** [LOG-20260715-008](LOG.md#log-20260715-008),
 [LOG-20260715-009](LOG.md#log-20260715-009),
 [LOG-20260715-010](LOG.md#log-20260715-010),
-[LOG-20260715-011](LOG.md#log-20260715-011)
+[LOG-20260715-011](LOG.md#log-20260715-011),
+[LOG-20260715-012](LOG.md#log-20260715-012)
 **Parked records:** [PARK-20260715-017](PARKED.md#park-20260715-017)
 **Source state:** `selfconnect-enterprise`,
 `hardening/partner-rollout-readiness-20260715`,
@@ -97,6 +98,7 @@ service dependency.
 [LOG-20260715-009](LOG.md#log-20260715-009),
 [LOG-20260715-010](LOG.md#log-20260715-010),
 [LOG-20260715-011](LOG.md#log-20260715-011),
+[LOG-20260715-012](LOG.md#log-20260715-012),
 [PARK-20260715-017](PARKED.md#park-20260715-017),
 `tests/test_identity_gate.py`, `tests/test_e2e_ultra_gate.py`, and the
 pinned BPC/TSK protocol commits.

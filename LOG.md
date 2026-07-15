@@ -54,6 +54,35 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260715-012 - Execute the pinned SDK dependency gate in generic CI
+
+**Timestamp (UTC):** 2026-07-15T11:54:20Z
+**Actor:** Codex, requested by the repository owner
+**Category:** test, supply-chain hardening
+**Base commit:** `cb00e36a9845d901e6299cc34b9f5d2a6483e369`
+**Change reference:** commit containing this entry and draft PR #20
+**Why:** [WHY-20260715-008](WHY.md#why-20260715-008)
+**Parked records:** None
+
+**Changed:** Installed the exact commit-pinned SelfConnect SDK in the generic
+Windows CI lane so the declared-dependency integrity test executes. Normalized
+pytest skip-report paths before applying the named live-Ultra allowlist.
+
+**Reason:** Hosted CI showed the allowlist correctly rejected an unapproved
+dependency-integrity skip and also revealed that Windows path separators made
+approved live-Ultra node IDs fail a POSIX-style comparison.
+
+**Full actions and links:** `.github/workflows/ci.yml`, draft PR #20, GitHub
+Actions run `29413084872`, and job `87344547270`.
+
+**Validation:** The dedicated Windows Ultra contract and production
+PostgreSQL/Redis durability jobs passed in run `29413084872`. Exact actionlint,
+documentation conformance, and the full generic lane must rerun on the
+containing commit.
+
+**Notes:** The dependency-integrity skip was not added to the allowlist. The
+missing pinned dependency is now installed and must be scanned.
+
 ## LOG-20260715-011 - Make CI skip evidence and platform imports explicit
 
 **Timestamp (UTC):** 2026-07-15T11:50:48Z
