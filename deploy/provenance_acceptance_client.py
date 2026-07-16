@@ -575,7 +575,13 @@ def exercise(args: argparse.Namespace) -> int:
             service_algorithm=str(config["service_algorithm"]),
             service_public_key=bytes.fromhex(str(config["service_public_key_hex"])),
             pipe_name=str(endpoint["pipe_name"]),
-        ).submit(build_record_request(identity, event_type=SessionEventType.TOOL_CALL))
+        ).submit(
+            build_record_request(
+                identity,
+                session_id=str(uuid.uuid4()),
+                event_type=SessionEventType.TOOL_CALL,
+            )
+        )
     except ProvenancePipeError:
         wrong_pid_denied = True
 
@@ -587,7 +593,13 @@ def exercise(args: argparse.Namespace) -> int:
             service_algorithm="ed25519",
             service_public_key=b"\0" * 32,
             pipe_name=str(endpoint["pipe_name"]),
-        ).submit(build_record_request(identity, event_type=SessionEventType.TOOL_CALL))
+        ).submit(
+            build_record_request(
+                identity,
+                session_id=str(uuid.uuid4()),
+                event_type=SessionEventType.TOOL_CALL,
+            )
+        )
     except ProvenancePipeError:
         wrong_key_denied = True
 

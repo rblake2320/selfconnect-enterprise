@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import base64
 import csv
 import hashlib
@@ -117,6 +118,25 @@ def test_acceptance_helper_imports_and_compiles():
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_acceptance_helper_record_requests_bind_explicit_sessions():
+    helper_path = ROOT / "deploy/provenance_acceptance_client.py"
+    tree = ast.parse(helper_path.read_text(encoding="utf-8"), filename=str(helper_path))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "build_record_request"
+    ]
+    assert calls
+    missing = [
+        node.lineno
+        for node in calls
+        if not any(keyword.arg == "session_id" for keyword in node.keywords)
+    ]
+    assert missing == [], f"build_record_request calls missing session_id at lines {missing}"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows completion receipt contract")
