@@ -178,6 +178,7 @@ def test_installer_has_explicit_acl_repair_and_no_silent_hardened_fallback():
     assert "'RepairAcl'" in installer
     assert "Set-ProvenanceAcls" in installer
     assert "Set-HardenedTreeFileAcls" in installer
+    assert "Set-HardenedTreeDirectoryAcls" in installer
     assert "Grant-ServiceRuntimeAccess" in installer
     assert "Resolve-ServiceRuntimeRoots" in installer
     assert "PythonExe must belong to a dedicated runtime below" in installer
@@ -195,6 +196,9 @@ def test_installer_has_explicit_acl_repair_and_no_silent_hardened_fallback():
     assert "'-m enterprise.provenance_service'" in installer
     assert "Failed to remove partial $ServiceName registration" in installer
     assert "operator-requested post-registration acceptance fault" in installer
+    assert "SC_PROVENANCE_BOOTSTRAP_IDENTITY=1" in installer
+    assert "Wait-IdentityBootstrap" in installer
+    assert "Wait-ProvenanceReady" in installer
     service = (ROOT / "enterprise/provenance_service.py").read_text(encoding="utf-8")
     assert "dedicated provenance service refuses consumer audit mode" in service
     assert "process token is not the dedicated SelfConnectProvenance service SID" in service

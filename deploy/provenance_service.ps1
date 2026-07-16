@@ -146,6 +146,19 @@ function Set-HardenedTreeFileAcls {
     }
 }
 
+function Set-HardenedTreeDirectoryAcls {
+    param(
+        [string]$Path,
+        [string]$ServiceSid,
+        [System.Security.AccessControl.FileSystemRights]$ServiceRights,
+        [string[]]$ReadSids = @()
+    )
+    foreach ($directory in Get-ChildItem -LiteralPath $Path -Directory -Recurse -Force) {
+        Set-HardenedAcl -Path $directory.FullName -ServiceSid $ServiceSid `
+            -ServiceRights $ServiceRights -ReadSids $ReadSids
+    }
+}
+
 function Add-ServiceRuntimeRule {
     param(
         [string]$Path,
@@ -278,6 +291,16 @@ function Set-ProvenanceAcls {
     Set-HardenedAcl -Path $identity -ServiceSid $ServiceSid -ServiceRights $writeState
     Set-HardenedAcl -Path $ledger -ServiceSid $ServiceSid -ServiceRights $appendLedger
     Set-HardenedAcl -Path $state -ServiceSid $ServiceSid -ServiceRights $writeState
+    Set-HardenedTreeDirectoryAcls -Path $config -ServiceSid $ServiceSid `
+        -ServiceRights $readOnly
+    Set-HardenedTreeDirectoryAcls -Path $endpoint -ServiceSid $ServiceSid `
+        -ServiceRights $writeState -ReadSids $clientSids
+    Set-HardenedTreeDirectoryAcls -Path $identity -ServiceSid $ServiceSid `
+        -ServiceRights $writeState
+    Set-HardenedTreeDirectoryAcls -Path $ledger -ServiceSid $ServiceSid `
+        -ServiceRights $appendLedger
+    Set-HardenedTreeDirectoryAcls -Path $state -ServiceSid $ServiceSid `
+        -ServiceRights $writeState
     Set-HardenedTreeFileAcls -Path $config -ServiceSid $ServiceSid -ServiceRights $readOnly
     Set-HardenedTreeFileAcls -Path $endpoint -ServiceSid $ServiceSid `
         -ServiceRights $writeState -ReadSids $clientSids
@@ -285,6 +308,37 @@ function Set-ProvenanceAcls {
     Set-HardenedTreeFileAcls -Path $ledger -ServiceSid $ServiceSid -ServiceRights $appendLedger
     Set-HardenedTreeFileAcls -Path $state -ServiceSid $ServiceSid -ServiceRights $writeState
     Set-HardenedFileAcl -Path $enrollment -ServiceSid $ServiceSid -ServiceRights $readOnly
+}
+
+function Wait-IdentityBootstrap {
+    param([string]$IdentityPublicKey, [int]$Seconds = 30)
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+        Start-Sleep -Milliseconds 100
+        $service = Get-Service -Name $ServiceName -ErrorAction Stop
+    } while ($service.Status -ne 'Stopped' -and (Get-Date) -lt $deadline)
+    if ($service.Status -ne 'Stopped' -or -not (Test-Path -LiteralPath $IdentityPublicKey)) {
+        throw 'dedicated service-token identity bootstrap did not complete cleanly'
+    }
+}
+
+function Wait-ProvenanceReady {
+    param([string]$EndpointFile, [int]$Seconds = 30)
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+        Start-Sleep -Milliseconds 100
+        $service = Get-Service -Name $ServiceName -ErrorAction Stop
+        if ($service.Status -eq 'Stopped') {
+            throw 'provenance service stopped before publishing its endpoint'
+        }
+    } while (-not (Test-Path -LiteralPath $EndpointFile) -and (Get-Date) -lt $deadline)
+    if (-not (Test-Path -LiteralPath $EndpointFile)) {
+        throw 'provenance service did not publish a ready endpoint'
+    }
+    $endpoint = Get-Content -Raw -LiteralPath $EndpointFile | ConvertFrom-Json
+    if ([string]$endpoint.version -ne 'selfconnect.provenance.endpoint.v1' -or -not $endpoint.pipe_name) {
+        throw 'provenance service published an invalid endpoint document'
+    }
 }
 
 function Install-ProvenanceService {
@@ -333,11 +387,6 @@ function Install-ProvenanceService {
             throw 'operator-requested post-registration acceptance fault'
         }
         Invoke-Native { sc.exe sidtype $ServiceName restricted } 'service SID restriction'
-        Invoke-Native {
-            sc.exe failure $ServiceName reset= 60 actions= restart/5000/restart/15000/restart/30000
-        } 'service recovery configuration'
-        Invoke-Native { sc.exe failureflag $ServiceName 1 } 'non-crash failure recovery configuration'
-
         $config = Join-Path $root 'config'
         $endpoint = Join-Path $root 'endpoint'
         $identity = Join-Path $root 'identity'
@@ -368,12 +417,28 @@ function Install-ProvenanceService {
         $environment = @(
             "SC_PROVENANCE_SERVICE_ROOT=$root",
             "SCENT_AUDIT_MODE=$AuditMode",
-            "SCENT_WORM_SINK=$WormSink"
+            "SCENT_WORM_SINK=$WormSink",
+            'SC_PROVENANCE_BOOTSTRAP_IDENTITY=1'
         )
         New-ItemProperty -Path $serviceKey -Name Environment -PropertyType MultiString `
             -Value $environment -Force | Out-Null
+        $identityPublic = Join-Path $identity "$ServiceName\identity.pub"
         Start-Service -Name $ServiceName
-        (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+        Wait-IdentityBootstrap -IdentityPublicKey $identityPublic
+        $environment = @(
+            "SC_PROVENANCE_SERVICE_ROOT=$root",
+            "SCENT_AUDIT_MODE=$AuditMode",
+            "SCENT_WORM_SINK=$WormSink"
+        )
+        Set-ProvenanceAcls -Root $root -ServiceSid $serviceSid
+        New-ItemProperty -Path $serviceKey -Name Environment -PropertyType MultiString `
+            -Value $environment -Force | Out-Null
+        Invoke-Native {
+            sc.exe failure $ServiceName reset= 60 actions= restart/5000/restart/15000/restart/30000
+        } 'service recovery configuration'
+        Invoke-Native { sc.exe failureflag $ServiceName 1 } 'non-crash failure recovery configuration'
+        Start-Service -Name $ServiceName
+        Wait-ProvenanceReady -EndpointFile (Join-Path $endpoint 'current.json')
         Write-Host "$ServiceName installed and running as $ServiceAccount ($serviceSid)"
         Write-Host "Enrollment file: $enrollment"
         Write-Host 'Restart the service after every reviewed enrollment change.'

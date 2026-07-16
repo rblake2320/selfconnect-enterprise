@@ -51,6 +51,7 @@ SERVICE_DESCRIPTION = (
     "Dedicated signed provenance writer with enrolled identity verification, "
     "replay protection, and a service-SID filesystem boundary."
 )
+_BOOTSTRAP_IDENTITY_ENV = "SC_PROVENANCE_BOOTSTRAP_IDENTITY"
 
 _WRITE_MASK = (
     0x00000002  # FILE_WRITE_DATA
@@ -491,6 +492,36 @@ class ProvenanceServiceRuntime:
             self.paths.endpoint_file.unlink(missing_ok=True)
 
 
+def bootstrap_service_identity(paths: ProvenanceServicePaths | None = None) -> AgentIdentity:
+    """Create or validate the DPAPI identity under the dedicated service token."""
+    if not _WIN32_SERVICE_AVAILABLE:
+        raise ProvenanceServiceConfigurationError("Windows and pywin32 are required")
+    resolved_paths = paths or ProvenanceServicePaths.from_env()
+    service_sid = resolve_account_sid(SERVICE_ACCOUNT)
+    if current_process_sid() != service_sid:
+        raise ProvenanceServiceConfigurationError(
+            "identity bootstrap token is not the dedicated SelfConnectProvenance service SID"
+        )
+    registry = EnrollmentRegistry.load(resolved_paths.enrollment_file)
+    for path, writable in [
+        (resolved_paths.root, False),
+        (resolved_paths.config_dir, False),
+        (resolved_paths.identity_dir, True),
+    ]:
+        verify_service_tree_acls(
+            path,
+            service_sid=service_sid,
+            client_sids=registry.allowed_sids,
+            service_requires_write=writable,
+        )
+    identity_name = SERVICE_NAME
+    return (
+        AgentIdentity.load(identity_name, data_dir=resolved_paths.identity_dir)
+        if AgentIdentity.exists(identity_name, data_dir=resolved_paths.identity_dir)
+        else AgentIdentity.init(identity_name, data_dir=resolved_paths.identity_dir)
+    )
+
+
 if _WIN32_SERVICE_AVAILABLE:
     class SelfConnectProvenanceService(win32serviceutil.ServiceFramework):
         _svc_name_ = SERVICE_NAME
@@ -510,6 +541,12 @@ if _WIN32_SERVICE_AVAILABLE:
 
         def SvcDoRun(self) -> None:
             try:
+                if os.environ.get(_BOOTSTRAP_IDENTITY_ENV) == "1":
+                    identity = bootstrap_service_identity()
+                    servicemanager.LogInfoMsg(
+                        f"SelfConnectProvenance identity bootstrapped: {identity.agent_id}"
+                    )
+                    return
                 self._runtime = ProvenanceServiceRuntime()
                 self._runtime.start()
                 servicemanager.LogInfoMsg("SelfConnectProvenance service started")

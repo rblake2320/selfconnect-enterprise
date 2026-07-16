@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -18,6 +19,7 @@ from enterprise.provenance_service import (
     main,
     verify_service_path_acl,
 )
+import enterprise.provenance_service as provenance_service
 
 
 class FakeIdentity:
@@ -43,6 +45,53 @@ def manager(tmp_path, identity):
 
 def event_types(path):
     return [json.loads(line)["event_type"] for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_service_identity_bootstrap_requires_service_token_and_uses_enrollment_scope(
+    tmp_path, monkeypatch
+):
+    paths = SimpleNamespace(
+        root=tmp_path,
+        config_dir=tmp_path / "config",
+        enrollment_file=tmp_path / "config" / "enrollments.json",
+        identity_dir=tmp_path / "identity",
+    )
+    paths.config_dir.mkdir()
+    paths.identity_dir.mkdir()
+    paths.enrollment_file.write_text('{"agents":[],"version":1}\n', encoding="ascii")
+    service_sid = "S-1-5-80-123"
+    client_sids = frozenset({"S-1-5-21-1-2-3-1001"})
+    observed = []
+    identity = SimpleNamespace(agent_id="SC-BOOTSTRAP")
+
+    monkeypatch.setattr(provenance_service, "_WIN32_SERVICE_AVAILABLE", True)
+    monkeypatch.setattr(provenance_service, "resolve_account_sid", lambda _name: service_sid)
+    monkeypatch.setattr(provenance_service, "current_process_sid", lambda: service_sid)
+    monkeypatch.setattr(
+        provenance_service.EnrollmentRegistry,
+        "load",
+        lambda _path: SimpleNamespace(allowed_sids=client_sids),
+    )
+    monkeypatch.setattr(
+        provenance_service,
+        "verify_service_tree_acls",
+        lambda path, **kwargs: observed.append((path, kwargs)),
+    )
+    monkeypatch.setattr(provenance_service.AgentIdentity, "exists", lambda *_a, **_k: False)
+    monkeypatch.setattr(provenance_service.AgentIdentity, "init", lambda *_a, **_k: identity)
+
+    assert provenance_service.bootstrap_service_identity(paths) is identity
+    assert [item[0] for item in observed] == [
+        paths.root,
+        paths.config_dir,
+        paths.identity_dir,
+    ]
+    assert all(item[1]["service_sid"] == service_sid for item in observed)
+    assert all(item[1]["client_sids"] == client_sids for item in observed)
+
+    monkeypatch.setattr(provenance_service, "current_process_sid", lambda: "S-1-5-21-OTHER")
+    with pytest.raises(ProvenanceServiceConfigurationError, match="bootstrap token"):
+        provenance_service.bootstrap_service_identity(paths)
 
 
 def test_manager_interrupts_and_reconstructs_only_after_signed_chain_verification(tmp_path):
