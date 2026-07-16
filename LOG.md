@@ -83,10 +83,11 @@ PR #14 and merge commit `56d5ff1802dca5d4136bcc32fa37aa122d4944dc`,
 [PARK-20260716-004](PARKED.md#park-20260716-004).
 
 **Validation:** `python -m tools.portfolio_conformance` verifies lock and VCS-pin
-agreement locally. The associated hosted Enterprise workflow checks out the
-exact locked commits, verifies Git/package identity, and runs generic Windows,
-live Ultra, live policy, Windows composed protocol, and Linux durable
-PostgreSQL/Redis composition jobs.
+agreement locally. The associated hosted Enterprise workflow runs the exact
+jobs `Workflow syntax`, `Lint + Test`, `Ultra live contract (Windows)`, and
+`Ultra production durability (PostgreSQL + Redis)`. The Ultra jobs check out
+the exact locked BPC and TSK commits and verify Git/package identity; the Python
+install resolves SelfConnect from the exact VCS pin.
 
 **Notes:** A green composition run establishes compatibility for this exact
 source set. It does not convert transport acceptance into delivery evidence,
