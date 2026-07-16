@@ -87,6 +87,15 @@ an installed service and a distinct non-admin token. A second Windows host is
 still required before claiming remote-host rejection was exercised rather than
 inferred from `PIPE_REJECT_REMOTE_CLIENTS`.
 
+The bounded 2026-07-16 run is recorded in
+[`docs/operations/2026-07-16-provenance-service-acceptance.json`](operations/2026-07-16-provenance-service-acceptance.json).
+It exercised one exact wheel on one Windows host and retained only redacted
+evidence in the repository. The artifact records 19/19 lifecycle checks,
+19/19 enrolled-agent checks, a 40-request forced-restart burst, 42 verified
+session ledgers containing 168 signed events, and 126 verified signed index
+entries. It does not establish off-host immutability, remote-host rejection,
+authorization, or behavior outside the recorded environment.
+
 ## Recovery
 
 `RepairAcl` reapplies the exact service-SID filesystem contract after an

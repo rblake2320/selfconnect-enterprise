@@ -103,6 +103,10 @@ Two hardened baselines are provided. Construct custom profiles via `ClassifiedMo
 Enterprise and Government runtime evidence is written through the dedicated
 Windows service described in [docs/PROVENANCE_SERVICE.md](docs/PROVENANCE_SERVICE.md).
 There is no automatic in-process fallback for those profiles.
+One installed-service lifecycle was implemented and exercised on the bounded
+environment recorded in
+[the redacted acceptance artifact](docs/operations/2026-07-16-provenance-service-acceptance.json);
+its named blind spots remain part of the claim.
 
 | Profile | Ceiling | CNG Required | Cloud Egress | Export | Operator Approval |
 |---------|---------|-------------|-------------|--------|-------------------|

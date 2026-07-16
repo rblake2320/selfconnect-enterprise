@@ -89,17 +89,31 @@ and unit tests did not establish the Windows service boundary required by issue
 [WHY-20260716-009](WHY.md#why-20260716-009), and
 [PARK-20260716-009](PARKED.md#park-20260716-009).
 
-**Validation:** Clean Python 3.12 environment: Ruff clean and `1496 passed, 34
-skipped` across the full suite after the independent-review corrections.
-Focused review regressions include a recomputed-hash index rewrite with an
-invalid signature, per-start endpoint rediscovery, exact wheel/source mismatch,
-existing-file ACL drift, and partial-registration cleanup. The installed SCM,
-distinct non-admin token, forced restart, DACL tamper, offline chain/index, and
-rollback evidence is recorded separately because unit tests cannot close issue
-#16.
+**Validation:** The exact wheel built from
+`9af484ec99c739176a287e9e68d003ffb8f78b88` matched all 63 runtime source files
+and passed the privileged installed-service lifecycle on Windows build
+`10.0.26200.0` with Python 3.12.10. All 19 lifecycle checks and all 19
+enrolled-agent checks passed. The run exercised a distinct disposable
+non-admin token, Medium/No-Write-Up pipe integrity, live server-PID and service
+key binding, replay/stale/signature/agent/version/frame denials, direct
+filesystem denial, endpoint rotation around old-name squatting, startup refusal
+after DACL tamper, a forced restart with 40 concurrent submissions and eight
+transient recoveries, offline verification of 42 session ledgers containing 168
+signed events, verification of 126 signed index entries, uninstall, and full
+disposable runtime/account/workspace cleanup. The redacted artifact is
+[`docs/operations/2026-07-16-provenance-service-acceptance.json`](docs/operations/2026-07-16-provenance-service-acceptance.json).
+In a fresh Python 3.12 release environment with the declared dependencies,
+including `cryptography==49.0.0`, the full suite passed `1512 passed, 34
+skipped`; Ruff and `pip check` passed; and `pip-audit` found zero vulnerable
+dependencies across 46 scanned packages. The machine-wide interpreter remained
+correctly blocked because it still contained `cryptography==44.0.3`; that
+environment failure is not reported as a branch pass. Final exact-head
+cross-repository conformance and independent review are appended before merge.
 
-**Notes:** A local memory witness does not establish off-host immutability. A
-second Windows host is required to exercise remote-host pipe rejection.
+**Notes:** The run used a local memory witness and does not establish off-host
+immutability. A second Windows host is required to exercise remote-host pipe
+rejection. It is implementation and one-host runtime evidence, not an
+authorization or a general deployment guarantee.
 
 ## LOG-20260716-008 - Bind Windows cleanup evidence to control flow
 

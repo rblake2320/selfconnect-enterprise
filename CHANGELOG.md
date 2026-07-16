@@ -11,6 +11,13 @@
 - Added administrator enrollment and deployment commands plus an installed,
   distinct-token acceptance drill. Off-host retention and remote-host pipe
   testing remain separate deployment evidence.
+- Implemented and exercised one exact-wheel installed-service lifecycle on one
+  Windows host: 19/19 lifecycle checks, 19/19 enrolled-agent checks, a
+  40-request crash/restart burst, 42 verified session ledgers with 168 signed
+  events, 126 verified signed index entries, rollback, and cleanup. The
+  [redacted artifact](docs/operations/2026-07-16-provenance-service-acceptance.json)
+  explicitly excludes off-host immutability, remote-host rejection, and
+  authorization claims.
 - Evidence: [LOG-20260716-009](LOG.md#log-20260716-009). Rationale:
   [WHY-20260716-009](WHY.md#why-20260716-009). Recovery:
   [PARK-20260716-009](PARKED.md#park-20260716-009).

@@ -128,8 +128,9 @@ Enterprise/Government configuration continues to refuse the fallback.
 **Restoration risks:** Recombines the audited actor and authoritative writer and
 invalidates service-boundary claims.
 
-**Evidence and links:** [WHY-20260716-009](WHY.md#why-20260716-009) and
-[service guide](docs/PROVENANCE_SERVICE.md).
+**Evidence and links:** [WHY-20260716-009](WHY.md#why-20260716-009),
+[service guide](docs/PROVENANCE_SERVICE.md), and
+[redacted installed-service acceptance](docs/operations/2026-07-16-provenance-service-acceptance.json).
 
 ## PARK-20260716-008 - Presence-only Windows cleanup conformance
 

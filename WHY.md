@@ -86,9 +86,11 @@ claims that require tamper resistance beyond the host.
 not silently fall back to in-process provenance. Consumer mode is the explicit
 compatibility path.
 
-**Evidence and links:** [service guide](docs/PROVENANCE_SERVICE.md), issue #16,
-the named provenance service tests, [LOG-20260716-009](LOG.md#log-20260716-009),
-and [PARK-20260716-009](PARKED.md#park-20260716-009).
+**Evidence and links:** [service guide](docs/PROVENANCE_SERVICE.md),
+[redacted installed-service acceptance](docs/operations/2026-07-16-provenance-service-acceptance.json),
+issue #16, the named provenance service tests,
+[LOG-20260716-009](LOG.md#log-20260716-009), and
+[PARK-20260716-009](PARKED.md#park-20260716-009).
 
 ## WHY-20260716-008 - Verify cleanup control flow, not cleanup vocabulary
 
