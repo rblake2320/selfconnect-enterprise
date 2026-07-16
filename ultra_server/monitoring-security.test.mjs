@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
@@ -100,6 +101,16 @@ test('hostile request paths collapse to one bounded route label', () => {
   ]);
   assert.equal(allKnownAndHostile.size, 3);
   assert.ok(METRIC_ROUTE_LABEL_LIMIT < 32);
+});
+
+test('every declared Ultra route has an explicit bounded metric label', async () => {
+  const server = await readFile(new URL('./server.js', import.meta.url), 'utf8');
+  const declared = [...server.matchAll(/app\.(?:get|post|patch)\('([^']+)'/g)]
+    .map((match) => match[1]);
+  assert.ok(declared.length > 0);
+  for (const route of declared) {
+    assert.equal(metricRouteLabel(route), route, `missing metric route label for ${route}`);
+  }
 });
 
 test('method and authentication failure labels use closed sets', () => {

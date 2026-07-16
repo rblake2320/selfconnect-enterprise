@@ -259,7 +259,6 @@ class ControlPlane:
                     f"Cannot {command!r} agent {agent_id!r}: "
                     f"transition from {prev!r} is not permitted"
                 )
-            self._states[agent_id] = new
             record = AgentControlRecord(
                 agent_id    = agent_id,
                 command     = command,
@@ -269,9 +268,12 @@ class ControlPlane:
                 new_state   = new,
                 ts          = time.time(),
             )
+            # A governed transition is not visible or accepted until its
+            # authoritative provenance receipt commits. Keep the lock so a
+            # concurrent reader cannot observe an unaudited intermediate state.
+            self._log(record)
+            self._states[agent_id] = new
             self._history.append(record)
-
-        self._log(record)
         return record
 
     def _log(self, record: AgentControlRecord) -> None:

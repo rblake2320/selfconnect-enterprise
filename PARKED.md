@@ -91,7 +91,7 @@ sources, limitations, and all related records.
 
 ## Register
 
-## PARK-20260716-005 - Admin-authorized and unbounded initial monitoring slice
+## PARK-20260716-010 - Admin-authorized and unbounded initial monitoring slice
 
 **Status:** Parked
 **Category:** configuration, security property, operations
@@ -99,14 +99,14 @@ sources, limitations, and all related records.
 **Source commit:** `b3c2707298d3fb92659ab1e574dd4ce3ce77db49`
 **Affected paths:** Ultra metrics middleware and the Prometheus/Grafana
 reference configuration
-**Action log:** [LOG-20260716-005](LOG.md#log-20260716-005)
-**Why changed:** [WHY-20260716-005](WHY.md#why-20260716-005)
+**Action log:** [LOG-20260716-010](LOG.md#log-20260716-010)
+**Why changed:** [WHY-20260716-010](WHY.md#why-20260716-010)
 **Parked by:** commit containing this record
 
-**Former wording:** `/metrics` used `requireAdminAuth`; request
-metrics used `req.route?.path ?? req.path`; Prometheus and Grafana used mutable
-version tags, listened on all host interfaces, and Grafana started with the
-inline `admin` password.
+**Former wording:** `/metrics` used `requireAdminAuth`; request metrics used
+`req.route?.path ?? req.path`; Prometheus and Grafana used mutable version tags,
+listened on all host interfaces, and Grafana started with the inline `admin`
+password.
 
 **Recovery source:** Restore the affected paths from commit
 `b3c2707298d3fb92659ab1e574dd4ce3ce77db49`.
@@ -136,8 +136,260 @@ demonstrate why the source state remains parked.
 compromise, telemetry resource exhaustion, mutable image drift, and management
 UI exposure.
 
-**Evidence and links:** [WHY-20260716-005](WHY.md#why-20260716-005), issue #14,
+**Evidence and links:** [WHY-20260716-010](WHY.md#why-20260716-010), issue #14,
 and pull request #25.
+
+## PARK-20260716-009 - Hardened profiles writing provenance in process
+
+**Status:** Parked
+**Category:** security property, implementation behavior
+**Former location:** `enterprise/service.py`, `enterprise/control.py`, and
+`enterprise/provenance.py`
+**Source commit:** `b001274419f378d8487e44f980bee3a09464000b`
+**Affected paths:** Hardened runtime construction and authoritative audit writes
+**Action log:** [LOG-20260716-009](LOG.md#log-20260716-009)
+**Why changed:** [WHY-20260716-009](WHY.md#why-20260716-009)
+**Parked by:** commit containing this record
+
+**Former wording:** Enterprise and Government runtime objects could share an
+in-process `ProvenanceRecorder` with the code whose actions were being audited.
+
+**Recovery source:** The named paths at source commit `b0012744`.
+
+**Reason parked:** The composition did not create an OS identity or filesystem
+boundary between an agent process and the authoritative local ledger writer.
+
+**Replacement:** `SelfConnectProvenance`, its service-SID DACL, signed local IPC,
+durable request store, and fail-closed client adapter.
+
+**Restore when:** Only for an explicitly named consumer/development posture.
+Do not restore it as a hardened-profile fallback.
+
+**Restore procedure:** Restore the source paths from the named commit on a new
+branch and select consumer mode explicitly.
+
+**Validation after restore:** Run consumer provenance tests and verify that all
+Enterprise/Government configuration continues to refuse the fallback.
+
+**Recovery rehearsal:** Not rehearsed.
+
+**Restoration risks:** Recombines the audited actor and authoritative writer and
+invalidates service-boundary claims.
+
+**Evidence and links:** [WHY-20260716-009](WHY.md#why-20260716-009),
+[service guide](docs/PROVENANCE_SERVICE.md), and
+[redacted installed-service acceptance](docs/operations/2026-07-16-provenance-service-acceptance.json).
+
+## PARK-20260716-008 - Presence-only Windows cleanup conformance
+
+**Status:** Parked
+**Category:** CI behavior, test evidence, release gate
+**Former location:** `tools/portfolio_conformance.py` and
+`tests/test_portfolio_conformance.py`
+**Source commit:** `eb4e033f3402245ceca6c16c2c4de82ed37694c3`
+**Affected paths:** `.github/workflows/ci.yml`,
+`tools/portfolio_conformance.py`, and `tests/test_portfolio_conformance.py`
+**Action log:** [LOG-20260716-008](LOG.md#log-20260716-008)
+**Why changed:** [WHY-20260716-008](WHY.md#why-20260716-008)
+**Parked by:** Codex, requested by the repository owner
+
+**Former wording:** The conformance gate required `finally {}` and
+`Stop-Process` to occur somewhere in the live-contract step. It did not require
+stop or log capture to be inside the `finally` block.
+
+**Recovery source:** The merged PR #30 source at Enterprise commit
+`eb4e033f3402245ceca6c16c2c4de82ed37694c3`.
+
+**Reason parked:** Independent mutation moved cleanup after an empty `finally`
+while retaining every marker; `run_checks()` returned PASS. The former gate did
+not establish the cleanup-on-failure proposition attributed to it.
+
+**Replacement:** Quote-aware, brace-balanced extraction of the lifecycle `try`
+after `Start-Process` and its immediately paired `finally`; live-contract
+markers required in that try; guarded stop/stdout/stderr required in that exact
+finally; negative outside/later-finally and guard mutations; and an executable
+PowerShell test proving three cleanup failures do not replace a deliberate
+primary contract failure.
+
+**Restore when:** Never without an equal or stronger control-flow-aware and
+failure-injection test.
+
+**Restore procedure:** Not applicable. Implement and review a stronger
+replacement, preserve this record, and rerun the focused and hosted gates.
+
+**Validation after restore:** Outside-cleanup, later-finally cleanup, and
+unguarded-cleanup mutations must fail conformance. Injected cleanup failures
+must leave the primary contract failure as the nonzero process result.
+
+**Recovery rehearsal:** The weakness was independently reproduced against
+commit `eb4e033f3402245ceca6c16c2c4de82ed37694c3`; restoration is not approved.
+
+**Restoration risks:** Leaked sidecar processes, missing failure logs, masked
+contract failures, and false confidence in the release gate.
+
+**Evidence and links:** [LOG-20260716-008](LOG.md#log-20260716-008),
+[WHY-20260716-008](WHY.md#why-20260716-008), merged PR #30, and the repair pull
+request including Actions run `29479444593`.
+
+## PARK-20260716-007 - Sequential Windows native commands with last-exit evidence
+
+**Status:** Parked
+**Category:** CI behavior, test evidence, release gate
+**Former location:** `.github/workflows/ci.yml`
+**Source commit:** `e503c86548dfd6b6f608e75a424796ede71956e5`
+**Affected paths:** `.github/workflows/ci.yml`,
+`tools/portfolio_conformance.py`, and `tests/test_portfolio_conformance.py`
+**Action log:** [LOG-20260716-007](LOG.md#log-20260716-007)
+**Why changed:** [WHY-20260716-007](WHY.md#why-20260716-007)
+**Parked by:** Codex, requested by the repository owner
+
+**Former wording:** Critical Windows steps ran multiple git, npm, and Python
+commands without enabling native-command error propagation. A later zero exit
+could make a step green after an earlier failure. The development Ultra
+sidecar also started in a separate Actions step from the contracts that used
+it, relying on process lifetime that the runner did not preserve.
+
+**Recovery source:** `.github/workflows/ci.yml` at Enterprise commit
+`e503c86548dfd6b6f608e75a424796ede71956e5` and Actions runs `29476950456`
+and `29477612730`.
+
+**Reason parked:** The hosted run contained a failed BPC test and failed live
+Node request but concluded success. The green check was therefore not faithful
+evidence for those propositions.
+
+**Replacement:** `$ErrorActionPreference = 'Stop'` and
+`$PSNativeCommandUseErrorActionPreference = $true` in each named critical
+Windows step, plus one live-contract step that starts, verifies,
+uses, logs, and stops the sidecar under `try`/`finally`. Portfolio conformance
+and negative regressions bind both requirements.
+
+**Restore when:** Never without an equal or stronger fail-fast shell wrapper
+and executable negative test.
+
+**Restore procedure:** Not applicable. A replacement must first demonstrate
+that a deliberately failing intermediate native command makes the job fail.
+
+**Validation after restore:** Run the negative repository regression and a
+disposable hosted workflow containing a failing intermediate command followed
+by a successful command; the job must remain failed.
+
+**Recovery rehearsal:** The former behavior was reproduced by Actions run
+`29476950456`; the process-lifetime failure was reproduced by fail-closed run
+`29477612730`. Both are retained as failure evidence, not rollback targets.
+
+**Restoration risks:** False-green release evidence, untested dependency
+composition, and inaccurate security claims.
+
+**Evidence and links:** [LOG-20260716-007](LOG.md#log-20260716-007),
+[WHY-20260716-007](WHY.md#why-20260716-007), Actions runs `29476950456` and
+`29477612730`, clean replacement run `29478571278`, and BPC PR #17.
+
+## PARK-20260716-006 - Prior BPC portfolio pin
+
+**Status:** Parked
+**Category:** configuration, release, security property
+**Former location:** `portfolio-lock.json`
+**Source commit:** `2e8e934536bc695f15119009b48eeaac7d59751a`
+**Affected paths:** `portfolio-lock.json`
+**Action log:** [LOG-20260716-006](LOG.md#log-20260716-006)
+**Why changed:** [WHY-20260716-006](WHY.md#why-20260716-006)
+**Parked by:** Codex, requested by the repository owner
+
+**Former wording:** BPC
+`ad6516698f3bb85a3517577f647cf46901205fd1` at package version `0.2.0`.
+
+**Recovery source:** `portfolio-lock.json` at Enterprise commit
+`2e8e934536bc695f15119009b48eeaac7d59751a`.
+
+**Reason parked:** The former pin remains reproducible and contains the earlier
+fail-closed Redis replay guard and immutable authorization snapshot, but it
+predates the merged governed Redis replay-continuity work in BPC PR #14.
+
+**Replacement:** BPC
+`772271e174769f91a980cc3ee69a6eb9cc36bf39` in `portfolio-lock.json`.
+The TSK pin remains `bc31c234100a6e6432d2ac5de82783fc136bc2ea`.
+
+The intermediate PR #14-only candidate
+`2aafcec93a1236e9994ba7e75907b398207b270e` was preserved in branch history
+but superseded before acceptance after hosted evidence exposed a timing-test
+boundary and Windows result-propagation defect. PR #17's canonical merge is
+the reviewed replacement.
+
+**Restore when:** Hosted composition fails, an incompatible runtime behavior
+is reproduced, or a reviewed security finding requires bounded rollback.
+
+**Restore procedure:** Create a new recorded decision, restore only the BPC
+SHA, and run portfolio conformance plus the complete Windows live and Linux
+PostgreSQL/Redis composition jobs. Do not silently follow either default
+branch.
+
+**Validation after restore:** Require exact checkout/package conformance, BPC
+and TSK builds and suites, Ultra Node and Python live contracts, and both
+hosted composition jobs.
+
+**Recovery rehearsal:** Not rehearsed; Git retains the exact former lock.
+
+**Restoration risks:** Omits the new governed Redis continuity implementation
+and may attach current portfolio wording to an older source set.
+
+**Evidence and links:** [LOG-20260716-006](LOG.md#log-20260716-006),
+[WHY-20260716-006](WHY.md#why-20260716-006), `portfolio-lock.json`, and BPC
+PR #14.
+
+## PARK-20260716-005 - Prior single-process Ultra composition
+
+**Status:** Parked
+**Category:** runtime behavior, configuration, security property
+**Former location:** `ultra_server/server.js`, `ultra_server/.env.example`, and
+the production durability CI job
+**Source commit:** `b001274419f378d8487e44f980bee3a09464000b`
+**Affected paths:** `ultra_server/server.js`, `ultra_server/runtime-stores.js`,
+`ultra_server/.env.example`, `.github/workflows/ci.yml`, and Ultra operational
+documentation
+**Action log:** [LOG-20260716-005](LOG.md#log-20260716-005)
+**Why changed:** [WHY-20260716-005](WHY.md#why-20260716-005)
+**Parked by:** Codex, requested by the repository owner
+
+**Former wording:** Ultra production supported one application process with
+PostgreSQL/Redis restart durability. It had no application-node writer lease,
+signed promotion endpoint, shared transition lock, or current-writer readiness
+contract.
+
+**Recovery source:** Enterprise commit
+`b001274419f378d8487e44f980bee3a09464000b`, or the disabled HA path in the
+replacement (`ULTRA_HA_ENABLED=false`).
+
+**Reason parked:** Single-process restart durability remains a valid bounded
+deployment mode but cannot prevent concurrent old/new application writers.
+Shared-state HA is therefore optional and fail-closed rather than silently
+changing existing production startup behavior.
+
+**Replacement:** The production-only shared-state active/passive mode and
+[`ULTRA_SHARED_STATE_HA.md`](docs/operations/ULTRA_SHARED_STATE_HA.md).
+
+**Restore when:** A shared-state fencing regression is reproduced, the pinned
+TSK fencing API becomes incompatible, or an approved workload cannot tolerate
+the bounded exclusive transition drain.
+
+**Restore procedure:** Stop all HA-enabled nodes, confirm no request is in
+flight, retain non-secret incident evidence, and start exactly one production
+process with `ULTRA_HA_ENABLED=false` or unset. Run production restart and key
+rotation conformance. Do not run multiple unfenced production processes.
+
+**Validation after restore:** `/health` and `/ready` must return 200 on the one
+process, the live Node/Python contract and production restart ceremony must
+pass, and no second application process may serve the same state plane.
+
+**Recovery rehearsal:** The disabled HA path retains existing unit/live
+coverage. A deployment-specific stop-two/start-one rollback drill has not been
+performed.
+
+**Restoration risks:** Removes cross-process writer fencing and therefore
+requires an operationally enforced single-process topology.
+
+**Evidence and links:** [LOG-20260716-005](LOG.md#log-20260716-005),
+[WHY-20260716-005](WHY.md#why-20260716-005), issues #21 and #28, and the
+associated draft pull request.
 
 ## PARK-20260716-004 - Prior core transport composition
 

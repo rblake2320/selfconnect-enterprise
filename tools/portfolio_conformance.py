@@ -16,6 +16,37 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "portfolio-lock.json"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 VCS_PIN_RE = re.compile(r"selfconnect\.git@([0-9a-f]{40})(?:\b|$)")
+WINDOWS_NATIVE_FAIL_FAST = "$PSNativeCommandUseErrorActionPreference = $true"
+WINDOWS_TERMINATING_ERRORS = "$ErrorActionPreference = 'Stop'"
+WINDOWS_NATIVE_STEPS = (
+    "Install dependencies",
+    "Checkout pinned BPC and TSK protocol sources",
+    "Build pinned protocol dependencies",
+    "Install Python contract dependencies",
+    "Run live Node and Python contracts",
+)
+WINDOWS_LIVE_STEP = "Run live Node and Python contracts"
+WINDOWS_LIVE_STEP_MARKERS = (
+    "Start-Process node",
+    "Invoke-RestMethod http://127.0.0.1:7777/health",
+    "npm run test:live",
+    "python -m pytest tests/test_e2e_ultra_gate.py tests/test_identity_gate.py",
+    "finally {",
+    "Stop-Process -Id $process.Id",
+)
+WINDOWS_CLEANUP_FINALLY_GUARDS = (
+    "Stop-Process -Id $process.Id -Force -ErrorAction Stop",
+    'Write-Warning "Ultra Server stop cleanup failed:',
+    "Get-Content $stdout -ErrorAction Stop",
+    'Write-Warning "Ultra Server stdout capture failed:',
+    "Get-Content $stderr -ErrorAction Stop",
+    'Write-Warning "Ultra Server stderr capture failed:',
+)
+WINDOWS_LIFECYCLE_TRY_MARKERS = (
+    "Invoke-RestMethod http://127.0.0.1:7777/health",
+    "npm run test:live",
+    "python -m pytest tests/test_e2e_ultra_gate.py tests/test_identity_gate.py",
+)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -57,6 +88,67 @@ def _parse_component_roots(values: list[str]) -> dict[str, Path]:
             raise ValueError(f"duplicate component root: {name}")
         roots[name] = Path(raw_path).resolve()
     return roots
+
+
+def _workflow_step(workflow_text: str, name: str) -> str:
+    marker = f"      - name: {name}\n"
+    start = workflow_text.find(marker)
+    if start < 0:
+        return ""
+    end = workflow_text.find("\n      - ", start + len(marker))
+    return workflow_text[start:] if end < 0 else workflow_text[start:end]
+
+
+def _powershell_brace_block(script: str, opening: int) -> tuple[str, int] | None:
+    depth = 0
+    quote: str | None = None
+    index = opening
+    while index < len(script):
+        character = script[index]
+        if quote is not None:
+            if character == "`":
+                index += 2
+                continue
+            if character == quote:
+                quote = None
+        elif character in {"'", '"'}:
+            quote = character
+        elif character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                return script[opening + 1:index], index
+        index += 1
+    return None
+
+
+def _powershell_try_finally_after(
+    script: str,
+    anchor: str,
+) -> tuple[str, str] | None:
+    """Return the first try and its immediately paired finally after an anchor."""
+    anchor_index = script.find(anchor)
+    if anchor_index < 0:
+        return None
+    try_match = re.search(r"\btry\s*\{", script[anchor_index + len(anchor):])
+    if try_match is None:
+        return None
+    try_start = anchor_index + len(anchor) + try_match.start()
+    try_opening = script.find("{", try_start)
+    parsed_try = _powershell_brace_block(script, try_opening)
+    if parsed_try is None:
+        return None
+    try_body, try_closing = parsed_try
+    finally_match = re.match(r"\s*finally\s*\{", script[try_closing + 1:])
+    if finally_match is None:
+        return None
+    finally_start = try_closing + 1 + finally_match.start()
+    finally_opening = script.find("{", finally_start)
+    parsed_finally = _powershell_brace_block(script, finally_opening)
+    if parsed_finally is None:
+        return None
+    return try_body, parsed_finally[0]
 
 
 def run_checks(
@@ -146,6 +238,46 @@ def run_checks(
         commit = components.get(name, {}).get("commit")
         if isinstance(commit, str) and commit in workflow_text:
             errors.append(f"ci.yml duplicates the {name} commit instead of reading the portfolio lock")
+    for step_name in WINDOWS_NATIVE_STEPS:
+        step = _workflow_step(workflow_text, step_name)
+        if WINDOWS_TERMINATING_ERRORS not in step:
+            errors.append(
+                f"ci.yml Windows step {step_name!r} must stop on PowerShell errors"
+            )
+        if WINDOWS_NATIVE_FAIL_FAST not in step:
+            errors.append(
+                f"ci.yml Windows step {step_name!r} must fail fast on native command errors"
+            )
+    if "      - name: Start development sidecar\n" in workflow_text:
+        errors.append(
+            "ci.yml must not start the Windows development sidecar in a separate step"
+        )
+    live_step = _workflow_step(workflow_text, WINDOWS_LIVE_STEP)
+    for marker in WINDOWS_LIVE_STEP_MARKERS:
+        if marker not in live_step:
+            errors.append(
+                f"ci.yml Windows live-contract step must contain {marker!r}"
+            )
+    lifecycle = _powershell_try_finally_after(live_step, "Start-Process node")
+    if lifecycle is None:
+        errors.append(
+            "ci.yml Windows live-contract step must pair the lifecycle try with "
+            "an immediate finally block"
+        )
+    else:
+        lifecycle_try, lifecycle_finally = lifecycle
+        if not all(marker in lifecycle_try for marker in WINDOWS_LIFECYCLE_TRY_MARKERS):
+            errors.append(
+                "ci.yml Windows live contracts must execute inside the lifecycle try block"
+            )
+        if not all(
+            marker in lifecycle_finally
+            for marker in WINDOWS_CLEANUP_FINALLY_GUARDS
+        ):
+            errors.append(
+                "ci.yml Windows cleanup guards must execute inside the lifecycle "
+                "try's paired finally block"
+            )
 
     return {
         "schema_version": 1,
@@ -157,6 +289,7 @@ def run_checks(
             "A pin proves source identity, not that the source is secure or authorized.",
             "PIN_ONLY components are verified only when their checkout is supplied.",
             "Deployment configuration, external storage, key custody, and authorization remain separate evidence.",
+            "Brace-aware workflow checks prove declared cleanup placement, not runner process behavior.",
         ],
     }
 

@@ -7,6 +7,8 @@ const expectedRuntimeFiles = [
   '.env.example',
   'README.md',
   'agent-auth.js',
+  'ha-command.mjs',
+  'ha-controller.js',
   'monitoring-security.js',
   'recovery-token.js',
   'runtime-stores.js',

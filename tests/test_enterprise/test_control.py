@@ -345,6 +345,15 @@ class TestHistory:
 # ── Ledger integration ─────────────────────────────────────────────────────────
 
 class TestLedgerIntegration:
+    def test_ledger_failure_leaves_state_and_history_unchanged(self):
+        mock_ledger = MagicMock()
+        mock_ledger.log.side_effect = RuntimeError("provenance unavailable")
+        cp = ControlPlane(ledger=mock_ledger)
+        with pytest.raises(RuntimeError, match="provenance unavailable"):
+            cp.pause(AGENT_A, OP_1)
+        assert cp.get_state(AGENT_A) == "active"
+        assert cp.get_history() == []
+
     def test_ledger_called_on_pause(self):
         mock_ledger = MagicMock()
         cp = ControlPlane(ledger=mock_ledger)

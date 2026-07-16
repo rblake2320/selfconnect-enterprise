@@ -11,6 +11,7 @@ import {
   PgIdentityBindingStore,
   PgTumblerStore,
   ULTRA_PG_SCHEMA,
+  initializePgSchemas,
 } from './runtime-stores.js';
 
 test('memory idempotency completion and operation locks are retry safe', async () => {
@@ -52,11 +53,91 @@ test('memory identity binding compare-and-swap is idempotent and conflict aware'
 
 const connectionString = process.env.DATABASE_URL;
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((accept) => { resolve = accept; });
+  return { promise, resolve };
+}
+
+async function waitForAdvisoryWaiter(pool) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const { rows } = await pool.query(
+      "SELECT COUNT(*)::int AS count FROM pg_locks WHERE locktype='advisory' AND NOT granted",
+    );
+    if (rows[0].count > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('exclusive advisory-lock waiter did not appear');
+}
+
+test('PostgreSQL HA shared holders overlap and queued transition is exclusive', {
+  skip: !connectionString,
+}, async () => {
+  const pool = new Pool({ connectionString, max: 8 });
+  const store = new PgIdempotencyStore(pool);
+  const key = `ha-lock-test:${randomUUID()}`;
+  const releaseShared = deferred();
+  const releaseExclusive = deferred();
+  const bothSharedEntered = deferred();
+  const exclusiveEntered = deferred();
+  let sharedActive = 0;
+  let sharedMaximum = 0;
+  let lateSharedEntered = false;
+
+  const sharedHolder = () => store.withSharedLock(key, async () => {
+    sharedActive += 1;
+    sharedMaximum = Math.max(sharedMaximum, sharedActive);
+    if (sharedActive === 2) bothSharedEntered.resolve();
+    await releaseShared.promise;
+    sharedActive -= 1;
+  });
+
+  const first = sharedHolder();
+  const second = sharedHolder();
+  let exclusive;
+  let lateShared;
+  try {
+    await bothSharedEntered.promise;
+    assert.equal(sharedMaximum, 2);
+
+    exclusive = store.withLock(key, async () => {
+      exclusiveEntered.resolve();
+      await releaseExclusive.promise;
+    });
+    await waitForAdvisoryWaiter(pool);
+
+    lateShared = store.withSharedLock(key, async () => {
+      lateSharedEntered = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(lateSharedEntered, false, 'late shared holder bypassed queued transition');
+
+    releaseShared.resolve();
+    await exclusiveEntered.promise;
+    assert.equal(sharedActive, 0);
+    assert.equal(lateSharedEntered, false);
+    releaseExclusive.resolve();
+    await Promise.all([first, second, exclusive, lateShared]);
+    assert.equal(lateSharedEntered, true);
+  } finally {
+    releaseShared.resolve();
+    exclusiveEntered.resolve();
+    releaseExclusive.resolve();
+    await Promise.allSettled([first, second, exclusive, lateShared].filter(Boolean));
+    await pool.end();
+  }
+});
+
 test('PostgreSQL stores preserve monotonic counters and atomic idempotency', {
   skip: !connectionString,
 }, async () => {
   const pool = new Pool({ connectionString });
-  await pool.query(ULTRA_PG_SCHEMA);
+  const concurrentInitializer = new Pool({ connectionString });
+  await Promise.all([
+    initializePgSchemas(pool, ULTRA_PG_SCHEMA),
+    initializePgSchemas(concurrentInitializer, ULTRA_PG_SCHEMA),
+  ]);
+  await concurrentInitializer.end();
   const tumblerStore = new PgTumblerStore(pool);
   const idempotency = new PgIdempotencyStore(pool);
   const bindings = new PgIdentityBindingStore(pool);

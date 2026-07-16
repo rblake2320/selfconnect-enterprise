@@ -31,6 +31,8 @@ jobs:
 
       - name: Install dependencies
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --upgrade pip
           pip install "pytest>=8" "ruff>=0.4" "hypothesis>=6.0" "pip-audit>=2.7" pywin32 "cryptography>=48.0.1" comtypes "rich>=13.0"
           $portfolio = Get-Content portfolio-lock.json | ConvertFrom-Json
@@ -126,6 +128,8 @@ jobs:
       - name: Checkout pinned BPC and TSK protocol sources
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $depsRoot = Split-Path $env:GITHUB_WORKSPACE -Parent
           $portfolio = Get-Content "$env:GITHUB_WORKSPACE\portfolio-lock.json" | ConvertFrom-Json
           $bpcCommit = $portfolio.components.'bpc-protocol'.commit
@@ -141,6 +145,8 @@ jobs:
       - name: Build pinned protocol dependencies
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $depsRoot = Split-Path $env:GITHUB_WORKSPACE -Parent
           Push-Location "$depsRoot\bpc-protocol"
           npm ci
@@ -161,29 +167,11 @@ jobs:
 
       - name: Install Python contract dependencies
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --upgrade pip
           pip install "pytest>=8" "cryptography>=48.0.1" pywin32
           pip install -e . --no-deps
-
-      - name: Start development sidecar
-        shell: pwsh
-        env:
-          ULTRA_ADMIN_TOKEN: ci-live-ultra-admin-token-2026
-          ULTRA_METRICS_TOKEN: ci-live-ultra-metrics-token-2026
-        run: |
-          $process = Start-Process node -ArgumentList 'server.js' `
-            -WorkingDirectory "$env:GITHUB_WORKSPACE\ultra_server" `
-            -WindowStyle Hidden -PassThru `
-            -RedirectStandardOutput "$env:RUNNER_TEMP\ultra.stdout.log" `
-            -RedirectStandardError "$env:RUNNER_TEMP\ultra.stderr.log"
-          $process.Id | Set-Content "$env:RUNNER_TEMP\ultra.pid"
-          for ($attempt = 0; $attempt -lt 30; $attempt++) {
-            try {
-              Invoke-RestMethod http://127.0.0.1:7777/health | Out-Null
-              exit 0
-            } catch { Start-Sleep -Seconds 1 }
-          }
-          throw 'Ultra Server did not become healthy'
 
       - name: Run live Node and Python contracts
         shell: pwsh
@@ -192,19 +180,57 @@ jobs:
           ULTRA_METRICS_TOKEN: ci-live-ultra-metrics-token-2026
           SC_REQUIRE_ULTRA_SERVER: "1"
         run: |
-          Push-Location ultra_server
-          npm run test:live
-          Pop-Location
-          python -m pytest tests/test_e2e_ultra_gate.py tests/test_identity_gate.py -q --tb=short
-
-      - name: Print sidecar logs and stop
-        if: always()
-        shell: pwsh
-        run: |
-          Get-Content "$env:RUNNER_TEMP\ultra.stdout.log" -ErrorAction SilentlyContinue
-          Get-Content "$env:RUNNER_TEMP\ultra.stderr.log" -ErrorAction SilentlyContinue
-          if (Test-Path "$env:RUNNER_TEMP\ultra.pid") {
-            Stop-Process -Id (Get-Content "$env:RUNNER_TEMP\ultra.pid") -Force -ErrorAction SilentlyContinue
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $stdout = "$env:RUNNER_TEMP\ultra.stdout.log"
+          $stderr = "$env:RUNNER_TEMP\ultra.stderr.log"
+          $process = Start-Process node -ArgumentList 'server.js' `
+            -WorkingDirectory "$env:GITHUB_WORKSPACE\ultra_server" `
+            -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr
+          try {
+            $healthy = $false
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              if ($process.HasExited) {
+                throw "Ultra Server exited before health verification with code $($process.ExitCode)"
+              }
+              try {
+                Invoke-RestMethod http://127.0.0.1:7777/health | Out-Null
+                $healthy = $true
+                break
+              } catch {
+                Start-Sleep -Seconds 1
+              }
+            }
+            if (-not $healthy) {
+              throw 'Ultra Server did not become healthy'
+            }
+            Push-Location ultra_server
+            try {
+              npm run test:live
+            } finally {
+              Pop-Location
+            }
+            python -m pytest tests/test_e2e_ultra_gate.py tests/test_identity_gate.py -q --tb=short
+          } finally {
+            try {
+              if (-not $process.HasExited) {
+                Stop-Process -Id $process.Id -Force -ErrorAction Stop
+              }
+            } catch {
+              Write-Warning "Ultra Server stop cleanup failed: $($_.Exception.Message)"
+            }
+            try {
+              Get-Content $stdout -ErrorAction Stop
+            } catch {
+              Write-Warning "Ultra Server stdout capture failed: $($_.Exception.Message)"
+            }
+            try {
+              Get-Content $stderr -ErrorAction Stop
+            } catch {
+              Write-Warning "Ultra Server stderr capture failed: $($_.Exception.Message)"
+            }
           }
 
   ultra-production-restart:
@@ -244,6 +270,10 @@ jobs:
       ULTRA_METRICS_TOKEN_PREVIOUS: ci-previous-ultra-metrics-token-2026-retire-me
       ULTRA_RECOVERY_HMAC_KEY: ci-production-recovery-hmac-key-2026
       ULTRA_RECOVERY_HMAC_KEY_PREVIOUS: ci-previous-recovery-hmac-key-2026-retire-me
+      ULTRA_HA_CLUSTER_ID: ci-shared-state
+      ULTRA_HA_GUARD_SECRET: ci-ultra-ha-guard-secret-at-least-32-bytes
+      ULTRA_HA_PRIMARY_ID: primary-a
+      ULTRA_HA_REPLICA_ID: replica-a
       SC_RECOVERY_WINDOW_SEC: "300"
       SC_REQUIRE_ULTRA_SERVER: "1"
 
@@ -279,6 +309,8 @@ jobs:
           npm run build --prefix "$deps_root/tsk-protocol"
           npm test --prefix "$deps_root/tsk-protocol"
           npm run test:ha --prefix "$deps_root/tsk-protocol"
+          TSK_REDIS_URL=redis://127.0.0.1:6379/15 \
+            npm run test:redis --prefix "$deps_root/tsk-protocol"
           npm run typecheck --prefix "$deps_root/tsk-protocol"
           npm ci --prefix ultra_server
           npm test --prefix ultra_server
@@ -368,6 +400,93 @@ jobs:
             node tools/ultra_rotation_conformance.mjs verify \
               --state "$RUNNER_TEMP/ultra-rotation.json" --delete
 
+      - name: Prove shared-state two-node fencing and identity continuity
+        shell: bash
+        run: |
+          set -euo pipefail
+          wait_for_health() {
+            local port="$1"
+            for _ in $(seq 1 30); do
+              curl --fail --silent "http://127.0.0.1:${port}/health" >/dev/null && return 0
+              sleep 1
+            done
+            return 1
+          }
+
+          kill "$(cat "$RUNNER_TEMP/ultra.pid")"
+          wait "$(cat "$RUNNER_TEMP/ultra.pid")" || true
+          rm -f "$RUNNER_TEMP/ultra.pid"
+
+          (
+            cd ultra_server
+            node --input-type=module -e \
+              "import pg from 'pg'; const client = new pg.Client({ connectionString: process.env.DATABASE_URL }); await client.connect(); await client.query('CREATE DATABASE ultra_ha'); await client.end();"
+          )
+
+          export DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/ultra_ha'
+          export REDIS_URL='redis://127.0.0.1:6379/1'
+          export ULTRA_HA_ENABLED='true'
+          export ULTRA_HA_MAX_COMMAND_AGE_MS='60000'
+          export ULTRA_HA_MAX_LEASE_MS='300000'
+          export ULTRA_HA_MIN_LEASE_REMAINING_MS='5000'
+          export ULTRA_PRIMARY_URL='http://127.0.0.1:7777'
+          export ULTRA_REPLICA_URL='http://127.0.0.1:7778'
+
+          ULTRA_SERVER_PORT=7777 \
+          ULTRA_HA_NODE_ID="$ULTRA_HA_PRIMARY_ID" \
+          ULTRA_HA_NODE_ROLE=primary \
+            node ultra_server/server.js >"$RUNNER_TEMP/ultra-primary.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/ultra-primary.pid"
+          ULTRA_SERVER_PORT=7778 \
+          ULTRA_HA_NODE_ID="$ULTRA_HA_REPLICA_ID" \
+          ULTRA_HA_NODE_ROLE=replica \
+            node ultra_server/server.js >"$RUNNER_TEMP/ultra-replica.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/ultra-replica.pid"
+          wait_for_health 7777
+          wait_for_health 7778
+
+          npm run test:ha-live --prefix ultra_server -- preflight
+          npm run ha:command --prefix ultra_server -- \
+            --url "$ULTRA_PRIMARY_URL" --command activate \
+            --cluster-id "$ULTRA_HA_CLUSTER_ID" --node-id "$ULTRA_HA_PRIMARY_ID" \
+            --fence-epoch 12 --lease-ms 240000 --by ci-fleet-guard \
+            --reason 'hosted shared-state conformance renewal'
+          python -m tools.ultra_restart_conformance seed \
+            --state "$RUNNER_TEMP/ultra-ha-state.json" --server-url "$ULTRA_PRIMARY_URL"
+          npm run test:ha-live --prefix ultra_server -- promote
+          python -m tools.ultra_restart_conformance verify \
+            --state "$RUNNER_TEMP/ultra-ha-state.json" --server-url "$ULTRA_REPLICA_URL"
+          npm run test:ha-live --prefix ultra_server -- \
+            assert-old-fenced "$RUNNER_TEMP/ultra-ha-state.json"
+
+          kill "$(cat "$RUNNER_TEMP/ultra-primary.pid")"
+          wait "$(cat "$RUNNER_TEMP/ultra-primary.pid")" || true
+          ULTRA_SERVER_PORT=7777 \
+          ULTRA_HA_NODE_ID="$ULTRA_HA_PRIMARY_ID" \
+          ULTRA_HA_NODE_ROLE=primary \
+            node ultra_server/server.js >>"$RUNNER_TEMP/ultra-primary.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/ultra-primary.pid"
+          wait_for_health 7777
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            "$ULTRA_PRIMARY_URL/ready")" = '503'
+
+          redis_container="$(docker ps --filter publish=6379 --format '{{.ID}}' | head -n 1)"
+          test -n "$redis_container"
+          docker pause "$redis_container" >/dev/null
+          ready_code="$(curl --max-time 5 --silent --output /dev/null --write-out '%{http_code}' \
+            "$ULTRA_REPLICA_URL/ready" || true)"
+          docker unpause "$redis_container" >/dev/null
+          test "$ready_code" = '503'
+          for _ in $(seq 1 15); do
+            test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              "$ULTRA_REPLICA_URL/ready")" = '200' && break
+            sleep 1
+          done
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            "$ULTRA_REPLICA_URL/ready")" = '200'
+
+          npm run test:ha-live --prefix ultra_server -- corrupt-fence
+
       - name: Print sidecar logs and stop
         if: always()
         shell: bash
@@ -375,3 +494,10 @@ jobs:
           cat "$RUNNER_TEMP/ultra.stdout.log" 2>/dev/null || true
           cat "$RUNNER_TEMP/ultra.stderr.log" 2>/dev/null || true
           test ! -f "$RUNNER_TEMP/ultra.pid" || kill "$(cat "$RUNNER_TEMP/ultra.pid")" 2>/dev/null || true
+          redis_container="$(docker ps --filter publish=6379 --format '{{.ID}}' | head -n 1 || true)"
+          test -z "$redis_container" || docker unpause "$redis_container" >/dev/null 2>&1 || true
+          cat "$RUNNER_TEMP/ultra-primary.log" 2>/dev/null || true
+          cat "$RUNNER_TEMP/ultra-replica.log" 2>/dev/null || true
+          test ! -f "$RUNNER_TEMP/ultra-primary.pid" || kill "$(cat "$RUNNER_TEMP/ultra-primary.pid")" 2>/dev/null || true
+          test ! -f "$RUNNER_TEMP/ultra-replica.pid" || kill "$(cat "$RUNNER_TEMP/ultra-replica.pid")" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/ultra-ha-state.json"

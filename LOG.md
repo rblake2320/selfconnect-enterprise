@@ -54,15 +54,15 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
-## LOG-20260716-005 - Enforce least-privilege bounded Ultra monitoring
+## LOG-20260716-010 - Enforce least-privilege bounded Ultra monitoring
 
 **Timestamp (UTC):** 2026-07-16T14:28:08Z
 **Actor:** Codex, requested by the repository owner
 **Category:** implementation, security hardening, test, documentation
 **Base commit:** `b3c2707298d3fb92659ab1e574dd4ce3ce77db49`
 **Change reference:** commit containing this entry
-**Why:** [WHY-20260716-005](WHY.md#why-20260716-005)
-**Parked records:** [PARK-20260716-005](PARKED.md#park-20260716-005)
+**Why:** [WHY-20260716-010](WHY.md#why-20260716-010)
+**Parked records:** [PARK-20260716-010](PARKED.md#park-20260716-010)
 
 **Changed:** Replaced administrator authorization on `GET /metrics` with a
 dedicated current/previous metrics bearer, production startup validation, and
@@ -82,8 +82,8 @@ were unsuitable as a least-privilege reference deployment.
 `.github/workflows/ci.yml`, issue #14, pull request #25, and the linked WHY/PARK
 records.
 
-**Validation:** Node unit suite passed 23 tests with one explicit PostgreSQL
-environment skip. A live development sidecar returned `401` for missing,
+**Validation:** Node unit suite passed 33 tests with two explicit PostgreSQL
+environment skips. A live development sidecar returned `401` for missing,
 incorrect, and administrator credentials at `/metrics`; accepted current and
 previous metrics credentials; denied the metrics credential at `/status`; and
 collapsed 500 unique hostile paths to `__unmatched__`. Docker Compose parsed
@@ -93,7 +93,7 @@ contract passed 33 tests. Real pinned Prometheus and Grafana containers then
 reported the Ultra target `up`, loaded dashboard UID `ultra-server`, queried
 request, registration, provisioning, and Node-memory series, restarted, and
 returned the same series and dashboard afterward. Ruff and `git diff --check`
-passed. The complete Python suite passed 1,459 tests in the existing isolated
+passed. The complete Python suite passed 1,546 tests in the existing isolated
 Python 3.12 environment with `cryptography==49.0.0`; the shared machine Python
 still fails its two intended supply-chain gates because it has
 `cryptography==44.0.3`, below the repository's declared `>=48.0.1` floor.
@@ -102,6 +102,333 @@ still fails its two intended supply-chain gates because it has
 alerting, retention sizing, SSO, TLS termination, or deployment authorization.
 The local container restart proves this reference stack on the tested Docker
 Desktop host; it does not establish another deployment environment.
+
+## LOG-20260716-009 - Isolate the authoritative provenance writer
+
+**Timestamp (UTC):** 2026-07-16T07:15:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, test, security, deployment
+**Base commit:** `b001274419f378d8487e44f980bee3a09464000b`
+**Change reference:** commit containing this entry
+**Why:** [WHY-20260716-009](WHY.md#why-20260716-009)
+**Parked records:** [PARK-20260716-009](PARKED.md#park-20260716-009)
+
+**Changed:** Added a dedicated Windows service identity, explicit service-SID
+filesystem ACL construction and verification, a versioned signed local pipe,
+OS-token enrollment binding, durable replay/idempotency state, recovery repair,
+signed high-water updates, an offline verifier for both agent attestations, a
+fail-closed hardened-profile client, administrator enrollment, deployment, and
+installed-service acceptance tooling. Independent review then reproduced an
+unsigned-index rollback, existing-file ACL drift, restart pipe squatting,
+partial service registration, and unbound wheel evidence. The implementation
+now signs and strictly verifies every index entry, verifies all existing files,
+rotates/discovers a 128-bit endpoint on every service start, rolls back partial
+registration, and binds the wheel's complete runtime tree to the clean commit.
+
+**Reason:** A signed recorder in the same process as the governed runtime did
+not prevent a compromised agent process from attempting direct ledger writes,
+and unit tests did not establish the Windows service boundary required by issue
+#16.
+
+**Full actions and links:** `enterprise/provenance_service.py`,
+`enterprise/provenance_pipe.py`, `enterprise/provenance_service_core.py`,
+`enterprise/provenance_client.py`, `deploy/provenance_service.ps1`,
+`deploy/provenance_service_acceptance.ps1`,
+[service guide](docs/PROVENANCE_SERVICE.md),
+[WHY-20260716-009](WHY.md#why-20260716-009), and
+[PARK-20260716-009](PARKED.md#park-20260716-009).
+
+**Validation:** The exact wheel built from
+`9af484ec99c739176a287e9e68d003ffb8f78b88` matched all 63 runtime source files
+and passed the privileged installed-service lifecycle on Windows build
+`10.0.26200.0` with Python 3.12.10. All 19 lifecycle checks and all 19
+enrolled-agent checks passed. The run exercised a distinct disposable
+non-admin token, Medium/No-Write-Up pipe integrity, live server-PID and service
+key binding, replay/stale/signature/agent/version/frame denials, direct
+filesystem denial, endpoint rotation around old-name squatting, startup refusal
+after DACL tamper, a forced restart with 40 concurrent submissions and eight
+transient recoveries, offline verification of 42 session ledgers containing 168
+signed events, verification of 126 signed index entries, uninstall, and full
+disposable runtime/account/workspace cleanup. The redacted artifact is
+[`docs/operations/2026-07-16-provenance-service-acceptance.json`](docs/operations/2026-07-16-provenance-service-acceptance.json).
+In a fresh Python 3.12 release environment with the declared dependencies,
+including `cryptography==49.0.0`, the full suite passed `1512 passed, 34
+skipped`; Ruff and `pip check` passed; and `pip-audit` found zero vulnerable
+dependencies across 46 scanned packages. The machine-wide interpreter remained
+correctly blocked because it still contained `cryptography==44.0.3`; that
+environment failure is not reported as a branch pass. An isolated portfolio
+layout then checked out Enterprise `4c6bea19e46763ccd29833f8ae5c6520ffc8fbe3`,
+BPC `772271e174769f91a980cc3ee69a6eb9cc36bf39`, and TSK
+`bc31c234100a6e6432d2ac5de82783fc136bc2ea`; installed and built both protocol
+workspaces; passed their Node, HA, and typecheck commands; passed the Ultra Node
+suite; and returned `PASS_WITH_NAMED_BLIND_SPOTS` with no failed executable
+controls from the release catalog
+(`f013ae5427170180ebd6b9424e72f3e378a0210f60b7f94fec6cac26e8a69610`).
+Independent read-only review of `10322cc031f01790765072416288fa58fcc86de2`
+approved with no findings after 101 provenance tests, 36 focused
+documentation/deployment tests, Ruff, and `git diff --check`. The reviewer
+confirmed closure of the prior arbitrary-wheel-content, stale-endpoint,
+rollback-exit, and evidence-cleanup findings and confirmed the remaining blind
+spots are stated without expanding the claim.
+
+**Notes:** The run used a local memory witness and does not establish off-host
+immutability. A second Windows host is required to exercise remote-host pipe
+rejection. It is implementation and one-host runtime evidence, not an
+authorization or a general deployment guarantee.
+
+## LOG-20260716-008 - Bind Windows cleanup evidence to control flow
+
+**Timestamp (UTC):** 2026-07-16T07:16:15Z
+**Actor:** Codex, requested by the repository owner
+**Category:** CI, test, evidence correction, post-merge hardening
+**Base commit:** `eb4e033f3402245ceca6c16c2c4de82ed37694c3`
+**Change reference:** commit containing this entry and the associated pull request
+**Why:** [WHY-20260716-008](WHY.md#why-20260716-008)
+**Parked records:** [PARK-20260716-008](PARKED.md#park-20260716-008)
+
+**Changed:** Wrapped Ultra process stop, stdout capture, and stderr capture in
+separate guarded cleanup operations inside the live-contract `finally` block.
+Extended portfolio conformance with a quote-aware, brace-balanced PowerShell
+block reader that locates the lifecycle `try` immediately after `Start-Process`
+and requires its immediately paired `finally`. It binds health/Node/Python
+contracts to that try and cleanup guards to that paired finally. Added negative
+mutations for cleanup moved outside the lifecycle, cleanup moved to a later
+unreachable `finally`, and a weakened unguarded stop, plus an executable PowerShell regression that
+injects stop/log cleanup failures and requires the original contract failure to
+remain the process error.
+
+**Reason:** Independent review of merged PR #30 moved cleanup statements after
+an empty `finally`; the prior substring-only conformance still returned PASS.
+The implementation was correct in the merged workflow, but the claimed
+recurrence gate did not verify control-flow placement and therefore created
+false coverage confidence.
+
+**Full actions and links:** `.github/workflows/ci.yml`,
+`tools/portfolio_conformance.py`, `tests/test_portfolio_conformance.py`, merged
+PR #30 at `eb4e033f3402245ceca6c16c2c4de82ed37694c3`,
+[WHY-20260716-008](WHY.md#why-20260716-008), and
+[PARK-20260716-008](PARKED.md#park-20260716-008).
+
+**Validation:** The focused portfolio suite passed 10/10, including all three
+cleanup mutations and the executable primary-failure preservation test. Ruff, workflow
+YAML parsing, and `git diff --check` passed. The corrected live lifecycle also
+ran locally against the actual sidecar: 30 Node checks and 105 Python tests
+passed, then guarded cleanup stopped the process and captured both logs. Hosted
+The first implementation Actions run
+[`29479444593`](https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29479444593)
+then passed all four jobs: workflow syntax, the complete lint/unit gate, Windows
+exact-source live composition, and Linux PostgreSQL/Redis production durability.
+An exact-head rerun is required after the paired lifecycle correction.
+
+**Notes:** Brace-aware parsing verifies the controlled inline PowerShell
+lifecycle shape, not arbitrary PowerShell or GitHub runner internals. The
+hosted live-contract job remains the runtime composition proof.
+
+## LOG-20260716-007 - Make Windows composition evidence fail closed
+
+**Timestamp (UTC):** 2026-07-16T06:43:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** CI, test, evidence correction, supply-chain hardening
+**Base commit:** `e503c86548dfd6b6f608e75a424796ede71956e5`
+**Change reference:** commit containing this entry and Enterprise PR #30
+**Why:** [WHY-20260716-007](WHY.md#why-20260716-007)
+**Parked records:** [PARK-20260716-007](PARKED.md#park-20260716-007)
+
+**Changed:** Added explicit terminating PowerShell error behavior and native
+command fail-fast behavior to the Windows dependency install, protocol
+checkout/build, Python contract install, and live
+Node/Python contract steps. Extended portfolio conformance to require that
+both declarations in every named critical step and added regressions that
+remove either declaration and require a failed report. After the corrected
+workflow failed honestly, moved the Windows Ultra sidecar lifecycle into the same step
+as its live Node/Python contracts. Added structural conformance markers and a
+negative regression that rejects separating sidecar startup from the live
+contract step.
+
+**Reason:** Enterprise Actions run
+[`29476950456`](https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29476950456)
+concluded success while its Windows log contained two nonzero native-command
+results: BPC server Vitest reported one failed test (`999` versus `1000` in a
+live-clock TTL assertion), and `npm run test:live` failed with
+`ECONNREFUSED 127.0.0.1:7777`. Later successful npm/Python commands supplied
+the final step exit code. The badge therefore did not establish the claimed
+whole-step result. The fail-closed rerun
+[`29477612730`](https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29477612730)
+then exposed a second defect: the sidecar was healthy in its startup step but
+was no longer reachable from the later live-contract step. Local same-process
+evidence had not tested GitHub Actions' cross-step process lifetime.
+
+**Full actions and links:** `.github/workflows/ci.yml`,
+`tools/portfolio_conformance.py`, `tests/test_portfolio_conformance.py`, BPC
+PR #17, [WHY-20260716-007](WHY.md#why-20260716-007), and
+[PARK-20260716-007](PARKED.md#park-20260716-007).
+
+**Validation:** The focused portfolio suite passed 6/6 including negative
+PowerShell/native fail-fast and same-step lifecycle regressions. Ruff passed;
+workflow YAML parsed locally, and hosted Actions remains the workflow runtime
+validator. The corrected same-step lifecycle then ran locally against the
+actual sidecar: health passed, the Node live contract passed 30 checks, and the
+Python BPC/TSK boundary passed 105 tests before `finally` stopped the process
+and printed its logs.
+Run `29477612730` proves the native failure now terminates the job and is kept
+as defect evidence. Exact checkout/package
+conformance continued to pass for the candidate lock. Hosted Actions run
+[`29478571278`](https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29478571278)
+then passed workflow syntax, the complete 1,428-test lint/unit gate, Windows
+exact-source composition and live contracts (30 Node checks and 105 Python
+tests), and Linux PostgreSQL/Redis production durability (39 Node checks and 33
+Python tests). Runs `29476950456` and `29477612730` remain defect evidence and
+must not be cited as clean composition runs.
+
+**Notes:** This corrects evidence propagation, not BPC or Ultra authorization
+semantics. A future native command added to a new or renamed workflow step
+still requires a same-commit conformance update; the current assertion covers
+the five named Windows multi-command steps only. The sidecar assertion verifies
+declared workflow structure, not runner internals; the hosted live contracts
+remain the runtime proof.
+
+## LOG-20260716-006 - Advance the BPC lock after exact-source composition
+
+**Timestamp (UTC):** 2026-07-16T06:31:00Z
+**Updated (UTC):** 2026-07-16T07:02:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** release, test, supply-chain hardening, documentation
+**Base commit:** `2e8e934536bc695f15119009b48eeaac7d59751a`
+**Change reference:** commit containing this entry and the associated pull request
+**Why:** [WHY-20260716-006](WHY.md#why-20260716-006)
+**Parked records:** [PARK-20260716-006](PARKED.md#park-20260716-006)
+
+**Changed:** Advanced only the `bpc-protocol` entry in
+`portfolio-lock.json` from
+`ad6516698f3bb85a3517577f647cf46901205fd1` to canonical merged commit
+`772271e174769f91a980cc3ee69a6eb9cc36bf39`. Retained the existing TSK pin
+`bc31c234100a6e6432d2ac5de82783fc136bc2ea`, which was verified as the
+current TSK master with no open pull requests.
+
+**Reason:** BPC PR #14 merged the governed Redis replay-continuity work after
+the prior Enterprise portfolio was recorded. Enterprise must identify and
+test the exact delivered BPC source rather than silently following master or
+continuing to present the older pin as current. TSK has no corresponding new
+delivered source, so moving it would be an unrelated and unsupported change.
+BPC PR #17 subsequently corrected the exact-horizon test boundary and its root
+workspace evidence runner after the first hosted Enterprise composition exposed
+a false-green Windows job. The active lock therefore uses PR #17's canonical
+merge rather than the intermediate PR #14-only candidate.
+
+**Full actions and links:** `portfolio-lock.json`, BPC PRs #14 and #17, final
+merge commit `772271e174769f91a980cc3ee69a6eb9cc36bf39`, TSK master
+`bc31c234100a6e6432d2ac5de82783fc136bc2ea`,
+[WHY-20260716-006](WHY.md#why-20260716-006), and
+[PARK-20260716-006](PARKED.md#park-20260716-006).
+
+**Validation:** An isolated CI-shaped directory checked out Enterprise
+`2e8e934536bc695f15119009b48eeaac7d59751a`, BPC
+`772271e174769f91a980cc3ee69a6eb9cc36bf39`, and TSK
+`bc31c234100a6e6432d2ac5de82783fc136bc2ea` as siblings. Portfolio
+conformance passed exact Git, package-name, and package-version checks. BPC
+built and passed 249 tests. TSK built, typechecked, and passed its named
+protocol, lifecycle, numeric exhaustion, durability, anomaly, adversarial,
+strict bridge, runtime capture, replication, receiver, and fencing suites;
+the strict BPC-before-TSK bridge passed 35/35 checks. The Ultra Node suite
+passed 24 tests with two PostgreSQL-only skips, its live HTTP contract passed
+30 checks, and the live Python BPC/TSK boundary passed 105 tests. Focused
+portfolio tests passed 3/3 and Ruff passed. Hosted Windows and Linux
+composition evidence remains required on the pull request before merge.
+The exact canonical BPC merge checkout passed package identity conformance,
+build, 249 Node tests plus four runner tests, and 81 Python tests. Before the
+final merge pin, BPC PR #17 independently passed its exact Redis
+test 20 consecutive times, 249 Node tests plus four runner tests, 81 Python
+tests, 28 live adversarial assertions, interop, package dry-runs, dependency
+audit, and two hosted Node/Python workflow runs.
+Enterprise hosted run `29478571278` then checked out the exact final BPC/TSK
+pins and passed all four jobs: workflow syntax, 1,428 repository tests with 34
+named skips, Windows live composition, and Linux PostgreSQL/Redis production
+durability. The Windows job included the BPC 249-test protocol suite plus four
+runner tests, the named TSK suites, 30 live Node checks, and 105 live Python
+tests. The production job returned 39 live Node checks and 33 Python tests.
+
+**Notes:** This establishes compatibility and source identity for the exact
+locked set. It does not prove that a deployment enabled BPC's governed Redis
+factory or configured `noeviction`; it does not establish Redis durability,
+external storage, key custody, FIPS validation, Impact Level authorization,
+an ATO, or any third-party assessment.
+
+## LOG-20260716-005 - Add shared-state Ultra writer fencing
+
+**Timestamp (UTC):** 2026-07-16T05:52:59Z
+**Updated (UTC):** 2026-07-16T06:12:14Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, test, security hardening, documentation
+**Base commit:** `b001274419f378d8487e44f980bee3a09464000b`
+**Change reference:** implementation commit `0195d27` and draft PR #29
+**Why:** [WHY-20260716-005](WHY.md#why-20260716-005)
+**Parked records:** [PARK-20260716-005](PARKED.md#park-20260716-005)
+
+**Changed:** Added optional production-only shared-state active/passive Ultra
+node fencing. Two actual Node processes can share one PostgreSQL database and
+Redis fencing authority while a strict, admin-authorized and guard-signed
+transition command selects one writer at a monotonic epoch. Every enabled node
+starts fenced. `/ready` identifies only a writer outside the drain window;
+`/health` remains liveness. All verification and lifecycle/admin mutations
+enter a shared PostgreSQL request lock and check the Redis writer lease before
+request processing. Governed requests take shared locks and may overlap; writer
+transitions take the exclusive form. The TSK store also uses the pinned
+protocol's `FencedTumblerStore` mutation boundary. BPC verification and BPC
+lifecycle updates take a per-pair cross-process lock so unrelated pairs remain
+concurrent without losing PairRegistry read-modify-write activity. PostgreSQL
+schema initialization now
+uses a transaction-scoped advisory lock after a real two-process startup race
+exposed concurrent `CREATE TABLE IF NOT EXISTS` as insufficient.
+
+**Reason:** Issue #21 correctly separated durable single-process restart from
+multi-process failover. The smallest deployable slice is node fencing over one
+shared state plane. It prevents a recovered old process or equal/lower epoch
+candidate from becoming an authoritative writer without claiming that the
+shared PostgreSQL/Redis infrastructure, independent replicas, or sites are
+highly available.
+
+**Full actions and links:** `ultra_server/ha-controller.js`,
+`ultra_server/ha-command.mjs`, `ultra_server/ha-live-conformance.mjs`,
+`ultra_server/server.js`, `ultra_server/runtime-stores.js`, their tests,
+`.github/workflows/ci.yml`,
+[`ULTRA_SHARED_STATE_HA.md`](docs/operations/ULTRA_SHARED_STATE_HA.md),
+[`ULTRA-HA-SHARED-001`](docs/assurance/control_catalog.json), issue #21,
+[WHY-20260716-005](WHY.md#why-20260716-005), and
+[PARK-20260716-005](PARKED.md#park-20260716-005).
+
+**Validation:** The local Node suite passed 26/26 with PostgreSQL 17.5,
+including HA signature/shape, monotonic epoch, role, stale/replay/tamper,
+wrong-node/cluster, corrupt/unavailable fence, restart, drain-window, concurrent
+shared-holder/exclusive-transition ordering, BPC route-boundary, and concurrent
+schema-startup assertions. A controlled local run started two production Node
+processes on different ports with shared PostgreSQL 17.5 and Redis 7.4.5,
+completed a real Python BPC+TSK principal seed and verification, promoted the
+replica at a higher epoch, verified the same principal on the new writer,
+proved the old and restarted primary returned 503 without changing the bounded
+pair/tumbler/binding snapshot, proved Redis pause failed readiness closed, and
+proved a corrupt fence denied both nodes. The first run reproduced a
+cross-process schema-initialization race; the advisory-lock correction passed
+the repeated run and has a PostgreSQL integration regression. A fresh isolated
+Python environment installed declared dependencies, including
+`cryptography==49.0.0`, and passed 1,459 tests with two expected external-sink
+warnings. Ruff, documentation records, quick conformance, workflow lint,
+JavaScript syntax, npm audit (zero findings), and diff checks passed. The shared
+machine environment separately failed two supply-chain gates because it still
+has `cryptography==44.0.3`; that environment failure was not relabeled as a
+repository pass. Hosted workflow run
+[`29475880116`](https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29475880116)
+then passed all four jobs: `Workflow syntax`, `Lint + Test`, `Ultra live contract
+(Windows)`, and `Ultra production durability (PostgreSQL + Redis)`. The PR
+remains draft and unmerged for review; green hosted evidence does not broaden
+the named shared-state boundary.
+
+**Notes:** This is shared-state application-node fencing only. A request
+admitted before the configured drain window may finish under that epoch; its
+shared PostgreSQL lock prevents the exclusive promotion from overlapping it.
+Concurrent governed requests remain allowed. This is not a wall-clock abort or
+per-row transactional epoch claim. Issue #21 remains open,
+and independent-state/site replication, convergence, secret-unseal, repeated
+failover, and restore evidence are tracked in issue #28.
 
 ## LOG-20260716-004 - Advance the core lock to fail-closed console transport
 

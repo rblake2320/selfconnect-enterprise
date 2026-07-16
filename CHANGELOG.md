@@ -12,12 +12,76 @@
   images, loopback-only management ports, ignored credential files, persistent
   volumes, and install/verify/rotate/backup/restore/upgrade/rollback/teardown
   procedures.
-- Evidence: [LOG-20260716-005](LOG.md#log-20260716-005).
-- Rationale: [WHY-20260716-005](WHY.md#why-20260716-005).
-- Recovery: [PARK-20260716-005](PARKED.md#park-20260716-005).
+- Evidence: [LOG-20260716-010](LOG.md#log-20260716-010).
+- Rationale: [WHY-20260716-010](WHY.md#why-20260716-010).
+- Recovery: [PARK-20260716-010](PARKED.md#park-20260716-010).
+
+### Dedicated provenance service boundary
+
+- Added a restricted `NT SERVICE\SelfConnectProvenance` Windows service, exact
+  service-SID filesystem ACLs, a bounded signed named-pipe protocol, durable
+  replay/idempotency state, signed high-water recovery, and a fail-closed client
+  adapter for Enterprise and Government runtime composition.
+- Added administrator enrollment and deployment commands plus an installed,
+  distinct-token acceptance drill. Off-host retention and remote-host pipe
+  testing remain separate deployment evidence.
+- Implemented and exercised one exact-wheel installed-service lifecycle on one
+  Windows host: 19/19 lifecycle checks, 19/19 enrolled-agent checks, a
+  40-request crash/restart burst, 42 verified session ledgers with 168 signed
+  events, 126 verified signed index entries, rollback, and cleanup. The
+  [redacted artifact](docs/operations/2026-07-16-provenance-service-acceptance.json)
+  explicitly excludes off-host immutability, remote-host rejection, and
+  authorization claims.
+- Evidence: [LOG-20260716-009](LOG.md#log-20260716-009). Rationale:
+  [WHY-20260716-009](WHY.md#why-20260716-009). Recovery:
+  [PARK-20260716-009](PARKED.md#park-20260716-009).
+
+### Shared-state Ultra application-node fencing
+
+- Added disabled-by-default, production-only active/passive fencing for two
+  Ultra Node processes sharing PostgreSQL and Redis.
+- Added admin-authorized, guard-signed monotonic activation/promotion commands,
+  current-writer readiness, fail-closed Redis authority handling, concurrent
+  shared request locks, and an exclusive PostgreSQL transition/drain boundary.
+- Added real two-process CI covering one-writer election, same-principal
+  failover, old/restarted-primary fencing without bounded state mutation,
+  replay/tamper/stale denial, Redis outage/corruption, and concurrent schema
+  initialization.
+- Kept independent-state/site replication, convergence, secret unseal, restore,
+  and repeated deployment drills explicitly open; this change does not close
+  issue #21, and the independent-state/site slice remains issue #28.
+- Evidence: [LOG-20260716-005](LOG.md#log-20260716-005), rationale:
+  [WHY-20260716-005](WHY.md#why-20260716-005), recovery:
+  [PARK-20260716-005](PARKED.md#park-20260716-005), and runbook:
+  [ULTRA_SHARED_STATE_HA.md](docs/operations/ULTRA_SHARED_STATE_HA.md).
 
 ### Portfolio composition identity
 
+- Closed a post-merge cleanup-conformance blind spot from PR #30. The Windows
+  live step now catches stop and log-capture failures separately so cleanup
+  cannot replace the primary contract failure. Portfolio conformance parses
+  the lifecycle `try` after `Start-Process`, requires its immediately paired
+  `finally`, and binds contracts and cleanup to those exact blocks. Negative
+  mutations cover cleanup moved outside the lifecycle, cleanup moved to a later
+  unreachable `finally`, and weakened guards, while an
+  executable PowerShell regression proves the extracted cleanup preserves a
+  deliberate primary failure. Hosted run `29479444593` passed all four jobs.
+  Evidence: [LOG-20260716-008](LOG.md#log-20260716-008), rationale:
+  [WHY-20260716-008](WHY.md#why-20260716-008), and recovery:
+  [PARK-20260716-008](PARKED.md#park-20260716-008).
+- Made the Windows composition workflow use explicit terminating PowerShell
+  errors and fail immediately on nonzero native commands, with executable
+  conformance assertions for every critical multi-command step. This follows
+  Actions run `29476950456`, whose green
+  conclusion masked a failed BPC workspace test and a failed live Node request.
+  Follow-up run `29477612730` then failed honestly and exposed that a Windows
+  background sidecar did not survive the Actions step boundary. Sidecar start,
+  health verification, live contracts, log capture, and shutdown now share one
+  `try`/`finally` step, and conformance rejects the former split lifecycle.
+  Hosted run `29478571278` passed all four workflow jobs with the final BPC pin.
+  Evidence: [LOG-20260716-007](LOG.md#log-20260716-007), rationale:
+  [WHY-20260716-007](WHY.md#why-20260716-007), and recovery:
+  [PARK-20260716-007](PARKED.md#park-20260716-007).
 - Added one machine-readable lock for the exact SelfConnect SDK, BPC, and TSK
   sources consumed by Enterprise.
 - Advanced the lock to the canonical merged core, BPC, and TSK security heads
@@ -30,6 +94,16 @@
   Evidence: [LOG-20260716-004](LOG.md#log-20260716-004),
   rationale: [WHY-20260716-004](WHY.md#why-20260716-004), recovery:
   [PARK-20260716-004](PARKED.md#park-20260716-004).
+- Advanced only the BPC pin to canonical merge
+  `772271e174769f91a980cc3ee69a6eb9cc36bf39` after an isolated exact-source
+  composition passed BPC, TSK, Ultra Node, and live Python contracts. The TSK
+  pin remains the current intentional master commit
+  `bc31c234100a6e6432d2ac5de82783fc136bc2ea`.
+  The final BPC merge includes PR #17's deterministic exact-horizon evidence,
+  cleanup-safe clock restoration, and tested fail-fast workspace runner.
+  Evidence: [LOG-20260716-006](LOG.md#log-20260716-006), rationale:
+  [WHY-20260716-006](WHY.md#why-20260716-006), and recovery:
+  [PARK-20260716-006](PARKED.md#park-20260716-006).
 - Made both protocol composition jobs read the lock and verify actual checkout
   commits, package names, and versions before build or execution.
 - Added fail-closed tests for missing/invalid pins and checkout mismatch while

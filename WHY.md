@@ -51,13 +51,13 @@ related records.
 
 ## Register
 
-## WHY-20260716-005 - Separate monitoring authority and bound telemetry labels
+## WHY-20260716-010 - Separate monitoring authority and bound telemetry labels
 
 **Status:** Accepted
 **Decision date (UTC):** 2026-07-16T14:28:08Z
 **Decision owner:** Repository owner
-**Action log:** [LOG-20260716-005](LOG.md#log-20260716-005)
-**Parked records:** [PARK-20260716-005](PARKED.md#park-20260716-005)
+**Action log:** [LOG-20260716-010](LOG.md#log-20260716-010)
+**Parked records:** [PARK-20260716-010](PARKED.md#park-20260716-010)
 **Source state:** `selfconnect-enterprise`, pull request #25,
 `b3c2707298d3fb92659ab1e574dd4ce3ce77db49`
 
@@ -91,7 +91,251 @@ restore administrator-token scraping or raw path labels.
 
 **Evidence and links:** `ultra_server/monitoring-security.test.mjs`,
 `ultra_server/monitoring-config.test.mjs`, live HTTP results recorded in
-[LOG-20260716-005](LOG.md#log-20260716-005), issue #14, and pull request #25.
+[LOG-20260716-010](LOG.md#log-20260716-010), issue #14, and pull request #25.
+
+## WHY-20260716-009 - Put hardened provenance behind a service SID
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T07:15:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-009](LOG.md#log-20260716-009)
+**Parked records:** [PARK-20260716-009](PARKED.md#park-20260716-009)
+**Source state:** `selfconnect-enterprise`, `hardening/provenance-service-sid`,
+`b001274419f378d8487e44f980bee3a09464000b`
+
+**Decision:** Enterprise and Government profiles use a dedicated, enrolled,
+signed provenance service with no automatic in-process fallback. Consumer mode
+may continue to use the in-process recorder only as an explicit posture.
+
+**Why:** Signatures and hash chains detect mutation but do not create process
+separation. A Windows service SID, exact filesystem DACL, OS-token-bound named
+pipe, durable replay state, and signed recovery receipt make the local writer a
+distinct enforceable boundary while preserving SelfConnect's offline design.
+
+**Alternatives considered:** Keeping the recorder in the main process was
+rejected for hardened profiles. Granting a broad user or service account was
+rejected because it weakens attribution and filesystem isolation. HTTP or a
+network broker was rejected because the boundary is local and must continue to
+work offline. Treating the local service as WORM was rejected as false.
+
+**Consequences:** Hardened runtime startup now requires a live, pinned service
+identity and enrolled client key. Deployment gains SCM, DACL, service recovery,
+and key-provisioning responsibilities. Local administrators and a compromised
+service remain outside this boundary, so off-host retention stays mandatory for
+claims that require tamper resistance beyond the host.
+
+**Rollback conditions:** Roll back only by disabling the hardened runtime. Do
+not silently fall back to in-process provenance. Consumer mode is the explicit
+compatibility path.
+
+**Evidence and links:** [service guide](docs/PROVENANCE_SERVICE.md),
+[redacted installed-service acceptance](docs/operations/2026-07-16-provenance-service-acceptance.json),
+issue #16, the named provenance service tests,
+[LOG-20260716-009](LOG.md#log-20260716-009), and
+[PARK-20260716-009](PARKED.md#park-20260716-009).
+
+## WHY-20260716-008 - Verify cleanup control flow, not cleanup vocabulary
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T07:16:15Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-008](LOG.md#log-20260716-008)
+**Parked records:** [PARK-20260716-008](PARKED.md#park-20260716-008)
+**Source state:** `selfconnect-enterprise`, `fix/windows-cleanup-conformance`,
+`eb4e033f3402245ceca6c16c2c4de82ed37694c3`
+
+**Decision:** Conformance must parse the balanced lifecycle `try` after
+`Start-Process`, require its immediately paired `finally`, and bind live
+contracts and non-masking cleanup guards to those exact blocks. Cleanup
+operations must catch and report their own failures so an existing contract
+failure remains the primary process error.
+
+**Why:** The prior gate checked only whether lifecycle substrings appeared in
+the named workflow step. That established vocabulary, not control flow. Moving
+the same stop/log statements after an empty `finally` preserved every marker
+and still returned PASS, even though a contract failure would skip cleanup.
+A first repair that accepted any later `finally` was also insufficient: an
+unreachable second try/finally could carry every cleanup guard while the actual
+lifecycle finally remained empty.
+
+**Alternatives considered:** Add more global substrings; rejected because their
+placement would remain unverified. Rely only on hosted green runs; rejected
+because a success path does not exercise failure cleanup. Extract a larger
+standalone runner immediately; deferred because the current inline step is
+small, and balanced-block validation plus an executable failure injection binds
+the missing proposition without introducing another operational artifact.
+
+**Consequences:** Lifecycle association, cleanup placement, and non-masking
+behavior now have separate negative and executable assertions. The parser intentionally supports the
+controlled workflow syntax rather than claiming to be a general PowerShell
+parser. Workflow refactors must update the conformance contract in the same
+change.
+
+**Rollback conditions:** Replace only with an equal or stronger mechanism that
+proves cleanup executes on contract failure and cannot replace the primary
+failure. Do not restore presence-only lifecycle checks.
+
+**Evidence and links:** [LOG-20260716-008](LOG.md#log-20260716-008),
+[PARK-20260716-008](PARKED.md#park-20260716-008), merged PR #30, and the repair
+pull request checks including Actions run `29479444593`.
+
+## WHY-20260716-007 - Treat every native command as a composition gate
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T06:43:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-007](LOG.md#log-20260716-007)
+**Parked records:** [PARK-20260716-007](PARKED.md#park-20260716-007)
+**Source state:** `selfconnect-enterprise`, `agent/portfolio-bpc-pin`,
+`e503c86548dfd6b6f608e75a424796ede71956e5`
+
+**Decision:** Every critical Windows composition step must explicitly make
+PowerShell errors terminating, and every native command must terminate that
+step on nonzero exit. The workflow itself must be covered
+by an executable repository conformance assertion. A background sidecar and
+the contracts that depend on it must execute within one Actions step, with
+health verification and cleanup bound by `try`/`finally`.
+
+**Why:** PowerShell can continue after a native process exits nonzero, and a
+later successful process can become the step's final exit status. This happened
+in a real hosted run, turning both a failed BPC workspace and a failed live Node
+request into a green job. A comment or operator convention would not prevent
+recurrence.
+
+The first fail-closed rerun then showed that a healthy process launched in one
+Windows Actions step was not reachable in the next. Process lifetime across
+step boundaries is runner behavior, not an application guarantee, so the
+dependent contract must own the sidecar's complete lifecycle.
+
+**Alternatives considered:** Check `$LASTEXITCODE` only after the final command;
+rejected because it observes only the last process. Add manual checks after
+every npm/python/git command; correct but repetitive and easy to omit. Accept
+the green badge because Linux and Python passed; rejected because the Windows
+propositions were not executed successfully. Disable the flaky BPC assertion;
+rejected because the exact horizon property can be tested deterministically.
+
+**Consequences:** Critical Windows steps stop at the first PowerShell or native
+failure, and the portfolio test fails if either fail-fast declaration disappears
+from any currently named step. It also fails if sidecar start, health check, Node/Python
+contracts, or cleanup are removed from the single live-contract step. Hosted
+workflows may fail more often, but those failures now represent evidence
+defects or implementation defects instead of being silently overwritten.
+
+**Rollback conditions:** Replace this mechanism only with an equal or stronger
+shell wrapper that proves every native exit is propagated and has a negative
+regression. Never restore sequential unchecked native commands in an evidence
+job.
+
+**Evidence and links:** [LOG-20260716-007](LOG.md#log-20260716-007),
+[PARK-20260716-007](PARKED.md#park-20260716-007), Actions runs `29476950456`
+and `29477612730`, clean Actions run `29478571278`, and BPC PR #17.
+
+## WHY-20260716-006 - Move only the BPC pin after composed verification
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T06:31:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-006](LOG.md#log-20260716-006)
+**Parked records:** [PARK-20260716-006](PARKED.md#park-20260716-006)
+**Source state:** `selfconnect-enterprise`, `agent/portfolio-bpc-pin`,
+`2e8e934536bc695f15119009b48eeaac7d59751a`
+
+**Decision:** Pin Enterprise to the canonical BPC source containing PR #14's
+continuity implementation and PR #17's evidence corrections only after the
+exact BPC/TSK/Enterprise assembly passes the existing cross-repository
+contracts. Keep TSK at its already-current canonical master commit.
+
+**Why:** A lock is useful only when it identifies the source actually tested.
+BPC's Redis continuity implementation is newer than the active lock, but a
+repository-local BPC pass alone cannot establish compatibility with the strict
+TSK bridge and Enterprise sidecar. Conversely, TSK has no newer delivered
+source or open change to justify a coordinated version move.
+
+**Alternatives considered:** Follow BPC master dynamically; rejected because
+future commits would change the evaluated composition without review. Pin the
+PR head; rejected because the canonical merge is the delivered source. Advance
+TSK for symmetry; rejected because it would be unrelated churn without new
+evidence. Retain the older BPC pin; rejected after the new canonical source
+passed the complete local composition because it would omit merged security
+work from the active portfolio identity.
+
+**Consequences:** Enterprise CI will check out and exercise the merged BPC
+continuity source with the unchanged TSK boundary. The pin does not
+automatically enable new BPC factories or validate a deployment's Redis
+policy; integrators still have to select the governed factory and satisfy its
+startup and continuity requirements.
+
+**Rollback conditions:** Restore the former BPC pin if hosted Windows or Linux
+composition fails, a runtime regression is reproduced, or independent review
+finds an incompatible contract. Preserve the failure and make the rollback a
+new recorded decision rather than rewriting this evidence.
+
+**Evidence and links:** [LOG-20260716-006](LOG.md#log-20260716-006),
+[PARK-20260716-006](PARKED.md#park-20260716-006), `portfolio-lock.json`, BPC
+PRs #14 and #17, and Enterprise Actions run `29478571278`.
+
+## WHY-20260716-005 - Fence shared-state Ultra nodes before broader HA
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T05:52:59Z
+**Updated (UTC):** 2026-07-16T06:12:14Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-005](LOG.md#log-20260716-005)
+**Parked records:** [PARK-20260716-005](PARKED.md#park-20260716-005)
+**Source state:** `selfconnect-enterprise`,
+`hardening/ultra-shared-state-ha`,
+`b001274419f378d8487e44f980bee3a09464000b`
+
+**Decision:** Implement a disabled-by-default, production-only active/passive
+mode in which two Ultra application processes share PostgreSQL and Redis, all
+nodes start fenced, one guard-signed monotonic epoch owns writes, and concurrent
+requests hold shared PostgreSQL advisory locks while an epoch change requires
+the exclusive form.
+Keep the larger independent-state/site HA requirement open in issue #28.
+
+**Why:** Existing restart durability did not prevent a recovered old process
+from serving writes beside a promoted process. The pinned TSK component already
+provides a fail-closed Redis fencing authority and a store wrapper, but Ultra
+did not compose either into its real routes. A shared-state slice is testable
+with two genuine processes and closes that application-writer risk without
+inventing a process-local replication queue or claiming independent
+infrastructure. The transition lock resolves the lease-expiry race explicitly:
+new requests drain before expiry, and a higher epoch waits for an already
+admitted request rather than overlapping it.
+
+**Alternatives considered:** Treat `/ready` as the fence; rejected because a
+load balancer check is routing advice, not mutation authorization. Check only
+at route admission; rejected because promotion could overlap a long admitted
+mutation. Add only `FencedTumblerStore`; rejected because BPC, bindings,
+idempotency, nonce consumption, and administrative lifecycle routes also
+mutate governed state. Build process-local BPC/TSK replication immediately;
+rejected because its queue/checkpoint crash boundary is not transactionally
+coupled to PostgreSQL and would not satisfy issue #21's convergence claim.
+Automate leader election; deferred because policy, quorum, infrastructure
+failure semantics, and operator authority must be designed and tested first.
+
+**Consequences:** A deployment may run redundant Ultra application processes
+over one state plane with explicit, signed operator promotion and deterministic
+old-node fencing. Nodes refuse writes when Redis is unavailable or corrupt and
+lose local write authority on restart. Governed requests retain concurrency,
+but an exclusive transition waits for every admitted shared holder to drain.
+PostgreSQL/Redis remain shared dependencies,
+and the result does not establish site availability, RPO/RTO, backup restore,
+secret custody, compliance, or authorization.
+
+**Rollback conditions:** Roll back or disable HA if transition drain causes
+unacceptable bounded workload latency, a pinned protocol compatibility change
+invalidates the store wrapper, readiness diverges from mutation authority, or
+any test shows two epochs can mutate concurrently. Preserve the failed evidence
+and use the documented single-process rollback; do not weaken the fence or
+silently extend leases.
+
+**Evidence and links:** [LOG-20260716-005](LOG.md#log-20260716-005),
+[PARK-20260716-005](PARKED.md#park-20260716-005), issues #21 and #28,
+[`ULTRA_SHARED_STATE_HA.md`](docs/operations/ULTRA_SHARED_STATE_HA.md),
+`ultra_server/ha-controller.test.mjs`,
+`ultra_server/ha-live-conformance.mjs`, draft PR #29, and hosted CI run
+[`29475880116`](https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29475880116).
 
 ## WHY-20260716-004 - Pin the merged fail-closed console transport
 

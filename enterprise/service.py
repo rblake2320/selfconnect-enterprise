@@ -179,45 +179,54 @@ class ControlPlaneThread(threading.Thread):
                     "S3 Object Lock or Cloudflare R2 bucket lock."
                 )
 
-            from enterprise.identity import AgentIdentity
-
             session_id = str(uuid.uuid4())
-            identity_name = "scent-service"
-            identity = (
-                AgentIdentity.load(identity_name)
-                if AgentIdentity.exists(identity_name)
-                else AgentIdentity.init(identity_name)
-            )
-            orchestrator_token = secrets.token_urlsafe(32)
-            try:
-                recorder = build_provenance_recorder(
-                    audit_config,
-                    session_id,
-                    identity=identity,
-                    orchestrator_token=orchestrator_token,
+            if audit_config.audit_mode == CfgAuditMode.CONSUMER:
+                from enterprise.identity import AgentIdentity
+
+                identity_name = "scent-service"
+                identity = (
+                    AgentIdentity.load(identity_name)
+                    if AgentIdentity.exists(identity_name)
+                    else AgentIdentity.init(identity_name)
                 )
-                recorder.start()
-                self.provenance_recorder = recorder
+                orchestrator_token = secrets.token_urlsafe(32)
+                try:
+                    recorder = build_provenance_recorder(
+                        audit_config,
+                        session_id,
+                        identity=identity,
+                        orchestrator_token=orchestrator_token,
+                    )
+                    recorder.start()
+                    self.provenance_recorder = recorder
+                    ledger = _ProvenanceLedgerAdapter(recorder)
+                    logger.info("Consumer in-process provenance initialised: session=%s", session_id)
+                except WormServiceError as exc:
+                    logger.error("WORM service initialisation failed: %s", exc)
+                    self.crashed = True
+                    self._stop_signal.set()
+                    return
+            else:
+                from enterprise.provenance_client import ProvenanceServiceLedgerAdapter
+
+                ledger = ProvenanceServiceLedgerAdapter.from_env()
                 logger.info(
-                    "ProvenanceRecorder initialised: session=%s mode=%s",
-                    session_id, audit_config.audit_mode.value,
+                    "Hardened provenance service client initialised: session=%s mode=%s",
+                    ledger.session_id,
+                    audit_config.audit_mode.value,
                 )
-            except WormServiceError as exc:
-                logger.error("WORM service initialisation failed: %s", exc)
-                self.crashed = True
-                self._stop_signal.set()
-                return
 
             from enterprise.control import ControlPlane
-            cp = ControlPlane(ledger=_ProvenanceLedgerAdapter(recorder))
+            cp = ControlPlane(ledger=ledger)
             logger.info("ControlPlane started")
             while not self._stop_signal.wait(timeout=5.0):
                 pass
             cp.shutdown() if hasattr(cp, "shutdown") else None
-            recorder.close(
-                summary={"reason": "service_stop"},
-                orchestrator_token=orchestrator_token,
-            )
+            if recorder is not None:
+                recorder.close(
+                    summary={"reason": "service_stop"},
+                    orchestrator_token=orchestrator_token,
+                )
             logger.info("ControlPlane stopped")
         except Exception:  # noqa: BLE001
             logger.exception("ControlPlane thread crashed — service will stop to avoid fail-open")

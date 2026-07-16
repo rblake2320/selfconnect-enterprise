@@ -195,8 +195,11 @@ def build_provenance_recorder(
     config: AuditConfig,
     session_id: str,
     *,
+    agent_id: str = "scent-service",
     identity=None,
+    log_dir: Path | None = None,
     orchestrator_token: str | None = None,
+    supervisor_id: str | None = None,
 ) -> ProvenanceRecorder:
     """Build a ProvenanceRecorder wired with the correct ReplicationSink.
 
@@ -257,9 +260,11 @@ def build_provenance_recorder(
 
     return ProvenanceRecorder(
         session_id=session_id,
-        agent_id="scent-service",
+        agent_id=agent_id,
         audit_mode=provenance_mode,
         identity=identity,
+        log_dir=log_dir,
         orchestrator_token=orchestrator_token,
         replication_sink=sink,
+        supervisor_id=supervisor_id,
     )
