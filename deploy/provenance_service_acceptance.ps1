@@ -222,6 +222,37 @@ function Wait-ServiceState {
     (Get-Service -Name $ServiceName).WaitForStatus($State, [TimeSpan]::FromSeconds($Seconds))
 }
 
+function Wait-ProvenanceEndpoint {
+    param(
+        [string]$Path,
+        [string]$PreviousPipeName = '',
+        [int]$Seconds = 45
+    )
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+        $service = Get-Service -Name $ServiceName -ErrorAction Stop
+        if ($service.Status -eq 'Stopped') {
+            throw 'provenance service stopped before publishing a ready endpoint'
+        }
+        if (Test-Path -LiteralPath $Path) {
+            try {
+                $endpoint = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+                $valid = [string]$endpoint.version -eq 'selfconnect.provenance.endpoint.v1' -and `
+                    [string]$endpoint.pipe_name
+                $rotated = -not $PreviousPipeName -or `
+                    [string]$endpoint.pipe_name -ne $PreviousPipeName
+                if ($valid -and $rotated) {
+                    return $endpoint
+                }
+            } catch {
+                # The service publishes with os.replace(); retry only while the bounded deadline remains.
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $deadline)
+    throw 'provenance service did not publish a valid fresh endpoint before the deadline'
+}
+
 try {
     if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
         throw "$ServiceName is already installed; acceptance requires a clean service slot"
@@ -370,7 +401,7 @@ try {
     Wait-ServiceState -State Running
 
     $endpointFile = Join-Path $ServiceRoot 'endpoint\current.json'
-    $endpoint = Get-Content -Raw -LiteralPath $endpointFile | ConvertFrom-Json
+    $endpoint = Wait-ProvenanceEndpoint -Path $endpointFile
     $PipeName = [string]$endpoint.pipe_name
     $Results.pipe = $PipeName
     $servicePublicKeyPath = Join-Path $ServiceRoot 'identity\SelfConnectProvenance\identity.pub'
@@ -421,7 +452,8 @@ try {
     if (-not (Test-Path -LiteralPath $SquatReady)) { throw 'pipe squatter did not become ready' }
     Start-Service -Name $ServiceName
     Wait-ServiceState -State Running
-    $rotatedEndpoint = Get-Content -Raw -LiteralPath $endpointFile | ConvertFrom-Json
+    $rotatedEndpoint = Wait-ProvenanceEndpoint -Path $endpointFile `
+        -PreviousPipeName $oldPipeName
     $PipeName = [string]$rotatedEndpoint.pipe_name
     $Results.checks.pipe_rotation_survives_old_name_squatting = `
         $PipeName -and $PipeName -ne $oldPipeName
@@ -459,6 +491,7 @@ try {
     & $DeployScript -Action RepairAcl -PythonExe $PythonExe -RootPath $ServiceRoot
     Start-Service -Name $ServiceName
     Wait-ServiceState -State Running
+    Wait-ProvenanceEndpoint -Path $endpointFile -PreviousPipeName $PipeName | Out-Null
 
     $burst = Invoke-AsUser -Credential $agent.Credential -ExpectedSid $agent.Sid `
         -Workspace $AgentRoot -Description 'restart burst' -NoWait `
