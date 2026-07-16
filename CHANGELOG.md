@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Shared-state Ultra application-node fencing
+
+- Added disabled-by-default, production-only active/passive fencing for two
+  Ultra Node processes sharing PostgreSQL and Redis.
+- Added admin-authorized, guard-signed monotonic activation/promotion commands,
+  current-writer readiness, fail-closed Redis authority handling, concurrent
+  shared request locks, and an exclusive PostgreSQL transition/drain boundary.
+- Added real two-process CI covering one-writer election, same-principal
+  failover, old/restarted-primary fencing without bounded state mutation,
+  replay/tamper/stale denial, Redis outage/corruption, and concurrent schema
+  initialization.
+- Kept independent-state/site replication, convergence, secret unseal, restore,
+  and repeated deployment drills explicitly open; this change does not close
+  issue #21, and the independent-state/site slice remains issue #28.
+- Evidence: [LOG-20260716-005](LOG.md#log-20260716-005), rationale:
+  [WHY-20260716-005](WHY.md#why-20260716-005), recovery:
+  [PARK-20260716-005](PARKED.md#park-20260716-005), and runbook:
+  [ULTRA_SHARED_STATE_HA.md](docs/operations/ULTRA_SHARED_STATE_HA.md).
+
 ### Portfolio composition identity
 
 - Added one machine-readable lock for the exact SelfConnect SDK, BPC, and TSK

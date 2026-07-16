@@ -91,6 +91,61 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260716-005 - Prior single-process Ultra composition
+
+**Status:** Parked
+**Category:** runtime behavior, configuration, security property
+**Former location:** `ultra_server/server.js`, `ultra_server/.env.example`, and
+the production durability CI job
+**Source commit:** `b001274419f378d8487e44f980bee3a09464000b`
+**Affected paths:** `ultra_server/server.js`, `ultra_server/runtime-stores.js`,
+`ultra_server/.env.example`, `.github/workflows/ci.yml`, and Ultra operational
+documentation
+**Action log:** [LOG-20260716-005](LOG.md#log-20260716-005)
+**Why changed:** [WHY-20260716-005](WHY.md#why-20260716-005)
+**Parked by:** Codex, requested by the repository owner
+
+**Former wording:** Ultra production supported one application process with
+PostgreSQL/Redis restart durability. It had no application-node writer lease,
+signed promotion endpoint, shared transition lock, or current-writer readiness
+contract.
+
+**Recovery source:** Enterprise commit
+`b001274419f378d8487e44f980bee3a09464000b`, or the disabled HA path in the
+replacement (`ULTRA_HA_ENABLED=false`).
+
+**Reason parked:** Single-process restart durability remains a valid bounded
+deployment mode but cannot prevent concurrent old/new application writers.
+Shared-state HA is therefore optional and fail-closed rather than silently
+changing existing production startup behavior.
+
+**Replacement:** The production-only shared-state active/passive mode and
+[`ULTRA_SHARED_STATE_HA.md`](docs/operations/ULTRA_SHARED_STATE_HA.md).
+
+**Restore when:** A shared-state fencing regression is reproduced, the pinned
+TSK fencing API becomes incompatible, or an approved workload cannot tolerate
+the bounded exclusive transition drain.
+
+**Restore procedure:** Stop all HA-enabled nodes, confirm no request is in
+flight, retain non-secret incident evidence, and start exactly one production
+process with `ULTRA_HA_ENABLED=false` or unset. Run production restart and key
+rotation conformance. Do not run multiple unfenced production processes.
+
+**Validation after restore:** `/health` and `/ready` must return 200 on the one
+process, the live Node/Python contract and production restart ceremony must
+pass, and no second application process may serve the same state plane.
+
+**Recovery rehearsal:** The disabled HA path retains existing unit/live
+coverage. A deployment-specific stop-two/start-one rollback drill has not been
+performed.
+
+**Restoration risks:** Removes cross-process writer fencing and therefore
+requires an operationally enforced single-process topology.
+
+**Evidence and links:** [LOG-20260716-005](LOG.md#log-20260716-005),
+[WHY-20260716-005](WHY.md#why-20260716-005), issues #21 and #28, and the
+associated draft pull request.
+
 ## PARK-20260716-004 - Prior core transport composition
 
 **Status:** Parked

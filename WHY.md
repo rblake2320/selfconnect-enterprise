@@ -51,6 +51,67 @@ related records.
 
 ## Register
 
+## WHY-20260716-005 - Fence shared-state Ultra nodes before broader HA
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T05:52:59Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-005](LOG.md#log-20260716-005)
+**Parked records:** [PARK-20260716-005](PARKED.md#park-20260716-005)
+**Source state:** `selfconnect-enterprise`,
+`hardening/ultra-shared-state-ha`,
+`b001274419f378d8487e44f980bee3a09464000b`
+
+**Decision:** Implement a disabled-by-default, production-only active/passive
+mode in which two Ultra application processes share PostgreSQL and Redis, all
+nodes start fenced, one guard-signed monotonic epoch owns writes, and concurrent
+requests hold shared PostgreSQL advisory locks while an epoch change requires
+the exclusive form.
+Keep the larger independent-state/site HA requirement open in issue #28.
+
+**Why:** Existing restart durability did not prevent a recovered old process
+from serving writes beside a promoted process. The pinned TSK component already
+provides a fail-closed Redis fencing authority and a store wrapper, but Ultra
+did not compose either into its real routes. A shared-state slice is testable
+with two genuine processes and closes that application-writer risk without
+inventing a process-local replication queue or claiming independent
+infrastructure. The transition lock resolves the lease-expiry race explicitly:
+new requests drain before expiry, and a higher epoch waits for an already
+admitted request rather than overlapping it.
+
+**Alternatives considered:** Treat `/ready` as the fence; rejected because a
+load balancer check is routing advice, not mutation authorization. Check only
+at route admission; rejected because promotion could overlap a long admitted
+mutation. Add only `FencedTumblerStore`; rejected because BPC, bindings,
+idempotency, nonce consumption, and administrative lifecycle routes also
+mutate governed state. Build process-local BPC/TSK replication immediately;
+rejected because its queue/checkpoint crash boundary is not transactionally
+coupled to PostgreSQL and would not satisfy issue #21's convergence claim.
+Automate leader election; deferred because policy, quorum, infrastructure
+failure semantics, and operator authority must be designed and tested first.
+
+**Consequences:** A deployment may run redundant Ultra application processes
+over one state plane with explicit, signed operator promotion and deterministic
+old-node fencing. Nodes refuse writes when Redis is unavailable or corrupt and
+lose local write authority on restart. Governed requests retain concurrency,
+but an exclusive transition waits for every admitted shared holder to drain.
+PostgreSQL/Redis remain shared dependencies,
+and the result does not establish site availability, RPO/RTO, backup restore,
+secret custody, compliance, or authorization.
+
+**Rollback conditions:** Roll back or disable HA if transition drain causes
+unacceptable bounded workload latency, a pinned protocol compatibility change
+invalidates the store wrapper, readiness diverges from mutation authority, or
+any test shows two epochs can mutate concurrently. Preserve the failed evidence
+and use the documented single-process rollback; do not weaken the fence or
+silently extend leases.
+
+**Evidence and links:** [LOG-20260716-005](LOG.md#log-20260716-005),
+[PARK-20260716-005](PARKED.md#park-20260716-005), issues #21 and #28,
+[`ULTRA_SHARED_STATE_HA.md`](docs/operations/ULTRA_SHARED_STATE_HA.md),
+`ultra_server/ha-controller.test.mjs`,
+`ultra_server/ha-live-conformance.mjs`, and the associated hosted CI run.
+
 ## WHY-20260716-004 - Pin the merged fail-closed console transport
 
 **Status:** Accepted

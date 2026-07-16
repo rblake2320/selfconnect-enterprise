@@ -9,6 +9,8 @@
     ".env.example",
     "README.md",
     "agent-auth.js",
+    "ha-command.mjs",
+    "ha-controller.js",
     "recovery-token.js",
     "runtime-stores.js",
     "security-boundary.js",
@@ -17,7 +19,9 @@
   "scripts": {
     "start": "node server.js",
     "install-deps": "npm install",
-    "test": "node --test agent-auth.test.mjs package-content.test.mjs recovery-token.test.mjs runtime-stores.test.mjs security-boundary.test.mjs",
+    "ha:command": "node ha-command.mjs",
+    "test:ha-live": "node ha-live-conformance.mjs",
+    "test": "node --test agent-auth.test.mjs ha-controller.test.mjs package-content.test.mjs recovery-token.test.mjs runtime-stores.test.mjs security-boundary.test.mjs",
     "test:live": "node server.test.mjs"
   },
   "dependencies": {

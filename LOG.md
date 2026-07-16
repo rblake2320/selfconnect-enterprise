@@ -54,6 +54,78 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260716-005 - Add shared-state Ultra writer fencing
+
+**Timestamp (UTC):** 2026-07-16T05:52:59Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, test, security hardening, documentation
+**Base commit:** `b001274419f378d8487e44f980bee3a09464000b`
+**Change reference:** commit containing this entry and the associated draft pull request
+**Why:** [WHY-20260716-005](WHY.md#why-20260716-005)
+**Parked records:** [PARK-20260716-005](PARKED.md#park-20260716-005)
+
+**Changed:** Added optional production-only shared-state active/passive Ultra
+node fencing. Two actual Node processes can share one PostgreSQL database and
+Redis fencing authority while a strict, admin-authorized and guard-signed
+transition command selects one writer at a monotonic epoch. Every enabled node
+starts fenced. `/ready` identifies only a writer outside the drain window;
+`/health` remains liveness. All verification and lifecycle/admin mutations
+enter a shared PostgreSQL request lock and check the Redis writer lease before
+request processing. Governed requests take shared locks and may overlap; writer
+transitions take the exclusive form. The TSK store also uses the pinned
+protocol's `FencedTumblerStore` mutation boundary. BPC verification and BPC
+lifecycle updates take a per-pair cross-process lock so unrelated pairs remain
+concurrent without losing PairRegistry read-modify-write activity. PostgreSQL
+schema initialization now
+uses a transaction-scoped advisory lock after a real two-process startup race
+exposed concurrent `CREATE TABLE IF NOT EXISTS` as insufficient.
+
+**Reason:** Issue #21 correctly separated durable single-process restart from
+multi-process failover. The smallest deployable slice is node fencing over one
+shared state plane. It prevents a recovered old process or equal/lower epoch
+candidate from becoming an authoritative writer without claiming that the
+shared PostgreSQL/Redis infrastructure, independent replicas, or sites are
+highly available.
+
+**Full actions and links:** `ultra_server/ha-controller.js`,
+`ultra_server/ha-command.mjs`, `ultra_server/ha-live-conformance.mjs`,
+`ultra_server/server.js`, `ultra_server/runtime-stores.js`, their tests,
+`.github/workflows/ci.yml`,
+[`ULTRA_SHARED_STATE_HA.md`](docs/operations/ULTRA_SHARED_STATE_HA.md),
+[`ULTRA-HA-SHARED-001`](docs/assurance/control_catalog.json), issue #21,
+[WHY-20260716-005](WHY.md#why-20260716-005), and
+[PARK-20260716-005](PARKED.md#park-20260716-005).
+
+**Validation:** The local Node suite passed 26/26 with PostgreSQL 17.5,
+including HA signature/shape, monotonic epoch, role, stale/replay/tamper,
+wrong-node/cluster, corrupt/unavailable fence, restart, drain-window, concurrent
+shared-holder/exclusive-transition ordering, BPC route-boundary, and concurrent
+schema-startup assertions. A controlled local run started two production Node
+processes on different ports with shared PostgreSQL 17.5 and Redis 7.4.5,
+completed a real Python BPC+TSK principal seed and verification, promoted the
+replica at a higher epoch, verified the same principal on the new writer,
+proved the old and restarted primary returned 503 without changing the bounded
+pair/tumbler/binding snapshot, proved Redis pause failed readiness closed, and
+proved a corrupt fence denied both nodes. The first run reproduced a
+cross-process schema-initialization race; the advisory-lock correction passed
+the repeated run and has a PostgreSQL integration regression. A fresh isolated
+Python environment installed declared dependencies, including
+`cryptography==49.0.0`, and passed 1,459 tests with two expected external-sink
+warnings. Ruff, documentation records, quick conformance, workflow lint,
+JavaScript syntax, npm audit (zero findings), and diff checks passed. The shared
+machine environment separately failed two supply-chain gates because it still
+has `cryptography==44.0.3`; that environment failure was not relabeled as a
+repository pass. Hosted CI remains required on the draft pull request before
+merge.
+
+**Notes:** This is shared-state application-node fencing only. A request
+admitted before the configured drain window may finish under that epoch; its
+shared PostgreSQL lock prevents the exclusive promotion from overlapping it.
+Concurrent governed requests remain allowed. This is not a wall-clock abort or
+per-row transactional epoch claim. Issue #21 remains open,
+and independent-state/site replication, convergence, secret-unseal, repeated
+failover, and restore evidence are tracked in issue #28.
+
 ## LOG-20260716-004 - Advance the core lock to fail-closed console transport
 
 **Timestamp (UTC):** 2026-07-16T02:06:16Z

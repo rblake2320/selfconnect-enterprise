@@ -202,6 +202,16 @@
       "tier": "description"
     },
     {
+      "id": "ULTRA-HA-SHARED-001",
+      "title": "Shared-state Ultra nodes enforce one fail-closed writer fence",
+      "scope": "Two production Ultra Node processes on different ports sharing one PostgreSQL database and one Redis fencing authority",
+      "assertion": "Run the hosted Ultra production durability job's shared-state phase: start both processes fenced, activate one signed epoch, seed a real BPC/TSK principal, promote the other node at a higher epoch, verify the same principal, probe the old and restarted primary, pause Redis, and corrupt the fence record.",
+      "expected": "Exactly one equal-epoch candidate wins; only the current writer is ready; same-principal verification continues after promotion; the old/restarted primary cannot mutate state; stale, replayed, tampered, unavailable, and corrupt fence conditions fail closed.",
+      "evidence": "Hosted CI logs and artifacts for Ultra production durability, non-secret service logs, exact portfolio lock, and controlled-drill record",
+      "blind_spots": "Does not establish independent PostgreSQL/Redis replicas, site/region failover, transactional replication checkpoints, automatic leader election, secret unseal/custody, infrastructure backup restore, RPO/RTO, or authorization. An admitted request may drain under its epoch while its shared PostgreSQL lock prevents a higher epoch's exclusive transition from activating.",
+      "tier": "description"
+    },
+    {
       "id": "ULTRA-KEY-CEREMONY-001",
       "title": "Production key overlap and retirement ceremony",
       "scope": "The selected production Ultra service, its current/previous operator and recovery secrets, PostgreSQL, Redis, and authorized operator clients",
