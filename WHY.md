@@ -51,6 +51,52 @@ related records.
 
 ## Register
 
+## WHY-20260716-004 - Pin the merged fail-closed console transport
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T02:06:16Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-004](LOG.md#log-20260716-004)
+**Parked records:** [PARK-20260716-004](PARKED.md#park-20260716-004)
+**Source state:** `selfconnect-enterprise`,
+`chore/pin-core-console-transport`,
+`8dcd6e58afb05f05d6fee97bba4c8d46a0ae9907`
+
+**Decision:** Advance the Enterprise SelfConnect lock only to canonical core
+merge `56d5ff1802dca5d4136bcc32fa37aa122d4944dc` and require the full composed
+workflow before accepting compatibility.
+
+**Why:** The prior lock included repaired core CI but not the subsequently
+reproduced `ConsoleWindowClass` delivery defect. The new core commit separates
+queue/API acceptance from receiver delivery, selects the native console-input
+path by verified class, fails closed on partial write or caller-console
+restoration failure, and prevents higher-level callers from recording success
+without a structured transport record. Repository-local proof is necessary but
+does not establish compatibility with Enterprise, BPC, and TSK.
+
+**Alternatives considered:** Follow SelfConnect `master`; rejected because a
+moving branch is not reproducible. Keep `a87e490`; rejected because Enterprise
+would continue testing a source set with the known transport false-positive
+behavior. Pin the PR head; rejected because only the canonical merge commit
+identifies the delivered default-branch source. Treat core hosted CI as composed
+evidence; rejected because it does not install and exercise the Enterprise
+portfolio boundary.
+
+**Consequences:** Enterprise tests the exact merged core transport behavior and
+retains immutable source identity across all composed jobs. The lock update
+does not broaden any delivery, security, compliance, patent, or authorization
+claim beyond the named evidence.
+
+**Rollback conditions:** If the composed jobs reveal a compatibility or
+security regression, keep this change unmerged and diagnose the failed
+proposition. Restore `a87e490` only for historical reproduction or under a new
+bounded rollback decision that records the missing core fix.
+
+**Evidence and links:** [LOG-20260716-004](LOG.md#log-20260716-004),
+[PARK-20260716-004](PARKED.md#park-20260716-004), `portfolio-lock.json`,
+`tools/portfolio_conformance.py`, SelfConnect PR #14, and the associated hosted
+Enterprise workflow.
+
 ## WHY-20260716-003 - Use bounded BPC error codes across the Ultra boundary
 
 **Status:** Accepted

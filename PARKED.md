@@ -91,6 +91,39 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260716-004 - Prior core transport composition
+
+**Status:** Parked
+**Category:** configuration, release, security property
+**Former location:** `portfolio-lock.json` and `pyproject.toml`
+**Source commit:** `8dcd6e58afb05f05d6fee97bba4c8d46a0ae9907`
+**Affected paths:** `portfolio-lock.json`, `pyproject.toml`
+**Action log:** [LOG-20260716-004](LOG.md#log-20260716-004)
+**Why changed:** [WHY-20260716-004](WHY.md#why-20260716-004)
+**Parked by:** Codex, requested by the repository owner
+**Former wording:** SelfConnect
+`a87e490c88c4ccb18ccaac514d018c7bba779d55` at package version `0.12.0`.
+**Recovery source:** `portfolio-lock.json` and `pyproject.toml` at Enterprise
+commit `8dcd6e58afb05f05d6fee97bba4c8d46a0ae9907`.
+**Reason parked:** The former pin contains the repaired core CI and remains
+historically reproducible, but it predates the merged fail-closed
+`ConsoleWindowClass` transport and structured caller failure propagation.
+**Replacement:** SelfConnect `56d5ff1802dca5d4136bcc32fa37aa122d4944dc`
+in `portfolio-lock.json` and the exact matching VCS dependency.
+**Restore when:** Historical reproduction only, or after a new decision record
+identifies a regression in the replacement and approves a bounded rollback.
+**Restore procedure:** Create an isolated branch from the source commit and run
+the same hosted composition workflow. Do not silently overwrite the active
+portfolio lock.
+**Validation after restore:** Require portfolio conformance and every Windows
+and Linux composed job, and label the evidence historical.
+**Recovery rehearsal:** Not rehearsed; Git retains the exact former lock.
+**Restoration risks:** Reintroduces the known distinction failure between
+PostMessage queue acceptance and actual `ConsoleWindowClass` input delivery.
+**Evidence and links:** [LOG-20260716-004](LOG.md#log-20260716-004),
+[WHY-20260716-004](WHY.md#why-20260716-004), `portfolio-lock.json`, and
+SelfConnect PR #14.
+
 ## PARK-20260716-003 - Unbounded Enterprise-specific BPC error names
 
 **Status:** Parked
