@@ -228,6 +228,8 @@ def test_acceptance_requires_exact_source_and_proves_cross_restart_recovery():
     assert acceptance.count("Wait-ProvenanceEndpoint -Path $endpointFile") == 3
     assert "provenance service stopped before publishing a ready endpoint" in acceptance
     assert "provenance service did not publish a valid fresh endpoint before the deadline" in acceptance
+    assert "[Text.UTF8Encoding]::new($false)" in acceptance
+    assert "Set-Content -LiteralPath $ConfigPath -Encoding UTF8" not in acceptance
     assert "Read-OptionalText" in acceptance
     assert "acceptance-completion.v1" in acceptance
     assert "disposable_user_workspaces_isolated" in acceptance

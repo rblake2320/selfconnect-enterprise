@@ -409,7 +409,7 @@ try {
     $serviceAgentId = Get-AgentIdFromPublicKey -PublicKeyHex $servicePublicKeyHex
     $sentinel = Join-Path $ServiceRoot 'ledger\acceptance-sentinel.dat'
     [IO.File]::WriteAllText($sentinel, "sentinel`n", [Text.Encoding]::ASCII)
-    [ordered]@{
+    $configJson = [ordered]@{
         identity_dir = (Join-Path $AgentRoot 'identity')
         identity_name = 'provenance-acceptance-agent'
         endpoint_file = $endpointFile
@@ -421,7 +421,8 @@ try {
         service_public_key_hex = $servicePublicKeyHex
         service_sid = $Results.artifacts.service_sid
         timeout_ms = 5000
-    } | ConvertTo-Json | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
+    } | ConvertTo-Json
+    [IO.File]::WriteAllText($ConfigPath, $configJson, [Text.UTF8Encoding]::new($false))
 
     Invoke-AsUser -Credential $agent.Credential -ExpectedSid $agent.Sid -Workspace $AgentRoot `
         -Description 'enrolled agent adversarial exercise' `
