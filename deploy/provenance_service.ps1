@@ -356,6 +356,8 @@ function Wait-ProvenanceReady {
                 $pipeName = [string]$endpoint.pipe_name
                 $valid = [string]$endpoint.version -eq 'selfconnect.provenance.endpoint.v1' -and `
                     $pipeName.StartsWith('\\.\pipe\SelfConnectProvenance.v1.') -and `
+                    [string]$endpoint.pipe_integrity_sid -eq 'S-1-16-8192' -and `
+                    [int]$endpoint.pipe_integrity_policy -eq 1 -and `
                     [string]$endpoint.service_sid -eq $ExpectedServiceSid -and `
                     [string]$endpoint.service_agent_id -eq $ExpectedAgentId -and `
                     [int]$endpoint.service_pid -gt 0 -and `

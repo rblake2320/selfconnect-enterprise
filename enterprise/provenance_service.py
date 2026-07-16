@@ -20,6 +20,8 @@ from enterprise.provenance import ProvenanceRecorder, SessionState, verify_log
 from enterprise.provenance_ipc import EnrollmentRegistry
 from enterprise.provenance_pipe import (
     PIPE_NAME,
+    PIPE_INTEGRITY_POLICY,
+    PIPE_INTEGRITY_SID,
     ProvenancePipeConfig,
     ProvenancePipeServer,
     resolve_account_sid,
@@ -466,12 +468,21 @@ class ProvenanceServiceRuntime:
         value = {
             "instance_id": secrets.token_hex(16),
             "pipe_name": self.pipe_name,
+            "pipe_integrity_policy": self.pipe.integrity_policy,
+            "pipe_integrity_sid": self.pipe.integrity_sid,
             "service_agent_id": self.identity.agent_id,
             "service_pid": os.getpid(),
             "service_sid": self.service_sid,
             "version": "selfconnect.provenance.endpoint.v1",
         }
         encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        if (
+            value["pipe_integrity_sid"] != PIPE_INTEGRITY_SID
+            or value["pipe_integrity_policy"] != PIPE_INTEGRITY_POLICY
+        ):
+            raise ProvenanceServiceConfigurationError(
+                "live provenance pipe integrity label is not medium/no-write-up"
+            )
         temporary = self.paths.endpoint_file.with_name(
             f".{self.paths.endpoint_file.name}.{secrets.token_hex(8)}.tmp"
         )

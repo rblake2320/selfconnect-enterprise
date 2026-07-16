@@ -19,9 +19,12 @@ from enterprise.provenance_ipc import (
     decode_frame,
 )
 from enterprise.provenance_pipe import (
-    FILE_READ_DATA,
+    PIPE_CLIENT_ACCESS,
     FILE_WRITE_ATTRIBUTES,
     FILE_WRITE_DATA,
+    FILE_READ_DATA,
+    PIPE_INTEGRITY_POLICY,
+    PIPE_INTEGRITY_SID,
     SYNCHRONIZE,
     ProvenancePipeClient,
     ProvenancePipeConfig,
@@ -168,8 +171,24 @@ def test_client_pipe_ace_does_not_grant_server_instance_creation():
         for index in range(dacl.GetAceCount())
         if dacl.GetAce(index)[2] == client
     ]
-    assert masks == [FILE_READ_DATA | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE]
+    assert masks == [PIPE_CLIENT_ACCESS]
+    assert masks[0] == FILE_READ_DATA | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE
     assert not masks[0] & 0x0004  # FILE_CREATE_PIPE_INSTANCE / FILE_APPEND_DATA
+
+
+def test_pipe_descriptor_has_exact_medium_no_write_up_integrity_label():
+    import win32api
+    import win32security
+
+    service_sid = resolve_account_sid(win32api.GetUserNameEx(2))
+    attributes = build_pipe_security_attributes(service_sid, frozenset())
+    sacl = attributes.SECURITY_DESCRIPTOR.GetSecurityDescriptorSacl()
+    assert sacl is not None
+    assert sacl.GetAceCount() == 1
+    ace = sacl.GetAce(0)
+    assert int(ace[0][0]) == 17  # SYSTEM_MANDATORY_LABEL_ACE_TYPE
+    assert int(ace[1]) == PIPE_INTEGRITY_POLICY
+    assert win32security.ConvertSidToStringSid(ace[2]) == PIPE_INTEGRITY_SID
 
 
 def test_oversized_raw_message_is_a_signed_bounded_denial(tmp_path):
@@ -185,7 +204,7 @@ def test_oversized_raw_message_is_a_signed_bounded_denial(tmp_path):
         win32pipe.WaitNamedPipe(pipe_name, 5_000)
         handle = win32file.CreateFile(
             pipe_name,
-            FILE_READ_DATA | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+            PIPE_CLIENT_ACCESS,
             0,
             None,
             win32con.OPEN_EXISTING,
@@ -224,7 +243,7 @@ def test_idle_client_deadline_releases_the_only_pipe_instance(tmp_path):
         win32pipe.WaitNamedPipe(pipe_name, 5_000)
         idle = win32file.CreateFile(
             pipe_name,
-            FILE_READ_DATA | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+            PIPE_CLIENT_ACCESS,
             0,
             None,
             win32con.OPEN_EXISTING,

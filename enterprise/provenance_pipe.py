@@ -38,6 +38,9 @@ FILE_READ_DATA = 0x0001
 FILE_WRITE_DATA = 0x0002
 FILE_WRITE_ATTRIBUTES = 0x0100
 SYNCHRONIZE = 0x00100000
+PIPE_CLIENT_ACCESS = FILE_READ_DATA | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE
+PIPE_INTEGRITY_SID = "S-1-16-8192"
+PIPE_INTEGRITY_POLICY = 0x00000001  # SYSTEM_MANDATORY_LABEL_NO_WRITE_UP
 
 try:
     import pywintypes
@@ -107,15 +110,46 @@ def build_pipe_security_attributes(service_sid: str, client_sids: set[str] | fro
     # Do not grant FILE_GENERIC_WRITE here. For named pipes it contains
     # FILE_APPEND_DATA, which is the same bit as FILE_CREATE_PIPE_INSTANCE and
     # would let an enrolled client create a server-side pipe instance.
-    client_access = FILE_READ_DATA | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE
     for sid in sorted(client_sids):
-        dacl.AddAccessAllowedAce(win32security.ACL_REVISION, client_access, _sid(sid))
+        dacl.AddAccessAllowedAce(
+            win32security.ACL_REVISION,
+            PIPE_CLIENT_ACCESS,
+            _sid(sid),
+        )
+    sacl = win32security.ACL()
+    medium_integrity_sid = win32security.CreateWellKnownSid(
+        win32security.WinMediumLabelSid
+    )
+    sacl.AddMandatoryAce(
+        win32security.ACL_REVISION,
+        0,
+        win32security.SYSTEM_MANDATORY_LABEL_NO_WRITE_UP,
+        medium_integrity_sid,
+    )
     descriptor = win32security.SECURITY_DESCRIPTOR()
     descriptor.SetSecurityDescriptorDacl(True, dacl, False)
+    descriptor.SetSecurityDescriptorSacl(True, sacl, False)
     attributes = win32security.SECURITY_ATTRIBUTES()
     attributes.SECURITY_DESCRIPTOR = descriptor
     attributes.bInheritHandle = False
     return attributes
+
+
+def pipe_mandatory_label(handle: Any) -> tuple[str, int]:
+    """Read the live pipe mandatory label using the server handle's READ_CONTROL."""
+    _require_windows()
+    descriptor = win32security.GetSecurityInfo(
+        handle,
+        win32security.SE_KERNEL_OBJECT,
+        win32security.LABEL_SECURITY_INFORMATION,
+    )
+    sacl = descriptor.GetSecurityDescriptorSacl()
+    if sacl is None or sacl.GetAceCount() != 1:
+        raise ProvenancePipeError("provenance pipe must have exactly one integrity label")
+    ace = sacl.GetAce(0)
+    if int(ace[0][0]) != 17:  # SYSTEM_MANDATORY_LABEL_ACE_TYPE
+        raise ProvenancePipeError("provenance pipe SACL is not a mandatory integrity label")
+    return win32security.ConvertSidToStringSid(ace[2]), int(ace[1])
 
 
 def pipe_client_sid(handle: Any, allowed_sids: frozenset[str]) -> str:
@@ -246,6 +280,8 @@ class ProvenancePipeServer:
         self._threads: list[threading.Thread] = []
         self._fatal = threading.Event()
         self._started = False
+        self.integrity_sid: str | None = None
+        self.integrity_policy: int | None = None
 
     def _create_pipe(self, *, first: bool):
         flags = win32pipe.PIPE_ACCESS_DUPLEX | win32file.FILE_FLAG_WRITE_THROUGH
@@ -271,6 +307,20 @@ class ProvenancePipeServer:
         # This creation is synchronous: a squatted pipe name fails startup
         # before the service reports ready.
         first_handle = self._create_pipe(first=True)
+        try:
+            integrity_sid, integrity_policy = pipe_mandatory_label(first_handle)
+            if (
+                integrity_sid != PIPE_INTEGRITY_SID
+                or integrity_policy != PIPE_INTEGRITY_POLICY
+            ):
+                raise ProvenancePipeError(
+                    "provenance pipe mandatory integrity label is not medium/no-write-up"
+                )
+        except Exception:
+            win32file.CloseHandle(first_handle)
+            raise
+        self.integrity_sid = integrity_sid
+        self.integrity_policy = integrity_policy
         self._started = True
         for index in range(self.config.instances):
             thread = threading.Thread(
@@ -371,7 +421,7 @@ class ProvenancePipeServer:
                 win32pipe.WaitNamedPipe(self.config.pipe_name, 100)
                 handle = win32file.CreateFile(
                     self.config.pipe_name,
-                    FILE_READ_DATA | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+                    PIPE_CLIENT_ACCESS,
                     0,
                     None,
                     win32con.OPEN_EXISTING,
@@ -423,7 +473,7 @@ class ProvenancePipeClient:
                 win32pipe.WaitNamedPipe(self.pipe_name, remaining_ms)
                 handle = win32file.CreateFile(
                     self.pipe_name,
-                    FILE_READ_DATA | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+                    PIPE_CLIENT_ACCESS,
                     0,
                     None,
                     win32con.OPEN_EXISTING,

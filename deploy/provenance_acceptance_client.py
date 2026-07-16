@@ -14,6 +14,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import uuid
@@ -31,9 +32,12 @@ if not _VERIFY_WHEEL_ONLY:
     import pywintypes
     import win32api
     import win32con
+    import win32event
     import win32file
     import win32pipe
+    import win32process
     import win32security
+    import winerror
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -47,18 +51,15 @@ if not _VERIFY_WHEEL_ONLY:
     )
     from enterprise.provenance_pipe import (
         FILE_FLAG_FIRST_PIPE_INSTANCE,
-        FILE_READ_DATA,
-        FILE_WRITE_ATTRIBUTES,
-        FILE_WRITE_DATA,
         PIPE_REJECT_REMOTE_CLIENTS,
+        PIPE_CLIENT_ACCESS,
         SECURITY_IDENTIFICATION,
         SECURITY_SQOS_PRESENT,
-        SYNCHRONIZE,
         ProvenancePipeClient,
         ProvenancePipeError,
     )
 
-    _PIPE_ACCESS = FILE_READ_DATA | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE
+    _PIPE_ACCESS = PIPE_CLIENT_ACCESS
 
 
 class EphemeralIdentity:
@@ -97,6 +98,18 @@ def _current_process_sid() -> str:
     token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
     try:
         sid = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+        return win32security.ConvertSidToStringSid(sid)
+    finally:
+        token.Close()
+
+
+def _current_integrity_sid() -> str:
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+    try:
+        sid = win32security.GetTokenInformation(
+            token,
+            win32security.TokenIntegrityLevel,
+        )[0]
         return win32security.ConvertSidToStringSid(sid)
     finally:
         token.Close()
@@ -416,12 +429,77 @@ def bootstrap(args: argparse.Namespace) -> int:
         {
             "agent_id": identity.agent_id,
             "algorithm": "ed25519",
+            "integrity_sid": _current_integrity_sid(),
             "identity_dir": str(args.identity_dir),
             "identity_name": args.name,
             "public_key_hex": identity.public_key_bytes.hex(),
         },
     )
     return 0
+
+
+def _low_integrity_pipe_denied(config_path: Path) -> bool:
+    access = (
+        win32security.TOKEN_ASSIGN_PRIMARY
+        | win32security.TOKEN_DUPLICATE
+        | win32security.TOKEN_QUERY
+        | win32security.TOKEN_ADJUST_DEFAULT
+        | win32con.TOKEN_ADJUST_SESSIONID
+    )
+    current = win32security.OpenProcessToken(win32api.GetCurrentProcess(), access)
+    try:
+        low_token = win32security.DuplicateTokenEx(
+            current,
+            win32security.SecurityImpersonation,
+            win32security.TOKEN_ALL_ACCESS,
+            win32security.TokenPrimary,
+            None,
+        )
+    finally:
+        current.Close()
+    try:
+        low_sid = win32security.CreateWellKnownSid(win32security.WinLowLabelSid)
+        win32security.SetTokenInformation(
+            low_token,
+            win32security.TokenIntegrityLevel,
+            (
+                low_sid,
+                win32security.SE_GROUP_INTEGRITY
+                | win32security.SE_GROUP_INTEGRITY_ENABLED,
+            ),
+        )
+        startup = win32process.STARTUPINFO()
+        command = subprocess.list2cmdline(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "probe-low-connect",
+                "--config",
+                str(config_path),
+            ]
+        )
+        process, thread, _pid, _tid = win32process.CreateProcessAsUser(
+            low_token,
+            sys.executable,
+            command,
+            None,
+            None,
+            False,
+            win32con.CREATE_NO_WINDOW,
+            None,
+            str(config_path.parent),
+            startup,
+        )
+        thread.Close()
+        try:
+            if win32event.WaitForSingleObject(process, 15_000) != win32event.WAIT_OBJECT_0:
+                win32process.TerminateProcess(process, 1)
+                return False
+            return win32process.GetExitCodeProcess(process) == 0
+        finally:
+            process.Close()
+    finally:
+        low_token.Close()
 
 
 def exercise(args: argparse.Namespace) -> int:
@@ -500,6 +578,7 @@ def exercise(args: argparse.Namespace) -> int:
         wrong_key_denied = True
 
     checks = {
+        "client_medium_integrity": _current_integrity_sid() == "S-1-16-8192",
         "committed": committed.get("status") == "committed",
         "idempotent_replay": replay.get("status") == "already_committed",
         "nonce_replay_denied": _denial(client.submit(nonce_replay), "replayed_nonce"),
@@ -517,10 +596,12 @@ def exercise(args: argparse.Namespace) -> int:
         ),
         "wrong_server_sid_denied": wrong_sid_denied,
         "wrong_service_key_denied": wrong_key_denied,
+        "same_sid_low_integrity_denied": _low_integrity_pipe_denied(args.config),
     }
     checks.update({f"filesystem_{name}_denied": value for name, value in _filesystem_denials(config).items()})
     result = {
         "checks": checks,
+        "client_integrity_sid": _current_integrity_sid(),
         "ok": all(checks.values()),
         "protocol_version": PROTOCOL_VERSION,
         "session_id": session_id,
@@ -528,6 +609,29 @@ def exercise(args: argparse.Namespace) -> int:
     }
     _write_json(args.output, result)
     return 0 if result["ok"] else 1
+
+
+def probe_low_connect(args: argparse.Namespace) -> int:
+    if _current_integrity_sid() != "S-1-16-4096":
+        return 2
+    config = _load_config(args.config)
+    try:
+        pipe_name = _resolve_pipe_name(config)
+        win32pipe.WaitNamedPipe(pipe_name, 2_000)
+        handle = win32file.CreateFile(
+            pipe_name,
+            _PIPE_ACCESS,
+            0,
+            None,
+            win32con.OPEN_EXISTING,
+            SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+            None,
+        )
+    except pywintypes.error as exc:
+        return 0 if exc.winerror == winerror.ERROR_ACCESS_DENIED else 3
+    else:
+        win32file.CloseHandle(handle)
+        return 4
 
 
 def probe_connect(args: argparse.Namespace) -> int:
@@ -745,6 +849,10 @@ def main(argv: list[str] | None = None) -> int:
     probe_parser.add_argument("--output", type=Path, required=True)
     _add_completion_arguments(probe_parser)
     probe_parser.set_defaults(func=probe_connect)
+
+    low_probe_parser = commands.add_parser("probe-low-connect")
+    low_probe_parser.add_argument("--config", type=Path, required=True)
+    low_probe_parser.set_defaults(func=probe_low_connect)
 
     hold_parser = commands.add_parser("hold-pipe")
     hold_parser.add_argument("--config", type=Path, required=True)

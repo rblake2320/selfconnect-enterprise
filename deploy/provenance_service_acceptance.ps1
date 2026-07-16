@@ -240,6 +240,8 @@ function Wait-ProvenanceEndpoint {
                 $endpoint = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
                 $valid = [string]$endpoint.version -eq 'selfconnect.provenance.endpoint.v1' -and `
                     [string]$endpoint.pipe_name -and `
+                    [string]$endpoint.pipe_integrity_sid -eq 'S-1-16-8192' -and `
+                    [int]$endpoint.pipe_integrity_policy -eq 1 -and `
                     [string]$endpoint.service_sid -eq $Results.artifacts.service_sid -and `
                     [int]$endpoint.service_pid -gt 0 -and `
                     [string]$endpoint.instance_id
@@ -402,6 +404,10 @@ try {
         '--name', 'provenance-acceptance-agent', '--output', $BootstrapPath
     ) | Out-Null
     $bootstrap = Get-Content -Raw $BootstrapPath | ConvertFrom-Json
+    $Results.artifacts.client_integrity_sid = [string]$bootstrap.integrity_sid
+    if ($Results.artifacts.client_integrity_sid -ne 'S-1-16-8192') {
+        throw 'enrolled acceptance client did not run at medium integrity'
+    }
     & $PythonExe -m enterprise.provenance_admin --file (Join-Path $ServiceRoot 'config\enrollments.json') `
         enroll --agent-id $bootstrap.agent_id --algorithm $bootstrap.algorithm `
         --public-key-hex $bootstrap.public_key_hex --sid $agent.Sid
@@ -414,6 +420,8 @@ try {
         -PreviousPipeName $preEnrollmentPipeName
     $PipeName = [string]$endpoint.pipe_name
     $Results.pipe = $PipeName
+    $Results.artifacts.pipe_integrity_sid = [string]$endpoint.pipe_integrity_sid
+    $Results.artifacts.pipe_integrity_policy = [int]$endpoint.pipe_integrity_policy
     $servicePublicKeyPath = Join-Path $ServiceRoot 'identity\SelfConnectProvenance\identity.pub'
     $servicePublicKeyHex = (Get-Content -Raw $servicePublicKeyPath).Trim()
     $serviceAgentId = Get-AgentIdFromPublicKey -PublicKeyHex $servicePublicKeyHex
@@ -440,6 +448,7 @@ try {
     $exercise = Get-Content -Raw $ExercisePath | ConvertFrom-Json
     $Results.checks.enrolled_agent_contract = [bool]$exercise.ok
     $Results.artifacts.enrolled_agent_checks = $exercise.checks
+    $Results.artifacts.exercise_client_integrity_sid = [string]$exercise.client_integrity_sid
     $Results.artifacts.valid_request_id = $exercise.valid_request_id
 
     Invoke-AsUser -Credential $anonymous.Credential -ExpectedSid $anonymous.Sid `
