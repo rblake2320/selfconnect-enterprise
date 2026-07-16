@@ -21,6 +21,8 @@ $AgentUser = "scpa-$UserId"
 $AnonymousUser = "scpx-$UserId"
 $AcceptanceRoot = Join-Path $env:ProgramData "SelfConnect\ProvenanceAcceptance\$RunId"
 $ServiceRoot = Join-Path $env:ProgramData "SelfConnect\Provenance-$RunId"
+$RuntimeRoot = Join-Path $env:ProgramData "SelfConnect\Runtime\ProvenanceAcceptance-$RunId"
+$ServicePythonExe = Join-Path $RuntimeRoot 'Scripts\python.exe'
 $Helper = Join-Path $AcceptanceRoot 'provenance_acceptance_client.py'
 $ConfigPath = Join-Path $AcceptanceRoot 'config.json'
 $BootstrapPath = Join-Path $AcceptanceRoot 'bootstrap.json'
@@ -94,9 +96,16 @@ function Invoke-AsUser {
         return $process
     }
     $process.WaitForExit()
-    if ($process.ExitCode -ne 0) {
-        $detail = if (Test-Path -LiteralPath $stderr) { Get-Content -Raw $stderr } else { '' }
-        throw "$Description failed with exit code $($process.ExitCode): $detail"
+    $process.Refresh()
+    $exitCode = $process.ExitCode
+    if ($exitCode -ne 0) {
+        $stderrDetail = if (Test-Path -LiteralPath $stderr) {
+            (Get-Content -Raw $stderr).Trim()
+        } else { '' }
+        $stdoutDetail = if (Test-Path -LiteralPath $stdout) {
+            (Get-Content -Raw $stdout).Trim()
+        } else { '' }
+        throw "$Description failed with exit code ${exitCode}: stderr=$stderrDetail stdout=$stdoutDetail"
     }
     return $process
 }
@@ -134,6 +143,7 @@ try {
     if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
         throw "Python executable not found: $PythonExe"
     }
+    $BootstrapPythonExe = (Resolve-Path -LiteralPath $PythonExe).Path
     $wheel = (Resolve-Path -LiteralPath $WheelPath).Path
     $wheelHash = (Get-FileHash -LiteralPath $wheel -Algorithm SHA256).Hash.ToLowerInvariant()
     $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -151,6 +161,16 @@ try {
     $wheelBinding = Get-Content -Raw $WheelBindingPath | ConvertFrom-Json
     $Results.checks.wheel_matches_source_commit = [bool]$wheelBinding.ok
     $Results.artifacts.wheel_source_binding = $wheelBinding
+    New-Item -ItemType Directory -Path (Split-Path -Parent $RuntimeRoot) -Force | Out-Null
+    & $BootstrapPythonExe -m venv $RuntimeRoot
+    if ($LASTEXITCODE -ne 0) { throw 'dedicated provenance runtime creation failed' }
+    $PythonExe = $ServicePythonExe
+    & $PythonExe -m pip install $wheel
+    if ($LASTEXITCODE -ne 0) { throw 'dedicated provenance runtime provisioning failed' }
+    & $PythonExe -m pip check
+    if ($LASTEXITCODE -ne 0) { throw 'dedicated provenance runtime dependency check failed' }
+    $Results.checks.dedicated_runtime_provisioned = Test-Path -LiteralPath $PythonExe -PathType Leaf
+    $Results.artifacts.dedicated_runtime = $RuntimeRoot
     Start-Transcript -Path $TranscriptPath -Force | Out-Null
     $TranscriptStarted = $true
 
@@ -401,6 +421,30 @@ try {
         } catch {
             $Results.checks.rollback_uninstall = $false
             $Results.rollback_error = $_.Exception.Message
+        }
+    }
+    if (Test-Path -LiteralPath $RuntimeRoot) {
+        $runtimeBase = [IO.Path]::GetFullPath("$env:ProgramData\SelfConnect\Runtime").TrimEnd('\')
+        $resolvedRuntime = (Resolve-Path -LiteralPath $RuntimeRoot).Path
+        if ($resolvedRuntime.StartsWith(
+            $runtimeBase + '\',
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            Remove-Item -LiteralPath $resolvedRuntime -Recurse -Force
+        } else {
+            $Results.runtime_cleanup_error = "Refused to remove runtime outside $runtimeBase"
+        }
+    }
+    if (Test-Path -LiteralPath $ServiceRoot) {
+        $serviceBase = [IO.Path]::GetFullPath("$env:ProgramData\SelfConnect").TrimEnd('\')
+        $resolvedServiceRoot = (Resolve-Path -LiteralPath $ServiceRoot).Path
+        if ($resolvedServiceRoot.StartsWith(
+            $serviceBase + '\Provenance-',
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            Remove-Item -LiteralPath $resolvedServiceRoot -Recurse -Force
+        } else {
+            $Results.service_cleanup_error = "Refused to remove service root outside acceptance scope"
         }
     }
     foreach ($name in $CreatedUsers) {

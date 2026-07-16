@@ -496,6 +496,8 @@ if _WIN32_SERVICE_AVAILABLE:
         _svc_name_ = SERVICE_NAME
         _svc_display_name_ = SERVICE_DISPLAY_NAME
         _svc_description_ = SERVICE_DESCRIPTION
+        _exe_name_ = sys.executable
+        _exe_args_ = "-m enterprise.provenance_service"
 
         def __init__(self, args: list[str]) -> None:
             super().__init__(args)
@@ -531,10 +533,16 @@ def main(argv: list[str] | None = None) -> int:
     if not _WIN32_SERVICE_AVAILABLE:
         print("ERROR: Windows and pywin32 are required", file=sys.stderr)
         return 1
+    command_args = list(sys.argv if argv is None else argv)
+    if len(command_args) == 1:
+        servicemanager.Initialize()
+        servicemanager.PrepareToHostSingle(SelfConnectProvenanceService)
+        servicemanager.StartServiceCtrlDispatcher()
+        return 0
     return int(
         win32serviceutil.HandleCommandLine(
             SelfConnectProvenanceService,
-            argv=argv,
+            argv=command_args,
         )
     )
 

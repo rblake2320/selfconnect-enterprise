@@ -5,7 +5,7 @@
 param(
     [ValidateSet('Install', 'Start', 'Stop', 'Status', 'RepairAcl', 'Uninstall')]
     [string]$Action = 'Status',
-    [string]$PythonExe = 'C:\Python312\python.exe',
+    [string]$PythonExe = 'C:\ProgramData\SelfConnect\Runtime\Provenance\Scripts\python.exe',
     [string]$WheelPath = '',
     [string]$RootPath = "$env:ProgramData\SelfConnect\Provenance",
     [ValidateSet('enterprise', 'government')]
@@ -146,6 +146,100 @@ function Set-HardenedTreeFileAcls {
     }
 }
 
+function Add-ServiceRuntimeRule {
+    param(
+        [string]$Path,
+        [string]$ServiceSid,
+        [System.Security.AccessControl.FileSystemRights]$Rights,
+        [System.Security.AccessControl.InheritanceFlags]$Inheritance
+    )
+    $identity = [System.Security.Principal.SecurityIdentifier]::new($ServiceSid)
+    $acl = Get-Acl -LiteralPath $Path
+    $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+        $identity,
+        $Rights,
+        $Inheritance,
+        [System.Security.AccessControl.PropagationFlags]::None,
+        [System.Security.AccessControl.AccessControlType]::Allow
+    )
+    [void]$acl.AddAccessRule($rule)
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+function Resolve-ServiceRuntimeRoots {
+    $runtimeRoot = (& $PythonExe -c 'import sys; print(sys.prefix)').Trim()
+    $baseRuntimeRoot = (& $PythonExe -c 'import sys; print(sys.base_prefix)').Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $runtimeRoot -or -not $baseRuntimeRoot) {
+        throw 'Unable to resolve the dedicated and base Python runtime roots'
+    }
+    $runtimeRoot = [IO.Path]::GetFullPath($runtimeRoot).TrimEnd('\')
+    $baseRuntimeRoot = [IO.Path]::GetFullPath($baseRuntimeRoot).TrimEnd('\')
+    $runtimeBase = [IO.Path]::GetFullPath("$env:ProgramData\SelfConnect\Runtime").TrimEnd('\')
+    if (-not $runtimeRoot.StartsWith(
+        $runtimeBase + '\',
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "PythonExe must belong to a dedicated runtime below $runtimeBase"
+    }
+    $userProfile = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\')
+    if ($baseRuntimeRoot.StartsWith(
+        $userProfile + '\',
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw 'The base Python runtime must not be installed below a user profile'
+    }
+    return [pscustomobject]@{
+        Application = $runtimeRoot
+        Base = $baseRuntimeRoot
+    }
+}
+
+function Grant-ServiceRuntimeAccess {
+    param(
+        [string]$RuntimeRoot,
+        [string]$BaseRuntimeRoot,
+        [string]$ServiceSid
+    )
+    $productRoot = [IO.Path]::GetFullPath("$env:ProgramData\SelfConnect").TrimEnd('\')
+    $runtimeBase = Join-Path $productRoot 'Runtime'
+    foreach ($path in @($productRoot, $runtimeBase)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+            throw "Required product runtime boundary is missing: $path"
+        }
+        Add-ServiceRuntimeRule -Path $path -ServiceSid $ServiceSid `
+            -Rights ([System.Security.AccessControl.FileSystemRights]::Traverse) `
+            -Inheritance ([System.Security.AccessControl.InheritanceFlags]::None)
+    }
+    Add-ServiceRuntimeRule -Path $runtimeRoot -ServiceSid $ServiceSid `
+        -Rights ([System.Security.AccessControl.FileSystemRights]::ReadAndExecute) `
+        -Inheritance (
+            [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
+            [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+        )
+    if (-not $baseRuntimeRoot.Equals($runtimeRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        Add-ServiceRuntimeRule -Path $baseRuntimeRoot -ServiceSid $ServiceSid `
+            -Rights ([System.Security.AccessControl.FileSystemRights]::ReadAndExecute) `
+            -Inheritance (
+                [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
+                [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+            )
+    }
+    return @($runtimeRoot, $baseRuntimeRoot, $runtimeBase, $productRoot) |
+        Sort-Object -Unique
+}
+
+function Revoke-ServiceRuntimeAccess {
+    param([string[]]$Paths, [string]$ServiceSid)
+    if (-not $ServiceSid) { return }
+    $identity = [System.Security.Principal.SecurityIdentifier]::new($ServiceSid)
+    foreach ($path in @($Paths)) {
+        if (-not $path -or -not (Test-Path -LiteralPath $path)) { continue }
+        $acl = Get-Acl -LiteralPath $path
+        $acl.PurgeAccessRules($identity)
+        Set-Acl -LiteralPath $path -AclObject $acl
+    }
+}
+
 function Set-ProvenanceAcls {
     param([string]$Root, [string]$ServiceSid)
     $config = Join-Path $Root 'config'
@@ -204,6 +298,7 @@ function Install-ProvenanceService {
     if (-not $WheelPath -or -not (Test-Path -LiteralPath $WheelPath -PathType Leaf)) {
         throw 'Install requires -WheelPath pointing to the reviewed selfconnect-enterprise wheel'
     }
+    $pythonRuntime = Resolve-ServiceRuntimeRoots
     $wheel = (Resolve-Path -LiteralPath $WheelPath).Path
     $wheelHash = (Get-FileHash -LiteralPath $wheel -Algorithm SHA256).Hash
     Write-Host "Installing reviewed wheel SHA256=$wheelHash"
@@ -211,20 +306,23 @@ function Install-ProvenanceService {
         & $PythonExe -m pip install --force-reinstall --no-deps $wheel
     } 'exact reviewed wheel installation'
     $serviceHostProbe = @(
-        'import pathlib',
-        'import win32serviceutil',
-        'import enterprise.provenance_service',
-        'service_exe = pathlib.Path(win32serviceutil.LocatePythonServiceExe())',
-        'print(service_exe)',
-        'raise SystemExit(0 if service_exe.is_file() else 1)'
+        'import sys',
+        'import enterprise.provenance_service as service',
+        'service_class = service.SelfConnectProvenanceService',
+        'print(service_class._exe_name_)',
+        'raise SystemExit(0 if service_class._exe_name_ == sys.executable and service_class._exe_args_ == sys.argv[1] else 1)'
     ) -join '; '
-    Invoke-Native { & $PythonExe -c $serviceHostProbe } 'service host verification'
+    Invoke-Native {
+        & $PythonExe -c $serviceHostProbe '-m enterprise.provenance_service'
+    } 'service host verification'
 
     $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if ($existing) {
         throw "$ServiceName already exists; uninstall it before a clean install"
     }
     $registered = $false
+    $runtimeAclPaths = @()
+    $serviceSid = $null
     try {
         Invoke-Native {
             & $PythonExe -m enterprise.provenance_service `
@@ -258,9 +356,15 @@ function Install-ProvenanceService {
         }
 
         $serviceSid = Get-ServiceSid
+        $runtimeAclPaths = @(Grant-ServiceRuntimeAccess `
+            -RuntimeRoot $pythonRuntime.Application `
+            -BaseRuntimeRoot $pythonRuntime.Base `
+            -ServiceSid $serviceSid)
         Set-ProvenanceAcls -Root $root -ServiceSid $serviceSid
 
         $serviceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
+        New-ItemProperty -Path $serviceKey -Name ProvenanceRuntimeAclPaths `
+            -PropertyType MultiString -Value $runtimeAclPaths -Force | Out-Null
         $environment = @(
             "SC_PROVENANCE_SERVICE_ROOT=$root",
             "SCENT_AUDIT_MODE=$AuditMode",
@@ -275,6 +379,13 @@ function Install-ProvenanceService {
         Write-Host 'Restart the service after every reviewed enrollment change.'
     } catch {
         $original = $_
+        if ($runtimeAclPaths.Count -gt 0 -and $serviceSid) {
+            try {
+                Revoke-ServiceRuntimeAccess -Paths $runtimeAclPaths -ServiceSid $serviceSid
+            } catch {
+                Write-Warning "Failed to revoke partial runtime ACLs: $($_.Exception.Message)"
+            }
+        }
         if ($registered -or (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) {
             try {
                 $partial = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -342,12 +453,21 @@ switch ($Action) {
     'Uninstall' {
         $root = Resolve-SafeRoot
         $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        $serviceSid = if ($service) { Get-ServiceSid } else { $null }
+        $serviceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
+        $runtimeAclPaths = if (Test-Path -LiteralPath $serviceKey) {
+            @((Get-ItemProperty -LiteralPath $serviceKey -Name ProvenanceRuntimeAclPaths `
+                -ErrorAction SilentlyContinue).ProvenanceRuntimeAclPaths)
+        } else { @() }
         if ($service -and $service.Status -ne 'Stopped') {
             Stop-Service -Name $ServiceName
             $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
         }
         if ($service) {
             Invoke-Native { & $PythonExe -m enterprise.provenance_service remove } 'service removal'
+        }
+        if ($runtimeAclPaths.Count -gt 0 -and $serviceSid) {
+            Revoke-ServiceRuntimeAccess -Paths $runtimeAclPaths -ServiceSid $serviceSid
         }
         if ($PurgeData) {
             $verified = Resolve-SafeRoot

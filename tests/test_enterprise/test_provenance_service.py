@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import uuid
 
 import pytest
@@ -206,3 +207,34 @@ def test_service_command_propagates_pywin32_failure_exit(monkeypatch):
         lambda *_args, **_kwargs: 37,
     )
     assert main(["provenance_service", "install"]) == 37
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows service command contract")
+def test_service_install_uses_exact_python_module_host():
+    from enterprise.provenance_service import SelfConnectProvenanceService
+
+    assert SelfConnectProvenanceService._exe_name_ == sys.executable
+    assert SelfConnectProvenanceService._exe_args_ == "-m enterprise.provenance_service"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows service command contract")
+def test_service_process_registers_dispatcher_without_cli_args(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "enterprise.provenance_service.servicemanager.Initialize",
+        lambda: calls.append("initialize"),
+    )
+    monkeypatch.setattr(
+        "enterprise.provenance_service.servicemanager.PrepareToHostSingle",
+        lambda service_class: calls.append(("prepare", service_class._svc_name_)),
+    )
+    monkeypatch.setattr(
+        "enterprise.provenance_service.servicemanager.StartServiceCtrlDispatcher",
+        lambda: calls.append("dispatch"),
+    )
+    assert main(["provenance_service"]) == 0
+    assert calls == [
+        "initialize",
+        ("prepare", "SelfConnectProvenance"),
+        "dispatch",
+    ]

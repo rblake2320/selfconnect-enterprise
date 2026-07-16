@@ -117,9 +117,21 @@ def test_installer_has_explicit_acl_repair_and_no_silent_hardened_fallback():
     assert "'RepairAcl'" in installer
     assert "Set-ProvenanceAcls" in installer
     assert "Set-HardenedTreeFileAcls" in installer
+    assert "Grant-ServiceRuntimeAccess" in installer
+    assert "Resolve-ServiceRuntimeRoots" in installer
+    assert "PythonExe must belong to a dedicated runtime below" in installer
+    assert "The base Python runtime must not be installed below a user profile" in installer
+    assert "sys.base_prefix" in installer
+    assert "ProvenanceRuntimeAclPaths" in installer
+    assert "Revoke-ServiceRuntimeAccess" in installer
+    assert "FileSystemRights]::Traverse" in installer
+    assert "FileSystemRights]::ReadAndExecute" in installer
+    assert "[IO.DirectoryInfo]::new($runtimeRoot).Parent" not in installer
     assert "pip install --force-reinstall --no-deps $wheel" in installer
     assert "$serviceHostProbe" in installer
-    assert "LocatePythonServiceExe" in installer
+    assert "service_class._exe_name_ == sys.executable" in installer
+    assert "service_class._exe_args_ == sys.argv[1]" in installer
+    assert "'-m enterprise.provenance_service'" in installer
     assert "Failed to remove partial $ServiceName registration" in installer
     assert "operator-requested post-registration acceptance fault" in installer
     service = (ROOT / "enterprise/provenance_service.py").read_text(encoding="utf-8")
@@ -137,6 +149,12 @@ def test_acceptance_requires_exact_source_and_proves_cross_restart_recovery():
     assert '$AgentUser = "scpa-$UserId"' in acceptance
     assert '$AnonymousUser = "scpx-$UserId"' in acceptance
     assert "recovered_after_error_count -gt 0" in acceptance
+    assert "SelfConnect\\Runtime\\ProvenanceAcceptance-$RunId" in acceptance
+    assert "-m venv $RuntimeRoot" in acceptance
+    assert "-m pip check" in acceptance
+    assert "Refused to remove service root outside acceptance scope" in acceptance
+    assert "$process.Refresh()" in acceptance
+    assert "stderr=$stderrDetail stdout=$stdoutDetail" in acceptance
     assert "restartedService.ProcessId -eq $killedProcessId" in acceptance
     assert "pipe_rotation_survives_old_name_squatting" in acceptance
     assert "dacl_tamper_preflight" in acceptance
