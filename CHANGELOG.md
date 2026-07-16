@@ -32,6 +32,7 @@
   background sidecar did not survive the Actions step boundary. Sidecar start,
   health verification, live contracts, log capture, and shutdown now share one
   `try`/`finally` step, and conformance rejects the former split lifecycle.
+  Hosted run `29478571278` passed all four workflow jobs with the final BPC pin.
   Evidence: [LOG-20260716-007](LOG.md#log-20260716-007), rationale:
   [WHY-20260716-007](WHY.md#why-20260716-007), and recovery:
   [PARK-20260716-007](PARKED.md#park-20260716-007).

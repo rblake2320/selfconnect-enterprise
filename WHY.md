@@ -100,7 +100,7 @@ job.
 
 **Evidence and links:** [LOG-20260716-007](LOG.md#log-20260716-007),
 [PARK-20260716-007](PARKED.md#park-20260716-007), Actions runs `29476950456`
-and `29477612730`, and BPC PR #17.
+and `29477612730`, clean Actions run `29478571278`, and BPC PR #17.
 
 ## WHY-20260716-006 - Move only the BPC pin after composed verification
 
@@ -144,7 +144,7 @@ new recorded decision rather than rewriting this evidence.
 
 **Evidence and links:** [LOG-20260716-006](LOG.md#log-20260716-006),
 [PARK-20260716-006](PARKED.md#park-20260716-006), `portfolio-lock.json`, BPC
-PRs #14 and #17, and the associated Enterprise pull request checks.
+PRs #14 and #17, and Enterprise Actions run `29478571278`.
 
 ## WHY-20260716-005 - Fence shared-state Ultra nodes before broader HA
 

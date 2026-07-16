@@ -142,7 +142,7 @@ composition, and inaccurate security claims.
 
 **Evidence and links:** [LOG-20260716-007](LOG.md#log-20260716-007),
 [WHY-20260716-007](WHY.md#why-20260716-007), Actions runs `29476950456` and
-`29477612730`, and BPC PR #17.
+`29477612730`, clean replacement run `29478571278`, and BPC PR #17.
 
 ## PARK-20260716-006 - Prior BPC portfolio pin
 

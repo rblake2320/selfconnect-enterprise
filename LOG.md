@@ -102,9 +102,13 @@ Python BPC/TSK boundary passed 105 tests before `finally` stopped the process
 and printed its logs.
 Run `29477612730` proves the native failure now terminates the job and is kept
 as defect evidence. Exact checkout/package
-conformance continued to pass for the candidate lock. Hosted evidence must be
-rerun after the canonical BPC timing correction merges; run `29476950456` is
-retained as defect evidence and must not be cited as a clean composition run.
+conformance continued to pass for the candidate lock. Hosted Actions run
+[`29478571278`](https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29478571278)
+then passed workflow syntax, the complete 1,428-test lint/unit gate, Windows
+exact-source composition and live contracts (30 Node checks and 105 Python
+tests), and Linux PostgreSQL/Redis production durability (39 Node checks and 33
+Python tests). Runs `29476950456` and `29477612730` remain defect evidence and
+must not be cited as clean composition runs.
 
 **Notes:** This corrects evidence propagation, not BPC or Ultra authorization
 semantics. A future native command added to a new or renamed workflow step
@@ -166,6 +170,12 @@ final merge pin, BPC PR #17 independently passed its exact Redis
 test 20 consecutive times, 249 Node tests plus four runner tests, 81 Python
 tests, 28 live adversarial assertions, interop, package dry-runs, dependency
 audit, and two hosted Node/Python workflow runs.
+Enterprise hosted run `29478571278` then checked out the exact final BPC/TSK
+pins and passed all four jobs: workflow syntax, 1,428 repository tests with 34
+named skips, Windows live composition, and Linux PostgreSQL/Redis production
+durability. The Windows job included the BPC 249-test protocol suite plus four
+runner tests, the named TSK suites, 30 live Node checks, and 105 live Python
+tests. The production job returned 39 live Node checks and 33 Python tests.
 
 **Notes:** This establishes compatibility and source identity for the exact
 locked set. It does not prove that a deployment enabled BPC's governed Redis
