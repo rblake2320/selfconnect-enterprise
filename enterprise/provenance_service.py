@@ -464,8 +464,10 @@ class ProvenanceServiceRuntime:
 
     def _publish_endpoint(self) -> None:
         value = {
+            "instance_id": secrets.token_hex(16),
             "pipe_name": self.pipe_name,
             "service_agent_id": self.identity.agent_id,
+            "service_pid": os.getpid(),
             "service_sid": self.service_sid,
             "version": "selfconnect.provenance.endpoint.v1",
         }
@@ -546,6 +548,7 @@ if _WIN32_SERVICE_AVAILABLE:
             win32event.SetEvent(self._stop_event)
 
         def SvcDoRun(self) -> None:
+            stop_reason = "service_failure"
             try:
                 if os.environ.get(_BOOTSTRAP_IDENTITY_ENV) == "1":
                     identity = bootstrap_service_identity()
@@ -564,12 +567,26 @@ if _WIN32_SERVICE_AVAILABLE:
                         raise ProvenanceServiceConfigurationError(
                             "provenance pipe worker set is not healthy"
                         )
-                self._runtime.stop("scm_stop")
-                servicemanager.LogInfoMsg("SelfConnectProvenance service stopped")
+                stop_reason = "scm_stop"
             except Exception:
                 logger.exception("SelfConnectProvenance failed closed")
                 servicemanager.LogErrorMsg("SelfConnectProvenance failed closed")
                 raise
+            finally:
+                if self._runtime is not None:
+                    try:
+                        self._runtime.stop(stop_reason)
+                    except Exception:
+                        logger.exception("SelfConnectProvenance cleanup failed closed")
+                        servicemanager.LogErrorMsg(
+                            "SelfConnectProvenance cleanup failed closed"
+                        )
+                        if stop_reason == "scm_stop":
+                            raise
+                    if stop_reason == "scm_stop":
+                        servicemanager.LogInfoMsg(
+                            "SelfConnectProvenance service stopped"
+                        )
 
 
 def main(argv: list[str] | None = None) -> int:

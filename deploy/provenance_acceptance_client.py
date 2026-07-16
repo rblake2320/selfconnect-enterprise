@@ -7,9 +7,13 @@ This helper is executed under disposable, distinct Windows user tokens by
 from __future__ import annotations
 
 import argparse
+import base64
+import csv
 import hashlib
+import io
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -145,35 +149,163 @@ def _identity(config: dict[str, Any]) -> AgentIdentity:
     )
 
 
-def verify_wheel(args: argparse.Namespace) -> int:
-    repo_root = args.repo_root.resolve()
-    source_root = repo_root / "enterprise"
+def _wheel_record_hash(value: bytes) -> str:
+    encoded = base64.urlsafe_b64encode(hashlib.sha256(value).digest()).decode("ascii")
+    return f"sha256={encoded.rstrip('=')}"
+
+
+def _expected_wheel_layout(repo_root: Path) -> tuple[list[str], dict[str, bytes], str]:
     source_files = sorted(
         path.relative_to(repo_root).as_posix()
-        for path in source_root.rglob("*.py")
+        for package in ("enterprise", "experiments")
+        for path in (repo_root / package).rglob("*.py")
         if path.is_file()
     )
+    egg_info = repo_root / "selfconnect_enterprise.egg-info"
+    package_info = egg_info / "PKG-INFO"
+    metadata = package_info.read_bytes()
+    name_match = re.search(br"(?m)^Name:\s*(\S+)\s*$", metadata)
+    version_match = re.search(br"(?m)^Version:\s*(\S+)\s*$", metadata)
+    if name_match is None or version_match is None:
+        raise ValueError("tracked package metadata is missing Name or Version")
+    normalized_name = re.sub(
+        rb"[-_.]+",
+        b"_",
+        name_match.group(1),
+    ).decode("ascii")
+    version = version_match.group(1).decode("ascii")
+    dist_info = f"{normalized_name}-{version}.dist-info"
+    bound_metadata = {
+        f"{dist_info}/METADATA": metadata,
+        f"{dist_info}/entry_points.txt": (egg_info / "entry_points.txt").read_bytes(),
+        f"{dist_info}/top_level.txt": (egg_info / "top_level.txt").read_bytes(),
+    }
+    return source_files, bound_metadata, dist_info
+
+
+def _validate_wheel_descriptor(value: bytes) -> list[str]:
+    try:
+        lines = value.decode("utf-8", errors="strict").splitlines()
+    except UnicodeDecodeError:
+        return ["wheel:encoding"]
+    headers: dict[str, list[str]] = {}
+    for line in lines:
+        if not line:
+            continue
+        if ": " not in line:
+            return ["wheel:malformed"]
+        name, item = line.split(": ", 1)
+        headers.setdefault(name, []).append(item)
+    allowed = {"Wheel-Version", "Generator", "Root-Is-Purelib", "Tag"}
+    errors = [f"wheel:unexpected-header:{name}" for name in sorted(set(headers) - allowed)]
+    if headers.get("Wheel-Version") != ["1.0"]:
+        errors.append("wheel:version")
+    if headers.get("Root-Is-Purelib") != ["true"]:
+        errors.append("wheel:purelib")
+    if headers.get("Tag") != ["py3-none-any"]:
+        errors.append("wheel:tag")
+    if len(headers.get("Generator", [])) != 1:
+        errors.append("wheel:generator")
+    return errors
+
+
+def _validate_wheel_record(
+    archive: zipfile.ZipFile,
+    *,
+    record_name: str,
+    member_names: set[str],
+) -> list[str]:
+    try:
+        decoded = archive.read(record_name).decode("utf-8", errors="strict")
+        rows = list(csv.reader(io.StringIO(decoded, newline="")))
+    except (KeyError, UnicodeDecodeError, csv.Error):
+        return ["record:malformed"]
+    errors: list[str] = []
+    records: dict[str, tuple[str, str]] = {}
+    for row in rows:
+        if len(row) != 3 or not row[0] or row[0] in records:
+            errors.append("record:malformed-row")
+            continue
+        records[row[0]] = (row[1], row[2])
+    if set(records) != member_names:
+        for name in sorted(member_names - set(records)):
+            errors.append(f"record:missing:{name}")
+        for name in sorted(set(records) - member_names):
+            errors.append(f"record:extra:{name}")
+    for name in sorted(member_names):
+        if name not in records:
+            continue
+        digest, size = records[name]
+        if name == record_name:
+            if digest or size:
+                errors.append("record:self-entry")
+            continue
+        value = archive.read(name)
+        if digest != _wheel_record_hash(value):
+            errors.append(f"record:hash:{name}")
+        if size != str(len(value)):
+            errors.append(f"record:size:{name}")
+    return errors
+
+
+def verify_wheel(args: argparse.Namespace) -> int:
+    repo_root = args.repo_root.resolve()
+    source_files, bound_metadata, dist_info = _expected_wheel_layout(repo_root)
+    wheel_name = f"{dist_info}/WHEEL"
+    record_name = f"{dist_info}/RECORD"
+    expected_members = set(source_files) | set(bound_metadata) | {wheel_name, record_name}
     mismatches: list[str] = []
     digest = hashlib.sha256()
     with zipfile.ZipFile(args.wheel) as archive:
-        wheel_files = sorted(
+        members = archive.infolist()
+        member_names = [item.filename for item in members]
+        if len(member_names) != len(set(member_names)):
+            mismatches.append("archive:duplicate-member")
+        unsafe = sorted(
             name
-            for name in archive.namelist()
-            if name.startswith("enterprise/") and name.endswith(".py")
+            for name in member_names
+            if (
+                name.startswith(("/", "\\"))
+                or "\\" in name
+                or ".." in Path(name).parts
+                or name.endswith("/")
+            )
         )
-        if wheel_files != source_files:
-            missing = sorted(set(source_files) - set(wheel_files))
-            extra = sorted(set(wheel_files) - set(source_files))
+        mismatches.extend(f"archive:unsafe:{name}" for name in unsafe)
+        symlinks = sorted(
+            item.filename
+            for item in members
+            if (item.external_attr >> 16) & 0o170000 == 0o120000
+        )
+        mismatches.extend(f"archive:symlink:{name}" for name in symlinks)
+        actual_members = set(member_names)
+        if actual_members != expected_members:
+            missing = sorted(expected_members - actual_members)
+            extra = sorted(actual_members - expected_members)
             mismatches.extend(f"missing:{name}" for name in missing)
             mismatches.extend(f"extra:{name}" for name in extra)
-        for name in sorted(set(source_files) & set(wheel_files)):
+        for name in sorted(set(source_files) & actual_members):
             source_bytes = (repo_root / Path(name)).read_bytes()
             wheel_bytes = archive.read(name)
             if source_bytes != wheel_bytes:
                 mismatches.append(f"content:{name}")
             digest.update(name.encode("utf-8") + b"\0" + wheel_bytes)
+        for name, expected in sorted(bound_metadata.items()):
+            if name in actual_members and archive.read(name) != expected:
+                mismatches.append(f"metadata:{name}")
+        if wheel_name in actual_members:
+            mismatches.extend(_validate_wheel_descriptor(archive.read(wheel_name)))
+        if record_name in actual_members:
+            mismatches.extend(
+                _validate_wheel_record(
+                    archive,
+                    record_name=record_name,
+                    member_names=actual_members,
+                )
+            )
     result = {
         "file_count": len(source_files),
+        "member_count": len(expected_members),
         "mismatches": mismatches,
         "ok": not mismatches,
         "runtime_tree_sha256": digest.hexdigest(),

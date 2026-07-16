@@ -20,6 +20,20 @@ $ErrorActionPreference = 'Stop'
 $ServiceName = 'SelfConnectProvenance'
 $ServiceAccount = "NT SERVICE\$ServiceName"
 
+if (-not ('SelfConnect.Provenance.NativeMethods' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace SelfConnect.Provenance {
+    public static class NativeMethods {
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool WaitNamedPipe(string name, uint timeout);
+    }
+}
+'@
+}
+
 function Invoke-Native {
     param([scriptblock]$Command, [string]$Description)
     & $Command
@@ -323,7 +337,12 @@ function Wait-IdentityBootstrap {
 }
 
 function Wait-ProvenanceReady {
-    param([string]$EndpointFile, [int]$Seconds = 30)
+    param(
+        [string]$EndpointFile,
+        [string]$ExpectedServiceSid,
+        [string]$ExpectedAgentId,
+        [int]$Seconds = 30
+    )
     $deadline = (Get-Date).AddSeconds($Seconds)
     do {
         Start-Sleep -Milliseconds 100
@@ -331,14 +350,28 @@ function Wait-ProvenanceReady {
         if ($service.Status -eq 'Stopped') {
             throw 'provenance service stopped before publishing its endpoint'
         }
-    } while (-not (Test-Path -LiteralPath $EndpointFile) -and (Get-Date) -lt $deadline)
-    if (-not (Test-Path -LiteralPath $EndpointFile)) {
-        throw 'provenance service did not publish a ready endpoint'
-    }
-    $endpoint = Get-Content -Raw -LiteralPath $EndpointFile | ConvertFrom-Json
-    if ([string]$endpoint.version -ne 'selfconnect.provenance.endpoint.v1' -or -not $endpoint.pipe_name) {
-        throw 'provenance service published an invalid endpoint document'
-    }
+        if (Test-Path -LiteralPath $EndpointFile) {
+            try {
+                $endpoint = Get-Content -Raw -LiteralPath $EndpointFile | ConvertFrom-Json
+                $pipeName = [string]$endpoint.pipe_name
+                $valid = [string]$endpoint.version -eq 'selfconnect.provenance.endpoint.v1' -and `
+                    $pipeName.StartsWith('\\.\pipe\SelfConnectProvenance.v1.') -and `
+                    [string]$endpoint.service_sid -eq $ExpectedServiceSid -and `
+                    [string]$endpoint.service_agent_id -eq $ExpectedAgentId -and `
+                    [int]$endpoint.service_pid -gt 0 -and `
+                    [string]$endpoint.instance_id
+                if (
+                    $valid -and
+                    [SelfConnect.Provenance.NativeMethods]::WaitNamedPipe($pipeName, 100)
+                ) {
+                    return $endpoint
+                }
+            } catch {
+                # Retry only while the service remains running and the bounded deadline remains.
+            }
+        }
+    } while ((Get-Date) -lt $deadline)
+    throw 'provenance service did not publish a live identity-bound endpoint'
 }
 
 function Install-ProvenanceService {
@@ -433,22 +466,37 @@ function Install-ProvenanceService {
         Set-ProvenanceAcls -Root $root -ServiceSid $serviceSid
         New-ItemProperty -Path $serviceKey -Name Environment -PropertyType MultiString `
             -Value $environment -Force | Out-Null
+        $endpointFile = Join-Path $endpoint 'current.json'
+        if (Test-Path -LiteralPath $endpointFile) {
+            Remove-Item -LiteralPath $endpointFile -Force -ErrorAction Stop
+        }
         Invoke-Native {
             sc.exe failure $ServiceName reset= 60 actions= restart/5000/restart/15000/restart/30000
         } 'service recovery configuration'
         Invoke-Native { sc.exe failureflag $ServiceName 1 } 'non-crash failure recovery configuration'
+        $publicKeyHex = (Get-Content -Raw -LiteralPath $identityPublic).Trim()
+        $agentId = (& $PythonExe -c (
+            "import hashlib,sys; print('SC-' + hashlib.sha256(bytes.fromhex(sys.argv[1])).hexdigest()[:8].upper())"
+        ) $publicKeyHex).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $agentId) {
+            throw 'service agent identity derivation failed'
+        }
         Start-Service -Name $ServiceName
-        Wait-ProvenanceReady -EndpointFile (Join-Path $endpoint 'current.json')
+        Wait-ProvenanceReady -EndpointFile $endpointFile `
+            -ExpectedServiceSid $serviceSid -ExpectedAgentId $agentId | Out-Null
         Write-Host "$ServiceName installed and running as $ServiceAccount ($serviceSid)"
         Write-Host "Enrollment file: $enrollment"
         Write-Host 'Restart the service after every reviewed enrollment change.'
     } catch {
         $original = $_
+        $rollbackFailures = [Collections.Generic.List[string]]::new()
         if ($runtimeAclPaths.Count -gt 0 -and $serviceSid) {
             try {
                 Revoke-ServiceRuntimeAccess -Paths $runtimeAclPaths -ServiceSid $serviceSid
             } catch {
-                Write-Warning "Failed to revoke partial runtime ACLs: $($_.Exception.Message)"
+                $rollbackFailures.Add(
+                    "runtime ACL revocation failed: $($_.Exception.Message)"
+                )
             }
         }
         if ($registered -or (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) {
@@ -458,10 +506,31 @@ function Install-ProvenanceService {
                     Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
                     $partial.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(15))
                 }
-                & $PythonExe -m enterprise.provenance_service remove | Out-Null
+                Invoke-Native {
+                    & $PythonExe -m enterprise.provenance_service remove | Out-Null
+                } 'partial service registration removal'
+                $deadline = (Get-Date).AddSeconds(15)
+                while (
+                    (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) -and
+                    (Get-Date) -lt $deadline
+                ) {
+                    Start-Sleep -Milliseconds 100
+                }
+                if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
+                    throw "partial $ServiceName registration remains after removal"
+                }
             } catch {
-                Write-Warning "Failed to remove partial $ServiceName registration: $($_.Exception.Message)"
+                $rollbackFailures.Add(
+                    "service registration removal failed: $($_.Exception.Message)"
+                )
             }
+        }
+        if ($rollbackFailures.Count -gt 0) {
+            throw [InvalidOperationException]::new(
+                "Install failed: $($original.Exception.Message); rollback failed: " +
+                    ($rollbackFailures -join '; '),
+                $original.Exception
+            )
         }
         throw $original
     }

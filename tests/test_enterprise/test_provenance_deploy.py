@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-import os
+import base64
+import csv
+import hashlib
+import io
 import json
+import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -11,6 +16,59 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _record_hash(value: bytes) -> str:
+    encoded = base64.urlsafe_b64encode(hashlib.sha256(value).digest()).decode("ascii")
+    return f"sha256={encoded.rstrip('=')}"
+
+
+def _write_bound_wheel(
+    path: Path,
+    *,
+    mutations: dict[str, bytes] | None = None,
+    extras: dict[str, bytes] | None = None,
+    corrupt_record_for: str | None = None,
+) -> None:
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    project = config["project"]
+    normalized = re.sub(r"[-_.]+", "_", project["name"])
+    dist_info = f"{normalized}-{project['version']}.dist-info"
+    members = {
+        source.relative_to(ROOT).as_posix(): source.read_bytes()
+        for package in ("enterprise", "experiments")
+        for source in (ROOT / package).rglob("*.py")
+    }
+    members.update({
+        f"{dist_info}/METADATA": (
+            ROOT / "selfconnect_enterprise.egg-info" / "PKG-INFO"
+        ).read_bytes(),
+        f"{dist_info}/entry_points.txt": (
+            ROOT / "selfconnect_enterprise.egg-info" / "entry_points.txt"
+        ).read_bytes(),
+        f"{dist_info}/top_level.txt": (
+            ROOT / "selfconnect_enterprise.egg-info" / "top_level.txt"
+        ).read_bytes(),
+        f"{dist_info}/WHEEL": (
+            b"Wheel-Version: 1.0\n"
+            b"Generator: acceptance-test\n"
+            b"Root-Is-Purelib: true\n"
+            b"Tag: py3-none-any\n\n"
+        ),
+    })
+    members.update(mutations or {})
+    members.update(extras or {})
+    record_name = f"{dist_info}/RECORD"
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    for name, value in sorted(members.items()):
+        digest = "sha256=invalid" if name == corrupt_record_for else _record_hash(value)
+        writer.writerow((name, digest, len(value)))
+    writer.writerow((record_name, "", ""))
+    members[record_name] = output.getvalue().encode("utf-8")
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, value in sorted(members.items()):
+            archive.writestr(name, value)
 
 
 def test_windows_service_runtime_dependency_and_admin_command_are_packaged():
@@ -121,13 +179,9 @@ def test_acceptance_helper_writes_atomic_completion_receipts(tmp_path):
     assert receipt["error_type"].endswith("Error")
 
 
-def test_wheel_binding_compares_every_runtime_source_file(tmp_path):
+def test_wheel_binding_covers_complete_archive_and_record(tmp_path):
     wheel = tmp_path / "runtime.whl"
     output = tmp_path / "result.json"
-    sources = sorted((ROOT / "enterprise").rglob("*.py"))
-    with zipfile.ZipFile(wheel, "w") as archive:
-        for source in sources:
-            archive.write(source, source.relative_to(ROOT).as_posix())
     command = [
         sys.executable,
         "deploy/provenance_acceptance_client.py",
@@ -139,17 +193,43 @@ def test_wheel_binding_compares_every_runtime_source_file(tmp_path):
         "--output",
         str(output),
     ]
+    _write_bound_wheel(wheel)
     completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=30)
     assert completed.returncode == 0, completed.stderr
 
-    with zipfile.ZipFile(wheel, "w") as archive:
-        for source in sources:
-            content = source.read_bytes()
-            if source.name == "session_index.py":
-                content += b"\n# injected mismatch\n"
-            archive.writestr(source.relative_to(ROOT).as_posix(), content)
+    target = "enterprise/session_index.py"
+    _write_bound_wheel(
+        wheel,
+        mutations={target: (ROOT / target).read_bytes() + b"\n# injected mismatch\n"},
+    )
     completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=30)
     assert completed.returncode == 1
+
+    _write_bound_wheel(wheel, extras={"payload.pth": b"import payload\n"})
+    completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 1
+    assert "extra:payload.pth" in json.loads(output.read_text(encoding="utf-8"))["mismatches"]
+
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dist_info = (
+        f"{re.sub(r'[-_.]+', '_', config['project']['name'])}-"
+        f"{config['project']['version']}.dist-info"
+    )
+    metadata_name = f"{dist_info}/METADATA"
+    metadata = (ROOT / "selfconnect_enterprise.egg-info" / "PKG-INFO").read_bytes()
+    _write_bound_wheel(wheel, mutations={metadata_name: metadata + b"X-Forged: yes\n"})
+    completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 1
+    assert f"metadata:{metadata_name}" in json.loads(
+        output.read_text(encoding="utf-8")
+    )["mismatches"]
+
+    _write_bound_wheel(wheel, corrupt_record_for="enterprise/provenance_service.py")
+    completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 1
+    assert "record:hash:enterprise/provenance_service.py" in json.loads(
+        output.read_text(encoding="utf-8")
+    )["mismatches"]
 
 
 def test_acceptance_helper_prefers_exact_repository_sources():
@@ -194,14 +274,21 @@ def test_installer_has_explicit_acl_repair_and_no_silent_hardened_fallback():
     assert "service_class._exe_name_ == sys.executable" in installer
     assert "service_class._exe_args_ == sys.argv[1]" in installer
     assert "'-m enterprise.provenance_service'" in installer
-    assert "Failed to remove partial $ServiceName registration" in installer
+    assert "'partial service registration removal'" in installer
+    assert "partial $ServiceName registration remains after removal" in installer
+    assert "$rollbackFailures -join '; '" in installer
     assert "operator-requested post-registration acceptance fault" in installer
     assert "SC_PROVENANCE_BOOTSTRAP_IDENTITY=1" in installer
     assert "Wait-IdentityBootstrap" in installer
     assert "Wait-ProvenanceReady" in installer
+    assert "WaitNamedPipe" in installer
+    assert "Remove-Item -LiteralPath $endpointFile" in installer
     service = (ROOT / "enterprise/provenance_service.py").read_text(encoding="utf-8")
     assert "dedicated provenance service refuses consumer audit mode" in service
     assert "process token is not the dedicated SelfConnectProvenance service SID" in service
+    assert '"instance_id": secrets.token_hex(16)' in service
+    assert '"service_pid": os.getpid()' in service
+    assert 'self._runtime.stop(stop_reason)' in service
 
 
 def test_acceptance_requires_exact_source_and_proves_cross_restart_recovery():
@@ -231,6 +318,8 @@ def test_acceptance_requires_exact_source_and_proves_cross_restart_recovery():
     assert "provenance service did not publish a valid fresh endpoint before the deadline" in acceptance
     assert "[Text.UTF8Encoding]::new($false)" in acceptance
     assert "Set-Content -LiteralPath $ConfigPath -Encoding UTF8" not in acceptance
+    assert "ProvenanceAcceptanceEvidence" in acceptance
+    assert "Join-Path $AcceptanceRoot 'acceptance-report.json'" not in acceptance
     assert "Read-OptionalText" in acceptance
     assert "acceptance-completion.v1" in acceptance
     assert "disposable_user_workspaces_isolated" in acceptance

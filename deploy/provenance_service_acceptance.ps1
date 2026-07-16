@@ -42,10 +42,11 @@ $BurstGo = Join-Path $AgentRoot 'burst.go'
 $SquatReady = Join-Path $AnonymousRoot 'squat.ready'
 $SquatStop = Join-Path $AnonymousRoot 'squat.stop'
 $TranscriptPath = Join-Path $AcceptanceRoot 'acceptance-transcript.txt'
+$DefaultEvidenceRoot = Join-Path $env:ProgramData 'SelfConnect\ProvenanceAcceptanceEvidence'
 $ReportPath = if ($EvidencePath) {
     [IO.Path]::GetFullPath($EvidencePath)
 } else {
-    Join-Path $AcceptanceRoot 'acceptance-report.json'
+    Join-Path $DefaultEvidenceRoot "$RunId.json"
 }
 $CreatedUsers = [Collections.Generic.List[string]]::new()
 $TranscriptStarted = $false
@@ -238,10 +239,16 @@ function Wait-ProvenanceEndpoint {
             try {
                 $endpoint = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
                 $valid = [string]$endpoint.version -eq 'selfconnect.provenance.endpoint.v1' -and `
-                    [string]$endpoint.pipe_name
+                    [string]$endpoint.pipe_name -and `
+                    [string]$endpoint.service_sid -eq $Results.artifacts.service_sid -and `
+                    [int]$endpoint.service_pid -gt 0 -and `
+                    [string]$endpoint.instance_id
                 $rotated = -not $PreviousPipeName -or `
                     [string]$endpoint.pipe_name -ne $PreviousPipeName
-                if ($valid -and $rotated) {
+                $pipeName = [string]$endpoint.pipe_name
+                $live = $pipeName.StartsWith('\\.\pipe\SelfConnectProvenance.v1.') -and `
+                    [SelfConnect.Provenance.NativeMethods]::WaitNamedPipe($pipeName, 100)
+                if ($valid -and $rotated -and $live) {
                     return $endpoint
                 }
             } catch {
@@ -694,7 +701,14 @@ try {
     $Results.ok = $required.Count -gt 0 -and -not ($required -contains $false) -and -not $Results.error
     $parent = Split-Path -Parent $ReportPath
     if ($parent) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-    $Results | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $ReportPath -Encoding UTF8
+    if (-not $EvidencePath) {
+        & icacls.exe $DefaultEvidenceRoot /inheritance:r `
+            /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' `
+            "*$OperatorSid`:(OI)(CI)F" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'default evidence directory ACL hardening failed' }
+    }
+    $reportJson = $Results | ConvertTo-Json -Depth 12
+    [IO.File]::WriteAllText($ReportPath, $reportJson, [Text.UTF8Encoding]::new($false))
     Write-Host "Acceptance evidence: $ReportPath"
     if (-not $Results.ok) { exit 1 }
 }
