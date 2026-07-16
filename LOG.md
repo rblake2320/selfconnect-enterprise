@@ -54,6 +54,135 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260716-007 - Make Windows composition evidence fail closed
+
+**Timestamp (UTC):** 2026-07-16T06:43:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** CI, test, evidence correction, supply-chain hardening
+**Base commit:** `e503c86548dfd6b6f608e75a424796ede71956e5`
+**Change reference:** commit containing this entry and Enterprise PR #30
+**Why:** [WHY-20260716-007](WHY.md#why-20260716-007)
+**Parked records:** [PARK-20260716-007](PARKED.md#park-20260716-007)
+
+**Changed:** Added explicit terminating PowerShell error behavior and native
+command fail-fast behavior to the Windows dependency install, protocol
+checkout/build, Python contract install, and live
+Node/Python contract steps. Extended portfolio conformance to require that
+both declarations in every named critical step and added regressions that
+remove either declaration and require a failed report. After the corrected
+workflow failed honestly, moved the Windows Ultra sidecar lifecycle into the same step
+as its live Node/Python contracts. Added structural conformance markers and a
+negative regression that rejects separating sidecar startup from the live
+contract step.
+
+**Reason:** Enterprise Actions run
+[`29476950456`](https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29476950456)
+concluded success while its Windows log contained two nonzero native-command
+results: BPC server Vitest reported one failed test (`999` versus `1000` in a
+live-clock TTL assertion), and `npm run test:live` failed with
+`ECONNREFUSED 127.0.0.1:7777`. Later successful npm/Python commands supplied
+the final step exit code. The badge therefore did not establish the claimed
+whole-step result. The fail-closed rerun
+[`29477612730`](https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29477612730)
+then exposed a second defect: the sidecar was healthy in its startup step but
+was no longer reachable from the later live-contract step. Local same-process
+evidence had not tested GitHub Actions' cross-step process lifetime.
+
+**Full actions and links:** `.github/workflows/ci.yml`,
+`tools/portfolio_conformance.py`, `tests/test_portfolio_conformance.py`, BPC
+PR #17, [WHY-20260716-007](WHY.md#why-20260716-007), and
+[PARK-20260716-007](PARKED.md#park-20260716-007).
+
+**Validation:** The focused portfolio suite passed 6/6 including negative
+PowerShell/native fail-fast and same-step lifecycle regressions. Ruff passed;
+workflow YAML parsed locally, and hosted Actions remains the workflow runtime
+validator. The corrected same-step lifecycle then ran locally against the
+actual sidecar: health passed, the Node live contract passed 30 checks, and the
+Python BPC/TSK boundary passed 105 tests before `finally` stopped the process
+and printed its logs.
+Run `29477612730` proves the native failure now terminates the job and is kept
+as defect evidence. Exact checkout/package
+conformance continued to pass for the candidate lock. Hosted Actions run
+[`29478571278`](https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29478571278)
+then passed workflow syntax, the complete 1,428-test lint/unit gate, Windows
+exact-source composition and live contracts (30 Node checks and 105 Python
+tests), and Linux PostgreSQL/Redis production durability (39 Node checks and 33
+Python tests). Runs `29476950456` and `29477612730` remain defect evidence and
+must not be cited as clean composition runs.
+
+**Notes:** This corrects evidence propagation, not BPC or Ultra authorization
+semantics. A future native command added to a new or renamed workflow step
+still requires a same-commit conformance update; the current assertion covers
+the five named Windows multi-command steps only. The sidecar assertion verifies
+declared workflow structure, not runner internals; the hosted live contracts
+remain the runtime proof.
+
+## LOG-20260716-006 - Advance the BPC lock after exact-source composition
+
+**Timestamp (UTC):** 2026-07-16T06:31:00Z
+**Updated (UTC):** 2026-07-16T07:02:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** release, test, supply-chain hardening, documentation
+**Base commit:** `2e8e934536bc695f15119009b48eeaac7d59751a`
+**Change reference:** commit containing this entry and the associated pull request
+**Why:** [WHY-20260716-006](WHY.md#why-20260716-006)
+**Parked records:** [PARK-20260716-006](PARKED.md#park-20260716-006)
+
+**Changed:** Advanced only the `bpc-protocol` entry in
+`portfolio-lock.json` from
+`ad6516698f3bb85a3517577f647cf46901205fd1` to canonical merged commit
+`772271e174769f91a980cc3ee69a6eb9cc36bf39`. Retained the existing TSK pin
+`bc31c234100a6e6432d2ac5de82783fc136bc2ea`, which was verified as the
+current TSK master with no open pull requests.
+
+**Reason:** BPC PR #14 merged the governed Redis replay-continuity work after
+the prior Enterprise portfolio was recorded. Enterprise must identify and
+test the exact delivered BPC source rather than silently following master or
+continuing to present the older pin as current. TSK has no corresponding new
+delivered source, so moving it would be an unrelated and unsupported change.
+BPC PR #17 subsequently corrected the exact-horizon test boundary and its root
+workspace evidence runner after the first hosted Enterprise composition exposed
+a false-green Windows job. The active lock therefore uses PR #17's canonical
+merge rather than the intermediate PR #14-only candidate.
+
+**Full actions and links:** `portfolio-lock.json`, BPC PRs #14 and #17, final
+merge commit `772271e174769f91a980cc3ee69a6eb9cc36bf39`, TSK master
+`bc31c234100a6e6432d2ac5de82783fc136bc2ea`,
+[WHY-20260716-006](WHY.md#why-20260716-006), and
+[PARK-20260716-006](PARKED.md#park-20260716-006).
+
+**Validation:** An isolated CI-shaped directory checked out Enterprise
+`2e8e934536bc695f15119009b48eeaac7d59751a`, BPC
+`772271e174769f91a980cc3ee69a6eb9cc36bf39`, and TSK
+`bc31c234100a6e6432d2ac5de82783fc136bc2ea` as siblings. Portfolio
+conformance passed exact Git, package-name, and package-version checks. BPC
+built and passed 249 tests. TSK built, typechecked, and passed its named
+protocol, lifecycle, numeric exhaustion, durability, anomaly, adversarial,
+strict bridge, runtime capture, replication, receiver, and fencing suites;
+the strict BPC-before-TSK bridge passed 35/35 checks. The Ultra Node suite
+passed 24 tests with two PostgreSQL-only skips, its live HTTP contract passed
+30 checks, and the live Python BPC/TSK boundary passed 105 tests. Focused
+portfolio tests passed 3/3 and Ruff passed. Hosted Windows and Linux
+composition evidence remains required on the pull request before merge.
+The exact canonical BPC merge checkout passed package identity conformance,
+build, 249 Node tests plus four runner tests, and 81 Python tests. Before the
+final merge pin, BPC PR #17 independently passed its exact Redis
+test 20 consecutive times, 249 Node tests plus four runner tests, 81 Python
+tests, 28 live adversarial assertions, interop, package dry-runs, dependency
+audit, and two hosted Node/Python workflow runs.
+Enterprise hosted run `29478571278` then checked out the exact final BPC/TSK
+pins and passed all four jobs: workflow syntax, 1,428 repository tests with 34
+named skips, Windows live composition, and Linux PostgreSQL/Redis production
+durability. The Windows job included the BPC 249-test protocol suite plus four
+runner tests, the named TSK suites, 30 live Node checks, and 105 live Python
+tests. The production job returned 39 live Node checks and 33 Python tests.
+
+**Notes:** This establishes compatibility and source identity for the exact
+locked set. It does not prove that a deployment enabled BPC's governed Redis
+factory or configured `noeviction`; it does not establish Redis durability,
+external storage, key custody, FIPS validation, Impact Level authorization,
+an ATO, or any third-party assessment.
+
 ## LOG-20260716-005 - Add shared-state Ultra writer fencing
 
 **Timestamp (UTC):** 2026-07-16T05:52:59Z

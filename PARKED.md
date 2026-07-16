@@ -91,6 +91,111 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260716-007 - Sequential Windows native commands with last-exit evidence
+
+**Status:** Parked
+**Category:** CI behavior, test evidence, release gate
+**Former location:** `.github/workflows/ci.yml`
+**Source commit:** `e503c86548dfd6b6f608e75a424796ede71956e5`
+**Affected paths:** `.github/workflows/ci.yml`,
+`tools/portfolio_conformance.py`, and `tests/test_portfolio_conformance.py`
+**Action log:** [LOG-20260716-007](LOG.md#log-20260716-007)
+**Why changed:** [WHY-20260716-007](WHY.md#why-20260716-007)
+**Parked by:** Codex, requested by the repository owner
+
+**Former wording:** Critical Windows steps ran multiple git, npm, and Python
+commands without enabling native-command error propagation. A later zero exit
+could make a step green after an earlier failure. The development Ultra
+sidecar also started in a separate Actions step from the contracts that used
+it, relying on process lifetime that the runner did not preserve.
+
+**Recovery source:** `.github/workflows/ci.yml` at Enterprise commit
+`e503c86548dfd6b6f608e75a424796ede71956e5` and Actions runs `29476950456`
+and `29477612730`.
+
+**Reason parked:** The hosted run contained a failed BPC test and failed live
+Node request but concluded success. The green check was therefore not faithful
+evidence for those propositions.
+
+**Replacement:** `$ErrorActionPreference = 'Stop'` and
+`$PSNativeCommandUseErrorActionPreference = $true` in each named critical
+Windows step, plus one live-contract step that starts, verifies,
+uses, logs, and stops the sidecar under `try`/`finally`. Portfolio conformance
+and negative regressions bind both requirements.
+
+**Restore when:** Never without an equal or stronger fail-fast shell wrapper
+and executable negative test.
+
+**Restore procedure:** Not applicable. A replacement must first demonstrate
+that a deliberately failing intermediate native command makes the job fail.
+
+**Validation after restore:** Run the negative repository regression and a
+disposable hosted workflow containing a failing intermediate command followed
+by a successful command; the job must remain failed.
+
+**Recovery rehearsal:** The former behavior was reproduced by Actions run
+`29476950456`; the process-lifetime failure was reproduced by fail-closed run
+`29477612730`. Both are retained as failure evidence, not rollback targets.
+
+**Restoration risks:** False-green release evidence, untested dependency
+composition, and inaccurate security claims.
+
+**Evidence and links:** [LOG-20260716-007](LOG.md#log-20260716-007),
+[WHY-20260716-007](WHY.md#why-20260716-007), Actions runs `29476950456` and
+`29477612730`, clean replacement run `29478571278`, and BPC PR #17.
+
+## PARK-20260716-006 - Prior BPC portfolio pin
+
+**Status:** Parked
+**Category:** configuration, release, security property
+**Former location:** `portfolio-lock.json`
+**Source commit:** `2e8e934536bc695f15119009b48eeaac7d59751a`
+**Affected paths:** `portfolio-lock.json`
+**Action log:** [LOG-20260716-006](LOG.md#log-20260716-006)
+**Why changed:** [WHY-20260716-006](WHY.md#why-20260716-006)
+**Parked by:** Codex, requested by the repository owner
+
+**Former wording:** BPC
+`ad6516698f3bb85a3517577f647cf46901205fd1` at package version `0.2.0`.
+
+**Recovery source:** `portfolio-lock.json` at Enterprise commit
+`2e8e934536bc695f15119009b48eeaac7d59751a`.
+
+**Reason parked:** The former pin remains reproducible and contains the earlier
+fail-closed Redis replay guard and immutable authorization snapshot, but it
+predates the merged governed Redis replay-continuity work in BPC PR #14.
+
+**Replacement:** BPC
+`772271e174769f91a980cc3ee69a6eb9cc36bf39` in `portfolio-lock.json`.
+The TSK pin remains `bc31c234100a6e6432d2ac5de82783fc136bc2ea`.
+
+The intermediate PR #14-only candidate
+`2aafcec93a1236e9994ba7e75907b398207b270e` was preserved in branch history
+but superseded before acceptance after hosted evidence exposed a timing-test
+boundary and Windows result-propagation defect. PR #17's canonical merge is
+the reviewed replacement.
+
+**Restore when:** Hosted composition fails, an incompatible runtime behavior
+is reproduced, or a reviewed security finding requires bounded rollback.
+
+**Restore procedure:** Create a new recorded decision, restore only the BPC
+SHA, and run portfolio conformance plus the complete Windows live and Linux
+PostgreSQL/Redis composition jobs. Do not silently follow either default
+branch.
+
+**Validation after restore:** Require exact checkout/package conformance, BPC
+and TSK builds and suites, Ultra Node and Python live contracts, and both
+hosted composition jobs.
+
+**Recovery rehearsal:** Not rehearsed; Git retains the exact former lock.
+
+**Restoration risks:** Omits the new governed Redis continuity implementation
+and may attach current portfolio wording to an older source set.
+
+**Evidence and links:** [LOG-20260716-006](LOG.md#log-20260716-006),
+[WHY-20260716-006](WHY.md#why-20260716-006), `portfolio-lock.json`, and BPC
+PR #14.
+
 ## PARK-20260716-005 - Prior single-process Ultra composition
 
 **Status:** Parked

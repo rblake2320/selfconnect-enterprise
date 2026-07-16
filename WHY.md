@@ -51,6 +51,101 @@ related records.
 
 ## Register
 
+## WHY-20260716-007 - Treat every native command as a composition gate
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T06:43:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-007](LOG.md#log-20260716-007)
+**Parked records:** [PARK-20260716-007](PARKED.md#park-20260716-007)
+**Source state:** `selfconnect-enterprise`, `agent/portfolio-bpc-pin`,
+`e503c86548dfd6b6f608e75a424796ede71956e5`
+
+**Decision:** Every critical Windows composition step must explicitly make
+PowerShell errors terminating, and every native command must terminate that
+step on nonzero exit. The workflow itself must be covered
+by an executable repository conformance assertion. A background sidecar and
+the contracts that depend on it must execute within one Actions step, with
+health verification and cleanup bound by `try`/`finally`.
+
+**Why:** PowerShell can continue after a native process exits nonzero, and a
+later successful process can become the step's final exit status. This happened
+in a real hosted run, turning both a failed BPC workspace and a failed live Node
+request into a green job. A comment or operator convention would not prevent
+recurrence.
+
+The first fail-closed rerun then showed that a healthy process launched in one
+Windows Actions step was not reachable in the next. Process lifetime across
+step boundaries is runner behavior, not an application guarantee, so the
+dependent contract must own the sidecar's complete lifecycle.
+
+**Alternatives considered:** Check `$LASTEXITCODE` only after the final command;
+rejected because it observes only the last process. Add manual checks after
+every npm/python/git command; correct but repetitive and easy to omit. Accept
+the green badge because Linux and Python passed; rejected because the Windows
+propositions were not executed successfully. Disable the flaky BPC assertion;
+rejected because the exact horizon property can be tested deterministically.
+
+**Consequences:** Critical Windows steps stop at the first PowerShell or native
+failure, and the portfolio test fails if either fail-fast declaration disappears
+from any currently named step. It also fails if sidecar start, health check, Node/Python
+contracts, or cleanup are removed from the single live-contract step. Hosted
+workflows may fail more often, but those failures now represent evidence
+defects or implementation defects instead of being silently overwritten.
+
+**Rollback conditions:** Replace this mechanism only with an equal or stronger
+shell wrapper that proves every native exit is propagated and has a negative
+regression. Never restore sequential unchecked native commands in an evidence
+job.
+
+**Evidence and links:** [LOG-20260716-007](LOG.md#log-20260716-007),
+[PARK-20260716-007](PARKED.md#park-20260716-007), Actions runs `29476950456`
+and `29477612730`, clean Actions run `29478571278`, and BPC PR #17.
+
+## WHY-20260716-006 - Move only the BPC pin after composed verification
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T06:31:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-006](LOG.md#log-20260716-006)
+**Parked records:** [PARK-20260716-006](PARKED.md#park-20260716-006)
+**Source state:** `selfconnect-enterprise`, `agent/portfolio-bpc-pin`,
+`2e8e934536bc695f15119009b48eeaac7d59751a`
+
+**Decision:** Pin Enterprise to the canonical BPC source containing PR #14's
+continuity implementation and PR #17's evidence corrections only after the
+exact BPC/TSK/Enterprise assembly passes the existing cross-repository
+contracts. Keep TSK at its already-current canonical master commit.
+
+**Why:** A lock is useful only when it identifies the source actually tested.
+BPC's Redis continuity implementation is newer than the active lock, but a
+repository-local BPC pass alone cannot establish compatibility with the strict
+TSK bridge and Enterprise sidecar. Conversely, TSK has no newer delivered
+source or open change to justify a coordinated version move.
+
+**Alternatives considered:** Follow BPC master dynamically; rejected because
+future commits would change the evaluated composition without review. Pin the
+PR head; rejected because the canonical merge is the delivered source. Advance
+TSK for symmetry; rejected because it would be unrelated churn without new
+evidence. Retain the older BPC pin; rejected after the new canonical source
+passed the complete local composition because it would omit merged security
+work from the active portfolio identity.
+
+**Consequences:** Enterprise CI will check out and exercise the merged BPC
+continuity source with the unchanged TSK boundary. The pin does not
+automatically enable new BPC factories or validate a deployment's Redis
+policy; integrators still have to select the governed factory and satisfy its
+startup and continuity requirements.
+
+**Rollback conditions:** Restore the former BPC pin if hosted Windows or Linux
+composition fails, a runtime regression is reproduced, or independent review
+finds an incompatible contract. Preserve the failure and make the rollback a
+new recorded decision rather than rewriting this evidence.
+
+**Evidence and links:** [LOG-20260716-006](LOG.md#log-20260716-006),
+[PARK-20260716-006](PARKED.md#park-20260716-006), `portfolio-lock.json`, BPC
+PRs #14 and #17, and Enterprise Actions run `29478571278`.
+
 ## WHY-20260716-005 - Fence shared-state Ultra nodes before broader HA
 
 **Status:** Accepted

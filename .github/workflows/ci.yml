@@ -31,6 +31,8 @@ jobs:
 
       - name: Install dependencies
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --upgrade pip
           pip install "pytest>=8" "ruff>=0.4" "hypothesis>=6.0" "pip-audit>=2.7" pywin32 "cryptography>=48.0.1" comtypes "rich>=13.0"
           $portfolio = Get-Content portfolio-lock.json | ConvertFrom-Json
@@ -126,6 +128,8 @@ jobs:
       - name: Checkout pinned BPC and TSK protocol sources
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $depsRoot = Split-Path $env:GITHUB_WORKSPACE -Parent
           $portfolio = Get-Content "$env:GITHUB_WORKSPACE\portfolio-lock.json" | ConvertFrom-Json
           $bpcCommit = $portfolio.components.'bpc-protocol'.commit
@@ -141,6 +145,8 @@ jobs:
       - name: Build pinned protocol dependencies
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $depsRoot = Split-Path $env:GITHUB_WORKSPACE -Parent
           Push-Location "$depsRoot\bpc-protocol"
           npm ci
@@ -161,28 +167,11 @@ jobs:
 
       - name: Install Python contract dependencies
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --upgrade pip
           pip install "pytest>=8" "cryptography>=48.0.1" pywin32
           pip install -e . --no-deps
-
-      - name: Start development sidecar
-        shell: pwsh
-        env:
-          ULTRA_ADMIN_TOKEN: ci-live-ultra-admin-token-2026
-        run: |
-          $process = Start-Process node -ArgumentList 'server.js' `
-            -WorkingDirectory "$env:GITHUB_WORKSPACE\ultra_server" `
-            -WindowStyle Hidden -PassThru `
-            -RedirectStandardOutput "$env:RUNNER_TEMP\ultra.stdout.log" `
-            -RedirectStandardError "$env:RUNNER_TEMP\ultra.stderr.log"
-          $process.Id | Set-Content "$env:RUNNER_TEMP\ultra.pid"
-          for ($attempt = 0; $attempt -lt 30; $attempt++) {
-            try {
-              Invoke-RestMethod http://127.0.0.1:7777/health | Out-Null
-              exit 0
-            } catch { Start-Sleep -Seconds 1 }
-          }
-          throw 'Ultra Server did not become healthy'
 
       - name: Run live Node and Python contracts
         shell: pwsh
@@ -190,19 +179,45 @@ jobs:
           ULTRA_ADMIN_TOKEN: ci-live-ultra-admin-token-2026
           SC_REQUIRE_ULTRA_SERVER: "1"
         run: |
-          Push-Location ultra_server
-          npm run test:live
-          Pop-Location
-          python -m pytest tests/test_e2e_ultra_gate.py tests/test_identity_gate.py -q --tb=short
-
-      - name: Print sidecar logs and stop
-        if: always()
-        shell: pwsh
-        run: |
-          Get-Content "$env:RUNNER_TEMP\ultra.stdout.log" -ErrorAction SilentlyContinue
-          Get-Content "$env:RUNNER_TEMP\ultra.stderr.log" -ErrorAction SilentlyContinue
-          if (Test-Path "$env:RUNNER_TEMP\ultra.pid") {
-            Stop-Process -Id (Get-Content "$env:RUNNER_TEMP\ultra.pid") -Force -ErrorAction SilentlyContinue
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $stdout = "$env:RUNNER_TEMP\ultra.stdout.log"
+          $stderr = "$env:RUNNER_TEMP\ultra.stderr.log"
+          $process = Start-Process node -ArgumentList 'server.js' `
+            -WorkingDirectory "$env:GITHUB_WORKSPACE\ultra_server" `
+            -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr
+          try {
+            $healthy = $false
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              if ($process.HasExited) {
+                throw "Ultra Server exited before health verification with code $($process.ExitCode)"
+              }
+              try {
+                Invoke-RestMethod http://127.0.0.1:7777/health | Out-Null
+                $healthy = $true
+                break
+              } catch {
+                Start-Sleep -Seconds 1
+              }
+            }
+            if (-not $healthy) {
+              throw 'Ultra Server did not become healthy'
+            }
+            Push-Location ultra_server
+            try {
+              npm run test:live
+            } finally {
+              Pop-Location
+            }
+            python -m pytest tests/test_e2e_ultra_gate.py tests/test_identity_gate.py -q --tb=short
+          } finally {
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            }
+            Get-Content $stdout -ErrorAction SilentlyContinue
+            Get-Content $stderr -ErrorAction SilentlyContinue
           }
 
   ultra-production-restart:
