@@ -1,0 +1,17 @@
+# Prometheus scrape config for the Ultra server (issue #14).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: ultra-server
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/ultra_metrics_token
+    static_configs:
+      # Ultra server runs on the host at :7777 (ULTRA_SERVER_PORT).
+      # host.docker.internal resolves to the host from inside the container.
+      - targets: ["host.docker.internal:7777"]
+        labels:
+          service: ultra-server

@@ -19,6 +19,8 @@ observer_logs/
 ultra_server/node_modules/
 ultra_server/.ultra-*.log
 ultra_server/.ultra-*.json
+ultra_server/monitoring/secrets/*
+!ultra_server/monitoring/secrets/README.md
 !.env.example
 !**/.env.example
 .claude/

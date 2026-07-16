@@ -51,6 +51,48 @@ related records.
 
 ## Register
 
+## WHY-20260716-010 - Separate monitoring authority and bound telemetry labels
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T14:28:08Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-010](LOG.md#log-20260716-010)
+**Parked records:** [PARK-20260716-010](PARKED.md#park-20260716-010)
+**Source state:** `selfconnect-enterprise`, pull request #25,
+`b3c2707298d3fb92659ab1e574dd4ce3ce77db49`
+
+**Decision:** Metrics scraping gets one dedicated bearer authority accepted
+only by `/metrics`, with one bounded previous token for rotation. Production
+refuses an absent, short, reused, or administrator-equal metrics token. Metric
+labels come only from explicit closed sets. The supplied monitoring stack binds
+to loopback, reads ignored secret files, persists state, and pins images by
+registry digest.
+
+**Why:** Read-only observability does not need lifecycle mutation authority.
+Sharing the administrator token increased blast radius, while labeling unknown
+requests with raw paths let unauthenticated input consume unbounded telemetry
+resources. Deployment examples are copied into real environments, so insecure
+defaults would become operational risk rather than harmless documentation.
+
+**Alternatives considered:** Retaining admin authentication was rejected on
+least-privilege grounds. Hashing or truncating raw paths was rejected because it
+still permits attacker-controlled cardinality. Disabling metrics by default was
+rejected because a separately authenticated loopback endpoint is testable and
+supports the requested reference deployment.
+
+**Consequences:** Operators provision and rotate one additional secret.
+Prometheus cannot administer Ultra even if its credential is compromised.
+Future Ultra routes must be explicitly added to the metric-route allowlist or
+they appear safely as `__unmatched__`.
+
+**Rollback conditions:** Replace this design only with an equal or stronger
+read-only monitoring identity and a proven bounded-label contract. Do not
+restore administrator-token scraping or raw path labels.
+
+**Evidence and links:** `ultra_server/monitoring-security.test.mjs`,
+`ultra_server/monitoring-config.test.mjs`, live HTTP results recorded in
+[LOG-20260716-010](LOG.md#log-20260716-010), issue #14, and pull request #25.
+
 ## WHY-20260716-009 - Put hardened provenance behind a service SID
 
 **Status:** Accepted

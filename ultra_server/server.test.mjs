@@ -7,6 +7,8 @@ import { agentIdFromPublicKey, signedAgentMaterial } from './agent-auth.js';
 const BASE = process.env.ULTRA_SERVER_URL ?? 'http://127.0.0.1:7777';
 const ADMIN_TOKEN = process.env.ULTRA_ADMIN_TOKEN ?? '';
 if (!ADMIN_TOKEN) throw new Error('ULTRA_ADMIN_TOKEN is required');
+const METRICS_TOKEN = process.env.ULTRA_METRICS_TOKEN ?? '';
+if (!METRICS_TOKEN) throw new Error('ULTRA_METRICS_TOKEN is required');
 const hasDatabase = Boolean(process.env.DATABASE_URL);
 
 const identity = generateKeyPairSync('ed25519');
@@ -82,6 +84,27 @@ assert(unauthStatus.status === 401, 'status disclosed without admin authorizatio
 const admin = { Authorization: `Bearer ${ADMIN_TOKEN}` };
 const status = await request('GET', '/status', undefined, admin);
 assert(status.status === 200 && status.body.ok, 'authorized status failed');
+
+const unauthMetrics = await request('GET', '/metrics');
+assert(unauthMetrics.status === 401, 'metrics disclosed without metrics authorization');
+const wrongMetrics = await request(
+  'GET',
+  '/metrics',
+  undefined,
+  { Authorization: 'Bearer wrong-metrics-token' },
+);
+assert(wrongMetrics.status === 401, 'metrics accepted a wrong credential');
+const metricsAuth = { Authorization: `Bearer ${METRICS_TOKEN}` };
+const metricsResponse = await fetch(`${BASE}/metrics`, { headers: metricsAuth });
+assert(metricsResponse.status === 200, 'dedicated metrics credential was rejected');
+assert(
+  (await metricsResponse.text()).includes('ultra_http_requests_total'),
+  'metrics response omitted the Ultra request counter',
+);
+const metricsCannotAdmin = await request('GET', '/status', undefined, metricsAuth);
+assert(metricsCannotAdmin.status === 401, 'metrics credential authorized an admin route');
+const adminCannotMetrics = await fetch(`${BASE}/metrics`, { headers: admin });
+assert(adminCannotMetrics.status === 401, 'admin credential authorized the metrics route');
 
 const registerKey = randomUUID();
 const registerBody = {
@@ -228,6 +251,12 @@ if (process.env.ULTRA_ADMIN_TOKEN_PREVIOUS) {
   };
   const previousStatus = await request('GET', '/status', undefined, previousAdmin);
   assert(previousStatus.status === 200, 'previous admin token not accepted during overlap');
+}
+if (process.env.ULTRA_METRICS_TOKEN_PREVIOUS) {
+  const previousMetrics = await fetch(`${BASE}/metrics`, {
+    headers: { Authorization: `Bearer ${process.env.ULTRA_METRICS_TOKEN_PREVIOUS}` },
+  });
+  assert(previousMetrics.status === 200, 'previous metrics token not accepted during overlap');
 }
 
 const pairs = await request('GET', '/bpc/pairs', undefined, admin);

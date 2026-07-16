@@ -1,0 +1,41 @@
+services:
+  prometheus:
+    image: prom/prometheus:v3.12.0@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac
+    container_name: ultra-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+      - ./secrets/ultra_metrics_token:/run/secrets/ultra_metrics_token:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+    extra_hosts:
+      # Lets the container reach the Ultra server on the host (Linux hosts).
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:13.1.0@sha256:121a7a9ece6dc10b969f1f96eed64b4f07dfac0d0b8abc070f7cb83bbde86f63
+    container_name: ultra-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SNAPSHOTS_EXTERNAL_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+      - ./secrets/grafana_admin_password:/run/secrets/grafana_admin_password:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+
+volumes:
+  prometheus-data:
+  grafana-data:

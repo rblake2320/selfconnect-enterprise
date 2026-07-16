@@ -1,0 +1,14 @@
+# Auto-load dashboards from disk (issue #14).
+apiVersion: 1
+
+providers:
+  - name: ultra
+    orgId: 1
+    folder: Ultra
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
