@@ -159,6 +159,17 @@
       "command": ["{python}", "-m", "tools.dependency_provenance", "--json"]
     },
     {
+      "id": "PORTFOLIO-PIN-001",
+      "title": "Cross-repository composition uses one verified source lock",
+      "scope": "SelfConnect SDK dependency identity and the BPC/TSK source checkouts consumed by Enterprise Ultra CI",
+      "assertion": "Validate portfolio-lock.json, the pyproject SDK pin, CI lock consumption, and any supplied component checkout commits and package metadata.",
+      "expected": "Every required component has one lowercase 40-character commit; duplicated workflow commits are absent; supplied checkouts exactly match the locked commit, name, and version.",
+      "evidence": "portfolio_conformance JSON, checkout/build logs, and the release conformance report",
+      "blind_spots": "Exact source identity does not establish component security, deployment configuration, external storage, key custody, or authorization; a component marked PIN_ONLY requires a composition job to supply its checkout.",
+      "tier": "quick",
+      "command": ["{python}", "-m", "tools.portfolio_conformance"]
+    },
+    {
       "id": "ULTRA-OP-RECOVERY-001",
       "title": "Production lifecycle operations recover stranded idempotency state",
       "scope": "Pair registration, initial TSK provisioning, identity binding, and TSK rotation prepare using PostgreSQL idempotency/resource state",

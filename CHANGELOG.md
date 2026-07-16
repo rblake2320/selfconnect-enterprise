@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Portfolio composition identity
+
+- Added one machine-readable lock for the exact SelfConnect SDK, BPC, and TSK
+  sources consumed by Enterprise.
+- Made both protocol composition jobs read the lock and verify actual checkout
+  commits, package names, and versions before build or execution.
+- Added fail-closed tests for missing/invalid pins and checkout mismatch while
+  retaining source freshness, deployment, and authorization as separate gates.
+- Evidence: [LOG-20260716-001](LOG.md#log-20260716-001).
+- Rationale: [WHY-20260716-001](WHY.md#why-20260716-001).
+- Parked record:
+  [PARK-20260716-001](PARKED.md#park-20260716-001).
+
 ### Authoritative Ultra enforcement and protocol composition
 
 - Replaced Level 0 local self-check authorization with the live Ultra server's

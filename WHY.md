@@ -51,6 +51,49 @@ related records.
 
 ## Register
 
+## WHY-20260716-001 - Use one executable lock for portfolio composition
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T01:13:16Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-001](LOG.md#log-20260716-001)
+**Parked records:** [PARK-20260716-001](PARKED.md#park-20260716-001)
+**Source state:** `selfconnect-enterprise`,
+`hardening/portfolio-conformance-20260715`,
+`ce249afa89a2bb3022ee93acc8309f8c63dad8b9`
+
+**Decision:** Keep the exact SelfConnect, BPC, and TSK source identities used by
+Enterprise in one machine-readable portfolio lock. CI must read that lock and
+verify actual checkout commits and package metadata before composition tests.
+
+**Why:** Repository-local test counts cannot establish cross-repository
+compatibility. Duplicated SHA literals in two workflow jobs and prose could
+drift independently, leaving green evidence attached to an older composition.
+The gate must identify the exact tested sources and fail before execution when
+the checkouts or package identities do not match.
+
+**Alternatives considered:** Use branch names; rejected because they are
+mutable. Keep duplicate literals and compare them in review; rejected because
+manual review was the failure mode. Automatically follow every repository's
+`master`; rejected because unreviewed upstream changes would make builds
+non-reproducible. Treat a green component branch as compatible; rejected
+because BPC/TSK contract changes require composed verification.
+
+**Consequences:** A component upgrade is now an explicit lock change. CI has a
+single reproducible composition identity and records actual checkout/package
+metadata. The lock can lag upstream until compatibility review completes, so
+freshness remains a release decision rather than an inferred property.
+
+**Rollback conditions:** Replace this lock only with an equivalent immutable
+dependency mechanism that is consumed directly by every composition job and
+verifies actual source plus package identity. Do not restore independent
+hard-coded pins.
+
+**Evidence and links:** [LOG-20260716-001](LOG.md#log-20260716-001),
+[PARK-20260716-001](PARKED.md#park-20260716-001),
+`tools/portfolio_conformance.py`, `tests/test_portfolio_conformance.py`, and
+control `PORTFOLIO-PIN-001` in `docs/assurance/control_catalog.json`.
+
 ## WHY-20260715-008 - Require the authoritative server for Level 0 authorization
 
 **Status:** Accepted
