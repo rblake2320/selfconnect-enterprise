@@ -220,6 +220,7 @@ def test_acceptance_requires_exact_source_and_proves_cross_restart_recovery():
     assert "-m pip check" in acceptance
     assert "Refused to remove service root outside acceptance scope" in acceptance
     assert "Wait-AsUserCompletion" in acceptance
+    assert "Read-OptionalText" in acceptance
     assert "acceptance-completion.v1" in acceptance
     assert "disposable_user_workspaces_isolated" in acceptance
     assert "Get-SidAllowMask" in acceptance

@@ -124,6 +124,14 @@ function Invoke-AsUser {
     return $handle
 }
 
+function Read-OptionalText {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return '' }
+    $value = Get-Content -Raw -LiteralPath $Path
+    if ($null -eq $value) { return '' }
+    return $value.ToString().Trim()
+}
+
 function Wait-AsUserCompletion {
     param(
         [pscustomobject]$Handle,
@@ -133,12 +141,8 @@ function Wait-AsUserCompletion {
     while (-not (Test-Path -LiteralPath $Handle.CompletionPath) -and (Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 100
     }
-    $stderrDetail = if (Test-Path -LiteralPath $Handle.StderrPath) {
-        ([string](Get-Content -Raw -LiteralPath $Handle.StderrPath)).Trim()
-    } else { '' }
-    $stdoutDetail = if (Test-Path -LiteralPath $Handle.StdoutPath) {
-        ([string](Get-Content -Raw -LiteralPath $Handle.StdoutPath)).Trim()
-    } else { '' }
+    $stderrDetail = Read-OptionalText -Path $Handle.StderrPath
+    $stdoutDetail = Read-OptionalText -Path $Handle.StdoutPath
     if (-not (Test-Path -LiteralPath $Handle.CompletionPath)) {
         throw "$($Handle.Description) produced no completion receipt: stderr=$stderrDetail stdout=$stdoutDetail"
     }
