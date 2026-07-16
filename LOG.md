@@ -57,6 +57,7 @@ related records sufficient to reconstruct the action.
 ## LOG-20260716-004 - Advance the core lock to fail-closed console transport
 
 **Timestamp (UTC):** 2026-07-16T02:06:16Z
+**Updated (UTC):** 2026-07-16T02:16:31Z
 **Actor:** Codex, requested by the repository owner
 **Category:** release, test, supply-chain hardening
 **Base commit:** `8dcd6e58afb05f05d6fee97bba4c8d46a0ae9907`
@@ -67,18 +68,24 @@ related records sufficient to reconstruct the action.
 **Changed:** Advanced the `portfolio-lock.json` SelfConnect component and the
 matching `pyproject.toml` VCS dependency from
 `a87e490c88c4ccb18ccaac514d018c7bba779d55` to canonical merge commit
-`56d5ff1802dca5d4136bcc32fa37aa122d4944dc`. BPC and TSK pins are unchanged.
+`5c493300b937a0f912e32a131061a132d2c11fe8`. BPC and TSK pins are unchanged.
 
 **Reason:** The merged core commit closes a reproduced transport false positive:
 `PostMessageW` queue acceptance on `ConsoleWindowClass` could be reported as
 delivery even when no input reached the console. The replacement uses
 `WriteConsoleInputW` for that class, explicitly restores the caller console,
 retains bounded CASCADIA routing, and propagates structured transport failures
-through production callers. Enterprise must compose against the exact merged
-source before accepting it as the active portfolio dependency.
+through production callers. That implementation merged at ancestor
+`56d5ff1802dca5d4136bcc32fa37aa122d4944dc`. Canonical head `5c4933` also
+contains PR #15's deterministic external-window smoke selection: it excludes
+the caller PID, requires an unambiguous title, asserts exact HWND/PID identity,
+and records a bounded skip when no safe candidate exists. Enterprise must
+compose against the exact canonical source before accepting it as the active
+portfolio dependency.
 
 **Full actions and links:** `portfolio-lock.json`, `pyproject.toml`, SelfConnect
-PR #14 and merge commit `56d5ff1802dca5d4136bcc32fa37aa122d4944dc`,
+PR #14 and transport merge `56d5ff1802dca5d4136bcc32fa37aa122d4944dc`,
+PR #15 and canonical merge `5c493300b937a0f912e32a131061a132d2c11fe8`,
 [WHY-20260716-004](WHY.md#why-20260716-004), and
 [PARK-20260716-004](PARKED.md#park-20260716-004).
 

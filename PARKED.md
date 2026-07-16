@@ -109,7 +109,10 @@ commit `8dcd6e58afb05f05d6fee97bba4c8d46a0ae9907`.
 historically reproducible, but it predates the merged fail-closed
 `ConsoleWindowClass` transport and structured caller failure propagation.
 **Replacement:** SelfConnect `56d5ff1802dca5d4136bcc32fa37aa122d4944dc`
-in `portfolio-lock.json` and the exact matching VCS dependency.
+implemented the transport correction. The active exact replacement is canonical
+merge `5c493300b937a0f912e32a131061a132d2c11fe8`, which also contains PR #15's
+deterministic external-target smoke evidence, in `portfolio-lock.json` and the
+matching VCS dependency.
 **Restore when:** Historical reproduction only, or after a new decision record
 identifies a regression in the replacement and approves a bounded rollback.
 **Restore procedure:** Create an isolated branch from the source commit and run
@@ -122,7 +125,7 @@ and Linux composed job, and label the evidence historical.
 PostMessage queue acceptance and actual `ConsoleWindowClass` input delivery.
 **Evidence and links:** [LOG-20260716-004](LOG.md#log-20260716-004),
 [WHY-20260716-004](WHY.md#why-20260716-004), `portfolio-lock.json`, and
-SelfConnect PR #14.
+SelfConnect PR #14 and SelfConnect PR #15.
 
 ## PARK-20260716-003 - Unbounded Enterprise-specific BPC error names
 
