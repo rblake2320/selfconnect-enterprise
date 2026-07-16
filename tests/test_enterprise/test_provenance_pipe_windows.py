@@ -19,10 +19,12 @@ from enterprise.provenance_ipc import (
     decode_frame,
 )
 from enterprise.provenance_pipe import (
-    PIPE_CLIENT_ACCESS,
+    FILE_FLAG_FIRST_PIPE_INSTANCE,
+    FILE_READ_ATTRIBUTES,
+    FILE_READ_DATA,
     FILE_WRITE_ATTRIBUTES,
     FILE_WRITE_DATA,
-    FILE_READ_DATA,
+    PIPE_CLIENT_ACCESS,
     PIPE_INTEGRITY_POLICY,
     PIPE_INTEGRITY_SID,
     SYNCHRONIZE,
@@ -172,8 +174,76 @@ def test_client_pipe_ace_does_not_grant_server_instance_creation():
         if dacl.GetAce(index)[2] == client
     ]
     assert masks == [PIPE_CLIENT_ACCESS]
-    assert masks[0] == FILE_READ_DATA | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE
+    assert masks[0] == (
+        FILE_READ_DATA
+        | FILE_WRITE_DATA
+        | FILE_READ_ATTRIBUTES
+        | FILE_WRITE_ATTRIBUTES
+        | SYNCHRONIZE
+    )
     assert not masks[0] & 0x0004  # FILE_CREATE_PIPE_INSTANCE / FILE_APPEND_DATA
+
+
+def test_client_ace_alone_opens_and_exchanges_a_pipe_message():
+    import threading
+
+    import win32api
+    import win32con
+    import win32file
+    import win32pipe
+
+    pipe_name = rf"\\.\pipe\SelfConnectProvenance.client-ace.{uuid.uuid4()}"
+    service_sid = "S-1-5-18"
+    client_sid = resolve_account_sid(win32api.GetUserNameEx(2))
+    attributes = build_pipe_security_attributes(service_sid, frozenset({client_sid}))
+    server = win32pipe.CreateNamedPipe(
+        pipe_name,
+        win32pipe.PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+        win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
+        1,
+        1024,
+        1024,
+        0,
+        attributes,
+    )
+    result: list[bytes] = []
+
+    def serve_once() -> None:
+        win32pipe.ConnectNamedPipe(server, None)
+        _hr, data = win32file.ReadFile(server, 1024)
+        result.append(bytes(data))
+        win32file.WriteFile(server, b"ack")
+
+    thread = threading.Thread(target=serve_once, daemon=True)
+    thread.start()
+    client = None
+    try:
+        win32pipe.WaitNamedPipe(pipe_name, 5_000)
+        client = win32file.CreateFile(
+            pipe_name,
+            PIPE_CLIENT_ACCESS,
+            0,
+            None,
+            win32con.OPEN_EXISTING,
+            0,
+            None,
+        )
+        win32pipe.SetNamedPipeHandleState(
+            client,
+            win32pipe.PIPE_READMODE_MESSAGE,
+            None,
+            None,
+        )
+        win32file.WriteFile(client, b"request")
+        _hr, response = win32file.ReadFile(client, 1024)
+        assert bytes(response) == b"ack"
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert result == [b"request"]
+    finally:
+        if client is not None:
+            win32file.CloseHandle(client)
+        win32file.CloseHandle(server)
 
 
 def test_pipe_descriptor_has_exact_medium_no_write_up_integrity_label():
