@@ -55,6 +55,7 @@ related records.
 
 **Status:** Accepted
 **Decision date (UTC):** 2026-07-16T05:52:59Z
+**Updated (UTC):** 2026-07-16T06:12:14Z
 **Decision owner:** Repository owner
 **Action log:** [LOG-20260716-005](LOG.md#log-20260716-005)
 **Parked records:** [PARK-20260716-005](PARKED.md#park-20260716-005)
@@ -110,7 +111,8 @@ silently extend leases.
 [PARK-20260716-005](PARKED.md#park-20260716-005), issues #21 and #28,
 [`ULTRA_SHARED_STATE_HA.md`](docs/operations/ULTRA_SHARED_STATE_HA.md),
 `ultra_server/ha-controller.test.mjs`,
-`ultra_server/ha-live-conformance.mjs`, and the associated hosted CI run.
+`ultra_server/ha-live-conformance.mjs`, draft PR #29, and hosted CI run
+[`29475880116`](https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29475880116).
 
 ## WHY-20260716-004 - Pin the merged fail-closed console transport
 

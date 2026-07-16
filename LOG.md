@@ -57,10 +57,11 @@ related records sufficient to reconstruct the action.
 ## LOG-20260716-005 - Add shared-state Ultra writer fencing
 
 **Timestamp (UTC):** 2026-07-16T05:52:59Z
+**Updated (UTC):** 2026-07-16T06:12:14Z
 **Actor:** Codex, requested by the repository owner
 **Category:** implementation, test, security hardening, documentation
 **Base commit:** `b001274419f378d8487e44f980bee3a09464000b`
-**Change reference:** commit containing this entry and the associated draft pull request
+**Change reference:** implementation commit `0195d27` and draft PR #29
 **Why:** [WHY-20260716-005](WHY.md#why-20260716-005)
 **Parked records:** [PARK-20260716-005](PARKED.md#park-20260716-005)
 
@@ -115,8 +116,12 @@ warnings. Ruff, documentation records, quick conformance, workflow lint,
 JavaScript syntax, npm audit (zero findings), and diff checks passed. The shared
 machine environment separately failed two supply-chain gates because it still
 has `cryptography==44.0.3`; that environment failure was not relabeled as a
-repository pass. Hosted CI remains required on the draft pull request before
-merge.
+repository pass. Hosted workflow run
+[`29475880116`](https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29475880116)
+then passed all four jobs: `Workflow syntax`, `Lint + Test`, `Ultra live contract
+(Windows)`, and `Ultra production durability (PostgreSQL + Redis)`. The PR
+remains draft and unmerged for review; green hosted evidence does not broaden
+the named shared-state boundary.
 
 **Notes:** This is shared-state application-node fencing only. A request
 admitted before the configured drain window may finish under that epoch; its
