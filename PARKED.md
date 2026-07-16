@@ -91,6 +91,52 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260716-006 - Prior BPC portfolio pin
+
+**Status:** Parked
+**Category:** configuration, release, security property
+**Former location:** `portfolio-lock.json`
+**Source commit:** `2e8e934536bc695f15119009b48eeaac7d59751a`
+**Affected paths:** `portfolio-lock.json`
+**Action log:** [LOG-20260716-006](LOG.md#log-20260716-006)
+**Why changed:** [WHY-20260716-006](WHY.md#why-20260716-006)
+**Parked by:** Codex, requested by the repository owner
+
+**Former wording:** BPC
+`ad6516698f3bb85a3517577f647cf46901205fd1` at package version `0.2.0`.
+
+**Recovery source:** `portfolio-lock.json` at Enterprise commit
+`2e8e934536bc695f15119009b48eeaac7d59751a`.
+
+**Reason parked:** The former pin remains reproducible and contains the earlier
+fail-closed Redis replay guard and immutable authorization snapshot, but it
+predates the merged governed Redis replay-continuity work in BPC PR #14.
+
+**Replacement:** BPC
+`2aafcec93a1236e9994ba7e75907b398207b270e` in `portfolio-lock.json`.
+The TSK pin remains `bc31c234100a6e6432d2ac5de82783fc136bc2ea`.
+
+**Restore when:** Hosted composition fails, an incompatible runtime behavior
+is reproduced, or a reviewed security finding requires bounded rollback.
+
+**Restore procedure:** Create a new recorded decision, restore only the BPC
+SHA, and run portfolio conformance plus the complete Windows live and Linux
+PostgreSQL/Redis composition jobs. Do not silently follow either default
+branch.
+
+**Validation after restore:** Require exact checkout/package conformance, BPC
+and TSK builds and suites, Ultra Node and Python live contracts, and both
+hosted composition jobs.
+
+**Recovery rehearsal:** Not rehearsed; Git retains the exact former lock.
+
+**Restoration risks:** Omits the new governed Redis continuity implementation
+and may attach current portfolio wording to an older source set.
+
+**Evidence and links:** [LOG-20260716-006](LOG.md#log-20260716-006),
+[WHY-20260716-006](WHY.md#why-20260716-006), `portfolio-lock.json`, and BPC
+PR #14.
+
 ## PARK-20260716-005 - Prior single-process Ultra composition
 
 **Status:** Parked

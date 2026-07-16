@@ -51,6 +51,49 @@ related records.
 
 ## Register
 
+## WHY-20260716-006 - Move only the BPC pin after composed verification
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T06:31:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-006](LOG.md#log-20260716-006)
+**Parked records:** [PARK-20260716-006](PARKED.md#park-20260716-006)
+**Source state:** `selfconnect-enterprise`, `agent/portfolio-bpc-pin`,
+`2e8e934536bc695f15119009b48eeaac7d59751a`
+
+**Decision:** Pin Enterprise to the canonical BPC PR #14 merge only after the
+exact BPC/TSK/Enterprise assembly passes the existing cross-repository
+contracts. Keep TSK at its already-current canonical master commit.
+
+**Why:** A lock is useful only when it identifies the source actually tested.
+BPC's Redis continuity implementation is newer than the active lock, but a
+repository-local BPC pass alone cannot establish compatibility with the strict
+TSK bridge and Enterprise sidecar. Conversely, TSK has no newer delivered
+source or open change to justify a coordinated version move.
+
+**Alternatives considered:** Follow BPC master dynamically; rejected because
+future commits would change the evaluated composition without review. Pin the
+PR head; rejected because the canonical merge is the delivered source. Advance
+TSK for symmetry; rejected because it would be unrelated churn without new
+evidence. Retain the older BPC pin; rejected after the new canonical source
+passed the complete local composition because it would omit merged security
+work from the active portfolio identity.
+
+**Consequences:** Enterprise CI will check out and exercise the merged BPC
+continuity source with the unchanged TSK boundary. The pin does not
+automatically enable new BPC factories or validate a deployment's Redis
+policy; integrators still have to select the governed factory and satisfy its
+startup and continuity requirements.
+
+**Rollback conditions:** Restore the former BPC pin if hosted Windows or Linux
+composition fails, a runtime regression is reproduced, or independent review
+finds an incompatible contract. Preserve the failure and make the rollback a
+new recorded decision rather than rewriting this evidence.
+
+**Evidence and links:** [LOG-20260716-006](LOG.md#log-20260716-006),
+[PARK-20260716-006](PARKED.md#park-20260716-006), `portfolio-lock.json`, BPC
+PR #14, and the associated Enterprise pull request checks.
+
 ## WHY-20260716-005 - Fence shared-state Ultra nodes before broader HA
 
 **Status:** Accepted

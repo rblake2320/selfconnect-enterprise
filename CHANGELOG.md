@@ -35,6 +35,14 @@
   Evidence: [LOG-20260716-004](LOG.md#log-20260716-004),
   rationale: [WHY-20260716-004](WHY.md#why-20260716-004), recovery:
   [PARK-20260716-004](PARKED.md#park-20260716-004).
+- Advanced only the BPC pin to canonical merge
+  `2aafcec93a1236e9994ba7e75907b398207b270e` after an isolated exact-source
+  composition passed BPC, TSK, Ultra Node, and live Python contracts. The TSK
+  pin remains the current intentional master commit
+  `bc31c234100a6e6432d2ac5de82783fc136bc2ea`.
+  Evidence: [LOG-20260716-006](LOG.md#log-20260716-006), rationale:
+  [WHY-20260716-006](WHY.md#why-20260716-006), and recovery:
+  [PARK-20260716-006](PARKED.md#park-20260716-006).
 - Made both protocol composition jobs read the lock and verify actual checkout
   commits, package names, and versions before build or execution.
 - Added fail-closed tests for missing/invalid pins and checkout mismatch while

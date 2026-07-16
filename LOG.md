@@ -54,6 +54,55 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260716-006 - Advance the BPC lock after exact-source composition
+
+**Timestamp (UTC):** 2026-07-16T06:31:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** release, test, supply-chain hardening, documentation
+**Base commit:** `2e8e934536bc695f15119009b48eeaac7d59751a`
+**Change reference:** commit containing this entry and the associated pull request
+**Why:** [WHY-20260716-006](WHY.md#why-20260716-006)
+**Parked records:** [PARK-20260716-006](PARKED.md#park-20260716-006)
+
+**Changed:** Advanced only the `bpc-protocol` entry in
+`portfolio-lock.json` from
+`ad6516698f3bb85a3517577f647cf46901205fd1` to canonical merged commit
+`2aafcec93a1236e9994ba7e75907b398207b270e`. Retained the existing TSK pin
+`bc31c234100a6e6432d2ac5de82783fc136bc2ea`, which was verified as the
+current TSK master with no open pull requests.
+
+**Reason:** BPC PR #14 merged the governed Redis replay-continuity work after
+the prior Enterprise portfolio was recorded. Enterprise must identify and
+test the exact delivered BPC source rather than silently following master or
+continuing to present the older pin as current. TSK has no corresponding new
+delivered source, so moving it would be an unrelated and unsupported change.
+
+**Full actions and links:** `portfolio-lock.json`, BPC PR #14 and merge commit
+`2aafcec93a1236e9994ba7e75907b398207b270e`, TSK master
+`bc31c234100a6e6432d2ac5de82783fc136bc2ea`,
+[WHY-20260716-006](WHY.md#why-20260716-006), and
+[PARK-20260716-006](PARKED.md#park-20260716-006).
+
+**Validation:** An isolated CI-shaped directory checked out Enterprise
+`2e8e934536bc695f15119009b48eeaac7d59751a`, BPC
+`2aafcec93a1236e9994ba7e75907b398207b270e`, and TSK
+`bc31c234100a6e6432d2ac5de82783fc136bc2ea` as siblings. Portfolio
+conformance passed exact Git, package-name, and package-version checks. BPC
+built and passed 249 tests. TSK built, typechecked, and passed its named
+protocol, lifecycle, numeric exhaustion, durability, anomaly, adversarial,
+strict bridge, runtime capture, replication, receiver, and fencing suites;
+the strict BPC-before-TSK bridge passed 35/35 checks. The Ultra Node suite
+passed 24 tests with two PostgreSQL-only skips, its live HTTP contract passed
+30 checks, and the live Python BPC/TSK boundary passed 105 tests. Focused
+portfolio tests passed 3/3 and Ruff passed. Hosted Windows and Linux
+composition evidence remains required on the pull request before merge.
+
+**Notes:** This establishes compatibility and source identity for the exact
+locked set. It does not prove that a deployment enabled BPC's governed Redis
+factory or configured `noeviction`; it does not establish Redis durability,
+external storage, key custody, FIPS validation, Impact Level authorization,
+an ATO, or any third-party assessment.
+
 ## LOG-20260716-005 - Add shared-state Ultra writer fencing
 
 **Timestamp (UTC):** 2026-07-16T05:52:59Z
