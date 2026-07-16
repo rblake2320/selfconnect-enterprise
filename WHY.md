@@ -90,7 +90,7 @@ failure. Do not restore presence-only lifecycle checks.
 
 **Evidence and links:** [LOG-20260716-008](LOG.md#log-20260716-008),
 [PARK-20260716-008](PARKED.md#park-20260716-008), merged PR #30, and the repair
-pull request checks.
+pull request checks including Actions run `29479444593`.
 
 ## WHY-20260716-007 - Treat every native command as a composition gate
 

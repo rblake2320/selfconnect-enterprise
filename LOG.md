@@ -90,7 +90,10 @@ mutations and the executable primary-failure preservation test. Ruff, workflow
 YAML parsing, and `git diff --check` passed. The corrected live lifecycle also
 ran locally against the actual sidecar: 30 Node checks and 105 Python tests
 passed, then guarded cleanup stopped the process and captured both logs. Hosted
-exact-head evidence remains required on the repair pull request.
+Actions run
+[`29479444593`](https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29479444593)
+then passed all four jobs: workflow syntax, the complete lint/unit gate, Windows
+exact-source live composition, and Linux PostgreSQL/Redis production durability.
 
 **Notes:** Brace-aware parsing verifies the declared inline PowerShell
 structure, not GitHub runner internals. The hosted live-contract job remains the

@@ -29,7 +29,7 @@
   balanced PowerShell `finally` blocks and requires all cleanup guards in one
   block; negative mutations cover moved cleanup and weakened guards, and an
   executable PowerShell regression proves the extracted cleanup preserves a
-  deliberate primary failure.
+  deliberate primary failure. Hosted run `29479444593` passed all four jobs.
   Evidence: [LOG-20260716-008](LOG.md#log-20260716-008), rationale:
   [WHY-20260716-008](WHY.md#why-20260716-008), and recovery:
   [PARK-20260716-008](PARKED.md#park-20260716-008).

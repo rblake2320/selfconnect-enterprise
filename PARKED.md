@@ -138,7 +138,7 @@ contract failures, and false confidence in the release gate.
 
 **Evidence and links:** [LOG-20260716-008](LOG.md#log-20260716-008),
 [WHY-20260716-008](WHY.md#why-20260716-008), merged PR #30, and the repair pull
-request.
+request including Actions run `29479444593`.
 
 ## PARK-20260716-007 - Sequential Windows native commands with last-exit evidence
 
