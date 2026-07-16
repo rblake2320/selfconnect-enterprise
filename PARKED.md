@@ -115,10 +115,12 @@ stop or log capture to be inside the `finally` block.
 while retaining every marker; `run_checks()` returned PASS. The former gate did
 not establish the cleanup-on-failure proposition attributed to it.
 
-**Replacement:** Quote-aware, brace-balanced `finally` block extraction; one
-required block containing all guarded stop/stdout/stderr operations; negative
-placement and guard mutations; and an executable PowerShell test proving three
-cleanup failures do not replace a deliberate primary contract failure.
+**Replacement:** Quote-aware, brace-balanced extraction of the lifecycle `try`
+after `Start-Process` and its immediately paired `finally`; live-contract
+markers required in that try; guarded stop/stdout/stderr required in that exact
+finally; negative outside/later-finally and guard mutations; and an executable
+PowerShell test proving three cleanup failures do not replace a deliberate
+primary contract failure.
 
 **Restore when:** Never without an equal or stronger control-flow-aware and
 failure-injection test.
@@ -126,9 +128,9 @@ failure-injection test.
 **Restore procedure:** Not applicable. Implement and review a stronger
 replacement, preserve this record, and rerun the focused and hosted gates.
 
-**Validation after restore:** A moved-cleanup mutation and an unguarded-cleanup
-mutation must fail conformance. Injected cleanup failures must leave the primary
-contract failure as the nonzero process result.
+**Validation after restore:** Outside-cleanup, later-finally cleanup, and
+unguarded-cleanup mutations must fail conformance. Injected cleanup failures
+must leave the primary contract failure as the nonzero process result.
 
 **Recovery rehearsal:** The weakness was independently reproduced against
 commit `eb4e033f3402245ceca6c16c2c4de82ed37694c3`; restoration is not approved.

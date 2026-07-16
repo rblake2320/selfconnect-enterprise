@@ -61,15 +61,19 @@ related records.
 **Source state:** `selfconnect-enterprise`, `fix/windows-cleanup-conformance`,
 `eb4e033f3402245ceca6c16c2c4de82ed37694c3`
 
-**Decision:** Conformance must parse balanced PowerShell blocks and require all
-non-masking cleanup guards inside one `finally` block. Cleanup operations must
-catch and report their own failures so an existing contract failure remains the
-primary process error.
+**Decision:** Conformance must parse the balanced lifecycle `try` after
+`Start-Process`, require its immediately paired `finally`, and bind live
+contracts and non-masking cleanup guards to those exact blocks. Cleanup
+operations must catch and report their own failures so an existing contract
+failure remains the primary process error.
 
 **Why:** The prior gate checked only whether lifecycle substrings appeared in
 the named workflow step. That established vocabulary, not control flow. Moving
 the same stop/log statements after an empty `finally` preserved every marker
 and still returned PASS, even though a contract failure would skip cleanup.
+A first repair that accepted any later `finally` was also insufficient: an
+unreachable second try/finally could carry every cleanup guard while the actual
+lifecycle finally remained empty.
 
 **Alternatives considered:** Add more global substrings; rejected because their
 placement would remain unverified. Rely only on hosted green runs; rejected
@@ -78,8 +82,8 @@ standalone runner immediately; deferred because the current inline step is
 small, and balanced-block validation plus an executable failure injection binds
 the missing proposition without introducing another operational artifact.
 
-**Consequences:** Cleanup placement and non-masking behavior now have separate
-negative and executable assertions. The parser intentionally supports the
+**Consequences:** Lifecycle association, cleanup placement, and non-masking
+behavior now have separate negative and executable assertions. The parser intentionally supports the
 controlled workflow syntax rather than claiming to be a general PowerShell
 parser. Workflow refactors must update the conformance contract in the same
 change.

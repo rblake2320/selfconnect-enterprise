@@ -42,6 +42,11 @@ WINDOWS_CLEANUP_FINALLY_GUARDS = (
     "Get-Content $stderr -ErrorAction Stop",
     'Write-Warning "Ultra Server stderr capture failed:',
 )
+WINDOWS_LIFECYCLE_TRY_MARKERS = (
+    "Invoke-RestMethod http://127.0.0.1:7777/health",
+    "npm run test:live",
+    "python -m pytest tests/test_e2e_ultra_gate.py tests/test_identity_gate.py",
+)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -94,34 +99,56 @@ def _workflow_step(workflow_text: str, name: str) -> str:
     return workflow_text[start:] if end < 0 else workflow_text[start:end]
 
 
-def _powershell_keyword_blocks(script: str, keyword: str) -> list[str]:
-    """Return brace-balanced blocks following a PowerShell keyword."""
-    blocks: list[str] = []
-    pattern = re.compile(rf"\b{re.escape(keyword)}\s*\{{")
-    for match in pattern.finditer(script):
-        opening = script.find("{", match.start())
-        depth = 0
-        quote: str | None = None
-        index = opening
-        while index < len(script):
-            character = script[index]
-            if quote is not None:
-                if character == "`":
-                    index += 2
-                    continue
-                if character == quote:
-                    quote = None
-            elif character in {"'", '"'}:
-                quote = character
-            elif character == "{":
-                depth += 1
-            elif character == "}":
-                depth -= 1
-                if depth == 0:
-                    blocks.append(script[opening + 1:index])
-                    break
-            index += 1
-    return blocks
+def _powershell_brace_block(script: str, opening: int) -> tuple[str, int] | None:
+    depth = 0
+    quote: str | None = None
+    index = opening
+    while index < len(script):
+        character = script[index]
+        if quote is not None:
+            if character == "`":
+                index += 2
+                continue
+            if character == quote:
+                quote = None
+        elif character in {"'", '"'}:
+            quote = character
+        elif character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                return script[opening + 1:index], index
+        index += 1
+    return None
+
+
+def _powershell_try_finally_after(
+    script: str,
+    anchor: str,
+) -> tuple[str, str] | None:
+    """Return the first try and its immediately paired finally after an anchor."""
+    anchor_index = script.find(anchor)
+    if anchor_index < 0:
+        return None
+    try_match = re.search(r"\btry\s*\{", script[anchor_index + len(anchor):])
+    if try_match is None:
+        return None
+    try_start = anchor_index + len(anchor) + try_match.start()
+    try_opening = script.find("{", try_start)
+    parsed_try = _powershell_brace_block(script, try_opening)
+    if parsed_try is None:
+        return None
+    try_body, try_closing = parsed_try
+    finally_match = re.match(r"\s*finally\s*\{", script[try_closing + 1:])
+    if finally_match is None:
+        return None
+    finally_start = try_closing + 1 + finally_match.start()
+    finally_opening = script.find("{", finally_start)
+    parsed_finally = _powershell_brace_block(script, finally_opening)
+    if parsed_finally is None:
+        return None
+    return try_body, parsed_finally[0]
 
 
 def run_checks(
@@ -231,16 +258,26 @@ def run_checks(
             errors.append(
                 f"ci.yml Windows live-contract step must contain {marker!r}"
             )
-    cleanup_blocks = [
-        block
-        for block in _powershell_keyword_blocks(live_step, "finally")
-        if all(marker in block for marker in WINDOWS_CLEANUP_FINALLY_GUARDS)
-    ]
-    if len(cleanup_blocks) != 1:
+    lifecycle = _powershell_try_finally_after(live_step, "Start-Process node")
+    if lifecycle is None:
         errors.append(
-            "ci.yml Windows live-contract cleanup guards must appear together "
-            "inside exactly one finally block"
+            "ci.yml Windows live-contract step must pair the lifecycle try with "
+            "an immediate finally block"
         )
+    else:
+        lifecycle_try, lifecycle_finally = lifecycle
+        if not all(marker in lifecycle_try for marker in WINDOWS_LIFECYCLE_TRY_MARKERS):
+            errors.append(
+                "ci.yml Windows live contracts must execute inside the lifecycle try block"
+            )
+        if not all(
+            marker in lifecycle_finally
+            for marker in WINDOWS_CLEANUP_FINALLY_GUARDS
+        ):
+            errors.append(
+                "ci.yml Windows cleanup guards must execute inside the lifecycle "
+                "try's paired finally block"
+            )
 
     return {
         "schema_version": 1,

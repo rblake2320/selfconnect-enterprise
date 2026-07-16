@@ -67,9 +67,11 @@ related records sufficient to reconstruct the action.
 **Changed:** Wrapped Ultra process stop, stdout capture, and stderr capture in
 separate guarded cleanup operations inside the live-contract `finally` block.
 Extended portfolio conformance with a quote-aware, brace-balanced PowerShell
-block reader that requires the complete cleanup guard set inside exactly one
-`finally` block. Added negative mutations for cleanup moved outside `finally`
-and a weakened unguarded stop, plus an executable PowerShell regression that
+block reader that locates the lifecycle `try` immediately after `Start-Process`
+and requires its immediately paired `finally`. It binds health/Node/Python
+contracts to that try and cleanup guards to that paired finally. Added negative
+mutations for cleanup moved outside the lifecycle, cleanup moved to a later
+unreachable `finally`, and a weakened unguarded stop, plus an executable PowerShell regression that
 injects stop/log cleanup failures and requires the original contract failure to
 remain the process error.
 
@@ -85,19 +87,20 @@ PR #30 at `eb4e033f3402245ceca6c16c2c4de82ed37694c3`,
 [WHY-20260716-008](WHY.md#why-20260716-008), and
 [PARK-20260716-008](PARKED.md#park-20260716-008).
 
-**Validation:** The focused portfolio suite passed 9/9, including both cleanup
-mutations and the executable primary-failure preservation test. Ruff, workflow
+**Validation:** The focused portfolio suite passed 10/10, including all three
+cleanup mutations and the executable primary-failure preservation test. Ruff, workflow
 YAML parsing, and `git diff --check` passed. The corrected live lifecycle also
 ran locally against the actual sidecar: 30 Node checks and 105 Python tests
 passed, then guarded cleanup stopped the process and captured both logs. Hosted
-Actions run
+The first implementation Actions run
 [`29479444593`](https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29479444593)
 then passed all four jobs: workflow syntax, the complete lint/unit gate, Windows
 exact-source live composition, and Linux PostgreSQL/Redis production durability.
+An exact-head rerun is required after the paired lifecycle correction.
 
-**Notes:** Brace-aware parsing verifies the declared inline PowerShell
-structure, not GitHub runner internals. The hosted live-contract job remains the
-runtime composition proof.
+**Notes:** Brace-aware parsing verifies the controlled inline PowerShell
+lifecycle shape, not arbitrary PowerShell or GitHub runner internals. The
+hosted live-contract job remains the runtime composition proof.
 
 ## LOG-20260716-007 - Make Windows composition evidence fail closed
 

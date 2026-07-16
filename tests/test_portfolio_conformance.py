@@ -8,9 +8,8 @@ from pathlib import Path
 
 from tools.portfolio_conformance import (
     ROOT,
-    WINDOWS_CLEANUP_FINALLY_GUARDS,
     WINDOWS_LIVE_STEP,
-    _powershell_keyword_blocks,
+    _powershell_try_finally_after,
     _workflow_step,
     run_checks,
 )
@@ -165,7 +164,7 @@ def test_windows_live_cleanup_must_remain_inside_finally(tmp_path: Path) -> None
 
     report = run_checks(root=root)
     assert report["overall"] == "FAIL"
-    assert any("cleanup guards must appear together" in error for error in report["errors"])
+    assert any("paired finally block" in error for error in report["errors"])
 
 
 def test_windows_live_cleanup_errors_cannot_mask_contract_failure(tmp_path: Path) -> None:
@@ -186,17 +185,43 @@ def test_windows_live_cleanup_errors_cannot_mask_contract_failure(tmp_path: Path
 
     report = run_checks(root=root)
     assert report["overall"] == "FAIL"
-    assert any("cleanup guards must appear together" in error for error in report["errors"])
+    assert any("paired finally block" in error for error in report["errors"])
+
+
+def test_windows_live_cleanup_cannot_move_to_a_later_finally(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    workflow_dir = root / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    (root / "pyproject.toml").write_text(
+        (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    live_step = _workflow_step(workflow, WINDOWS_LIVE_STEP)
+    lifecycle = _powershell_try_finally_after(live_step, "Start-Process node")
+    assert lifecycle is not None
+    cleanup = lifecycle[1]
+    workflow = workflow.replace(cleanup, "", 1)
+    workflow = workflow.replace(
+        "          }\n\n  ultra-production-restart:",
+        "          }\n          try {\n          } finally {\n"
+        + cleanup
+        + "\n          }\n\n  ultra-production-restart:",
+        1,
+    )
+    (workflow_dir / "ci.yml").write_text(workflow, encoding="utf-8")
+
+    report = run_checks(root=root)
+    assert report["overall"] == "FAIL"
+    assert any("paired finally block" in error for error in report["errors"])
 
 
 def test_windows_live_cleanup_preserves_the_primary_failure(tmp_path: Path) -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     live_step = _workflow_step(workflow, WINDOWS_LIVE_STEP)
-    cleanup = next(
-        block
-        for block in _powershell_keyword_blocks(live_step, "finally")
-        if all(marker in block for marker in WINDOWS_CLEANUP_FINALLY_GUARDS)
-    )
+    lifecycle = _powershell_try_finally_after(live_step, "Start-Process node")
+    assert lifecycle is not None
+    cleanup = lifecycle[1]
     stdout = str(tmp_path / "missing-stdout.log").replace("'", "''")
     stderr = str(tmp_path / "missing-stderr.log").replace("'", "''")
     script = f"""

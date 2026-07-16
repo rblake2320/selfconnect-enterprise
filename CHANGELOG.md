@@ -26,8 +26,10 @@
 - Closed a post-merge cleanup-conformance blind spot from PR #30. The Windows
   live step now catches stop and log-capture failures separately so cleanup
   cannot replace the primary contract failure. Portfolio conformance parses
-  balanced PowerShell `finally` blocks and requires all cleanup guards in one
-  block; negative mutations cover moved cleanup and weakened guards, and an
+  the lifecycle `try` after `Start-Process`, requires its immediately paired
+  `finally`, and binds contracts and cleanup to those exact blocks. Negative
+  mutations cover cleanup moved outside the lifecycle, cleanup moved to a later
+  unreachable `finally`, and weakened guards, while an
   executable PowerShell regression proves the extracted cleanup preserves a
   deliberate primary failure. Hosted run `29479444593` passed all four jobs.
   Evidence: [LOG-20260716-008](LOG.md#log-20260716-008), rationale:
