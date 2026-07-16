@@ -1,0 +1,48 @@
+# Prometheus + Grafana monitoring stack for the Ultra server /metrics endpoint.
+# Issue #14. Brings up:
+#   - Prometheus scraping http://host.docker.internal:7777/metrics every 15s
+#   - Grafana auto-provisioned with the Prometheus datasource + Ultra dashboard
+#
+# Usage (from this directory):
+#   docker compose up -d
+#   Grafana:    http://localhost:3000  (admin / admin on first login)
+#   Prometheus: http://localhost:9090
+#
+# The Ultra server must be running on the host at :7777 (ULTRA_SERVER_PORT).
+services:
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: ultra-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      # Lets the container reach the Ultra server on the host (Linux hosts).
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: ultra-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+
+volumes:
+  prometheus-data:
+  grafana-data:
