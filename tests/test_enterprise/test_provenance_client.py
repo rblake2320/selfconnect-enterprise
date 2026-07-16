@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 
 import pytest
@@ -84,12 +85,14 @@ def test_discovering_client_uses_fresh_pinned_endpoint_each_submission(tmp_path,
         service_public_key=service_key,
         timeout_ms=1000,
     )
-    for suffix in ("a" * 32, "b" * 32):
+    for index, suffix in enumerate(("a" * 32, "b" * 32), start=101):
         endpoint.write_text(
             (
                 '{"pipe_name":"\\\\\\\\.\\\\pipe\\\\SelfConnectProvenance.v1.'
                 + suffix
                 + '","service_agent_id":"SC-12345678",'
+                '"pipe_integrity_policy":1,"pipe_integrity_sid":"S-1-16-8192",'
+                f'"service_pid":{index},'
                 '"service_sid":"S-1-5-80-123",'
                 '"version":"selfconnect.provenance.endpoint.v1"}'
             ),
@@ -100,12 +103,14 @@ def test_discovering_client_uses_fresh_pinned_endpoint_each_submission(tmp_path,
         rf"\\.\pipe\SelfConnectProvenance.v1.{'a' * 32}",
         rf"\\.\pipe\SelfConnectProvenance.v1.{'b' * 32}",
     ]
+    assert [item["expected_server_pid"] for item in observed] == [101, 102]
 
 
 def test_discovering_client_rejects_unpinned_endpoint(tmp_path):
     endpoint = tmp_path / "current.json"
     endpoint.write_text(
         '{"pipe_name":"\\\\\\\\.\\\\pipe\\\\Other.x",'
+        '"pipe_integrity_policy":1,"pipe_integrity_sid":"S-1-16-8192","service_pid":101,'
         '"service_agent_id":"SC-12345678","service_sid":"S-1-5-80-123",'
         '"version":"selfconnect.provenance.endpoint.v1"}',
         encoding="utf-8",
@@ -119,4 +124,31 @@ def test_discovering_client_rejects_unpinned_endpoint(tmp_path):
         timeout_ms=1000,
     )
     with pytest.raises(ProvenanceServiceUnavailable, match="pipe name is invalid"):
+        client.submit({})
+
+
+@pytest.mark.parametrize("service_pid", [None, True, 0, -1, "101"])
+def test_discovering_client_rejects_invalid_service_pid(tmp_path, service_pid):
+    endpoint = tmp_path / "current.json"
+    endpoint.write_text(
+        (
+            '{"pipe_integrity_policy":1,"pipe_integrity_sid":"S-1-16-8192",'
+            '"pipe_name":"\\\\\\\\.\\\\pipe\\\\SelfConnectProvenance.v1.'
+            + ("a" * 32)
+            + '","service_agent_id":"SC-12345678",'
+            f'"service_pid":{json.dumps(service_pid)},'
+            '"service_sid":"S-1-5-80-123",'
+            '"version":"selfconnect.provenance.endpoint.v1"}'
+        ),
+        encoding="utf-8",
+    )
+    client = DiscoveringProvenancePipeClient(
+        endpoint_file=endpoint,
+        expected_service_sid="S-1-5-80-123",
+        service_agent_id="SC-12345678",
+        service_algorithm="ed25519",
+        service_public_key=b"k" * 32,
+        timeout_ms=1000,
+    )
+    with pytest.raises(ProvenanceServiceUnavailable, match="service PID is invalid"):
         client.submit({})

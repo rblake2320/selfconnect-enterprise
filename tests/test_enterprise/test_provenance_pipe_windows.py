@@ -91,7 +91,7 @@ def make_stack(tmp_path, pipe_name, *, instances=4, request_timeout_ms=5_000):
         ),
     )
     client = ProvenancePipeClient(
-        expected_service_sid=sid,
+        expected_server_pid=os.getpid(),
         service_agent_id=service.agent_id,
         service_algorithm="ed25519",
         service_public_key=service.public_key_bytes,
@@ -135,9 +135,9 @@ def test_real_pipe_round_trip_and_concurrent_idempotency(tmp_path):
         server.stop()
 
 
-def test_client_fails_closed_when_server_process_sid_is_not_pinned(tmp_path):
+def test_client_fails_closed_when_live_server_pid_is_not_pinned(tmp_path):
     pipe_name = rf"\\.\pipe\SelfConnectProvenance.test.{uuid.uuid4()}"
-    agent, service, server, _client, _sid = make_stack(tmp_path, pipe_name)
+    agent, service, server, client, _sid = make_stack(tmp_path, pipe_name)
     request = build_record_request(
         agent,
         session_id=str(uuid.uuid4()),
@@ -145,7 +145,7 @@ def test_client_fails_closed_when_server_process_sid_is_not_pinned(tmp_path):
         payload={"action": "safe-test"},
     )
     wrong = ProvenancePipeClient(
-        expected_service_sid="S-1-5-18",
+        expected_server_pid=os.getpid() + 1,
         service_agent_id=service.agent_id,
         service_algorithm="ed25519",
         service_public_key=service.public_key_bytes,
@@ -153,8 +153,9 @@ def test_client_fails_closed_when_server_process_sid_is_not_pinned(tmp_path):
     )
     server.start()
     try:
-        with pytest.raises(ProvenancePipeError, match="server SID"):
+        with pytest.raises(ProvenancePipeError, match="server PID"):
             wrong.submit(request)
+        assert client.submit(request)["status"] == "committed"
     finally:
         server.stop()
 

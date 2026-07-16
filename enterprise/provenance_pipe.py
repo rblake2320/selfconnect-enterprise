@@ -33,7 +33,6 @@ FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000
 PIPE_REJECT_REMOTE_CLIENTS = 0x00000008
 SECURITY_SQOS_PRESENT = 0x00100000
 SECURITY_IDENTIFICATION = 0x00010000
-PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 FILE_READ_DATA = 0x0001
 FILE_WRITE_DATA = 0x0002
 FILE_READ_ATTRIBUTES = 0x0080
@@ -193,24 +192,17 @@ def pipe_client_sid(handle: Any, allowed_sids: frozenset[str]) -> str:
             raise ProvenancePipeError(f"RevertToSelf failed: {ctypes.get_last_error()}")
 
 
-def pipe_server_sid(handle: Any) -> str:
-    """Resolve the server process token SID, not a payload-asserted identity."""
+def pipe_server_pid(handle: Any) -> int:
+    """Read the live server PID from the connected kernel pipe handle."""
     _require_windows()
     process_id = ctypes.wintypes.ULONG()
     if not _kernel32.GetNamedPipeServerProcessId(int(handle), ctypes.byref(process_id)):
         raise ProvenancePipeError(
             f"GetNamedPipeServerProcessId failed: {ctypes.get_last_error()}"
         )
-    process = win32api.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, process_id.value)
-    try:
-        token = win32security.OpenProcessToken(process, win32con.TOKEN_QUERY)
-        try:
-            sid = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
-            return win32security.ConvertSidToStringSid(sid)
-        finally:
-            token.Close()
-    finally:
-        process.Close()
+    if process_id.value <= 0:
+        raise ProvenancePipeError("named-pipe server PID is invalid")
+    return int(process_id.value)
 
 
 def _safe_request_id(value: Any) -> str | None:
@@ -454,7 +446,7 @@ class ProvenancePipeClient:
     def __init__(
         self,
         *,
-        expected_service_sid: str,
+        expected_server_pid: int,
         service_agent_id: str,
         service_algorithm: str,
         service_public_key: bytes,
@@ -462,7 +454,9 @@ class ProvenancePipeClient:
         timeout_ms: int = DEFAULT_CONNECT_TIMEOUT_MS,
     ) -> None:
         _require_windows()
-        self.expected_service_sid = expected_service_sid
+        if type(expected_server_pid) is not int or expected_server_pid <= 0:
+            raise ValueError("expected_server_pid must be a positive integer")
+        self.expected_server_pid = expected_server_pid
         self.service_agent_id = service_agent_id
         self.service_algorithm = service_algorithm
         self.service_public_key = service_public_key
@@ -501,9 +495,11 @@ class ProvenancePipeClient:
                 "provenance service is unavailable or backpressured"
             ) from last_error
         try:
-            actual_sid = pipe_server_sid(handle)
-            if actual_sid != self.expected_service_sid:
-                raise ProvenancePipeError("named-pipe server SID does not match the pinned service SID")
+            actual_pid = pipe_server_pid(handle)
+            if actual_pid != self.expected_server_pid:
+                raise ProvenancePipeError(
+                    "named-pipe server PID does not match the protected service endpoint"
+                )
             win32pipe.SetNamedPipeHandleState(handle, win32pipe.PIPE_READMODE_MESSAGE, None, None)
             win32file.WriteFile(handle, encoded)
             _wait_for_message(handle, deadline=deadline)

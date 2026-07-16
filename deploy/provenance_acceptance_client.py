@@ -328,7 +328,7 @@ def verify_wheel(args: argparse.Namespace) -> int:
     return 0 if result["ok"] else 1
 
 
-def _resolve_pipe_name(config: dict[str, Any]) -> str:
+def _resolve_endpoint(config: dict[str, Any]) -> dict[str, Any]:
     endpoint = json.loads(Path(config["endpoint_file"]).read_text(encoding="utf-8"))
     if not isinstance(endpoint, dict) or endpoint.get("version") != (
         "selfconnect.provenance.endpoint.v1"
@@ -338,19 +338,32 @@ def _resolve_pipe_name(config: dict[str, Any]) -> str:
         raise ValueError("provenance endpoint SID mismatch")
     if endpoint.get("service_agent_id") != config["service_agent_id"]:
         raise ValueError("provenance endpoint identity mismatch")
+    service_pid = endpoint.get("service_pid")
+    if type(service_pid) is not int or service_pid <= 0:
+        raise ValueError("invalid provenance endpoint service PID")
+    if (
+        endpoint.get("pipe_integrity_sid") != "S-1-16-8192"
+        or endpoint.get("pipe_integrity_policy") != 1
+    ):
+        raise ValueError("invalid provenance endpoint integrity boundary")
     pipe_name = str(endpoint.get("pipe_name", ""))
     if not pipe_name.startswith(r"\\.\pipe\SelfConnectProvenance.v1."):
         raise ValueError("invalid provenance endpoint pipe")
-    return pipe_name
+    return endpoint
+
+
+def _resolve_pipe_name(config: dict[str, Any]) -> str:
+    return str(_resolve_endpoint(config)["pipe_name"])
 
 
 def _client(config: dict[str, Any]) -> ProvenancePipeClient:
+    endpoint = _resolve_endpoint(config)
     return ProvenancePipeClient(
-        expected_service_sid=str(config["service_sid"]),
+        expected_server_pid=int(endpoint["service_pid"]),
         service_agent_id=str(config["service_agent_id"]),
         service_algorithm=str(config["service_algorithm"]),
         service_public_key=bytes.fromhex(str(config["service_public_key_hex"])),
-        pipe_name=_resolve_pipe_name(config),
+        pipe_name=str(endpoint["pipe_name"]),
         timeout_ms=int(config.get("timeout_ms", 5_000)),
     )
 
@@ -553,26 +566,27 @@ def exercise(args: argparse.Namespace) -> int:
     )
     unsupported["version"] = "selfconnect.provenance.ipc.v999"
 
-    wrong_sid_denied = False
+    endpoint = _resolve_endpoint(config)
+    wrong_pid_denied = False
     try:
         ProvenancePipeClient(
-            expected_service_sid="S-1-5-18",
+            expected_server_pid=int(endpoint["service_pid"]) + 1,
             service_agent_id=str(config["service_agent_id"]),
             service_algorithm=str(config["service_algorithm"]),
             service_public_key=bytes.fromhex(str(config["service_public_key_hex"])),
-            pipe_name=_resolve_pipe_name(config),
+            pipe_name=str(endpoint["pipe_name"]),
         ).submit(build_record_request(identity, event_type=SessionEventType.TOOL_CALL))
     except ProvenancePipeError:
-        wrong_sid_denied = True
+        wrong_pid_denied = True
 
     wrong_key_denied = False
     try:
         ProvenancePipeClient(
-            expected_service_sid=str(config["service_sid"]),
+            expected_server_pid=int(endpoint["service_pid"]),
             service_agent_id=str(config["service_agent_id"]),
             service_algorithm="ed25519",
             service_public_key=b"\0" * 32,
-            pipe_name=_resolve_pipe_name(config),
+            pipe_name=str(endpoint["pipe_name"]),
         ).submit(build_record_request(identity, event_type=SessionEventType.TOOL_CALL))
     except ProvenancePipeError:
         wrong_key_denied = True
@@ -594,7 +608,7 @@ def exercise(args: argparse.Namespace) -> int:
             _raw_exchange(_resolve_pipe_name(config), b"x" * (MAX_FRAME_BYTES + 1)),
             "frame_too_large",
         ),
-        "wrong_server_sid_denied": wrong_sid_denied,
+        "wrong_server_pid_denied": wrong_pid_denied,
         "wrong_service_key_denied": wrong_key_denied,
         "same_sid_low_integrity_denied": _low_integrity_pipe_denied(args.config),
     }

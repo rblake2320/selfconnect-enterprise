@@ -12,7 +12,13 @@ from typing import Any
 from enterprise.identity import AgentIdentity
 from enterprise.provenance import SessionEventType
 from enterprise.provenance_ipc import build_record_request
-from enterprise.provenance_pipe import PIPE_NAME, ProvenancePipeClient, resolve_account_sid
+from enterprise.provenance_pipe import (
+    PIPE_INTEGRITY_POLICY,
+    PIPE_INTEGRITY_SID,
+    PIPE_NAME,
+    ProvenancePipeClient,
+    resolve_account_sid,
+)
 from enterprise.provenance_service import SERVICE_ACCOUNT
 from enterprise.provenance_service_core import ProvenanceServiceUnavailable
 
@@ -139,8 +145,16 @@ class DiscoveringProvenancePipeClient:
             raise ProvenanceServiceUnavailable("provenance endpoint service SID mismatch")
         if endpoint.get("service_agent_id") != self.service_agent_id:
             raise ProvenanceServiceUnavailable("provenance endpoint service identity mismatch")
+        service_pid = endpoint.get("service_pid")
+        if type(service_pid) is not int or service_pid <= 0:
+            raise ProvenanceServiceUnavailable("provenance endpoint service PID is invalid")
+        if (
+            endpoint.get("pipe_integrity_sid") != PIPE_INTEGRITY_SID
+            or endpoint.get("pipe_integrity_policy") != PIPE_INTEGRITY_POLICY
+        ):
+            raise ProvenanceServiceUnavailable("provenance endpoint integrity boundary mismatch")
         return ProvenancePipeClient(
-            expected_service_sid=self.expected_service_sid,
+            expected_server_pid=service_pid,
             service_agent_id=self.service_agent_id,
             service_algorithm=self.service_algorithm,
             service_public_key=self.service_public_key,
