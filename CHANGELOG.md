@@ -23,6 +23,13 @@
 
 ### Portfolio composition identity
 
+- Made the Windows composition workflow fail immediately on nonzero native
+  commands and added an executable conformance assertion for every critical
+  multi-command step. This follows Actions run `29476950456`, whose green
+  conclusion masked a failed BPC workspace test and a failed live Node request.
+  Evidence: [LOG-20260716-007](LOG.md#log-20260716-007), rationale:
+  [WHY-20260716-007](WHY.md#why-20260716-007), and recovery:
+  [PARK-20260716-007](PARKED.md#park-20260716-007).
 - Added one machine-readable lock for the exact SelfConnect SDK, BPC, and TSK
   sources consumed by Enterprise.
 - Advanced the lock to the canonical merged core, BPC, and TSK security heads

@@ -51,6 +51,48 @@ related records.
 
 ## Register
 
+## WHY-20260716-007 - Treat every native command as a composition gate
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T06:43:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-007](LOG.md#log-20260716-007)
+**Parked records:** [PARK-20260716-007](PARKED.md#park-20260716-007)
+**Source state:** `selfconnect-enterprise`, `agent/portfolio-bpc-pin`,
+`e503c86548dfd6b6f608e75a424796ede71956e5`
+
+**Decision:** Every native command in a critical Windows composition step must
+terminate that step on nonzero exit, and the workflow itself must be covered
+by an executable repository conformance assertion.
+
+**Why:** PowerShell can continue after a native process exits nonzero, and a
+later successful process can become the step's final exit status. This happened
+in a real hosted run, turning both a failed BPC workspace and a failed live Node
+request into a green job. A comment or operator convention would not prevent
+recurrence.
+
+**Alternatives considered:** Check `$LASTEXITCODE` only after the final command;
+rejected because it observes only the last process. Add manual checks after
+every npm/python/git command; correct but repetitive and easy to omit. Accept
+the green badge because Linux and Python passed; rejected because the Windows
+propositions were not executed successfully. Disable the flaky BPC assertion;
+rejected because the exact horizon property can be tested deterministically.
+
+**Consequences:** Critical Windows steps stop at the first native failure, and
+the portfolio test fails if the fail-fast declaration disappears from any
+currently named step. Hosted workflows may fail more often, but those failures
+now represent evidence defects or implementation defects instead of being
+silently overwritten.
+
+**Rollback conditions:** Replace this mechanism only with an equal or stronger
+shell wrapper that proves every native exit is propagated and has a negative
+regression. Never restore sequential unchecked native commands in an evidence
+job.
+
+**Evidence and links:** [LOG-20260716-007](LOG.md#log-20260716-007),
+[PARK-20260716-007](PARKED.md#park-20260716-007), Actions run `29476950456`,
+and BPC PR #17.
+
 ## WHY-20260716-006 - Move only the BPC pin after composed verification
 
 **Status:** Accepted

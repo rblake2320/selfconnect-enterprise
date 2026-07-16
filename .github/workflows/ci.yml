@@ -31,6 +31,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --upgrade pip
           pip install "pytest>=8" "ruff>=0.4" "hypothesis>=6.0" "pip-audit>=2.7" pywin32 "cryptography>=48.0.1" comtypes "rich>=13.0"
           $portfolio = Get-Content portfolio-lock.json | ConvertFrom-Json
@@ -126,6 +127,7 @@ jobs:
       - name: Checkout pinned BPC and TSK protocol sources
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           $depsRoot = Split-Path $env:GITHUB_WORKSPACE -Parent
           $portfolio = Get-Content "$env:GITHUB_WORKSPACE\portfolio-lock.json" | ConvertFrom-Json
           $bpcCommit = $portfolio.components.'bpc-protocol'.commit
@@ -141,6 +143,7 @@ jobs:
       - name: Build pinned protocol dependencies
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           $depsRoot = Split-Path $env:GITHUB_WORKSPACE -Parent
           Push-Location "$depsRoot\bpc-protocol"
           npm ci
@@ -161,6 +164,7 @@ jobs:
 
       - name: Install Python contract dependencies
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --upgrade pip
           pip install "pytest>=8" "cryptography>=48.0.1" pywin32
           pip install -e . --no-deps
@@ -190,6 +194,7 @@ jobs:
           ULTRA_ADMIN_TOKEN: ci-live-ultra-admin-token-2026
           SC_REQUIRE_ULTRA_SERVER: "1"
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           Push-Location ultra_server
           npm run test:live
           Pop-Location

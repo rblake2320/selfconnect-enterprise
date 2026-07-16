@@ -55,3 +55,24 @@ def test_invalid_or_missing_component_pins_fail_closed(tmp_path: Path) -> None:
     assert report["overall"] == "FAIL"
     assert any("missing components" in error for error in report["errors"])
     assert any("40-character Git SHA" in error for error in report["errors"])
+
+
+def test_windows_native_command_failures_cannot_be_masked(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    workflow_dir = root / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    (root / "pyproject.toml").write_text(
+        (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    workflow = workflow.replace(
+        "          $PSNativeCommandUseErrorActionPreference = $true\n",
+        "",
+        1,
+    )
+    (workflow_dir / "ci.yml").write_text(workflow, encoding="utf-8")
+
+    report = run_checks(root=root)
+    assert report["overall"] == "FAIL"
+    assert any("must fail fast on native command errors" in error for error in report["errors"])

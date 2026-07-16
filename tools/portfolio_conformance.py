@@ -16,6 +16,14 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "portfolio-lock.json"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 VCS_PIN_RE = re.compile(r"selfconnect\.git@([0-9a-f]{40})(?:\b|$)")
+WINDOWS_NATIVE_FAIL_FAST = "$PSNativeCommandUseErrorActionPreference = $true"
+WINDOWS_NATIVE_STEPS = (
+    "Install dependencies",
+    "Checkout pinned BPC and TSK protocol sources",
+    "Build pinned protocol dependencies",
+    "Install Python contract dependencies",
+    "Run live Node and Python contracts",
+)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -57,6 +65,15 @@ def _parse_component_roots(values: list[str]) -> dict[str, Path]:
             raise ValueError(f"duplicate component root: {name}")
         roots[name] = Path(raw_path).resolve()
     return roots
+
+
+def _workflow_step(workflow_text: str, name: str) -> str:
+    marker = f"      - name: {name}\n"
+    start = workflow_text.find(marker)
+    if start < 0:
+        return ""
+    end = workflow_text.find("\n      - ", start + len(marker))
+    return workflow_text[start:] if end < 0 else workflow_text[start:end]
 
 
 def run_checks(
@@ -146,6 +163,12 @@ def run_checks(
         commit = components.get(name, {}).get("commit")
         if isinstance(commit, str) and commit in workflow_text:
             errors.append(f"ci.yml duplicates the {name} commit instead of reading the portfolio lock")
+    for step_name in WINDOWS_NATIVE_STEPS:
+        step = _workflow_step(workflow_text, step_name)
+        if WINDOWS_NATIVE_FAIL_FAST not in step:
+            errors.append(
+                f"ci.yml Windows step {step_name!r} must fail fast on native command errors"
+            )
 
     return {
         "schema_version": 1,

@@ -91,6 +91,53 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260716-007 - Sequential Windows native commands with last-exit evidence
+
+**Status:** Parked
+**Category:** CI behavior, test evidence, release gate
+**Former location:** `.github/workflows/ci.yml`
+**Source commit:** `e503c86548dfd6b6f608e75a424796ede71956e5`
+**Affected paths:** `.github/workflows/ci.yml`,
+`tools/portfolio_conformance.py`, and `tests/test_portfolio_conformance.py`
+**Action log:** [LOG-20260716-007](LOG.md#log-20260716-007)
+**Why changed:** [WHY-20260716-007](WHY.md#why-20260716-007)
+**Parked by:** Codex, requested by the repository owner
+
+**Former wording:** Critical Windows steps ran multiple git, npm, and Python
+commands without enabling native-command error propagation. A later zero exit
+could make a step green after an earlier failure.
+
+**Recovery source:** `.github/workflows/ci.yml` at Enterprise commit
+`e503c86548dfd6b6f608e75a424796ede71956e5` and Actions run `29476950456`.
+
+**Reason parked:** The hosted run contained a failed BPC test and failed live
+Node request but concluded success. The green check was therefore not faithful
+evidence for those propositions.
+
+**Replacement:** `$PSNativeCommandUseErrorActionPreference = $true` in each
+named critical Windows step plus portfolio conformance and a negative
+regression.
+
+**Restore when:** Never without an equal or stronger fail-fast shell wrapper
+and executable negative test.
+
+**Restore procedure:** Not applicable. A replacement must first demonstrate
+that a deliberately failing intermediate native command makes the job fail.
+
+**Validation after restore:** Run the negative repository regression and a
+disposable hosted workflow containing a failing intermediate command followed
+by a successful command; the job must remain failed.
+
+**Recovery rehearsal:** The former behavior was reproduced by Actions run
+`29476950456`; it is retained as failure evidence, not a rollback target.
+
+**Restoration risks:** False-green release evidence, untested dependency
+composition, and inaccurate security claims.
+
+**Evidence and links:** [LOG-20260716-007](LOG.md#log-20260716-007),
+[WHY-20260716-007](WHY.md#why-20260716-007), Actions run `29476950456`, and
+BPC PR #17.
+
 ## PARK-20260716-006 - Prior BPC portfolio pin
 
 **Status:** Parked

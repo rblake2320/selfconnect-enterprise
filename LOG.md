@@ -54,6 +54,47 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260716-007 - Make Windows composition evidence fail closed
+
+**Timestamp (UTC):** 2026-07-16T06:43:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** CI, test, evidence correction, supply-chain hardening
+**Base commit:** `e503c86548dfd6b6f608e75a424796ede71956e5`
+**Change reference:** commit containing this entry and Enterprise PR #30
+**Why:** [WHY-20260716-007](WHY.md#why-20260716-007)
+**Parked records:** [PARK-20260716-007](PARKED.md#park-20260716-007)
+
+**Changed:** Added PowerShell native-command fail-fast behavior to the Windows
+dependency install, protocol checkout/build, Python contract install, and live
+Node/Python contract steps. Extended portfolio conformance to require that
+declaration in every named critical step and added a regression that removes
+one declaration and requires a failed report.
+
+**Reason:** Enterprise Actions run
+[`29476950456`](https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29476950456)
+concluded success while its Windows log contained two nonzero native-command
+results: BPC server Vitest reported one failed test (`999` versus `1000` in a
+live-clock TTL assertion), and `npm run test:live` failed with
+`ECONNREFUSED 127.0.0.1:7777`. Later successful npm/Python commands supplied
+the final step exit code. The badge therefore did not establish the claimed
+whole-step result.
+
+**Full actions and links:** `.github/workflows/ci.yml`,
+`tools/portfolio_conformance.py`, `tests/test_portfolio_conformance.py`, BPC
+PR #17, [WHY-20260716-007](WHY.md#why-20260716-007), and
+[PARK-20260716-007](PARKED.md#park-20260716-007).
+
+**Validation:** The focused portfolio suite passed 4/4 including the negative
+fail-fast regression. Ruff and actionlint passed. Exact checkout/package
+conformance continued to pass for the candidate lock. Hosted evidence must be
+rerun after the canonical BPC timing correction merges; run `29476950456` is
+retained as defect evidence and must not be cited as a clean composition run.
+
+**Notes:** This corrects evidence propagation, not BPC or Ultra authorization
+semantics. A future native command added to a new or renamed workflow step
+still requires a same-commit conformance update; the current assertion covers
+the five named Windows multi-command steps only.
+
 ## LOG-20260716-006 - Advance the BPC lock after exact-source composition
 
 **Timestamp (UTC):** 2026-07-16T06:31:00Z
