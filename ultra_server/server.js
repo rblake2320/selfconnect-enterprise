@@ -19,7 +19,7 @@
  * Version: 1.3.0  Signed lifecycle and durable production runtime
  */
 import express from 'express';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { createAdminAuthMiddleware, createAgentAuthMiddleware } from './agent-auth.js';
 import {
   createRecoveryKeyring,
@@ -27,6 +27,7 @@ import {
   verifyRecoveryToken,
 } from './recovery-token.js';
 import { enforceBpcAuthorization } from './security-boundary.js';
+import { UltraHaController, loadUltraHaConfig } from './ha-controller.js';
 import {
   MemoryIdempotencyStore,
   MemoryIdentityBindingStore,
@@ -34,6 +35,7 @@ import {
   PgIdentityBindingStore,
   PgTumblerStore,
   ULTRA_PG_SCHEMA,
+  initializePgSchemas,
 } from './runtime-stores.js';
 
 // ── BPC imports ───────────────────────────────────────────────────────────────
@@ -78,7 +80,9 @@ const cBpcRegistrations = new Counter({
 
 // ── TSK imports ───────────────────────────────────────────────────────────────
 import {
+  FencedTumblerStore,
   MemoryTumblerStore,
+  RedisFencingStore,
   TSKProvisioner,
 } from '@tsk/server';
 import { toProvisionPayload } from '@tsk/core';
@@ -93,6 +97,7 @@ const RUNTIME_MODE = process.env.ULTRA_RUNTIME_MODE ?? 'development';
 if (!['development', 'production'].includes(RUNTIME_MODE)) {
   throw new Error('ULTRA_RUNTIME_MODE must be development or production');
 }
+const HA_CONFIG = loadUltraHaConfig(process.env, RUNTIME_MODE);
 
 // Operator authorization is separate from the per-agent Ed25519 proof.
 // LIFECYCLE_SECRET remains a development compatibility alias only.
@@ -109,6 +114,7 @@ let idempotencyStore;
 let nonceBackendType;
 let rateLimiter;
 let ipRateLimiter;
+let haController = null;
 
 const RATE_LIMIT_WINDOW_MS = parseInt(process.env.BPC_RATE_LIMIT_WINDOW_MS ?? '60000', 10);
 const IP_RATE_LIMIT = parseInt(process.env.BPC_IP_RATE_LIMIT ?? '200', 10);
@@ -143,15 +149,37 @@ if (RUNTIME_MODE === 'production') {
   const [{ Pool }, { default: Redis }] = await Promise.all([import('pg'), import('ioredis')]);
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   await pool.query('SELECT 1');
-  await pool.query(PG_SCHEMA);
-  await pool.query(ULTRA_PG_SCHEMA);
+  await initializePgSchemas(pool, PG_SCHEMA, ULTRA_PG_SCHEMA);
 
-  const redisClient = new Redis(process.env.REDIS_URL, { lazyConnect: true });
+  const redisClient = new Redis(process.env.REDIS_URL, {
+    lazyConnect: true,
+    ...(HA_CONFIG.enabled ? {
+      commandTimeout: 2_000,
+      enableOfflineQueue: false,
+      maxRetriesPerRequest: 1,
+    } : {}),
+  });
   await redisClient.connect();
   pairStore = new PgPairStore(pool);
   anomalyStore = new RedisAnomalyStore(redisClient, 'ultra:anomaly:');
   nonceBackend = new RedisNonceStore(redisClient, 'ultra:nonce:');
-  tskStore = new PgTumblerStore(pool);
+  const pgTskStore = new PgTumblerStore(pool);
+  if (HA_CONFIG.enabled) {
+    const fenceStore = new RedisFencingStore(redisClient, HA_CONFIG.fenceKey);
+    haController = new UltraHaController({
+      clusterId: HA_CONFIG.clusterId,
+      fenceStore,
+      guardSecret: HA_CONFIG.guardSecret,
+      maxCommandAgeMs: HA_CONFIG.maxCommandAgeMs,
+      maxLeaseMs: HA_CONFIG.maxLeaseMs,
+      minLeaseRemainingMs: HA_CONFIG.minLeaseRemainingMs,
+      nodeId: HA_CONFIG.nodeId,
+      role: HA_CONFIG.role,
+    });
+    tskStore = new FencedTumblerStore(pgTskStore, haController);
+  } else {
+    tskStore = pgTskStore;
+  }
   identityBinding = new PgIdentityBindingStore(pool);
   idempotencyStore = new PgIdempotencyStore(pool);
   nonceBackendType = 'redis';
@@ -216,6 +244,65 @@ const registrationGuards = RUNTIME_MODE === 'production'
   ? [requireAdminAuth, requireAgentAuth]
   : [requireAgentAuth];
 
+function waitForResponse(res, next) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      res.off('finish', done);
+      res.off('close', done);
+      resolve();
+    };
+    res.once('finish', done);
+    res.once('close', done);
+    try {
+      next();
+    } catch (error) {
+      res.off('finish', done);
+      res.off('close', done);
+      reject(error);
+    }
+  });
+}
+
+function haLockMiddleware({ lockMode, requireWriter }) {
+  return function fencedHaBoundary(req, res, next) {
+    if (!HA_CONFIG.enabled) return next();
+    const withLock = lockMode === 'shared'
+      ? idempotencyStore.withSharedLock.bind(idempotencyStore)
+      : idempotencyStore.withLock.bind(idempotencyStore);
+    void withLock(HA_CONFIG.advisoryLockKey, async () => {
+      if (requireWriter) {
+        const writable = await haController.assertWritable({
+          minRemainingMs: HA_CONFIG.minLeaseRemainingMs,
+        });
+        if (!writable.ok) {
+          return res.status(503).json({ ok: false, error: 'ULTRA_WRITER_FENCED' });
+        }
+        req.scFenceEpoch = writable.fenceEpoch;
+      }
+      await waitForResponse(res, next);
+      return undefined;
+    }).catch((error) => {
+      console.error(JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'ERROR',
+        event: 'ha_boundary_error',
+        error: String(error),
+      }));
+      if (!res.headersSent) {
+        res.status(503).json({ ok: false, error: 'ULTRA_HA_BOUNDARY_UNAVAILABLE' });
+      } else if (!res.writableEnded) {
+        res.destroy();
+      }
+    });
+  };
+}
+
+const requireWriterLease = haLockMiddleware({ lockMode: 'shared', requireWriter: true });
+const serializeHaTransition = haLockMiddleware({ lockMode: 'exclusive', requireWriter: false });
+
 async function claimIdempotency(req, res, operation) {
   const headerKey = req.get('X-Idempotency-Key') ?? '';
   const bodyKey = req.body?.idempotencyKey ?? '';
@@ -267,7 +354,7 @@ app.use((req, res, next) => {
 });
 
 // ── Route: POST /register-pair ────────────────────────────────────────────────
-app.post('/register-pair', ...registrationGuards, async (req, res) => {
+app.post('/register-pair', requireWriterLease, ...registrationGuards, async (req, res) => {
   try {
     const { name, pubJwk, secretHash, scope, fingerprint } = req.body;
     if (!name || !pubJwk || !secretHash) {
@@ -322,7 +409,7 @@ app.post('/register-pair', ...registrationGuards, async (req, res) => {
 });
 
 // ── Route: POST /provision-tsk ────────────────────────────────────────────────
-app.post('/provision-tsk', requireAgentAuth, async (req, res) => {
+app.post('/provision-tsk', requireWriterLease, requireAgentAuth, async (req, res) => {
   try {
     const { requestorId, minTumblers, maxTumblers, keyLength } = req.body;
     if (!requestorId) {
@@ -407,10 +494,15 @@ function rotationLabel(agentId, pairId, oldClientId) {
   return `rotation:${agentId}:${pairId}:${oldClientId}`;
 }
 
+function bpcActivityLock(pairId) {
+  const digest = createHash('sha256').update(String(pairId), 'utf8').digest('hex');
+  return `bpc-activity:${digest}`;
+}
+
 // Resume the currently bound TSK client after a process restart. Production
 // requires both the agent's body-bound proof and the operator authorization
 // because the response contains the owning client's shared secret.
-app.post('/resume-identity', ...registrationGuards, async (req, res) => {
+app.post('/resume-identity', requireWriterLease, ...registrationGuards, async (req, res) => {
   try {
     const { pairId, agentId } = req.body ?? {};
     if (!pairId || agentId !== req.scAgent.agentId) {
@@ -435,7 +527,7 @@ app.post('/resume-identity', ...registrationGuards, async (req, res) => {
 
 // Phase 1 of TSK rotation: create and return a new unbound key. Idempotency
 // makes a lost response safe to retry without producing multiple candidates.
-app.post('/rotate-tsk/prepare', ...registrationGuards, async (req, res) => {
+app.post('/rotate-tsk/prepare', requireWriterLease, ...registrationGuards, async (req, res) => {
   try {
     const { pairId, oldClientId, agentId } = req.body ?? {};
     if (!pairId || !oldClientId || agentId !== req.scAgent.agentId) {
@@ -496,7 +588,7 @@ app.post('/rotate-tsk/prepare', ...registrationGuards, async (req, res) => {
 
 // Phase 2: atomically move the pair binding to the prepared key, then revoke
 // the old key. The binding CAS makes retries safe after a lost response.
-app.post('/rotate-tsk/commit', ...registrationGuards, async (req, res) => {
+app.post('/rotate-tsk/commit', requireWriterLease, ...registrationGuards, async (req, res) => {
   try {
     const { pairId, oldClientId, newClientId, agentId } = req.body ?? {};
     if (
@@ -550,7 +642,7 @@ app.post('/rotate-tsk/commit', ...registrationGuards, async (req, res) => {
 });
 
 // ── Route: POST /bind-identity ────────────────────────────────────────────────
-app.post('/bind-identity', requireAgentAuth, async (req, res) => {
+app.post('/bind-identity', requireWriterLease, requireAgentAuth, async (req, res) => {
   try {
     const { pairId, tskClientId, agentId } = req.body;
     if (!pairId || !tskClientId) {
@@ -588,7 +680,7 @@ app.post('/bind-identity', requireAgentAuth, async (req, res) => {
 });
 
 // ── Route: POST /verify (full 7-layer) ────────────────────────────────────────
-app.post('/verify', async (req, res) => {
+app.post('/verify', requireWriterLease, async (req, res) => {
   try {
     const { headers: reqHeaders, bodyHash } = req.body;
     if (!reqHeaders || !bodyHash) {
@@ -614,7 +706,7 @@ app.post('/verify', async (req, res) => {
       },
     };
 
-    const result = await verifyUltraRequest(
+    const verifyRequest = () => verifyUltraRequest(
       tskReqData,
       // bpcVerify callback: extract BPC fields from the headers map → BPCRequestData
       (r) => {
@@ -646,6 +738,10 @@ app.post('/verify', async (req, res) => {
         },
       },
     );
+    const pairId = tskReqData.headers['x-bpc-pair-id'];
+    const result = pairId
+      ? await idempotencyStore.withLock(bpcActivityLock(pairId), verifyRequest)
+      : await verifyRequest();
 
     if (!result.ok) {
       const failedLayer = result.layers?.find(l => !l.ok);
@@ -675,7 +771,7 @@ app.get('/pubkeys/:pairId', requireAdminAuth, async (req, res) => {
 // ── Route: POST /confirm-recovery (Gap 2 fix) ───────────────────────────────
 // Called by RecoveryManager after generating a new keypair.
 // Returns a server-signed HMAC token that peers must verify before accepting.
-app.post('/confirm-recovery', requireAdminAuth, requireAgentAuth, (req, res) => {
+app.post('/confirm-recovery', requireWriterLease, requireAdminAuth, requireAgentAuth, (req, res) => {
   try {
     const { agentName, agentId, newPubHex, challengeHash } = req.body ?? {};
     if (!agentName || !agentId || !newPubHex || !challengeHash) {
@@ -720,10 +816,59 @@ app.post('/verify-recovery-token', (req, res) => {
   }
 });
 
+// Guard-signed, operator-authorized writer transition. An exclusive PostgreSQL
+// advisory lock is held across this transition. Governed requests hold the
+// shared form of the same lock, so requests may overlap each other but cannot
+// overlap a fence epoch change.
+app.post('/ha/command', requireAdminAuth, serializeHaTransition, async (req, res) => {
+  if (!HA_CONFIG.enabled) {
+    return res.status(409).json({ ok: false, error: 'ULTRA_HA_DISABLED' });
+  }
+  const outcome = await haController.applyCommand(req.body);
+  console.log(JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level: outcome.status === 200 ? 'INFO' : 'WARN',
+    event: 'ha_guard_command',
+    command: req.body?.command ?? null,
+    commandId: req.body?.commandId ?? null,
+    fenceEpoch: req.body?.fenceEpoch ?? null,
+    nodeId: HA_CONFIG.nodeId,
+    accepted: outcome.status === 200,
+    result: outcome.result?.error ?? 'ok',
+  }));
+  return res.status(outcome.status).json(outcome.result);
+});
+
+app.get('/ha/status', requireAdminAuth, async (_req, res) => {
+  if (!HA_CONFIG.enabled) return res.json({ ok: true, enabled: false });
+  return res.json({ ok: true, enabled: true, ...(await haController.snapshot()) });
+});
+
 // ── Route: GET /health ────────────────────────────────────────────────────────
 // Simple liveness probe for load balancers and monitoring systems.
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'ultra-server', version: ULTRA_VERSION, ts: Date.now() });
+});
+
+// Readiness is deliberately stricter than liveness. In HA mode only the node
+// holding the current shared writer lease is eligible for governed traffic.
+app.get('/ready', async (_req, res) => {
+  if (!HA_CONFIG.enabled) {
+    return res.json({ ok: true, haEnabled: false, writable: true });
+  }
+  const writable = await haController.assertWritable({
+    minRemainingMs: HA_CONFIG.minLeaseRemainingMs,
+  });
+  if (!writable.ok) {
+    return res.status(503).json({ ok: false, haEnabled: true, writable: false, error: 'ULTRA_WRITER_FENCED' });
+  }
+  return res.json({
+    ok: true,
+    haEnabled: true,
+    writable: true,
+    fenceEpoch: writable.fenceEpoch,
+    nodeId: HA_CONFIG.nodeId,
+  });
 });
 
 // ── Route: GET /tsk/keys ─────────────────────────────────────────────────────
@@ -752,7 +897,7 @@ app.get('/tsk/keys/:clientId', requireAdminAuth, async (req, res) => {
 // ── Route: PATCH /tsk/keys/:clientId ─────────────────────────────────────────
 // Update TSK key lifecycle: label, expiresAt, maxRequests, status.
 // Does NOT modify cryptographic material — re-provision to change keys.
-app.patch('/tsk/keys/:clientId', requireAdminAuth, async (req, res) => {
+app.patch('/tsk/keys/:clientId', requireWriterLease, requireAdminAuth, async (req, res) => {
   try {
     const { label, expiresAt, maxRequests, status } = req.body ?? {};
     const updates = {};
@@ -796,7 +941,7 @@ app.get('/bpc/pairs', requireAdminAuth, async (_req, res) => {
 
 // ── Route: PATCH /bpc/pairs/:pairId ──────────────────────────────────────────
 // Update BPC pair lifecycle: scope, expiresAt, maxRequests, name.
-app.patch('/bpc/pairs/:pairId', requireAdminAuth, async (req, res) => {
+app.patch('/bpc/pairs/:pairId', requireWriterLease, requireAdminAuth, async (req, res) => {
   try {
     const { scope, expiresAt, maxRequests, name } = req.body ?? {};
     const updates = {};
@@ -807,10 +952,12 @@ app.patch('/bpc/pairs/:pairId', requireAdminAuth, async (req, res) => {
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ ok: false, error: 'NO_UPDATES_PROVIDED' });
     }
-    const found = await registry.updatePair(req.params.pairId, updates);
-    if (!found) return res.status(404).json({ ok: false, error: 'PAIR_NOT_FOUND' });
-    console.log(`[ultra-server] BPC pair ${req.params.pairId} updated: ${JSON.stringify(updates)}`);
-    return res.json({ ok: true });
+    return idempotencyStore.withLock(bpcActivityLock(req.params.pairId), async () => {
+      const found = await registry.updatePair(req.params.pairId, updates);
+      if (!found) return res.status(404).json({ ok: false, error: 'PAIR_NOT_FOUND' });
+      console.log(`[ultra-server] BPC pair ${req.params.pairId} updated: ${JSON.stringify(updates)}`);
+      return res.json({ ok: true });
+    });
   } catch (err) {
     return res.status(500).json({ ok: false, error: String(err) });
   }
@@ -826,6 +973,9 @@ app.get('/metrics', requireAdminAuth, async (_req, res) => {
 app.get('/status', requireAdminAuth, async (req, res) => {
   try {
     const pairs = await registry.list();
+    const ha = HA_CONFIG.enabled
+      ? { enabled: true, ...(await haController.snapshot()) }
+      : { enabled: false };
     return res.json({
       ok:           true,
       version:      ULTRA_VERSION,
@@ -834,6 +984,7 @@ app.get('/status', requireAdminAuth, async (req, res) => {
       sigWindowMs:  SIG_WINDOW_MS,
       nonceBackend: nonceBackendType,
       runtimeMode:  RUNTIME_MODE,
+      ha,
       keyRotation: {
         adminVerificationKeys: [ADMIN_TOKEN, ADMIN_TOKEN_PREVIOUS].filter(Boolean).length,
         recoveryVerificationKeys: recoveryKeyring.verificationKeys.size,
@@ -859,6 +1010,13 @@ app.listen(PORT, '127.0.0.1', () => {
   console.log(JSON.stringify({
     timestamp: new Date().toISOString(), level: 'INFO', event: 'server_start', port: PORT,
     runtimeMode: RUNTIME_MODE,
+    ha: HA_CONFIG.enabled ? {
+      enabled: true,
+      clusterId: HA_CONFIG.clusterId,
+      nodeId: HA_CONFIG.nodeId,
+      role: HA_CONFIG.role,
+      writableAtStart: false,
+    } : { enabled: false },
   }));
   if (RUNTIME_MODE === 'development') {
     console.warn(JSON.stringify({

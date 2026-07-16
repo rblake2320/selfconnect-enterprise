@@ -24,6 +24,23 @@ CREATE TABLE IF NOT EXISTS ultra_idempotency (
 );
 `;
 
+export async function initializePgSchemas(pool, ...schemas) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended('selfconnect-ultra-schema-v1', 0))",
+    );
+    for (const schema of schemas) await client.query(schema);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 function parseMap(value) {
   return typeof value === 'string' ? JSON.parse(value) : value;
 }
@@ -363,17 +380,25 @@ export class PgIdempotencyStore {
     ) return;
     throw new Error(existing ? 'idempotency response conflict' : 'idempotency key was not claimed');
   }
-  async withLock(key, callback) {
+  async _withAdvisoryLock(key, callback, { shared }) {
     const client = await this.pool.connect();
+    const lockFunction = shared ? 'pg_advisory_lock_shared' : 'pg_advisory_lock';
+    const unlockFunction = shared ? 'pg_advisory_unlock_shared' : 'pg_advisory_unlock';
     try {
-      await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]);
+      await client.query(`SELECT ${lockFunction}(hashtextextended($1, 0))`, [key]);
       return await callback();
     } finally {
       try {
-        await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [key]);
+        await client.query(`SELECT ${unlockFunction}(hashtextextended($1, 0))`, [key]);
       } finally {
         client.release();
       }
     }
+  }
+  async withLock(key, callback) {
+    return this._withAdvisoryLock(key, callback, { shared: false });
+  }
+  async withSharedLock(key, callback) {
+    return this._withAdvisoryLock(key, callback, { shared: true });
   }
 }

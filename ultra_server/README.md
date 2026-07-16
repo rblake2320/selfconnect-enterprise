@@ -45,6 +45,36 @@ One distinct previous operator token and recovery key may be configured during
 a bounded rolling rotation. They are verification-only and must be removed
 after the documented drain and token-TTL window.
 
+## Shared-State Active/Passive Fencing
+
+Production may opt into a shared-state active/passive application-node mode by
+setting `ULTRA_HA_ENABLED=true` and the remaining `ULTRA_HA_*` variables on two
+processes that use the same PostgreSQL database and Redis authority. HA is
+disabled by default. Every enabled process starts fenced, including a process
+restarted with the same node ID. An operator must submit an admin-authorized,
+guard-signed `activate` or `promote` command with a strictly increasing fence
+epoch before the selected node accepts any verification or lifecycle mutation.
+
+`GET /health` remains a liveness probe. `GET /ready` returns 200 only for the
+current writer with more than the configured drain window remaining; replicas,
+restarted nodes, expired leases, and nodes unable to read a valid Redis fence
+return 503. The transition endpoint and every governed mutation use one
+cluster-scoped PostgreSQL advisory-lock key: governed requests take shared
+locks and may run concurrently, while a transition takes the exclusive form.
+A request admitted before the drain window may finish under its admitted epoch;
+a higher epoch cannot activate until all admitted shared holders release. This
+is an explicit drain boundary, not a wall-clock abort or a per-row transactional
+epoch assertion. Once the lease enters its drain window, new requests fail the
+writer check and promptly release any shared lock even if lock scheduling lets
+them queue ahead of the transition.
+
+This mode only addresses application-node failover against one shared state
+plane. PostgreSQL and Redis availability, persistence, TLS/ACL configuration,
+backup/restore, region/site failure, independent-state replication, automated
+leader election, and operator/key custody remain deployment responsibilities.
+See [`ULTRA_SHARED_STATE_HA.md`](../docs/operations/ULTRA_SHARED_STATE_HA.md)
+for commands, evidence requirements, rollback, and the exact boundary.
+
 The provisioning response omits literal segment `position` fields and never
 returns the complete record verbatim. It does return the owning client's shared
 secret, segment types, lengths, order, initial HOTP counters, and total key
@@ -92,3 +122,9 @@ bounded overlap generation, retires the old generation, and restarts after TSK
 rotation. `SC_REQUIRE_ULTRA_SERVER=1` converts an unavailable sidecar from a
 skip to a test failure. These checks establish the tested composition only;
 they do not establish deployment secret custody or a completed backup restore.
+The same production job also starts two actual Node processes on different
+ports against one PostgreSQL database and Redis authority. It proves one
+writer, signed promotion, same-principal verification after failover, old-node
+fencing without state mutation, restart fencing, replay/tamper/stale denial,
+and fail-closed Redis outage/corruption behavior. It does not establish the
+independent-state/site HA work tracked in issue #28.
