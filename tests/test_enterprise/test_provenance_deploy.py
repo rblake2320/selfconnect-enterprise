@@ -230,7 +230,12 @@ def test_acceptance_requires_exact_source_and_proves_cross_restart_recovery():
     assert "*$($anonymous.Sid):(OI)(CI)M" in acceptance
     assert "*$($agent.Sid):(OI)(CI)RX" in acceptance
     assert "*$($anonymous.Sid):(OI)(CI)RX" in acceptance
+    assert "acceptance client runtime descendant ACL inheritance" in acceptance
+    assert "shared acceptance descendant ACL inheritance" in acceptance
     assert "foreach ($candidateRuntime in @($RuntimeRoot, $ClientRuntimeRoot))" in acceptance
+    assert "runtime_cleanup" in acceptance
+    assert "disposable_user_cleanup" in acceptance
+    assert "acceptance_workspace_cleanup" in acceptance
     assert "Refused to remove acceptance workspace outside" in acceptance
     assert "stderr=$stderrDetail stdout=$stdoutDetail" in acceptance
     assert "restartedService.ProcessId -eq $killedProcessId" in acceptance

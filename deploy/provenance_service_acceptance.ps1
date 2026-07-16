@@ -12,6 +12,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ServiceName = 'SelfConnectProvenance'
+$OperatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $PipeName = $null
 $DeployScript = Join-Path $PSScriptRoot 'provenance_service.ps1'
 $HelperSource = Join-Path $PSScriptRoot 'provenance_acceptance_client.py'
@@ -265,8 +266,10 @@ try {
     Invoke-Native {
         icacls.exe $SharedRoot /inheritance:r `
             /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" `
-            "*$($agent.Sid):(OI)(CI)RX" "*$($anonymous.Sid):(OI)(CI)RX" /T /C
+            "*$($agent.Sid):(OI)(CI)RX" "*$($anonymous.Sid):(OI)(CI)RX"
     } 'shared acceptance input ACL'
+    Invoke-Native { icacls.exe (Join-Path $SharedRoot '*') /reset /T /C } `
+        'shared acceptance descendant ACL inheritance'
     Invoke-Native {
         icacls.exe $AgentRoot /inheritance:r `
             /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" `
@@ -286,8 +289,10 @@ try {
     Invoke-Native {
         icacls.exe $ClientRuntimeRoot /inheritance:r `
             /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" `
-            "*$($agent.Sid):(OI)(CI)RX" "*$($anonymous.Sid):(OI)(CI)RX" /T /C
+            "*$($agent.Sid):(OI)(CI)RX" "*$($anonymous.Sid):(OI)(CI)RX"
     } 'acceptance client runtime ACL'
+    Invoke-Native { icacls.exe (Join-Path $ClientRuntimeRoot '*') /reset /T /C } `
+        'acceptance client runtime descendant ACL inheritance'
     $Results.checks.separate_client_runtime_provisioned = `
         (Test-Path -LiteralPath $ClientPythonExe -PathType Leaf) -and `
         ($ClientPythonExe -ne $ServicePythonExe)
@@ -567,10 +572,25 @@ try {
             $runtimeBase + '\',
             [StringComparison]::OrdinalIgnoreCase
         )) {
-            Remove-Item -LiteralPath $resolvedRuntime -Recurse -Force
+            try {
+                & takeown.exe /F $resolvedRuntime /R /D Y | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'runtime ownership reclamation failed' }
+                & icacls.exe $resolvedRuntime /grant:r "*$OperatorSid`:F" /T /C | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'runtime ACL reclamation failed' }
+                Remove-Item -LiteralPath $resolvedRuntime -Recurse -Force -ErrorAction Stop
+            } catch {
+                $Results.checks.runtime_cleanup = $false
+                $Results.runtime_cleanup_error = $_.Exception.Message
+            }
         } else {
+            $Results.checks.runtime_cleanup = $false
             $Results.runtime_cleanup_error = "Refused to remove runtime outside $runtimeBase"
         }
+    }
+    if (-not $Results.checks.Contains('runtime_cleanup')) {
+        $Results.checks.runtime_cleanup = `
+            -not (Test-Path -LiteralPath $RuntimeRoot) -and `
+            -not (Test-Path -LiteralPath $ClientRuntimeRoot)
     }
     if (Test-Path -LiteralPath $ServiceRoot) {
         $serviceBase = [IO.Path]::GetFullPath("$env:ProgramData\SelfConnect").TrimEnd('\')
@@ -585,7 +605,16 @@ try {
         }
     }
     foreach ($name in $CreatedUsers) {
-        try { Remove-LocalUser -Name $name -ErrorAction Stop } catch { }
+        try { Remove-LocalUser -Name $name -ErrorAction Stop } catch {
+            $Results.checks.disposable_user_cleanup = $false
+            $Results.disposable_user_cleanup_error = $_.Exception.Message
+        }
+    }
+    if (-not $Results.checks.Contains('disposable_user_cleanup')) {
+        $remainingUsers = @($CreatedUsers | Where-Object {
+            Get-LocalUser -Name $_ -ErrorAction SilentlyContinue
+        })
+        $Results.checks.disposable_user_cleanup = $remainingUsers.Count -eq 0
     }
     if (Test-Path -LiteralPath $AcceptanceRoot) {
         $acceptanceBase = [IO.Path]::GetFullPath(
@@ -596,11 +625,28 @@ try {
             $acceptanceBase + '\',
             [StringComparison]::OrdinalIgnoreCase
         )) {
-            Remove-Item -LiteralPath $resolvedAcceptanceRoot -Recurse -Force
+            try {
+                & takeown.exe /F $resolvedAcceptanceRoot /R /D Y | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    throw 'acceptance workspace ownership reclamation failed'
+                }
+                & icacls.exe $resolvedAcceptanceRoot /grant:r `
+                    "*$OperatorSid`:F" /T /C | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'acceptance workspace ACL reclamation failed' }
+                Remove-Item -LiteralPath $resolvedAcceptanceRoot -Recurse -Force -ErrorAction Stop
+            } catch {
+                $Results.checks.acceptance_workspace_cleanup = $false
+                $Results.acceptance_cleanup_error = $_.Exception.Message
+            }
         } else {
+            $Results.checks.acceptance_workspace_cleanup = $false
             $Results.acceptance_cleanup_error = `
                 "Refused to remove acceptance workspace outside $acceptanceBase"
         }
+    }
+    if (-not $Results.checks.Contains('acceptance_workspace_cleanup')) {
+        $Results.checks.acceptance_workspace_cleanup = `
+            -not (Test-Path -LiteralPath $AcceptanceRoot)
     }
     $Results.finished_at = (Get-Date).ToUniversalTime().ToString('o')
     $required = @($Results.checks.GetEnumerator() | ForEach-Object { [bool]$_.Value })
