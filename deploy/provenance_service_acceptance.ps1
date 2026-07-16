@@ -12,7 +12,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ServiceName = 'SelfConnectProvenance'
-$PipeName = '\\.\pipe\SelfConnectProvenance.v1'
+$PipeName = $null
 $DeployScript = Join-Path $PSScriptRoot 'provenance_service.ps1'
 $HelperSource = Join-Path $PSScriptRoot 'provenance_acceptance_client.py'
 $RunId = (Get-Date -Format 'yyyyMMddHHmmss') + '-' + ([Guid]::NewGuid().ToString('N').Substring(0, 6))
@@ -24,6 +24,7 @@ $ServiceRoot = Join-Path $env:ProgramData "SelfConnect\Provenance-$RunId"
 $Helper = Join-Path $AcceptanceRoot 'provenance_acceptance_client.py'
 $ConfigPath = Join-Path $AcceptanceRoot 'config.json'
 $BootstrapPath = Join-Path $AcceptanceRoot 'bootstrap.json'
+$WheelBindingPath = Join-Path $AcceptanceRoot 'wheel-binding.json'
 $ExercisePath = Join-Path $AcceptanceRoot 'exercise.json'
 $AnonymousPath = Join-Path $AcceptanceRoot 'anonymous.json'
 $BurstPath = Join-Path $AcceptanceRoot 'burst.json'
@@ -38,13 +39,12 @@ $ReportPath = if ($EvidencePath) {
     Join-Path $AcceptanceRoot 'acceptance-report.json'
 }
 $CreatedUsers = [Collections.Generic.List[string]]::new()
-$ServiceInstalled = $false
 $TranscriptStarted = $false
 $Results = [ordered]@{
     schema = 'selfconnect.provenance.acceptance.v1'
     started_at = (Get-Date).ToUniversalTime().ToString('o')
     service = $ServiceName
-    pipe = $PipeName
+    pipe = $null
     checks = [ordered]@{}
     artifacts = [ordered]@{}
     blind_spots = @(
@@ -140,10 +140,16 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'source commit lookup failed' }
     $sourceDirty = @(& git -C $repoRoot status --short --untracked-files=all)
     if ($LASTEXITCODE -ne 0 -or $sourceDirty.Count -ne 0) {
-        throw 'acceptance requires a clean tracked source tree at one exact commit'
+        throw 'acceptance requires a clean source tree at one exact commit'
     }
     New-Item -ItemType Directory -Path $AcceptanceRoot -Force | Out-Null
     Copy-Item -LiteralPath $HelperSource -Destination $Helper
+    & $PythonExe $Helper verify-wheel --wheel $wheel --repo-root $repoRoot `
+        --output $WheelBindingPath
+    if ($LASTEXITCODE -ne 0) { throw 'wheel does not match the exact clean source tree' }
+    $wheelBinding = Get-Content -Raw $WheelBindingPath | ConvertFrom-Json
+    $Results.checks.wheel_matches_source_commit = [bool]$wheelBinding.ok
+    $Results.artifacts.wheel_source_binding = $wheelBinding
     Start-Transcript -Path $TranscriptPath -Force | Out-Null
     $TranscriptStarted = $true
 
@@ -155,9 +161,22 @@ try {
             "*$($agent.Sid):(OI)(CI)M" "*$($anonymous.Sid):(OI)(CI)M"
     } 'acceptance workspace ACL'
 
+    $faultObserved = $false
+    try {
+        & $DeployScript -Action Install -PythonExe $PythonExe -WheelPath $wheel `
+            -RootPath $ServiceRoot -AuditMode enterprise -WormSink memory `
+            -FaultAfterRegistration
+    } catch {
+        $faultObserved = $_.Exception.Message -match 'post-registration acceptance fault'
+    }
+    $Results.checks.partial_install_rolls_back = $faultObserved -and `
+        -not [bool](Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)
+    if (-not $Results.checks.partial_install_rolls_back) {
+        throw 'post-registration fault did not roll back the partial service'
+    }
+
     & $DeployScript -Action Install -PythonExe $PythonExe -WheelPath $wheel `
         -RootPath $ServiceRoot -AuditMode enterprise -WormSink memory
-    $ServiceInstalled = $true
     $Results.checks.scm_install = (Get-Service -Name $ServiceName).Status -eq 'Running'
     $serviceConfig = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
     $Results.artifacts.service_account = $serviceConfig.StartName
@@ -179,9 +198,14 @@ try {
         enroll --agent-id $bootstrap.agent_id --algorithm $bootstrap.algorithm `
         --public-key-hex $bootstrap.public_key_hex --sid $agent.Sid
     if ($LASTEXITCODE -ne 0) { throw 'agent enrollment failed' }
+    & $DeployScript -Action RepairAcl -PythonExe $PythonExe -RootPath $ServiceRoot
     Restart-Service -Name $ServiceName
     Wait-ServiceState -State Running
 
+    $endpointFile = Join-Path $ServiceRoot 'endpoint\current.json'
+    $endpoint = Get-Content -Raw -LiteralPath $endpointFile | ConvertFrom-Json
+    $PipeName = [string]$endpoint.pipe_name
+    $Results.pipe = $PipeName
     $servicePublicKeyPath = Join-Path $ServiceRoot 'identity\SelfConnectProvenance\identity.pub'
     $servicePublicKeyHex = (Get-Content -Raw $servicePublicKeyPath).Trim()
     $serviceAgentId = Get-AgentIdFromPublicKey -PublicKeyHex $servicePublicKeyHex
@@ -190,6 +214,7 @@ try {
     [ordered]@{
         identity_dir = (Join-Path $AcceptanceRoot 'agent-identity')
         identity_name = 'provenance-acceptance-agent'
+        endpoint_file = $endpointFile
         ledger_dir = (Join-Path $ServiceRoot 'ledger')
         pipe_name = $PipeName
         sentinel_path = $sentinel
@@ -215,36 +240,55 @@ try {
 
     Stop-Service -Name $ServiceName
     Wait-ServiceState -State Stopped
+    $oldPipeName = $PipeName
     $squatter = Invoke-AsUser -Credential $anonymous.Credential -Description 'pipe squatter' -NoWait `
         -Arguments @($Helper, 'hold-pipe', '--config', $ConfigPath, '--ready', $SquatReady,
-            '--stop', $SquatStop, '--timeout', '45')
+            '--stop', $SquatStop, '--timeout', '45', '--pipe-name', $oldPipeName)
     $readyDeadline = (Get-Date).AddSeconds(15)
     while (-not (Test-Path -LiteralPath $SquatReady) -and (Get-Date) -lt $readyDeadline) {
         Start-Sleep -Milliseconds 100
     }
     if (-not (Test-Path -LiteralPath $SquatReady)) { throw 'pipe squatter did not become ready' }
-    $squatBlocked = $false
-    try {
-        Start-Service -Name $ServiceName -ErrorAction Stop
-        Start-Sleep -Seconds 2
-        $squatBlocked = (Get-Service -Name $ServiceName).Status -ne 'Running'
-    } catch {
-        $squatBlocked = $true
-    }
-    $Results.checks.pipe_squatting_blocks_service_readiness = $squatBlocked
+    Start-Service -Name $ServiceName
+    Wait-ServiceState -State Running
+    $rotatedEndpoint = Get-Content -Raw -LiteralPath $endpointFile | ConvertFrom-Json
+    $PipeName = [string]$rotatedEndpoint.pipe_name
+    $Results.checks.pipe_rotation_survives_old_name_squatting = `
+        $PipeName -and $PipeName -ne $oldPipeName
+    $Results.artifacts.pipe_before_restart = $oldPipeName
+    $Results.artifacts.pipe_after_restart = $PipeName
     New-Item -ItemType File -Path $SquatStop -Force | Out-Null
     $squatter.WaitForExit(15000)
     if (-not $squatter.HasExited -or $squatter.ExitCode -ne 0) {
         throw 'pipe squatter did not exit cleanly'
     }
-    Start-Service -Name $ServiceName
-    Wait-ServiceState -State Running
-
     Stop-Service -Name $ServiceName
     Wait-ServiceState -State Stopped
     Invoke-Native {
-        icacls.exe (Join-Path $ServiceRoot 'ledger') /grant '*S-1-5-32-545:(OI)(CI)M'
-    } 'DACL tamper injection'
+        icacls.exe $sentinel /grant '*S-1-5-32-545:M'
+    } 'existing ledger-file DACL tamper injection'
+    $daclProbe = & $PythonExe -c @'
+import json, pathlib, sys
+from enterprise.provenance_service import verify_service_path_acl
+
+path = pathlib.Path(sys.argv[1])
+service_sid = sys.argv[2]
+client_sid = sys.argv[3]
+try:
+    verify_service_path_acl(
+        path,
+        service_sid=service_sid,
+        client_sids=frozenset({client_sid}),
+        service_requires_write=True,
+    )
+except Exception as exc:
+    print(json.dumps({"blocked": True, "error_type": type(exc).__name__, "message": str(exc)}))
+else:
+    print(json.dumps({"blocked": False, "error_type": None, "message": ""}))
+'@ $sentinel $Results.artifacts.service_sid $agent.Sid
+    if ($LASTEXITCODE -ne 0) { throw 'DACL tamper preflight command failed' }
+    $daclProbeResult = $daclProbe | ConvertFrom-Json
+    $Results.artifacts.dacl_tamper_preflight = $daclProbeResult
     $tamperBlocked = $false
     try {
         Start-Service -Name $ServiceName -ErrorAction Stop
@@ -253,7 +297,9 @@ try {
     } catch {
         $tamperBlocked = $true
     }
-    $Results.checks.dacl_tamper_blocks_service_readiness = $tamperBlocked
+    $Results.checks.dacl_tamper_blocks_service_readiness = $tamperBlocked -and `
+        [bool]$daclProbeResult.blocked -and `
+        [string]$daclProbeResult.error_type -eq 'ProvenanceServiceConfigurationError'
     $tamperedService = Get-Service -Name $ServiceName
     if ($tamperedService.Status -ne 'Stopped') {
         Stop-Service -Name $ServiceName -Force
@@ -314,7 +360,8 @@ try {
     Wait-ServiceState -State Stopped
     $Results.checks.scm_stop = (Get-Service -Name $ServiceName).Status -eq 'Stopped'
     $verification = @()
-    foreach ($log in Get-ChildItem -LiteralPath (Join-Path $ServiceRoot 'ledger') -Filter '*.jsonl') {
+    foreach ($log in Get-ChildItem -LiteralPath (Join-Path $ServiceRoot 'ledger') -Filter '*.jsonl' |
+        Where-Object { $_.Name -ne 'session_index.jsonl' }) {
         $sessionId = $log.BaseName
         $json = & $PythonExe -c @'
 import json, pathlib, sys
@@ -344,6 +391,27 @@ print(json.dumps({
     $Results.artifacts.chain_verification = $verification
     $Results.checks.all_chains_verify_offline = $verification.Count -gt 0 -and `
         @($verification | Where-Object { -not $_.ok }).Count -eq 0
+    $indexPath = Join-Path $ServiceRoot 'ledger\session_index.jsonl'
+    $indexJson = & $PythonExe -c @'
+import json, pathlib, sys
+from enterprise.session_index import verify_index_file
+
+path = pathlib.Path(sys.argv[1])
+public_key = bytes.fromhex(sys.argv[2])
+agent_id = sys.argv[3]
+ok, message, count = verify_index_file(
+    path,
+    public_key=public_key,
+    expected_agent_id=agent_id,
+    require_signatures=True,
+)
+print(json.dumps({"count": count, "message": message, "ok": ok, "path": str(path)}))
+'@ $indexPath $servicePublicKeyHex $serviceAgentId
+    if ($LASTEXITCODE -ne 0) { throw 'offline session-index verification command failed' }
+    $indexVerification = $indexJson | ConvertFrom-Json
+    $Results.artifacts.session_index_verification = $indexVerification
+    $Results.checks.session_index_verifies_offline = [bool]$indexVerification.ok -and `
+        [int]$indexVerification.count -gt 0
     $Results.artifacts.wheel_sha256 = $wheelHash
     $Results.artifacts.source_commit = $sourceCommit
     $Results.artifacts.deploy_script_sha256 = (
@@ -371,7 +439,7 @@ print(json.dumps({
             Get-FileHash -LiteralPath $TranscriptPath -Algorithm SHA256
         ).Hash.ToLowerInvariant()
     }
-    if ($ServiceInstalled -and (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) {
+    if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
         try {
             & $DeployScript -Action Uninstall -PythonExe $PythonExe -RootPath $ServiceRoot -PurgeData
             $Results.checks.rollback_uninstall = -not [bool](Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)

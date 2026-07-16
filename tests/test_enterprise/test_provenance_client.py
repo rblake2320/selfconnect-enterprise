@@ -7,7 +7,10 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-from enterprise.provenance_client import ProvenanceServiceLedgerAdapter
+from enterprise.provenance_client import (
+    DiscoveringProvenancePipeClient,
+    ProvenanceServiceLedgerAdapter,
+)
 from enterprise.provenance_service_core import ProvenanceServiceUnavailable
 
 
@@ -58,3 +61,62 @@ def test_ledger_adapter_denial_is_fail_closed():
     )
     with pytest.raises(ProvenanceServiceUnavailable, match="denied evidence commit"):
         adapter.log("operator_control")
+
+
+def test_discovering_client_uses_fresh_pinned_endpoint_each_submission(tmp_path, monkeypatch):
+    endpoint = tmp_path / "current.json"
+    service_key = b"k" * 32
+    observed = []
+
+    class CapturingClient:
+        def __init__(self, **kwargs):
+            observed.append(kwargs)
+
+        def submit(self, request):
+            return {"ok": True, "request": request}
+
+    monkeypatch.setattr("enterprise.provenance_client.ProvenancePipeClient", CapturingClient)
+    client = DiscoveringProvenancePipeClient(
+        endpoint_file=endpoint,
+        expected_service_sid="S-1-5-80-123",
+        service_agent_id="SC-12345678",
+        service_algorithm="ed25519",
+        service_public_key=service_key,
+        timeout_ms=1000,
+    )
+    for suffix in ("a" * 32, "b" * 32):
+        endpoint.write_text(
+            (
+                '{"pipe_name":"\\\\\\\\.\\\\pipe\\\\SelfConnectProvenance.v1.'
+                + suffix
+                + '","service_agent_id":"SC-12345678",'
+                '"service_sid":"S-1-5-80-123",'
+                '"version":"selfconnect.provenance.endpoint.v1"}'
+            ),
+            encoding="utf-8",
+        )
+        assert client.submit({"request_id": suffix})["ok"]
+    assert [item["pipe_name"] for item in observed] == [
+        rf"\\.\pipe\SelfConnectProvenance.v1.{'a' * 32}",
+        rf"\\.\pipe\SelfConnectProvenance.v1.{'b' * 32}",
+    ]
+
+
+def test_discovering_client_rejects_unpinned_endpoint(tmp_path):
+    endpoint = tmp_path / "current.json"
+    endpoint.write_text(
+        '{"pipe_name":"\\\\\\\\.\\\\pipe\\\\Other.x",'
+        '"service_agent_id":"SC-12345678","service_sid":"S-1-5-80-123",'
+        '"version":"selfconnect.provenance.endpoint.v1"}',
+        encoding="utf-8",
+    )
+    client = DiscoveringProvenancePipeClient(
+        endpoint_file=endpoint,
+        expected_service_sid="S-1-5-80-123",
+        service_agent_id="SC-12345678",
+        service_algorithm="ed25519",
+        service_public_key=b"k" * 32,
+        timeout_ms=1000,
+    )
+    with pytest.raises(ProvenanceServiceUnavailable, match="pipe name is invalid"):
+        client.submit({})

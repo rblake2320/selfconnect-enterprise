@@ -69,7 +69,12 @@ filesystem ACL construction and verification, a versioned signed local pipe,
 OS-token enrollment binding, durable replay/idempotency state, recovery repair,
 signed high-water updates, an offline verifier for both agent attestations, a
 fail-closed hardened-profile client, administrator enrollment, deployment, and
-installed-service acceptance tooling.
+installed-service acceptance tooling. Independent review then reproduced an
+unsigned-index rollback, existing-file ACL drift, restart pipe squatting,
+partial service registration, and unbound wheel evidence. The implementation
+now signs and strictly verifies every index entry, verifies all existing files,
+rotates/discovers a 128-bit endpoint on every service start, rolls back partial
+registration, and binds the wheel's complete runtime tree to the clean commit.
 
 **Reason:** A signed recorder in the same process as the governed runtime did
 not prevent a compromised agent process from attempting direct ledger writes,
@@ -84,9 +89,12 @@ and unit tests did not establish the Windows service boundary required by issue
 [WHY-20260716-009](WHY.md#why-20260716-009), and
 [PARK-20260716-009](PARKED.md#park-20260716-009).
 
-**Validation:** Focused provenance, service, control-plane, WORM, deployment,
-and real Windows named-pipe tests passed before publication. The installed SCM,
-distinct non-admin token, forced restart, DACL tamper, offline chain, and
+**Validation:** Clean Python 3.12 environment: Ruff clean and `1496 passed, 34
+skipped` across the full suite after the independent-review corrections.
+Focused review regressions include a recomputed-hash index rewrite with an
+invalid signature, per-start endpoint rediscovery, exact wheel/source mismatch,
+existing-file ACL drift, and partial-registration cleanup. The installed SCM,
+distinct non-admin token, forced restart, DACL tamper, offline chain/index, and
 rollback evidence is recorded separately because unit tests cannot close issue
 #16.
 

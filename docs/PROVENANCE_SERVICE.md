@@ -11,7 +11,11 @@ an ATO, or a substitute for an independently administered retention system.
   service SID and configured restart actions.
 - Only that service SID, SYSTEM, and Administrators receive authority on the
   service root. Enrolled client SIDs do not receive ledger write authority.
-- The local named pipe uses `FILE_FLAG_FIRST_PIPE_INSTANCE`,
+- Each service start creates a fresh 128-bit named-pipe endpoint and publishes
+  it only after the pipe is live through the service-owned endpoint file.
+  Clients rediscover that endpoint for each submission, so a process holding a
+  prior pipe name cannot block service restart. The pipe also uses
+  `FILE_FLAG_FIRST_PIPE_INSTANCE`,
   `PIPE_REJECT_REMOTE_CLIENTS`, an explicit DACL, bounded instances and frames,
   request deadlines, and client/server SID pinning.
 - A request is accepted only when its OS token presents exactly one enrolled
@@ -42,7 +46,8 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 refuses installation unless `s3` or `r2` is selected, and the chosen provider's
 retention configuration still requires live verification.
 
-Manage enrollments as an administrator, then restart the service:
+Manage enrollments as an administrator, reapply the endpoint read ACL, then
+restart the service:
 
 ```powershell
 scent-provenance-admin enroll `
@@ -50,17 +55,25 @@ scent-provenance-admin enroll `
   --algorithm ed25519 `
   --public-key-hex ... `
   --sid S-1-5-21-...
+.\deploy\provenance_service.ps1 -Action RepairAcl
 Restart-Service SelfConnectProvenance
 ```
+
+Hardened clients set `SC_PROVENANCE_ENDPOINT_FILE` to the installed service's
+`endpoint\current.json` path. They still pin the service SID, agent ID, and
+public key; endpoint discovery does not replace cryptographic server
+verification.
 
 ## Acceptance Drill
 
 The acceptance script creates disposable non-admin users, installs the reviewed
 wheel through SCM, runs valid and adversarial requests under distinct tokens,
-tests direct filesystem denial, pipe squatting, DACL tamper refusal, forced
+tests direct filesystem denial, restart while an obsolete pipe name is held,
+DACL tamper refusal on an existing ledger file, forced
 process restart during concurrent submissions, offline signature/chain
-verification, and uninstall rollback. It does not print passwords or private
-keys.
+verification of both ledgers and the signed session index, source-to-wheel
+binding, partial-install rollback, and uninstall rollback. It does not print
+passwords or private keys.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `

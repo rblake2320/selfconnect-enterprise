@@ -44,6 +44,7 @@ from enterprise.provenance import (
 
 _DEFAULT_INDEX_FILENAME = "session_index.jsonl"
 _INDEX_DIR_ENV = "SC_PROVENANCE_DIR"
+_INDEX_RECORD_VERSION = 2
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +155,7 @@ class SessionIndex:
         index_dir: Optional[Path] = None,
         identity: Any = None,
         replication_sink: Optional[ReplicationSink] = None,
+        require_signatures: bool | None = None,
     ) -> None:
         if index_dir is None:
             env_dir = os.environ.get(_INDEX_DIR_ENV)
@@ -164,6 +166,11 @@ class SessionIndex:
         self._index_path = self._index_dir / _DEFAULT_INDEX_FILENAME
         self._identity = identity
         self._replication_sink = replication_sink
+        self._require_signatures = identity is not None if require_signatures is None else bool(
+            require_signatures
+        )
+        if self._require_signatures and identity is None:
+            raise SessionIndexError("signed session index requires a signing identity")
         self._lock = threading.Lock()
         self._prev_hash = "0" * 96
         self._entries: dict[str, SessionManifestEntry] = {}
@@ -324,11 +331,14 @@ class SessionIndex:
             fork_suspected = False
             if self._replication_sink is not None:
                 remote_receipt = self._replication_sink.get_latest_receipt(session_id)
-                if remote_receipt and entry.remote_receipt:
-                    local_root = entry.remote_receipt.get("root", "")
-                    remote_root = remote_receipt.get("root", "")
-                    if local_root and remote_root and local_root != remote_root:
+                if remote_receipt:
+                    if not entry.remote_receipt:
                         fork_suspected = True
+                    else:
+                        local_root = entry.remote_receipt.get("root", "")
+                        remote_root = remote_receipt.get("root", "")
+                        if not local_root or not remote_root or local_root != remote_root:
+                            fork_suspected = True
 
             if rollback_suspected or fork_suspected:
                 reasons = []
@@ -358,33 +368,23 @@ class SessionIndex:
             )
 
     def verify_index_chain(self) -> tuple[bool, str]:
-        """Verify the hash chain of the index file itself."""
+        """Verify the hash chain and required signatures of the index file."""
         with self._lock:
-            if not self._index_path.exists():
-                return True, "no index file"
-            prev = "0" * 96
-            count = 0
             try:
-                with open(self._index_path, encoding="utf-8") as fh:
-                    for lineno, line in enumerate(fh, 1):
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            record = json.loads(line)
-                        except json.JSONDecodeError as exc:
-                            return False, f"JSON error at line {lineno}: {exc}"
-                        stored_prev = record.get("prev_hash", "")
-                        if stored_prev != prev:
-                            return False, (
-                                f"index chain break at line {lineno}: "
-                                f"expected {prev[:16]}… got {stored_prev[:16]}…"
-                            )
-                        prev = canonical_hash(record)
-                        count += 1
-            except OSError as exc:
-                return False, f"read error: {exc}"
-            return True, f"{count} index entries, chain intact"
+                records, _prev = _validated_index_records(
+                    self._index_path,
+                    public_key=(
+                        self._identity.public_key_bytes if self._identity is not None else None
+                    ),
+                    expected_agent_id=(
+                        self._identity.agent_id if self._identity is not None else None
+                    ),
+                    require_signatures=self._require_signatures,
+                )
+            except SessionIndexError as exc:
+                return False, str(exc)
+            qualifier = "signed " if self._require_signatures else ""
+            return True, f"{len(records)} {qualifier}index entries, chain intact"
 
     # ── Internal ──────────────────────────────────────────────────────────
 
@@ -395,30 +395,36 @@ class SessionIndex:
         self._loaded = True
 
     def _load(self) -> None:
-        """Load existing index entries from disk."""
-        if not self._index_path.exists():
-            return
-        try:
-            with open(self._index_path, encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                        entry = SessionManifestEntry.from_dict(d)
-                        # Keep the latest entry per session_id
-                        self._entries[entry.session_id] = entry
-                        self._prev_hash = canonical_hash(d)
-                    except (json.JSONDecodeError, KeyError):
-                        pass
-        except OSError:
-            pass
+        """Load only a fully verified index; malformed evidence fails closed."""
+        records, previous = _validated_index_records(
+            self._index_path,
+            public_key=(self._identity.public_key_bytes if self._identity is not None else None),
+            expected_agent_id=(self._identity.agent_id if self._identity is not None else None),
+            require_signatures=self._require_signatures,
+        )
+        for record in records:
+            entry = SessionManifestEntry.from_dict(record)
+            if not entry.session_id:
+                raise SessionIndexError("session index entry has an empty session_id")
+            self._entries[entry.session_id] = entry
+        self._prev_hash = previous
 
     def _write_entry(self, entry: SessionManifestEntry) -> None:
         """Append a manifest entry to the index file."""
         self._index_dir.mkdir(parents=True, exist_ok=True)
         d = entry.to_dict()
+        if self._identity is not None:
+            d["index_record_version"] = _INDEX_RECORD_VERSION
+            d["signer_agent_id"] = self._identity.agent_id
+            d["signer_public_key_hex"] = self._identity.public_key_bytes.hex()
+            try:
+                d["entry_signature"] = self._identity.sign(
+                    _index_signing_bytes(d)
+                ).hex()
+            except Exception as exc:
+                raise SessionIndexError(f"Failed to sign session index entry: {exc}") from exc
+        elif self._require_signatures:
+            raise SessionIndexError("signed session index has no signing identity")
         entry.entry_hash = canonical_hash(d)
         d["entry_hash"] = entry.entry_hash
         self._entries[entry.session_id] = entry
@@ -433,6 +439,113 @@ class SessionIndex:
                 os.fsync(fh.fileno())
         except OSError as exc:
             raise SessionIndexError(f"Failed to write session index: {exc}") from exc
+
+
+def verify_index_file(
+    index_path: Path,
+    *,
+    public_key: bytes | None = None,
+    expected_agent_id: str | None = None,
+    require_signatures: bool = False,
+) -> tuple[bool, str, int]:
+    """Offline verification for a session index using a separately trusted key."""
+    try:
+        records, _previous = _validated_index_records(
+            Path(index_path),
+            public_key=public_key,
+            expected_agent_id=expected_agent_id,
+            require_signatures=require_signatures,
+        )
+    except SessionIndexError as exc:
+        return False, str(exc), 0
+    qualifier = "signed " if require_signatures else ""
+    return True, f"{len(records)} {qualifier}index entries, chain intact", len(records)
+
+
+def _index_signing_bytes(record: dict[str, Any]) -> bytes:
+    unsigned = {
+        key: value
+        for key, value in record.items()
+        if key not in {"entry_hash", "entry_signature"}
+    }
+    return json.dumps(
+        unsigned,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+
+
+def _verify_index_signature(record: dict[str, Any], public_key: bytes) -> bool:
+    try:
+        signature = bytes.fromhex(str(record.get("entry_signature", "")))
+    except ValueError:
+        return False
+    payload = _index_signing_bytes(record)
+    if len(public_key) == 32:
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+            Ed25519PublicKey.from_public_bytes(public_key).verify(signature, payload)
+            return True
+        except Exception:
+            return False
+    if len(public_key) == 96:
+        try:
+            from enterprise.crypto import cng_verify
+
+            return bool(cng_verify(payload, signature, public_key))
+        except Exception:
+            return False
+    return False
+
+
+def _validated_index_records(
+    index_path: Path,
+    *,
+    public_key: bytes | None,
+    expected_agent_id: str | None,
+    require_signatures: bool,
+) -> tuple[list[dict[str, Any]], str]:
+    if not index_path.exists():
+        return [], "0" * 96
+    previous = "0" * 96
+    records: list[dict[str, Any]] = []
+    try:
+        lines = index_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise SessionIndexError(f"session index read failed: {exc}") from exc
+    for lineno, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise SessionIndexError(f"session index JSON error at line {lineno}: {exc}") from exc
+        if not isinstance(record, dict):
+            raise SessionIndexError(f"session index line {lineno} is not an object")
+        if record.get("prev_hash") != previous:
+            raise SessionIndexError(f"session index chain break at line {lineno}")
+        stored_hash = record.get("entry_hash")
+        if not isinstance(stored_hash, str) or len(stored_hash) != 96:
+            raise SessionIndexError(f"session index entry hash missing at line {lineno}")
+        without_hash = {key: value for key, value in record.items() if key != "entry_hash"}
+        if canonical_hash(without_hash) != stored_hash:
+            raise SessionIndexError(f"session index entry hash mismatch at line {lineno}")
+        if require_signatures:
+            if record.get("index_record_version") != _INDEX_RECORD_VERSION:
+                raise SessionIndexError(f"signed session index version missing at line {lineno}")
+            if public_key is None:
+                raise SessionIndexError("signed session index verification key is missing")
+            if expected_agent_id is not None and record.get("signer_agent_id") != expected_agent_id:
+                raise SessionIndexError(f"session index signer mismatch at line {lineno}")
+            if record.get("signer_public_key_hex") != public_key.hex():
+                raise SessionIndexError(f"session index public key mismatch at line {lineno}")
+            if not _verify_index_signature(record, public_key):
+                raise SessionIndexError(f"session index signature invalid at line {lineno}")
+        records.append(record)
+        previous = canonical_hash(record)
+    return records, previous
 
 
 # ---------------------------------------------------------------------------

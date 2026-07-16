@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from enterprise.audit_config import AuditConfig, AuditMode as ConfigAuditMode, WormSinkType
-from enterprise.provenance import SessionEventType, SessionState
+from enterprise.provenance import SessionEventType, SessionState, canonical_hash
 from enterprise.provenance_service import (
     ProvenanceRecorderManager,
     ProvenanceServiceConfigurationError,
@@ -108,6 +108,29 @@ def test_manager_refuses_resume_after_valid_tail_records_are_removed(tmp_path):
         manager(tmp_path, identity)(session_id, None)
 
 
+def test_manager_refuses_rewritten_signed_high_water_index(tmp_path):
+    identity = FakeIdentity()
+    session_id = str(uuid.uuid4())
+    first_manager = manager(tmp_path, identity)
+    recorder = first_manager(session_id, None)
+    recorder.record(SessionEventType.TOOL_CALL, payload={"action": "one"})
+    first_manager.note_commit(recorder)
+    first_manager.interrupt_all("test_restart")
+
+    index_path = tmp_path / "session_index.jsonl"
+    lines = index_path.read_text(encoding="utf-8").splitlines()
+    rewritten = json.loads(lines[-1])
+    rewritten["last_known_seq"] = 1
+    rewritten["remote_receipt"] = None
+    rewritten.pop("entry_hash")
+    rewritten["entry_hash"] = canonical_hash(rewritten)
+    lines[-1] = json.dumps(rewritten, sort_keys=True, separators=(",", ":"))
+    index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(ProvenanceServiceConfigurationError, match="session index"):
+        manager(tmp_path, identity)(session_id, None)
+
+
 def test_manager_rejects_consumer_mode(tmp_path):
     with pytest.raises(ProvenanceServiceConfigurationError, match="consumer"):
         ProvenanceRecorderManager(
@@ -134,17 +157,17 @@ def test_path_acl_accepts_service_only_write_and_rejects_client_write(tmp_path):
     service_sid = win32security.ConvertSidToStringSid(service_sid_obj)
     client_sid = "S-1-5-21-1-2-3-1001"
 
-    def set_dacl(client_write=False):
+    def set_dacl(client_read=False, client_write=False):
         dacl = win32security.ACL()
         dacl.AddAccessAllowedAce(
             win32security.ACL_REVISION,
             win32con.GENERIC_ALL,
             service_sid_obj,
         )
-        if client_write:
+        if client_read or client_write:
             dacl.AddAccessAllowedAce(
                 win32security.ACL_REVISION,
-                win32con.GENERIC_WRITE,
+                win32con.GENERIC_WRITE if client_write else win32con.GENERIC_READ,
                 win32security.ConvertStringSidToSid(client_sid),
             )
         descriptor = win32security.SECURITY_DESCRIPTOR()
@@ -159,7 +182,7 @@ def test_path_acl_accepts_service_only_write_and_rejects_client_write(tmp_path):
             descriptor,
         )
 
-    set_dacl()
+    set_dacl(client_read=True)
     verify_service_path_acl(
         path,
         service_sid=service_sid,
@@ -167,7 +190,7 @@ def test_path_acl_accepts_service_only_write_and_rejects_client_write(tmp_path):
         service_requires_write=True,
     )
     set_dacl(client_write=True)
-    with pytest.raises(ProvenanceServiceConfigurationError, match="unexpected allowed SID"):
+    with pytest.raises(ProvenanceServiceConfigurationError, match="direct write authority"):
         verify_service_path_acl(
             path,
             service_sid=service_sid,

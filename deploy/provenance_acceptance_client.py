@@ -11,6 +11,7 @@ import hashlib
 import json
 import time
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -79,13 +80,67 @@ def _identity(config: dict[str, Any]) -> AgentIdentity:
     )
 
 
+def verify_wheel(args: argparse.Namespace) -> int:
+    repo_root = args.repo_root.resolve()
+    source_root = repo_root / "enterprise"
+    source_files = sorted(
+        path.relative_to(repo_root).as_posix()
+        for path in source_root.rglob("*.py")
+        if path.is_file()
+    )
+    mismatches: list[str] = []
+    digest = hashlib.sha256()
+    with zipfile.ZipFile(args.wheel) as archive:
+        wheel_files = sorted(
+            name
+            for name in archive.namelist()
+            if name.startswith("enterprise/") and name.endswith(".py")
+        )
+        if wheel_files != source_files:
+            missing = sorted(set(source_files) - set(wheel_files))
+            extra = sorted(set(wheel_files) - set(source_files))
+            mismatches.extend(f"missing:{name}" for name in missing)
+            mismatches.extend(f"extra:{name}" for name in extra)
+        for name in sorted(set(source_files) & set(wheel_files)):
+            source_bytes = (repo_root / Path(name)).read_bytes()
+            wheel_bytes = archive.read(name)
+            if source_bytes != wheel_bytes:
+                mismatches.append(f"content:{name}")
+            digest.update(name.encode("utf-8") + b"\0" + wheel_bytes)
+    result = {
+        "file_count": len(source_files),
+        "mismatches": mismatches,
+        "ok": not mismatches,
+        "runtime_tree_sha256": digest.hexdigest(),
+        "wheel_sha256": hashlib.sha256(args.wheel.read_bytes()).hexdigest(),
+    }
+    _write_json(args.output, result)
+    return 0 if result["ok"] else 1
+
+
+def _resolve_pipe_name(config: dict[str, Any]) -> str:
+    endpoint = json.loads(Path(config["endpoint_file"]).read_text(encoding="utf-8"))
+    if not isinstance(endpoint, dict) or endpoint.get("version") != (
+        "selfconnect.provenance.endpoint.v1"
+    ):
+        raise ValueError("invalid provenance endpoint")
+    if endpoint.get("service_sid") != config["service_sid"]:
+        raise ValueError("provenance endpoint SID mismatch")
+    if endpoint.get("service_agent_id") != config["service_agent_id"]:
+        raise ValueError("provenance endpoint identity mismatch")
+    pipe_name = str(endpoint.get("pipe_name", ""))
+    if not pipe_name.startswith(r"\\.\pipe\SelfConnectProvenance.v1."):
+        raise ValueError("invalid provenance endpoint pipe")
+    return pipe_name
+
+
 def _client(config: dict[str, Any]) -> ProvenancePipeClient:
     return ProvenancePipeClient(
         expected_service_sid=str(config["service_sid"]),
         service_agent_id=str(config["service_agent_id"]),
         service_algorithm=str(config["service_algorithm"]),
         service_public_key=bytes.fromhex(str(config["service_public_key_hex"])),
-        pipe_name=str(config["pipe_name"]),
+        pipe_name=_resolve_pipe_name(config),
         timeout_ms=int(config.get("timeout_ms", 5_000)),
     )
 
@@ -230,7 +285,7 @@ def exercise(args: argparse.Namespace) -> int:
             service_agent_id=str(config["service_agent_id"]),
             service_algorithm=str(config["service_algorithm"]),
             service_public_key=bytes.fromhex(str(config["service_public_key_hex"])),
-            pipe_name=str(config["pipe_name"]),
+            pipe_name=_resolve_pipe_name(config),
         ).submit(build_record_request(identity, event_type=SessionEventType.TOOL_CALL))
     except ProvenancePipeError:
         wrong_sid_denied = True
@@ -242,7 +297,7 @@ def exercise(args: argparse.Namespace) -> int:
             service_agent_id=str(config["service_agent_id"]),
             service_algorithm="ed25519",
             service_public_key=b"\0" * 32,
-            pipe_name=str(config["pipe_name"]),
+            pipe_name=_resolve_pipe_name(config),
         ).submit(build_record_request(identity, event_type=SessionEventType.TOOL_CALL))
     except ProvenancePipeError:
         wrong_key_denied = True
@@ -256,11 +311,11 @@ def exercise(args: argparse.Namespace) -> int:
         "wrong_agent_denied": _denial(client.submit(wrong_agent), "unknown_agent"),
         "unsupported_version_denied": _denial(client.submit(unsupported), "unsupported_protocol"),
         "malformed_denied": _denial(
-            _raw_exchange(str(config["pipe_name"]), b"{not-json"),
+            _raw_exchange(_resolve_pipe_name(config), b"{not-json"),
             "invalid_json",
         ),
         "oversized_denied": _denial(
-            _raw_exchange(str(config["pipe_name"]), b"x" * (MAX_FRAME_BYTES + 1)),
+            _raw_exchange(_resolve_pipe_name(config), b"x" * (MAX_FRAME_BYTES + 1)),
             "frame_too_large",
         ),
         "wrong_server_sid_denied": wrong_sid_denied,
@@ -283,9 +338,10 @@ def probe_connect(args: argparse.Namespace) -> int:
     denied = False
     code = None
     try:
-        win32pipe.WaitNamedPipe(str(config["pipe_name"]), 2_000)
+        pipe_name = _resolve_pipe_name(config)
+        win32pipe.WaitNamedPipe(pipe_name, 2_000)
         handle = win32file.CreateFile(
-            str(config["pipe_name"]),
+            pipe_name,
             _PIPE_ACCESS,
             0,
             None,
@@ -293,9 +349,10 @@ def probe_connect(args: argparse.Namespace) -> int:
             SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
             None,
         )
-    except pywintypes.error as exc:
+    except (OSError, ValueError, json.JSONDecodeError, pywintypes.error) as exc:
         denied = True
-        code = int(exc.winerror)
+        winerror_value = getattr(exc, "winerror", None)
+        code = int(winerror_value) if winerror_value is not None else None
     else:
         win32file.CloseHandle(handle)
     _write_json(args.output, {"access_denied": denied, "winerror": code})
@@ -303,9 +360,8 @@ def probe_connect(args: argparse.Namespace) -> int:
 
 
 def hold_pipe(args: argparse.Namespace) -> int:
-    config = _load_config(args.config)
     handle = win32pipe.CreateNamedPipe(
-        str(config["pipe_name"]),
+        str(args.pipe_name),
         win32pipe.PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
         win32pipe.PIPE_TYPE_MESSAGE
         | win32pipe.PIPE_READMODE_MESSAGE
@@ -399,6 +455,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
 
+    wheel_parser = commands.add_parser("verify-wheel")
+    wheel_parser.add_argument("--wheel", type=Path, required=True)
+    wheel_parser.add_argument("--repo-root", type=Path, required=True)
+    wheel_parser.add_argument("--output", type=Path, required=True)
+    wheel_parser.set_defaults(func=verify_wheel)
+
     bootstrap_parser = commands.add_parser("bootstrap")
     bootstrap_parser.add_argument("--identity-dir", type=Path, required=True)
     bootstrap_parser.add_argument("--name", default="provenance-acceptance-agent")
@@ -417,6 +479,7 @@ def main(argv: list[str] | None = None) -> int:
 
     hold_parser = commands.add_parser("hold-pipe")
     hold_parser.add_argument("--config", type=Path, required=True)
+    hold_parser.add_argument("--pipe-name", required=True)
     hold_parser.add_argument("--ready", type=Path, required=True)
     hold_parser.add_argument("--stop", type=Path, required=True)
     hold_parser.add_argument("--timeout", type=float, default=30.0)

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import secrets
+import stat
 import sys
 import threading
 from dataclasses import dataclass
@@ -24,7 +26,7 @@ from enterprise.provenance_pipe import (
 )
 from enterprise.provenance_service_core import ProvenanceRequestStore, ProvenanceServiceCore
 from enterprise.service import _validate_env_path
-from enterprise.session_index import SessionIndex
+from enterprise.session_index import SessionIndex, SessionIndexError
 from enterprise.worm_service import build_provenance_recorder, make_replication_sink
 
 try:
@@ -83,6 +85,8 @@ class ProvenanceServicePaths:
     root: Path
     config_dir: Path
     enrollment_file: Path
+    endpoint_dir: Path
+    endpoint_file: Path
     identity_dir: Path
     ledger_dir: Path
     log_file: Path
@@ -101,12 +105,15 @@ class ProvenanceServicePaths:
         )
         config_dir = root / "config"
         identity_dir = root / "identity"
+        endpoint_dir = root / "endpoint"
         ledger_dir = root / "ledger"
         state_dir = root / "state"
         return cls(
             root=root,
             config_dir=config_dir,
             enrollment_file=config_dir / "enrollments.json",
+            endpoint_dir=endpoint_dir,
+            endpoint_file=endpoint_dir / "current.json",
             identity_dir=identity_dir,
             ledger_dir=ledger_dir,
             log_file=state_dir / "service.log",
@@ -152,6 +159,9 @@ def verify_service_path_acl(
     """Fail startup on broad or client write authority and missing service rights."""
     if not path.exists():
         raise ProvenanceServiceConfigurationError(f"required hardened path is missing: {path}")
+    attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    if attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
+        raise ProvenanceServiceConfigurationError(f"hardened path is a reparse point: {path}")
     owner = _path_owner(path)
     if owner not in _FILESYSTEM_AUTHORITY_SIDS:
         raise ProvenanceServiceConfigurationError(
@@ -169,7 +179,7 @@ def verify_service_path_acl(
             raise ProvenanceServiceConfigurationError(
                 f"unsupported ACE type {ace_type} on hardened path {path}"
             )
-        if sid not in _FILESYSTEM_AUTHORITY_SIDS | {service_sid}:
+        if sid not in _FILESYSTEM_AUTHORITY_SIDS | {service_sid} | set(client_sids):
             raise ProvenanceServiceConfigurationError(
                 f"unexpected allowed SID {sid} on hardened path {path}"
             )
@@ -189,6 +199,43 @@ def verify_service_path_acl(
         raise ProvenanceServiceConfigurationError(
             f"service SID lacks complete required {mode} authority on {path}"
         )
+
+
+def verify_service_tree_acls(
+    root: Path,
+    *,
+    service_sid: str,
+    client_sids: frozenset[str],
+    service_requires_write: bool,
+) -> None:
+    """Verify every existing directory and file without following reparse points."""
+    pending = [Path(root)]
+    while pending:
+        current = pending.pop()
+        verify_service_path_acl(
+            current,
+            service_sid=service_sid,
+            client_sids=client_sids,
+            service_requires_write=service_requires_write,
+        )
+        if not current.is_dir():
+            continue
+        try:
+            children = list(os.scandir(current))
+        except OSError as exc:
+            raise ProvenanceServiceConfigurationError(
+                f"cannot enumerate hardened path {current}: {exc}"
+            ) from exc
+        for child in children:
+            child_path = Path(child.path)
+            attributes = getattr(child.stat(follow_symlinks=False), "st_file_attributes", 0)
+            if child.is_symlink() or attributes & getattr(
+                stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400
+            ):
+                raise ProvenanceServiceConfigurationError(
+                    f"hardened tree contains a reparse point: {child_path}"
+                )
+            pending.append(child_path)
 
 
 def current_process_sid() -> str:
@@ -219,6 +266,7 @@ class ProvenanceRecorderManager:
             index_dir=ledger_dir,
             identity=identity,
             replication_sink=make_replication_sink(audit_config),
+            require_signatures=True,
         )
         self.orchestrator_token = secrets.token_urlsafe(48)
         self._recorders: dict[str, ProvenanceRecorder] = {}
@@ -229,12 +277,22 @@ class ProvenanceRecorderManager:
             existing = self._recorders.get(session_id)
             if existing is not None:
                 return existing
-            manifest = self.index.get_session(session_id)
+            try:
+                manifest = self.index.get_session(session_id)
+            except SessionIndexError as exc:
+                raise ProvenanceServiceConfigurationError(
+                    f"session index verification failed: {exc}"
+                ) from exc
             resuming = manifest is not None
             if resuming:
                 if manifest.session_state == SessionState.SEALED.value:
                     raise ProvenanceServiceConfigurationError("sealed session cannot be resumed")
-                resume = self.index.verify_for_resume(session_id)
+                try:
+                    resume = self.index.verify_for_resume(session_id)
+                except SessionIndexError as exc:
+                    raise ProvenanceServiceConfigurationError(
+                        f"session index verification failed: {exc}"
+                    ) from exc
                 if not resume.ok:
                     raise ProvenanceServiceConfigurationError(
                         f"session resume verification failed: {resume.message}"
@@ -321,13 +379,14 @@ class ProvenanceServiceRuntime:
                 + ", ".join(sorted(prohibited))
             )
         for path, writable in [
+            (self.paths.root, False),
             (self.paths.config_dir, False),
-            (self.paths.enrollment_file, False),
+            (self.paths.endpoint_dir, True),
             (self.paths.identity_dir, True),
             (self.paths.ledger_dir, True),
             (self.paths.state_dir, True),
         ]:
-            verify_service_path_acl(
+            verify_service_tree_acls(
                 path,
                 service_sid=self.service_sid,
                 client_sids=self.registry.allowed_sids,
@@ -345,6 +404,18 @@ class ProvenanceServiceRuntime:
             ledger_dir=self.paths.ledger_dir,
         )
         self.request_store = ProvenanceRequestStore(self.paths.request_db)
+        for path, writable in [
+            (self.paths.identity_dir, True),
+            (self.paths.endpoint_dir, True),
+            (self.paths.ledger_dir, True),
+            (self.paths.state_dir, True),
+        ]:
+            verify_service_tree_acls(
+                path,
+                service_sid=self.service_sid,
+                client_sids=self.registry.allowed_sids,
+                service_requires_write=writable,
+            )
         self.core = ProvenanceServiceCore(
             registry=self.registry,
             request_store=self.request_store,
@@ -353,26 +424,71 @@ class ProvenanceServiceRuntime:
             on_commit=self.manager.note_commit,
         )
         instances = int(os.environ.get("SC_PROVENANCE_PIPE_INSTANCES", "4"))
+        self.pipe_name = f"{PIPE_NAME}.{secrets.token_hex(16)}"
         self.pipe = ProvenancePipeServer(
             self.core,
             ProvenancePipeConfig(
                 service_sid=self.service_sid,
                 client_sids=self.registry.allowed_sids,
-                pipe_name=PIPE_NAME,
+                pipe_name=self.pipe_name,
                 instances=instances,
             ),
         )
 
     def start(self) -> None:
         self.pipe.start()
+        try:
+            self._publish_endpoint()
+        except Exception:
+            self.pipe.stop()
+            raise
 
     def stop(self, reason: str = "service_stop") -> None:
-        self.manager.interrupt_all(reason)
-        self.pipe.stop()
+        try:
+            self.manager.interrupt_all(reason)
+        finally:
+            try:
+                self.pipe.stop()
+            finally:
+                self._remove_endpoint()
 
     @property
     def healthy(self) -> bool:
-        return self.pipe.healthy
+        return self.pipe.healthy and self.paths.endpoint_file.exists()
+
+    def _publish_endpoint(self) -> None:
+        value = {
+            "pipe_name": self.pipe_name,
+            "service_agent_id": self.identity.agent_id,
+            "service_sid": self.service_sid,
+            "version": "selfconnect.provenance.endpoint.v1",
+        }
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        temporary = self.paths.endpoint_file.with_name(
+            f".{self.paths.endpoint_file.name}.{secrets.token_hex(8)}.tmp"
+        )
+        try:
+            with temporary.open("x", encoding="utf-8") as handle:
+                handle.write(encoded + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.paths.endpoint_file)
+        finally:
+            temporary.unlink(missing_ok=True)
+        verify_service_path_acl(
+            self.paths.endpoint_file,
+            service_sid=self.service_sid,
+            client_sids=self.registry.allowed_sids,
+            service_requires_write=True,
+        )
+
+    def _remove_endpoint(self) -> None:
+        try:
+            value = json.loads(self.paths.endpoint_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if value.get("pipe_name") == self.pipe_name:
+            self.paths.endpoint_file.unlink(missing_ok=True)
 
 
 if _WIN32_SERVICE_AVAILABLE:

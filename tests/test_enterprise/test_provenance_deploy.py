@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tomllib
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -59,11 +60,45 @@ def test_acceptance_helper_imports_and_compiles():
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
+def test_wheel_binding_compares_every_runtime_source_file(tmp_path):
+    wheel = tmp_path / "runtime.whl"
+    output = tmp_path / "result.json"
+    sources = sorted((ROOT / "enterprise").rglob("*.py"))
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for source in sources:
+            archive.write(source, source.relative_to(ROOT).as_posix())
+    command = [
+        sys.executable,
+        "deploy/provenance_acceptance_client.py",
+        "verify-wheel",
+        "--wheel",
+        str(wheel),
+        "--repo-root",
+        str(ROOT),
+        "--output",
+        str(output),
+    ]
+    completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 0, completed.stderr
+
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for source in sources:
+            content = source.read_bytes()
+            if source.name == "session_index.py":
+                content += b"\n# injected mismatch\n"
+            archive.writestr(source.relative_to(ROOT).as_posix(), content)
+    completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 1
+
+
 def test_installer_has_explicit_acl_repair_and_no_silent_hardened_fallback():
     installer = (ROOT / "deploy/provenance_service.ps1").read_text(encoding="utf-8")
     assert "'RepairAcl'" in installer
     assert "Set-ProvenanceAcls" in installer
+    assert "Set-HardenedTreeFileAcls" in installer
     assert "pip install --force-reinstall --no-deps $wheel" in installer
+    assert "Failed to remove partial $ServiceName registration" in installer
+    assert "operator-requested post-registration acceptance fault" in installer
     service = (ROOT / "enterprise/provenance_service.py").read_text(encoding="utf-8")
     assert "dedicated provenance service refuses consumer audit mode" in service
     assert "process token is not the dedicated SelfConnectProvenance service SID" in service
@@ -75,12 +110,21 @@ def test_acceptance_requires_exact_source_and_proves_cross_restart_recovery():
     )
     assert "status --short --untracked-files=all" in acceptance
     assert "--untracked-files=no" not in acceptance
+    assert "if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)" in acceptance
     assert '$AgentUser = "scpa-$UserId"' in acceptance
     assert '$AnonymousUser = "scpx-$UserId"' in acceptance
     assert "recovered_after_error_count -gt 0" in acceptance
     assert "restartedService.ProcessId -eq $killedProcessId" in acceptance
+    assert "pipe_rotation_survives_old_name_squatting" in acceptance
+    assert "dacl_tamper_preflight" in acceptance
+    assert "session_index.jsonl" in acceptance
+    assert "verify_index_file" in acceptance
+    assert "verify-wheel" in acceptance
+    assert "wheel_matches_source_commit" in acceptance
+    assert "partial_install_rolls_back" in acceptance
 
     helper = (ROOT / "deploy/provenance_acceptance_client.py").read_text(encoding="utf-8")
     assert 'burst_parser.add_argument("--ready", type=Path, required=True)' in helper
     assert 'burst_parser.add_argument("--go", type=Path, required=True)' in helper
     assert '"recovered_after_error_count": recovered' in helper
+    assert "def verify_wheel(" in helper
