@@ -107,8 +107,15 @@ including `cryptography==49.0.0`, the full suite passed `1512 passed, 34
 skipped`; Ruff and `pip check` passed; and `pip-audit` found zero vulnerable
 dependencies across 46 scanned packages. The machine-wide interpreter remained
 correctly blocked because it still contained `cryptography==44.0.3`; that
-environment failure is not reported as a branch pass. Final exact-head
-cross-repository conformance and independent review are appended before merge.
+environment failure is not reported as a branch pass. An isolated portfolio
+layout then checked out Enterprise `4c6bea19e46763ccd29833f8ae5c6520ffc8fbe3`,
+BPC `772271e174769f91a980cc3ee69a6eb9cc36bf39`, and TSK
+`bc31c234100a6e6432d2ac5de82783fc136bc2ea`; installed and built both protocol
+workspaces; passed their Node, HA, and typecheck commands; passed the Ultra Node
+suite; and returned `PASS_WITH_NAMED_BLIND_SPOTS` with no failed executable
+controls from the release catalog
+(`f013ae5427170180ebd6b9424e72f3e378a0210f60b7f94fec6cac26e8a69610`).
+Final exact-head independent review is appended before merge.
 
 **Notes:** The run used a local memory witness and does not establish off-host
 immutability. A second Windows host is required to exercise remote-host pipe
