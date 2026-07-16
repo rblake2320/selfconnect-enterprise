@@ -156,6 +156,7 @@ def verify_service_path_acl(
     service_sid: str,
     client_sids: frozenset[str],
     service_requires_write: bool,
+    allow_service_owner: bool = False,
 ) -> None:
     """Fail startup on broad or client write authority and missing service rights."""
     if not path.exists():
@@ -164,9 +165,11 @@ def verify_service_path_acl(
     if attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
         raise ProvenanceServiceConfigurationError(f"hardened path is a reparse point: {path}")
     owner = _path_owner(path)
-    if owner not in _FILESYSTEM_AUTHORITY_SIDS:
+    allowed_owners = _FILESYSTEM_AUTHORITY_SIDS | ({service_sid} if allow_service_owner else set())
+    if owner not in allowed_owners:
         raise ProvenanceServiceConfigurationError(
-            f"hardened path owner is not SYSTEM or Administrators: {path} ({owner})"
+            "hardened path owner is not SYSTEM, Administrators, or the permitted "
+            f"dedicated service SID: {path} ({owner})"
         )
     service_rights = 0
     for ace_type, mask, sid in _path_dacl(path):
@@ -210,7 +213,8 @@ def verify_service_tree_acls(
     service_requires_write: bool,
 ) -> None:
     """Verify every existing directory and file without following reparse points."""
-    pending = [Path(root)]
+    root = Path(root)
+    pending = [root]
     while pending:
         current = pending.pop()
         verify_service_path_acl(
@@ -218,6 +222,7 @@ def verify_service_tree_acls(
             service_sid=service_sid,
             client_sids=client_sids,
             service_requires_write=service_requires_write,
+            allow_service_owner=current != root,
         )
         if not current.is_dir():
             continue
@@ -481,6 +486,7 @@ class ProvenanceServiceRuntime:
             service_sid=self.service_sid,
             client_sids=self.registry.allowed_sids,
             service_requires_write=True,
+            allow_service_owner=True,
         )
 
     def _remove_endpoint(self) -> None:

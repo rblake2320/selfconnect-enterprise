@@ -249,6 +249,44 @@ def test_path_acl_accepts_service_only_write_and_rejects_client_write(tmp_path):
         )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows owner contract")
+def test_path_acl_allows_exact_service_owner_only_for_runtime_descendants(tmp_path):
+    import win32api
+    import win32con
+    import win32security
+
+    path = tmp_path / "runtime-created.jsonl"
+    path.write_text("{}\n", encoding="ascii")
+    service_sid_obj, _domain, _kind = win32security.LookupAccountName(
+        "", win32api.GetUserNameEx(2)
+    )
+    service_sid = win32security.ConvertSidToStringSid(service_sid_obj)
+    dacl = win32security.ACL()
+    dacl.AddAccessAllowedAce(win32security.ACL_REVISION, win32con.GENERIC_ALL, service_sid_obj)
+    descriptor = win32security.SECURITY_DESCRIPTOR()
+    descriptor.SetSecurityDescriptorOwner(service_sid_obj, False)
+    descriptor.SetSecurityDescriptorDacl(True, dacl, False)
+    win32security.SetFileSecurity(
+        str(path),
+        win32security.DACL_SECURITY_INFORMATION | win32security.OWNER_SECURITY_INFORMATION,
+        descriptor,
+    )
+    with pytest.raises(ProvenanceServiceConfigurationError, match="permitted dedicated"):
+        verify_service_path_acl(
+            path,
+            service_sid=service_sid,
+            client_sids=frozenset(),
+            service_requires_write=True,
+        )
+    verify_service_path_acl(
+        path,
+        service_sid=service_sid,
+        client_sids=frozenset(),
+        service_requires_write=True,
+        allow_service_owner=True,
+    )
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows service command contract")
 def test_service_command_propagates_pywin32_failure_exit(monkeypatch):
     monkeypatch.setattr(
