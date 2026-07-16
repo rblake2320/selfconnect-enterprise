@@ -27,6 +27,7 @@ $BootstrapPath = Join-Path $AcceptanceRoot 'bootstrap.json'
 $WheelBindingPath = Join-Path $AcceptanceRoot 'wheel-binding.json'
 $ExercisePath = Join-Path $AcceptanceRoot 'exercise.json'
 $AnonymousPath = Join-Path $AcceptanceRoot 'anonymous.json'
+$DaclProbePath = Join-Path $AcceptanceRoot 'dacl-probe.json'
 $BurstPath = Join-Path $AcceptanceRoot 'burst.json'
 $BurstReady = Join-Path $AcceptanceRoot 'burst.ready'
 $BurstGo = Join-Path $AcceptanceRoot 'burst.go'
@@ -267,27 +268,11 @@ try {
     Invoke-Native {
         icacls.exe $sentinel /grant '*S-1-5-32-545:M'
     } 'existing ledger-file DACL tamper injection'
-    $daclProbe = & $PythonExe -c @'
-import json, pathlib, sys
-from enterprise.provenance_service import verify_service_path_acl
-
-path = pathlib.Path(sys.argv[1])
-service_sid = sys.argv[2]
-client_sid = sys.argv[3]
-try:
-    verify_service_path_acl(
-        path,
-        service_sid=service_sid,
-        client_sids=frozenset({client_sid}),
-        service_requires_write=True,
-    )
-except Exception as exc:
-    print(json.dumps({"blocked": True, "error_type": type(exc).__name__, "message": str(exc)}))
-else:
-    print(json.dumps({"blocked": False, "error_type": None, "message": ""}))
-'@ $sentinel $Results.artifacts.service_sid $agent.Sid
+    & $PythonExe $Helper verify-dacl --path $sentinel `
+        --service-sid $Results.artifacts.service_sid --client-sid $agent.Sid `
+        --output $DaclProbePath
     if ($LASTEXITCODE -ne 0) { throw 'DACL tamper preflight command failed' }
-    $daclProbeResult = $daclProbe | ConvertFrom-Json
+    $daclProbeResult = Get-Content -Raw $DaclProbePath | ConvertFrom-Json
     $Results.artifacts.dacl_tamper_preflight = $daclProbeResult
     $tamperBlocked = $false
     try {
@@ -363,52 +348,22 @@ else:
     foreach ($log in Get-ChildItem -LiteralPath (Join-Path $ServiceRoot 'ledger') -Filter '*.jsonl' |
         Where-Object { $_.Name -ne 'session_index.jsonl' }) {
         $sessionId = $log.BaseName
-        $json = & $PythonExe -c @'
-import json, pathlib, sys
-from enterprise.provenance import canonical_hash, verify_log
-
-path = pathlib.Path(sys.argv[1])
-session_id = sys.argv[2]
-public_key = bytes.fromhex(sys.argv[3])
-result = verify_log(path, session_id, recorder_public_key=public_key, require_recorder_signatures=True)
-records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-chain = [item for item in records if isinstance(item.get("seq"), int)]
-print(json.dumps({
-    "agent_attestations_verified": result.agent_attestations_verified,
-    "count": result.count,
-    "head_hash": canonical_hash(chain[-1]) if chain else None,
-    "high_water_seq": result.high_water_seq,
-    "message": result.message,
-    "ok": result.ok,
-    "path": str(path),
-    "session_id": session_id,
-    "signatures_verified": result.signatures_verified,
-}))
-'@ $log.FullName $sessionId $servicePublicKeyHex
+        $ledgerVerificationPath = Join-Path $AcceptanceRoot ("ledger-$sessionId.json")
+        & $PythonExe $Helper verify-ledger --path $log.FullName --session-id $sessionId `
+            --public-key-hex $servicePublicKeyHex --output $ledgerVerificationPath
         if ($LASTEXITCODE -ne 0) { throw "offline verification failed for $($log.FullName)" }
-        $verification += ($json | ConvertFrom-Json)
+        $verification += (Get-Content -Raw $ledgerVerificationPath | ConvertFrom-Json)
     }
     $Results.artifacts.chain_verification = $verification
     $Results.checks.all_chains_verify_offline = $verification.Count -gt 0 -and `
         @($verification | Where-Object { -not $_.ok }).Count -eq 0
     $indexPath = Join-Path $ServiceRoot 'ledger\session_index.jsonl'
-    $indexJson = & $PythonExe -c @'
-import json, pathlib, sys
-from enterprise.session_index import verify_index_file
-
-path = pathlib.Path(sys.argv[1])
-public_key = bytes.fromhex(sys.argv[2])
-agent_id = sys.argv[3]
-ok, message, count = verify_index_file(
-    path,
-    public_key=public_key,
-    expected_agent_id=agent_id,
-    require_signatures=True,
-)
-print(json.dumps({"count": count, "message": message, "ok": ok, "path": str(path)}))
-'@ $indexPath $servicePublicKeyHex $serviceAgentId
+    $indexVerificationPath = Join-Path $AcceptanceRoot 'session-index-verification.json'
+    & $PythonExe $Helper verify-index --path $indexPath `
+        --public-key-hex $servicePublicKeyHex --agent-id $serviceAgentId `
+        --output $indexVerificationPath
     if ($LASTEXITCODE -ne 0) { throw 'offline session-index verification command failed' }
-    $indexVerification = $indexJson | ConvertFrom-Json
+    $indexVerification = Get-Content -Raw $indexVerificationPath | ConvertFrom-Json
     $Results.artifacts.session_index_verification = $indexVerification
     $Results.checks.session_index_verifies_offline = [bool]$indexVerification.ok -and `
         [int]$indexVerification.count -gt 0

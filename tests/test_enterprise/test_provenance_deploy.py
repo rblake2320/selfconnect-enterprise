@@ -91,12 +91,35 @@ def test_wheel_binding_compares_every_runtime_source_file(tmp_path):
     assert completed.returncode == 1
 
 
+def test_acceptance_helper_prefers_exact_repository_sources():
+    helper = (ROOT / "deploy/provenance_acceptance_client.py").read_text(encoding="utf-8")
+    path_binding = "REPO_ROOT = Path(__file__).resolve().parents[1]"
+    enterprise_import = "from enterprise.identity import AgentIdentity"
+    assert path_binding in helper
+    assert helper.index(path_binding) < helper.index(enterprise_import)
+
+
+def test_acceptance_verification_uses_structured_helper_commands():
+    acceptance = (ROOT / "deploy/provenance_service_acceptance.ps1").read_text(
+        encoding="utf-8"
+    )
+    helper = (ROOT / "deploy/provenance_acceptance_client.py").read_text(
+        encoding="utf-8"
+    )
+    assert "-c @'" not in acceptance
+    for command in ("verify-dacl", "verify-ledger", "verify-index"):
+        assert command in acceptance
+        assert f'add_parser("{command}")' in helper
+
+
 def test_installer_has_explicit_acl_repair_and_no_silent_hardened_fallback():
     installer = (ROOT / "deploy/provenance_service.ps1").read_text(encoding="utf-8")
     assert "'RepairAcl'" in installer
     assert "Set-ProvenanceAcls" in installer
     assert "Set-HardenedTreeFileAcls" in installer
     assert "pip install --force-reinstall --no-deps $wheel" in installer
+    assert "$serviceHostProbe" in installer
+    assert "LocatePythonServiceExe" in installer
     assert "Failed to remove partial $ServiceName registration" in installer
     assert "operator-requested post-registration acceptance fault" in installer
     service = (ROOT / "enterprise/provenance_service.py").read_text(encoding="utf-8")
@@ -118,7 +141,11 @@ def test_acceptance_requires_exact_source_and_proves_cross_restart_recovery():
     assert "pipe_rotation_survives_old_name_squatting" in acceptance
     assert "dacl_tamper_preflight" in acceptance
     assert "session_index.jsonl" in acceptance
-    assert "verify_index_file" in acceptance
+    assert "verify-index" in acceptance
+    helper = (ROOT / "deploy/provenance_acceptance_client.py").read_text(
+        encoding="utf-8"
+    )
+    assert "verify_index_file" in helper
     assert "verify-wheel" in acceptance
     assert "wheel_matches_source_commit" in acceptance
     assert "partial_install_rolls_back" in acceptance

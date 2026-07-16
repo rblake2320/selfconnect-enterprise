@@ -210,18 +210,15 @@ function Install-ProvenanceService {
     Invoke-Native {
         & $PythonExe -m pip install --force-reinstall --no-deps $wheel
     } 'exact reviewed wheel installation'
-    Invoke-Native {
-        & $PythonExe -c @'
-import pathlib
-import win32serviceutil
-import enterprise.provenance_service
-
-service_exe = pathlib.Path(win32serviceutil.LocatePythonServiceExe())
-if not service_exe.is_file():
-    raise SystemExit(f"pywin32 service host not found: {service_exe}")
-print(service_exe)
-'@
-    } 'service host verification'
+    $serviceHostProbe = @(
+        'import pathlib',
+        'import win32serviceutil',
+        'import enterprise.provenance_service',
+        'service_exe = pathlib.Path(win32serviceutil.LocatePythonServiceExe())',
+        'print(service_exe)',
+        'raise SystemExit(0 if service_exe.is_file() else 1)'
+    ) -join '; '
+    Invoke-Native { & $PythonExe -c $serviceHostProbe } 'service host verification'
 
     $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if ($existing) {

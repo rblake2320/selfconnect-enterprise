@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 import time
 import uuid
 import zipfile
@@ -16,36 +17,42 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-import pywintypes
-import win32con
-import win32file
-import win32pipe
-import win32security
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if (REPO_ROOT / "enterprise").is_dir() and str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-from enterprise.identity import AgentIdentity
-from enterprise.provenance import SessionEventType
-from enterprise.provenance_ipc import (
-    MAX_FRAME_BYTES,
-    PROTOCOL_VERSION,
-    build_record_request,
-    decode_frame,
-)
-from enterprise.provenance_pipe import (
-    FILE_FLAG_FIRST_PIPE_INSTANCE,
-    FILE_READ_DATA,
-    FILE_WRITE_ATTRIBUTES,
-    FILE_WRITE_DATA,
-    PIPE_REJECT_REMOTE_CLIENTS,
-    SECURITY_IDENTIFICATION,
-    SECURITY_SQOS_PRESENT,
-    SYNCHRONIZE,
-    ProvenancePipeClient,
-    ProvenancePipeError,
-)
+_VERIFY_WHEEL_ONLY = len(sys.argv) > 1 and sys.argv[1] == "verify-wheel"
+if not _VERIFY_WHEEL_ONLY:
+    import pywintypes
+    import win32con
+    import win32file
+    import win32pipe
+    import win32security
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-_PIPE_ACCESS = FILE_READ_DATA | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE
+    from enterprise.identity import AgentIdentity
+    from enterprise.provenance import SessionEventType
+    from enterprise.provenance_ipc import (
+        MAX_FRAME_BYTES,
+        PROTOCOL_VERSION,
+        build_record_request,
+        decode_frame,
+    )
+    from enterprise.provenance_pipe import (
+        FILE_FLAG_FIRST_PIPE_INSTANCE,
+        FILE_READ_DATA,
+        FILE_WRITE_ATTRIBUTES,
+        FILE_WRITE_DATA,
+        PIPE_REJECT_REMOTE_CLIENTS,
+        SECURITY_IDENTIFICATION,
+        SECURITY_SQOS_PRESENT,
+        SYNCHRONIZE,
+        ProvenancePipeClient,
+        ProvenancePipeError,
+    )
+
+    _PIPE_ACCESS = FILE_READ_DATA | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE
 
 
 class EphemeralIdentity:
@@ -451,6 +458,75 @@ def burst(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def verify_dacl(args: argparse.Namespace) -> int:
+    from enterprise.provenance_service import verify_service_path_acl
+
+    try:
+        verify_service_path_acl(
+            args.path,
+            service_sid=args.service_sid,
+            client_sids=frozenset({args.client_sid}),
+            service_requires_write=True,
+        )
+    except Exception as exc:
+        result = {
+            "blocked": True,
+            "error_type": type(exc).__name__,
+            "message": str(exc),
+        }
+    else:
+        result = {"blocked": False, "error_type": None, "message": ""}
+    _write_json(args.output, result)
+    return 0
+
+
+def verify_ledger(args: argparse.Namespace) -> int:
+    from enterprise.provenance import canonical_hash, verify_log
+
+    public_key = bytes.fromhex(args.public_key_hex)
+    result = verify_log(
+        args.path,
+        args.session_id,
+        recorder_public_key=public_key,
+        require_recorder_signatures=True,
+    )
+    records = [
+        json.loads(line)
+        for line in args.path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    chain = [item for item in records if isinstance(item.get("seq"), int)]
+    payload = {
+        "agent_attestations_verified": result.agent_attestations_verified,
+        "count": result.count,
+        "head_hash": canonical_hash(chain[-1]) if chain else None,
+        "high_water_seq": result.high_water_seq,
+        "message": result.message,
+        "ok": result.ok,
+        "path": str(args.path),
+        "session_id": args.session_id,
+        "signatures_verified": result.signatures_verified,
+    }
+    _write_json(args.output, payload)
+    return 0 if result.ok else 1
+
+
+def verify_index(args: argparse.Namespace) -> int:
+    from enterprise.session_index import verify_index_file
+
+    ok, message, count = verify_index_file(
+        args.path,
+        public_key=bytes.fromhex(args.public_key_hex),
+        expected_agent_id=args.agent_id,
+        require_signatures=True,
+    )
+    _write_json(
+        args.output,
+        {"count": count, "message": message, "ok": ok, "path": str(args.path)},
+    )
+    return 0 if ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -495,6 +571,27 @@ def main(argv: list[str] | None = None) -> int:
     burst_parser.add_argument("--ready", type=Path, required=True)
     burst_parser.add_argument("--go", type=Path, required=True)
     burst_parser.set_defaults(func=burst)
+
+    dacl_parser = commands.add_parser("verify-dacl")
+    dacl_parser.add_argument("--path", type=Path, required=True)
+    dacl_parser.add_argument("--service-sid", required=True)
+    dacl_parser.add_argument("--client-sid", required=True)
+    dacl_parser.add_argument("--output", type=Path, required=True)
+    dacl_parser.set_defaults(func=verify_dacl)
+
+    ledger_parser = commands.add_parser("verify-ledger")
+    ledger_parser.add_argument("--path", type=Path, required=True)
+    ledger_parser.add_argument("--session-id", required=True)
+    ledger_parser.add_argument("--public-key-hex", required=True)
+    ledger_parser.add_argument("--output", type=Path, required=True)
+    ledger_parser.set_defaults(func=verify_ledger)
+
+    index_parser = commands.add_parser("verify-index")
+    index_parser.add_argument("--path", type=Path, required=True)
+    index_parser.add_argument("--public-key-hex", required=True)
+    index_parser.add_argument("--agent-id", required=True)
+    index_parser.add_argument("--output", type=Path, required=True)
+    index_parser.set_defaults(func=verify_index)
 
     args = parser.parse_args(argv)
     return int(args.func(args))
