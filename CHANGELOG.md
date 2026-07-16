@@ -8,6 +8,14 @@
   sources consumed by Enterprise.
 - Advanced the lock to the canonical merged core, BPC, and TSK security heads
   and required a fresh composed workflow before accepting compatibility.
+- Advanced the core pin again to merged SelfConnect
+  `5c493300b937a0f912e32a131061a132d2c11fe8` so Enterprise composes against
+  the fail-closed `ConsoleWindowClass` transport implemented at ancestor
+  `56d5ff1802dca5d4136bcc32fa37aa122d4944dc`, structured caller failure
+  propagation, and PR #15's deterministic external-target smoke evidence.
+  Evidence: [LOG-20260716-004](LOG.md#log-20260716-004),
+  rationale: [WHY-20260716-004](WHY.md#why-20260716-004), recovery:
+  [PARK-20260716-004](PARKED.md#park-20260716-004).
 - Made both protocol composition jobs read the lock and verify actual checkout
   commits, package names, and versions before build or execution.
 - Added fail-closed tests for missing/invalid pins and checkout mismatch while
