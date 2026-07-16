@@ -51,6 +51,47 @@ related records.
 
 ## Register
 
+## WHY-20260716-008 - Verify cleanup control flow, not cleanup vocabulary
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T07:16:15Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-008](LOG.md#log-20260716-008)
+**Parked records:** [PARK-20260716-008](PARKED.md#park-20260716-008)
+**Source state:** `selfconnect-enterprise`, `fix/windows-cleanup-conformance`,
+`eb4e033f3402245ceca6c16c2c4de82ed37694c3`
+
+**Decision:** Conformance must parse balanced PowerShell blocks and require all
+non-masking cleanup guards inside one `finally` block. Cleanup operations must
+catch and report their own failures so an existing contract failure remains the
+primary process error.
+
+**Why:** The prior gate checked only whether lifecycle substrings appeared in
+the named workflow step. That established vocabulary, not control flow. Moving
+the same stop/log statements after an empty `finally` preserved every marker
+and still returned PASS, even though a contract failure would skip cleanup.
+
+**Alternatives considered:** Add more global substrings; rejected because their
+placement would remain unverified. Rely only on hosted green runs; rejected
+because a success path does not exercise failure cleanup. Extract a larger
+standalone runner immediately; deferred because the current inline step is
+small, and balanced-block validation plus an executable failure injection binds
+the missing proposition without introducing another operational artifact.
+
+**Consequences:** Cleanup placement and non-masking behavior now have separate
+negative and executable assertions. The parser intentionally supports the
+controlled workflow syntax rather than claiming to be a general PowerShell
+parser. Workflow refactors must update the conformance contract in the same
+change.
+
+**Rollback conditions:** Replace only with an equal or stronger mechanism that
+proves cleanup executes on contract failure and cannot replace the primary
+failure. Do not restore presence-only lifecycle checks.
+
+**Evidence and links:** [LOG-20260716-008](LOG.md#log-20260716-008),
+[PARK-20260716-008](PARKED.md#park-20260716-008), merged PR #30, and the repair
+pull request checks.
+
 ## WHY-20260716-007 - Treat every native command as a composition gate
 
 **Status:** Accepted

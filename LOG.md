@@ -54,6 +54,48 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260716-008 - Bind Windows cleanup evidence to control flow
+
+**Timestamp (UTC):** 2026-07-16T07:16:15Z
+**Actor:** Codex, requested by the repository owner
+**Category:** CI, test, evidence correction, post-merge hardening
+**Base commit:** `eb4e033f3402245ceca6c16c2c4de82ed37694c3`
+**Change reference:** commit containing this entry and the associated pull request
+**Why:** [WHY-20260716-008](WHY.md#why-20260716-008)
+**Parked records:** [PARK-20260716-008](PARKED.md#park-20260716-008)
+
+**Changed:** Wrapped Ultra process stop, stdout capture, and stderr capture in
+separate guarded cleanup operations inside the live-contract `finally` block.
+Extended portfolio conformance with a quote-aware, brace-balanced PowerShell
+block reader that requires the complete cleanup guard set inside exactly one
+`finally` block. Added negative mutations for cleanup moved outside `finally`
+and a weakened unguarded stop, plus an executable PowerShell regression that
+injects stop/log cleanup failures and requires the original contract failure to
+remain the process error.
+
+**Reason:** Independent review of merged PR #30 moved cleanup statements after
+an empty `finally`; the prior substring-only conformance still returned PASS.
+The implementation was correct in the merged workflow, but the claimed
+recurrence gate did not verify control-flow placement and therefore created
+false coverage confidence.
+
+**Full actions and links:** `.github/workflows/ci.yml`,
+`tools/portfolio_conformance.py`, `tests/test_portfolio_conformance.py`, merged
+PR #30 at `eb4e033f3402245ceca6c16c2c4de82ed37694c3`,
+[WHY-20260716-008](WHY.md#why-20260716-008), and
+[PARK-20260716-008](PARKED.md#park-20260716-008).
+
+**Validation:** The focused portfolio suite passed 9/9, including both cleanup
+mutations and the executable primary-failure preservation test. Ruff, workflow
+YAML parsing, and `git diff --check` passed. The corrected live lifecycle also
+ran locally against the actual sidecar: 30 Node checks and 105 Python tests
+passed, then guarded cleanup stopped the process and captured both logs. Hosted
+exact-head evidence remains required on the repair pull request.
+
+**Notes:** Brace-aware parsing verifies the declared inline PowerShell
+structure, not GitHub runner internals. The hosted live-contract job remains the
+runtime composition proof.
+
 ## LOG-20260716-007 - Make Windows composition evidence fail closed
 
 **Timestamp (UTC):** 2026-07-16T06:43:00Z

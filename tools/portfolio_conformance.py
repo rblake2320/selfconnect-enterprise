@@ -34,6 +34,14 @@ WINDOWS_LIVE_STEP_MARKERS = (
     "finally {",
     "Stop-Process -Id $process.Id",
 )
+WINDOWS_CLEANUP_FINALLY_GUARDS = (
+    "Stop-Process -Id $process.Id -Force -ErrorAction Stop",
+    'Write-Warning "Ultra Server stop cleanup failed:',
+    "Get-Content $stdout -ErrorAction Stop",
+    'Write-Warning "Ultra Server stdout capture failed:',
+    "Get-Content $stderr -ErrorAction Stop",
+    'Write-Warning "Ultra Server stderr capture failed:',
+)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -84,6 +92,36 @@ def _workflow_step(workflow_text: str, name: str) -> str:
         return ""
     end = workflow_text.find("\n      - ", start + len(marker))
     return workflow_text[start:] if end < 0 else workflow_text[start:end]
+
+
+def _powershell_keyword_blocks(script: str, keyword: str) -> list[str]:
+    """Return brace-balanced blocks following a PowerShell keyword."""
+    blocks: list[str] = []
+    pattern = re.compile(rf"\b{re.escape(keyword)}\s*\{{")
+    for match in pattern.finditer(script):
+        opening = script.find("{", match.start())
+        depth = 0
+        quote: str | None = None
+        index = opening
+        while index < len(script):
+            character = script[index]
+            if quote is not None:
+                if character == "`":
+                    index += 2
+                    continue
+                if character == quote:
+                    quote = None
+            elif character in {"'", '"'}:
+                quote = character
+            elif character == "{":
+                depth += 1
+            elif character == "}":
+                depth -= 1
+                if depth == 0:
+                    blocks.append(script[opening + 1:index])
+                    break
+            index += 1
+    return blocks
 
 
 def run_checks(
@@ -193,6 +231,16 @@ def run_checks(
             errors.append(
                 f"ci.yml Windows live-contract step must contain {marker!r}"
             )
+    cleanup_blocks = [
+        block
+        for block in _powershell_keyword_blocks(live_step, "finally")
+        if all(marker in block for marker in WINDOWS_CLEANUP_FINALLY_GUARDS)
+    ]
+    if len(cleanup_blocks) != 1:
+        errors.append(
+            "ci.yml Windows live-contract cleanup guards must appear together "
+            "inside exactly one finally block"
+        )
 
     return {
         "schema_version": 1,
@@ -204,7 +252,7 @@ def run_checks(
             "A pin proves source identity, not that the source is secure or authorized.",
             "PIN_ONLY components are verified only when their checkout is supplied.",
             "Deployment configuration, external storage, key custody, and authorization remain separate evidence.",
-            "Workflow structure checks prove declared lifecycle composition, not runner process behavior.",
+            "Brace-aware workflow checks prove declared cleanup placement, not runner process behavior.",
         ],
     }
 

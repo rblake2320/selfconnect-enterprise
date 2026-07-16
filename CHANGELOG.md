@@ -23,6 +23,16 @@
 
 ### Portfolio composition identity
 
+- Closed a post-merge cleanup-conformance blind spot from PR #30. The Windows
+  live step now catches stop and log-capture failures separately so cleanup
+  cannot replace the primary contract failure. Portfolio conformance parses
+  balanced PowerShell `finally` blocks and requires all cleanup guards in one
+  block; negative mutations cover moved cleanup and weakened guards, and an
+  executable PowerShell regression proves the extracted cleanup preserves a
+  deliberate primary failure.
+  Evidence: [LOG-20260716-008](LOG.md#log-20260716-008), rationale:
+  [WHY-20260716-008](WHY.md#why-20260716-008), and recovery:
+  [PARK-20260716-008](PARKED.md#park-20260716-008).
 - Made the Windows composition workflow use explicit terminating PowerShell
   errors and fail immediately on nonzero native commands, with executable
   conformance assertions for every critical multi-command step. This follows

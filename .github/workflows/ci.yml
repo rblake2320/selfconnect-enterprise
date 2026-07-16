@@ -213,11 +213,23 @@ jobs:
             }
             python -m pytest tests/test_e2e_ultra_gate.py tests/test_identity_gate.py -q --tb=short
           } finally {
-            if (-not $process.HasExited) {
-              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            try {
+              if (-not $process.HasExited) {
+                Stop-Process -Id $process.Id -Force -ErrorAction Stop
+              }
+            } catch {
+              Write-Warning "Ultra Server stop cleanup failed: $($_.Exception.Message)"
             }
-            Get-Content $stdout -ErrorAction SilentlyContinue
-            Get-Content $stderr -ErrorAction SilentlyContinue
+            try {
+              Get-Content $stdout -ErrorAction Stop
+            } catch {
+              Write-Warning "Ultra Server stdout capture failed: $($_.Exception.Message)"
+            }
+            try {
+              Get-Content $stderr -ErrorAction Stop
+            } catch {
+              Write-Warning "Ultra Server stderr capture failed: $($_.Exception.Message)"
+            }
           }
 
   ultra-production-restart:
