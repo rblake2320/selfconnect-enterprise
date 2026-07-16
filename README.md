@@ -200,10 +200,11 @@ pip install -e .
 python -m pytest tests/ -q
 ```
 
-SDK submodule pinned to commit hash: `8cf151dbc5f312ce888e51aa429f62960e1a2ee6`
-That source declares package version `0.10.0`. Release conformance verifies the
-installed distribution's `direct_url.json` commit against the full pin; it does
-not infer a newer SDK version from later source tags or feature documents.
+The canonical SDK, BPC, and TSK source identities are recorded in
+[`portfolio-lock.json`](portfolio-lock.json). Release conformance verifies the
+installed SDK's `direct_url.json` commit and the checked-out protocol commits
+and package metadata against that lock. It does not infer source identity from
+tags, branch names, release titles, or feature documents.
 
 ---
 

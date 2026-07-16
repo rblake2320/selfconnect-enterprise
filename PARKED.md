@@ -91,6 +91,43 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260716-001 - Duplicated protocol commit pins in CI and prose
+
+**Status:** Parked
+**Category:** release, security property
+**Former location:** `.github/workflows/ci.yml` protocol checkout steps and
+`ultra_server/README.md` Pinned Protocol Sources
+**Source commit:** `ce249afa89a2bb3022ee93acc8309f8c63dad8b9`
+**Affected paths:** `.github/workflows/ci.yml`, `ultra_server/README.md`,
+`portfolio-lock.json`, `tools/portfolio_conformance.py`
+**Action log:** [LOG-20260716-001](LOG.md#log-20260716-001)
+**Why changed:** Independent literals could drift and did not prove the actual
+checkout or package metadata used by a composition run.
+**Parked by:** Codex, requested by the repository owner
+**Former wording:** The Windows and Linux jobs independently checked out BPC
+commit `7304e86d1d5df30b63e647146b20312a2a0da0c5` and TSK commit
+`63afcb83a033a82ce21f8f473e6a186cc195e801`; the same values were repeated in
+`ultra_server/README.md`.
+**Recovery source:** Git commit
+`ce249afa89a2bb3022ee93acc8309f8c63dad8b9` at the former paths.
+**Reason parked:** Repeating immutable-looking values did not enforce equality
+between jobs and supplied no executable verification of the resolved sources.
+**Replacement:** `portfolio-lock.json` plus `tools.portfolio_conformance.py` and
+the `PORTFOLIO-PIN-001` control.
+**Restore when:** Restore only for historical reproduction of the former CI,
+never as the active dependency-control design.
+**Restore procedure:** Create an isolated branch at the source commit and run
+the historical workflow against disposable checkouts. Do not overwrite the
+current lock or active workflow.
+**Validation after restore:** Confirm both historical workflow jobs resolve the
+recorded commits, then label resulting evidence as historical and superseded.
+**Recovery rehearsal:** Not rehearsed; Git contains the complete prior state.
+**Restoration risks:** Reintroduces cross-job pin drift and can attach current
+readiness language to an older, unidentified portfolio composition.
+**Evidence and links:** [LOG-20260716-001](LOG.md#log-20260716-001),
+[WHY-20260716-001](WHY.md#why-20260716-001), and
+`tests/test_portfolio_conformance.py`.
+
 ## PARK-20260715-017 - Local self-verification presented as full Ultra authorization
 
 **Status:** Parked

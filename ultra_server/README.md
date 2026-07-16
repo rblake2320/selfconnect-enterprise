@@ -60,11 +60,11 @@ for the operator procedures and their explicit evidence boundaries.
 
 ## Pinned Protocol Sources
 
-The package currently consumes local protocol source packages. CI checks out,
-builds, and tests these exact commits before starting the sidecar:
-
-- `bpc-protocol`: `7304e86d1d5df30b63e647146b20312a2a0da0c5`
-- `tsk-protocol`: `63afcb83a033a82ce21f8f473e6a186cc195e801`
+The package currently consumes local protocol source packages. The canonical
+repository URLs, commits, package names, and package versions are recorded once
+in [`portfolio-lock.json`](../portfolio-lock.json). Both CI composition jobs
+read that file directly and run `tools.portfolio_conformance` against the actual
+checkouts before building or starting the sidecar.
 
 From `ultra_server`, the file dependencies resolve at
 `../../bpc-protocol/packages/*` and `../../tsk-protocol/packages/*`. This layout

@@ -33,7 +33,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install "pytest>=8" "ruff>=0.4" "hypothesis>=6.0" "pip-audit>=2.7" pywin32 "cryptography>=48.0.1" comtypes "rich>=13.0"
-          pip install "selfconnect @ git+https://github.com/rblake2320/selfconnect.git@8cf151dbc5f312ce888e51aa429f62960e1a2ee6"
+          $portfolio = Get-Content portfolio-lock.json | ConvertFrom-Json
+          $sdk = $portfolio.components.selfconnect
+          pip install "selfconnect @ git+$($sdk.repository)@$($sdk.commit)"
           pip install -e . --no-deps
 
       - name: Lint (ruff — complete repository)
@@ -125,10 +127,16 @@ jobs:
         shell: pwsh
         run: |
           $depsRoot = Split-Path $env:GITHUB_WORKSPACE -Parent
+          $portfolio = Get-Content "$env:GITHUB_WORKSPACE\portfolio-lock.json" | ConvertFrom-Json
+          $bpcCommit = $portfolio.components.'bpc-protocol'.commit
+          $tskCommit = $portfolio.components.'tsk-protocol'.commit
           git clone https://github.com/rblake2320/bpc-protocol.git "$depsRoot\bpc-protocol"
-          git -C "$depsRoot\bpc-protocol" checkout 7304e86d1d5df30b63e647146b20312a2a0da0c5
+          git -C "$depsRoot\bpc-protocol" checkout --detach $bpcCommit
           git clone https://github.com/rblake2320/tsk-protocol.git "$depsRoot\tsk-protocol"
-          git -C "$depsRoot\tsk-protocol" checkout 63afcb83a033a82ce21f8f473e6a186cc195e801
+          git -C "$depsRoot\tsk-protocol" checkout --detach $tskCommit
+          python -m tools.portfolio_conformance `
+            --component-root "bpc-protocol=$depsRoot\bpc-protocol" `
+            --component-root "tsk-protocol=$depsRoot\tsk-protocol"
 
       - name: Build pinned protocol dependencies
         shell: pwsh
@@ -251,10 +259,15 @@ jobs:
         run: |
           set -euo pipefail
           deps_root="$(dirname "$GITHUB_WORKSPACE")"
+          bpc_commit="$(python -c 'import json; print(json.load(open("portfolio-lock.json"))["components"]["bpc-protocol"]["commit"])')"
+          tsk_commit="$(python -c 'import json; print(json.load(open("portfolio-lock.json"))["components"]["tsk-protocol"]["commit"])')"
           git clone https://github.com/rblake2320/bpc-protocol.git "$deps_root/bpc-protocol"
-          git -C "$deps_root/bpc-protocol" checkout 7304e86d1d5df30b63e647146b20312a2a0da0c5
+          git -C "$deps_root/bpc-protocol" checkout --detach "$bpc_commit"
           git clone https://github.com/rblake2320/tsk-protocol.git "$deps_root/tsk-protocol"
-          git -C "$deps_root/tsk-protocol" checkout 63afcb83a033a82ce21f8f473e6a186cc195e801
+          git -C "$deps_root/tsk-protocol" checkout --detach "$tsk_commit"
+          python -m tools.portfolio_conformance \
+            --component-root "bpc-protocol=$deps_root/bpc-protocol" \
+            --component-root "tsk-protocol=$deps_root/tsk-protocol"
           npm ci --prefix "$deps_root/bpc-protocol"
           npm run build --prefix "$deps_root/bpc-protocol"
           npm test --prefix "$deps_root/bpc-protocol"

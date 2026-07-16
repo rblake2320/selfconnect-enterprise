@@ -54,6 +54,48 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260716-001 - Make the tested portfolio composition machine-verifiable
+
+**Timestamp (UTC):** 2026-07-16T01:13:16Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, test, supply-chain hardening
+**Base commit:** `ce249afa89a2bb3022ee93acc8309f8c63dad8b9`
+**Change reference:** commit containing this entry and the associated pull request
+**Why:** [WHY-20260716-001](WHY.md#why-20260716-001)
+**Parked records:** [PARK-20260716-001](PARKED.md#park-20260716-001)
+
+**Changed:** Added `portfolio-lock.json` as the single runtime source identity
+for the SelfConnect SDK, BPC, and TSK inputs consumed by Enterprise. Added
+`tools.portfolio_conformance.py`, real-Git regression tests, a quick-tier
+control-catalog entry, and CI checkout verification of commit and package
+metadata. Removed duplicated BPC/TSK SHA literals from CI and documentation.
+
+**Reason:** Separate repository suites and duplicated CI pins allowed the
+portfolio to remain green against older component commits after security work
+moved forward elsewhere. A passing component suite did not identify which
+cross-repository composition Enterprise had actually tested.
+
+**Full actions and links:** `portfolio-lock.json`,
+`tools/portfolio_conformance.py`, `tests/test_portfolio_conformance.py`,
+`.github/workflows/ci.yml`, `docs/assurance/control_catalog.json`,
+`ultra_server/README.md`, [WHY-20260716-001](WHY.md#why-20260716-001), and
+[PARK-20260716-001](PARKED.md#park-20260716-001).
+
+**Validation:** `python -m tools.portfolio_conformance` returned `PASS`;
+`python -m pytest tests/test_portfolio_conformance.py
+tests/test_documentation_records.py -q` returned 10 passed; both JSON files
+parsed successfully; Ruff and actionlint passed; `git diff --check` reported no
+whitespace errors. The full shared-environment suite returned 1,423 passed, 34
+skipped, and two release-gate failures because that interpreter contains
+`cryptography==44.0.3`, below the repository's declared `>=48.0.1` floor. The
+gate was not weakened. Release-tier composition checks also refused to infer
+Ultra readiness without installed BPC/TSK dependencies or a VCS-traceable SDK;
+the hosted jobs assemble and verify those exact locked inputs.
+
+**Notes:** The initial lock preserves the previously tested commits. Updating a
+pin remains a reviewed compatibility change and requires the composed CI jobs
+to pass. Source identity does not establish deployment or authorization.
+
 ## LOG-20260715-012 - Execute the pinned SDK dependency gate in generic CI
 
 **Timestamp (UTC):** 2026-07-15T11:54:20Z
