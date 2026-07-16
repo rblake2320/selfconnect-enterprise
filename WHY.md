@@ -51,6 +51,43 @@ related records.
 
 ## Register
 
+## WHY-20260716-003 - Use bounded BPC error codes across the Ultra boundary
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T01:43:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-003](LOG.md#log-20260716-003)
+**Parked records:** [PARK-20260716-003](PARKED.md#park-20260716-003)
+**Source state:** Enterprise PR #23 at `de9dd25`
+
+**Decision:** Enterprise boundary adapters must emit lowercase bounded BPC
+error codes accepted by the strict TSK bridge. Shadow/ghost responses use
+`shadow_denied`; invalid result shapes use `invalid_result`.
+
+**Why:** The bridge treats BPC callback results as untrusted and accepts only a
+restricted error-code alphabet. Enterprise's earlier uppercase product-specific
+code was therefore sanitized, breaking evidence specificity while correctly
+remaining fail-closed. Aligning the adapter with the bounded contract keeps the
+denial reason useful without widening the bridge's trust boundary.
+
+**Alternatives considered:** Widen the bridge to accept arbitrary uppercase or
+free-form callback errors; rejected because it would reintroduce error-text
+injection. Assert only `ok == false`; rejected because it would stop proving
+that automatic shadow quarantine is the denial source. Keep the generic
+`VERIFICATION_FAILED`; safe but less useful for operational evidence.
+
+**Consequences:** Composed clients receive a stable, bounded shadow denial and
+the live test proves it. Detailed forensic context remains in BPC audit records,
+not in the authorization response.
+
+**Rollback conditions:** Replace these codes only with another closed,
+machine-validated error vocabulary shared by BPC, TSK, and Enterprise. Never
+restore arbitrary callback error propagation.
+
+**Evidence and links:** [LOG-20260716-003](LOG.md#log-20260716-003),
+[PARK-20260716-003](PARKED.md#park-20260716-003), the named unit/live tests,
+and failed hosted job `87515299829`.
+
 ## WHY-20260716-002 - Pin canonical merge commits after coordinated hardening
 
 **Status:** Accepted

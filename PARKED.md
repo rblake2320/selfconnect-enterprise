@@ -91,6 +91,38 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260716-003 - Unbounded Enterprise-specific BPC error names
+
+**Status:** Parked
+**Category:** runtime behavior, security property, test evidence
+**Former location:** `ultra_server/security-boundary.js` and related tests
+**Source commit:** `de9dd25`
+**Affected paths:** `ultra_server/security-boundary.js`,
+`ultra_server/security-boundary.test.mjs`, `tests/test_e2e_ultra_gate.py`
+**Action log:** [LOG-20260716-003](LOG.md#log-20260716-003)
+**Why changed:** [WHY-20260716-003](WHY.md#why-20260716-003)
+**Parked by:** Codex, requested by the repository owner
+**Former wording:** Enterprise emitted `BPC_SHADOW_QUARANTINED` and
+`BPC_INVALID_RESULT`; the live test searched for `SHADOW_QUARANTINED`.
+**Recovery source:** The named paths at Git commit `de9dd25`.
+**Reason parked:** The strict bridge correctly rejected those uppercase codes
+from its bounded callback error vocabulary and returned
+`BPC: VERIFICATION_FAILED`.
+**Replacement:** Lowercase `shadow_denied` and `invalid_result`, with an exact
+live assertion for `BPC: shadow_denied`.
+**Restore when:** Never as free-form callback text. Restore only after a new
+closed error schema explicitly includes and validates equivalent codes.
+**Restore procedure:** Introduce the schema and cross-repository compatibility
+tests first; then update all three layers in one reviewed composition change.
+**Validation after restore:** Require hostile error/accessor tests plus live
+shadow lockout and composed durability CI.
+**Recovery rehearsal:** Not rehearsed; prior behavior is retained in Git.
+**Restoration risks:** Weakens error sanitization or creates silent evidence
+drift between BPC, TSK, and Enterprise.
+**Evidence and links:** [LOG-20260716-003](LOG.md#log-20260716-003),
+[WHY-20260716-003](WHY.md#why-20260716-003), and failed hosted job
+`87515299829`.
+
 ## PARK-20260716-002 - Prior tested portfolio composition
 
 **Status:** Parked

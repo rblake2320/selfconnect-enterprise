@@ -54,6 +54,42 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260716-003 - Normalize Enterprise BPC denial codes at composition
+
+**Timestamp (UTC):** 2026-07-16T01:43:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, test, security hardening
+**Base commit:** `de9dd25`
+**Change reference:** commit containing this entry and Enterprise PR #23
+**Why:** [WHY-20260716-003](WHY.md#why-20260716-003)
+**Parked records:** [PARK-20260716-003](PARKED.md#park-20260716-003)
+
+**Changed:** Normalized Enterprise-generated BPC boundary errors to bounded
+lowercase codes (`shadow_denied`, `invalid_result`) accepted by the strict TSK
+bridge. Updated unit and live lockout assertions to require the exact composed
+denial `BPC: shadow_denied`.
+
+**Reason:** The first hosted run against the merged BPC/TSK commits failed one
+live assertion: Enterprise emitted `BPC_SHADOW_QUARANTINED`, while the hardened
+bridge intentionally converts non-bounded callback text to
+`VERIFICATION_FAILED`. Authorization remained denied, but the adapter contract
+and evidence assertion disagreed. Normalizing at the adapter preserves the
+specific safe denial without allowing arbitrary callback-controlled errors.
+
+**Full actions and links:** `ultra_server/security-boundary.js`,
+`ultra_server/security-boundary.test.mjs`,
+`tests/test_e2e_ultra_gate.py`, [WHY-20260716-003](WHY.md#why-20260716-003),
+[PARK-20260716-003](PARKED.md#park-20260716-003), and Enterprise Actions run
+`29464702436` job `87515299829`.
+
+**Validation:** Unit tests, focused Python tests, and a replacement hosted
+composition run execute on the commit containing this entry. PR #23 remains
+blocked until all Windows live and Linux PostgreSQL/Redis jobs pass.
+
+**Notes:** This changes only the bounded external error contract. Shadow and
+ghost decisions remain hard denials; internal BPC audit detail remains a
+separate evidence source.
+
 ## LOG-20260716-002 - Advance the portfolio lock to merged security heads
 
 **Timestamp (UTC):** 2026-07-16T01:38:40Z

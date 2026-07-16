@@ -5,13 +5,13 @@
  */
 export function enforceBpcAuthorization(result) {
   if (!result || typeof result !== 'object') {
-    return { ok: false, error: 'BPC_INVALID_RESULT' };
+    return { ok: false, error: 'invalid_result' };
   }
   if (result.shadow === true || result.ghostAlert === true) {
     return {
       ok: false,
       pairId: result.pairId,
-      error: 'BPC_SHADOW_QUARANTINED',
+      error: 'shadow_denied',
     };
   }
   return result;

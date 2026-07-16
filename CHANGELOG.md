@@ -19,6 +19,11 @@
   [PARK-20260716-002](PARKED.md#park-20260716-002).
 - Pin-update evidence: [LOG-20260716-002](LOG.md#log-20260716-002) and
   [WHY-20260716-002](WHY.md#why-20260716-002).
+- Normalized Enterprise BPC denial codes to the strict bridge's bounded error
+  vocabulary after the first merged-pin composition run found the mismatch.
+  Evidence: [LOG-20260716-003](LOG.md#log-20260716-003),
+  [WHY-20260716-003](WHY.md#why-20260716-003), and
+  [PARK-20260716-003](PARKED.md#park-20260716-003).
 
 ### Authoritative Ultra enforcement and protocol composition
 
