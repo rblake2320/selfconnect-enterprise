@@ -385,6 +385,9 @@ try {
     $Results.artifacts.service_sid_type = @(& sc.exe qsidtype $ServiceName)
     $Results.artifacts.service_failure_actions = @(& sc.exe qfailure $ServiceName)
     $Results.checks.dedicated_service_account = $serviceConfig.StartName -eq "NT SERVICE\$ServiceName"
+    $endpointFile = Join-Path $ServiceRoot 'endpoint\current.json'
+    $preEnrollmentEndpoint = Wait-ProvenanceEndpoint -Path $endpointFile
+    $preEnrollmentPipeName = [string]$preEnrollmentEndpoint.pipe_name
 
     Invoke-AsUser -Credential $agent.Credential -ExpectedSid $agent.Sid -Workspace $AgentRoot `
         -Description 'agent identity bootstrap' -Arguments @(
@@ -400,8 +403,8 @@ try {
     Restart-Service -Name $ServiceName
     Wait-ServiceState -State Running
 
-    $endpointFile = Join-Path $ServiceRoot 'endpoint\current.json'
-    $endpoint = Wait-ProvenanceEndpoint -Path $endpointFile
+    $endpoint = Wait-ProvenanceEndpoint -Path $endpointFile `
+        -PreviousPipeName $preEnrollmentPipeName
     $PipeName = [string]$endpoint.pipe_name
     $Results.pipe = $PipeName
     $servicePublicKeyPath = Join-Path $ServiceRoot 'identity\SelfConnectProvenance\identity.pub'
