@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import time
 import uuid
@@ -24,6 +25,7 @@ if (REPO_ROOT / "enterprise").is_dir() and str(REPO_ROOT) not in sys.path:
 _VERIFY_WHEEL_ONLY = len(sys.argv) > 1 and sys.argv[1] == "verify-wheel"
 if not _VERIFY_WHEEL_ONLY:
     import pywintypes
+    import win32api
     import win32con
     import win32file
     import win32pipe
@@ -71,6 +73,62 @@ class EphemeralIdentity:
 def _write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_json_atomic(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            json.dump(value, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _current_process_sid() -> str:
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+    try:
+        sid = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+        return win32security.ConvertSidToStringSid(sid)
+    finally:
+        token.Close()
+
+
+def _add_completion_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--completion", type=Path)
+    parser.add_argument("--invocation-id")
+
+
+def _run_command(args: argparse.Namespace) -> int:
+    code = 1
+    error_type: str | None = None
+    try:
+        code = int(args.func(args))
+        return code
+    except BaseException as exc:
+        error_type = type(exc).__name__
+        raise
+    finally:
+        completion = getattr(args, "completion", None)
+        if completion:
+            invocation_id = getattr(args, "invocation_id", None)
+            if not invocation_id:
+                raise ValueError("--invocation-id is required with --completion")
+            _write_json_atomic(
+                completion,
+                {
+                    "error_type": error_type,
+                    "exit_code": code,
+                    "invocation_id": invocation_id,
+                    "ok": code == 0 and error_type is None,
+                    "schema": "selfconnect.provenance.acceptance-completion.v1",
+                    "sid": _current_process_sid(),
+                },
+            )
 
 
 def _load_config(path: Path) -> dict[str, Any]:
@@ -541,16 +599,19 @@ def main(argv: list[str] | None = None) -> int:
     bootstrap_parser.add_argument("--identity-dir", type=Path, required=True)
     bootstrap_parser.add_argument("--name", default="provenance-acceptance-agent")
     bootstrap_parser.add_argument("--output", type=Path, required=True)
+    _add_completion_arguments(bootstrap_parser)
     bootstrap_parser.set_defaults(func=bootstrap)
 
     exercise_parser = commands.add_parser("exercise")
     exercise_parser.add_argument("--config", type=Path, required=True)
     exercise_parser.add_argument("--output", type=Path, required=True)
+    _add_completion_arguments(exercise_parser)
     exercise_parser.set_defaults(func=exercise)
 
     probe_parser = commands.add_parser("probe-connect")
     probe_parser.add_argument("--config", type=Path, required=True)
     probe_parser.add_argument("--output", type=Path, required=True)
+    _add_completion_arguments(probe_parser)
     probe_parser.set_defaults(func=probe_connect)
 
     hold_parser = commands.add_parser("hold-pipe")
@@ -559,6 +620,7 @@ def main(argv: list[str] | None = None) -> int:
     hold_parser.add_argument("--ready", type=Path, required=True)
     hold_parser.add_argument("--stop", type=Path, required=True)
     hold_parser.add_argument("--timeout", type=float, default=30.0)
+    _add_completion_arguments(hold_parser)
     hold_parser.set_defaults(func=hold_pipe)
 
     burst_parser = commands.add_parser("burst")
@@ -570,6 +632,7 @@ def main(argv: list[str] | None = None) -> int:
     burst_parser.add_argument("--retry-delay", type=float, default=0.5)
     burst_parser.add_argument("--ready", type=Path, required=True)
     burst_parser.add_argument("--go", type=Path, required=True)
+    _add_completion_arguments(burst_parser)
     burst_parser.set_defaults(func=burst)
 
     dacl_parser = commands.add_parser("verify-dacl")
@@ -594,7 +657,7 @@ def main(argv: list[str] | None = None) -> int:
     index_parser.set_defaults(func=verify_index)
 
     args = parser.parse_args(argv)
-    return int(args.func(args))
+    return _run_command(args)
 
 
 if __name__ == "__main__":

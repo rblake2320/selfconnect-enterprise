@@ -20,23 +20,26 @@ $UserId = [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $AgentUser = "scpa-$UserId"
 $AnonymousUser = "scpx-$UserId"
 $AcceptanceRoot = Join-Path $env:ProgramData "SelfConnect\ProvenanceAcceptance\$RunId"
+$SharedRoot = Join-Path $AcceptanceRoot 'shared'
+$AgentRoot = Join-Path $AcceptanceRoot 'agent'
+$AnonymousRoot = Join-Path $AcceptanceRoot 'anonymous'
 $ServiceRoot = Join-Path $env:ProgramData "SelfConnect\Provenance-$RunId"
 $RuntimeRoot = Join-Path $env:ProgramData "SelfConnect\Runtime\ProvenanceAcceptance-$RunId"
 $ServicePythonExe = Join-Path $RuntimeRoot 'Scripts\python.exe'
-$ClientRuntimeRoot = Join-Path $AcceptanceRoot 'client-runtime'
+$ClientRuntimeRoot = Join-Path $env:ProgramData "SelfConnect\Runtime\ProvenanceClientAcceptance-$RunId"
 $ClientPythonExe = Join-Path $ClientRuntimeRoot 'Scripts\python.exe'
-$Helper = Join-Path $AcceptanceRoot 'provenance_acceptance_client.py'
-$ConfigPath = Join-Path $AcceptanceRoot 'config.json'
-$BootstrapPath = Join-Path $AcceptanceRoot 'bootstrap.json'
+$Helper = Join-Path $SharedRoot 'provenance_acceptance_client.py'
+$ConfigPath = Join-Path $SharedRoot 'config.json'
+$BootstrapPath = Join-Path $AgentRoot 'bootstrap.json'
 $WheelBindingPath = Join-Path $AcceptanceRoot 'wheel-binding.json'
-$ExercisePath = Join-Path $AcceptanceRoot 'exercise.json'
-$AnonymousPath = Join-Path $AcceptanceRoot 'anonymous.json'
+$ExercisePath = Join-Path $AgentRoot 'exercise.json'
+$AnonymousPath = Join-Path $AnonymousRoot 'anonymous.json'
 $DaclProbePath = Join-Path $AcceptanceRoot 'dacl-probe.json'
-$BurstPath = Join-Path $AcceptanceRoot 'burst.json'
-$BurstReady = Join-Path $AcceptanceRoot 'burst.ready'
-$BurstGo = Join-Path $AcceptanceRoot 'burst.go'
-$SquatReady = Join-Path $AcceptanceRoot 'squat.ready'
-$SquatStop = Join-Path $AcceptanceRoot 'squat.stop'
+$BurstPath = Join-Path $AgentRoot 'burst.json'
+$BurstReady = Join-Path $AgentRoot 'burst.ready'
+$BurstGo = Join-Path $AgentRoot 'burst.go'
+$SquatReady = Join-Path $AnonymousRoot 'squat.ready'
+$SquatStop = Join-Path $AnonymousRoot 'squat.stop'
 $TranscriptPath = Join-Path $AcceptanceRoot 'acceptance-transcript.txt'
 $ReportPath = if ($EvidencePath) {
     [IO.Path]::GetFullPath($EvidencePath)
@@ -87,32 +90,75 @@ function Invoke-AsUser {
         [Management.Automation.PSCredential]$Credential,
         [string[]]$Arguments,
         [string]$Description,
+        [string]$ExpectedSid,
+        [string]$Workspace,
         [switch]$NoWait
     )
-    $stdout = Join-Path $AcceptanceRoot (([Guid]::NewGuid().ToString('N')) + '.stdout.txt')
-    $stderr = Join-Path $AcceptanceRoot (([Guid]::NewGuid().ToString('N')) + '.stderr.txt')
-    $process = Start-Process -FilePath $ClientPythonExe -ArgumentList $Arguments `
-        -Credential $Credential -WorkingDirectory $AcceptanceRoot -WindowStyle Hidden `
+    $invocationId = [Guid]::NewGuid().ToString('N')
+    $stdout = Join-Path $Workspace "$invocationId.stdout.txt"
+    $stderr = Join-Path $Workspace "$invocationId.stderr.txt"
+    $completion = Join-Path $Workspace "$invocationId.completion.json"
+    $receiptArguments = @($Arguments) + @(
+        '--completion', $completion, '--invocation-id', $invocationId
+    )
+    $process = Start-Process -FilePath $ClientPythonExe -ArgumentList $receiptArguments `
+        -Credential $Credential -WorkingDirectory $Workspace -WindowStyle Hidden `
         -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
     if ($null -eq $process) {
         throw "$Description did not return a process handle"
     }
+    $handle = [pscustomobject]@{
+        CompletionPath = $completion
+        Description = $Description
+        ExpectedSid = $ExpectedSid
+        InvocationId = $invocationId
+        Process = $process
+        StderrPath = $stderr
+        StdoutPath = $stdout
+    }
     if ($NoWait) {
-        return $process
+        return $handle
     }
-    $process.WaitForExit()
-    $process.Refresh()
-    $exitCode = $process.ExitCode
-    if ($exitCode -ne 0) {
-        $stderrDetail = if (Test-Path -LiteralPath $stderr) {
-            (Get-Content -Raw $stderr).Trim()
-        } else { '' }
-        $stdoutDetail = if (Test-Path -LiteralPath $stdout) {
-            (Get-Content -Raw $stdout).Trim()
-        } else { '' }
-        throw "$Description failed with exit code ${exitCode}: stderr=$stderrDetail stdout=$stdoutDetail"
+    Wait-AsUserCompletion -Handle $handle | Out-Null
+    return $handle
+}
+
+function Wait-AsUserCompletion {
+    param(
+        [pscustomobject]$Handle,
+        [int]$Seconds = 90
+    )
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while (-not (Test-Path -LiteralPath $Handle.CompletionPath) -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 100
     }
-    return $process
+    $stderrDetail = if (Test-Path -LiteralPath $Handle.StderrPath) {
+        ([string](Get-Content -Raw -LiteralPath $Handle.StderrPath)).Trim()
+    } else { '' }
+    $stdoutDetail = if (Test-Path -LiteralPath $Handle.StdoutPath) {
+        ([string](Get-Content -Raw -LiteralPath $Handle.StdoutPath)).Trim()
+    } else { '' }
+    if (-not (Test-Path -LiteralPath $Handle.CompletionPath)) {
+        throw "$($Handle.Description) produced no completion receipt: stderr=$stderrDetail stdout=$stdoutDetail"
+    }
+    try {
+        $receipt = Get-Content -Raw -LiteralPath $Handle.CompletionPath | ConvertFrom-Json
+    } catch {
+        throw "$($Handle.Description) produced a malformed completion receipt"
+    }
+    $valid = [string]$receipt.schema -eq 'selfconnect.provenance.acceptance-completion.v1' -and `
+        [string]$receipt.invocation_id -eq $Handle.InvocationId -and `
+        [string]$receipt.sid -eq $Handle.ExpectedSid -and `
+        [bool]$receipt.ok -and [int]$receipt.exit_code -eq 0 -and `
+        -not [string]$receipt.error_type
+    if (-not $valid) {
+        throw "$($Handle.Description) failed completion validation: stderr=$stderrDetail stdout=$stdoutDetail"
+    }
+    if (-not $Handle.Process.WaitForExit(5000)) {
+        Stop-Process -Id $Handle.Process.Id -Force -ErrorAction SilentlyContinue
+        throw "$($Handle.Description) wrote a completion receipt but did not exit"
+    }
+    return $receipt
 }
 
 function Get-ServiceSid {
@@ -134,6 +180,36 @@ function Get-AgentIdFromPublicKey {
         $sha.Dispose()
     }
     return 'SC-' + (($digest[0..3] | ForEach-Object { $_.ToString('x2') }) -join '').ToUpperInvariant()
+}
+
+function Get-SidAllowMask {
+    param([string]$Path, [string]$Sid)
+    [int64]$mask = 0
+    $rules = (Get-Acl -LiteralPath $Path).GetAccessRules(
+        $true,
+        $true,
+        [System.Security.Principal.SecurityIdentifier]
+    )
+    foreach ($rule in $rules) {
+        if (
+            $rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+            $rule.IdentityReference.Value -eq $Sid
+        ) {
+            $mask = $mask -bor [int64]$rule.FileSystemRights
+        }
+    }
+    return $mask
+}
+
+function Test-ReadExecuteOnly {
+    param([int64]$Mask)
+    [int64]$readExecute = [Security.AccessControl.FileSystemRights]::ReadAndExecute
+    [int64]$write = [Security.AccessControl.FileSystemRights]::Write
+    [int64]$dangerous = $write -bor `
+        [int64][Security.AccessControl.FileSystemRights]::Delete -bor `
+        [int64][Security.AccessControl.FileSystemRights]::ChangePermissions -bor `
+        [int64][Security.AccessControl.FileSystemRights]::TakeOwnership
+    return ($Mask -band $readExecute) -eq $readExecute -and ($Mask -band $dangerous) -eq 0
 }
 
 function Wait-ServiceState {
@@ -159,8 +235,11 @@ try {
         throw 'acceptance requires a clean source tree at one exact commit'
     }
     New-Item -ItemType Directory -Path $AcceptanceRoot -Force | Out-Null
-    Copy-Item -LiteralPath $HelperSource -Destination $Helper
-    & $PythonExe $Helper verify-wheel --wheel $wheel --repo-root $repoRoot `
+    Invoke-Native {
+        icacls.exe $AcceptanceRoot /inheritance:r `
+            /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
+    } 'acceptance root ACL'
+    & $PythonExe $HelperSource verify-wheel --wheel $wheel --repo-root $repoRoot `
         --output $WheelBindingPath
     if ($LASTEXITCODE -ne 0) { throw 'wheel does not match the exact clean source tree' }
     $wheelBinding = Get-Content -Raw $WheelBindingPath | ConvertFrom-Json
@@ -181,21 +260,63 @@ try {
 
     $agent = New-DisposableUser -Name $AgentUser
     $anonymous = New-DisposableUser -Name $AnonymousUser
+    New-Item -ItemType Directory -Path $SharedRoot, $AgentRoot, $AnonymousRoot -Force | Out-Null
+    Copy-Item -LiteralPath $HelperSource -Destination $Helper
     Invoke-Native {
-        icacls.exe $AcceptanceRoot /inheritance:r `
+        icacls.exe $SharedRoot /inheritance:r `
             /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" `
-            "*$($agent.Sid):(OI)(CI)M" "*$($anonymous.Sid):(OI)(CI)M"
-    } 'acceptance workspace ACL'
+            "*$($agent.Sid):(OI)(CI)RX" "*$($anonymous.Sid):(OI)(CI)RX" /T /C
+    } 'shared acceptance input ACL'
+    Invoke-Native {
+        icacls.exe $AgentRoot /inheritance:r `
+            /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" `
+            "*$($agent.Sid):(OI)(CI)M"
+    } 'agent acceptance workspace ACL'
+    Invoke-Native {
+        icacls.exe $AnonymousRoot /inheritance:r `
+            /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" `
+            "*$($anonymous.Sid):(OI)(CI)M"
+    } 'anonymous acceptance workspace ACL'
     & $BootstrapPythonExe -m venv $ClientRuntimeRoot
     if ($LASTEXITCODE -ne 0) { throw 'dedicated acceptance client runtime creation failed' }
     & $ClientPythonExe -m pip install $wheel
     if ($LASTEXITCODE -ne 0) { throw 'dedicated acceptance client runtime provisioning failed' }
     & $ClientPythonExe -m pip check
     if ($LASTEXITCODE -ne 0) { throw 'dedicated acceptance client dependency check failed' }
+    Invoke-Native {
+        icacls.exe $ClientRuntimeRoot /inheritance:r `
+            /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" `
+            "*$($agent.Sid):(OI)(CI)RX" "*$($anonymous.Sid):(OI)(CI)RX" /T /C
+    } 'acceptance client runtime ACL'
     $Results.checks.separate_client_runtime_provisioned = `
         (Test-Path -LiteralPath $ClientPythonExe -PathType Leaf) -and `
         ($ClientPythonExe -ne $ServicePythonExe)
     $Results.artifacts.client_runtime = $ClientRuntimeRoot
+    [int64]$modify = [Security.AccessControl.FileSystemRights]::Modify
+    $agentOnAgent = Get-SidAllowMask -Path $AgentRoot -Sid $agent.Sid
+    $anonymousOnAgent = Get-SidAllowMask -Path $AgentRoot -Sid $anonymous.Sid
+    $agentOnAnonymous = Get-SidAllowMask -Path $AnonymousRoot -Sid $agent.Sid
+    $anonymousOnAnonymous = Get-SidAllowMask -Path $AnonymousRoot -Sid $anonymous.Sid
+    $agentOnShared = Get-SidAllowMask -Path $SharedRoot -Sid $agent.Sid
+    $anonymousOnShared = Get-SidAllowMask -Path $SharedRoot -Sid $anonymous.Sid
+    $agentOnRuntime = Get-SidAllowMask -Path $ClientRuntimeRoot -Sid $agent.Sid
+    $anonymousOnRuntime = Get-SidAllowMask -Path $ClientRuntimeRoot -Sid $anonymous.Sid
+    $Results.checks.disposable_user_workspaces_isolated = `
+        ($agentOnAgent -band $modify) -eq $modify -and $anonymousOnAgent -eq 0 -and `
+        ($anonymousOnAnonymous -band $modify) -eq $modify -and $agentOnAnonymous -eq 0 -and `
+        (Test-ReadExecuteOnly -Mask $agentOnShared) -and `
+        (Test-ReadExecuteOnly -Mask $anonymousOnShared) -and `
+        (Test-ReadExecuteOnly -Mask $agentOnRuntime) -and `
+        (Test-ReadExecuteOnly -Mask $anonymousOnRuntime)
+    $Results.artifacts.acceptance_workspace_acls = [ordered]@{
+        agent = @(& icacls.exe $AgentRoot)
+        anonymous = @(& icacls.exe $AnonymousRoot)
+        shared = @(& icacls.exe $SharedRoot)
+        client_runtime = @(& icacls.exe $ClientRuntimeRoot)
+    }
+    if (-not $Results.checks.disposable_user_workspaces_isolated) {
+        throw 'disposable acceptance user workspaces are not isolated'
+    }
 
     $faultObserved = $false
     try {
@@ -225,8 +346,9 @@ try {
     $Results.artifacts.service_failure_actions = @(& sc.exe qfailure $ServiceName)
     $Results.checks.dedicated_service_account = $serviceConfig.StartName -eq "NT SERVICE\$ServiceName"
 
-    Invoke-AsUser -Credential $agent.Credential -Description 'agent identity bootstrap' -Arguments @(
-        $Helper, 'bootstrap', '--identity-dir', (Join-Path $AcceptanceRoot 'agent-identity'),
+    Invoke-AsUser -Credential $agent.Credential -ExpectedSid $agent.Sid -Workspace $AgentRoot `
+        -Description 'agent identity bootstrap' -Arguments @(
+        $Helper, 'bootstrap', '--identity-dir', (Join-Path $AgentRoot 'identity'),
         '--name', 'provenance-acceptance-agent', '--output', $BootstrapPath
     ) | Out-Null
     $bootstrap = Get-Content -Raw $BootstrapPath | ConvertFrom-Json
@@ -248,7 +370,7 @@ try {
     $sentinel = Join-Path $ServiceRoot 'ledger\acceptance-sentinel.dat'
     [IO.File]::WriteAllText($sentinel, "sentinel`n", [Text.Encoding]::ASCII)
     [ordered]@{
-        identity_dir = (Join-Path $AcceptanceRoot 'agent-identity')
+        identity_dir = (Join-Path $AgentRoot 'identity')
         identity_name = 'provenance-acceptance-agent'
         endpoint_file = $endpointFile
         ledger_dir = (Join-Path $ServiceRoot 'ledger')
@@ -261,14 +383,16 @@ try {
         timeout_ms = 5000
     } | ConvertTo-Json | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
 
-    Invoke-AsUser -Credential $agent.Credential -Description 'enrolled agent adversarial exercise' `
+    Invoke-AsUser -Credential $agent.Credential -ExpectedSid $agent.Sid -Workspace $AgentRoot `
+        -Description 'enrolled agent adversarial exercise' `
         -Arguments @($Helper, 'exercise', '--config', $ConfigPath, '--output', $ExercisePath) | Out-Null
     $exercise = Get-Content -Raw $ExercisePath | ConvertFrom-Json
     $Results.checks.enrolled_agent_contract = [bool]$exercise.ok
     $Results.artifacts.enrolled_agent_checks = $exercise.checks
     $Results.artifacts.valid_request_id = $exercise.valid_request_id
 
-    Invoke-AsUser -Credential $anonymous.Credential -Description 'anonymous pipe denial' `
+    Invoke-AsUser -Credential $anonymous.Credential -ExpectedSid $anonymous.Sid `
+        -Workspace $AnonymousRoot -Description 'anonymous pipe denial' `
         -Arguments @($Helper, 'probe-connect', '--config', $ConfigPath, '--output', $AnonymousPath) | Out-Null
     $anonymousResult = Get-Content -Raw $AnonymousPath | ConvertFrom-Json
     $Results.checks.anonymous_pipe_denied = [bool]$anonymousResult.access_denied
@@ -277,7 +401,8 @@ try {
     Stop-Service -Name $ServiceName
     Wait-ServiceState -State Stopped
     $oldPipeName = $PipeName
-    $squatter = Invoke-AsUser -Credential $anonymous.Credential -Description 'pipe squatter' -NoWait `
+    $squatter = Invoke-AsUser -Credential $anonymous.Credential -ExpectedSid $anonymous.Sid `
+        -Workspace $AnonymousRoot -Description 'pipe squatter' -NoWait `
         -Arguments @($Helper, 'hold-pipe', '--config', $ConfigPath, '--ready', $SquatReady,
             '--stop', $SquatStop, '--timeout', '45', '--pipe-name', $oldPipeName)
     $readyDeadline = (Get-Date).AddSeconds(15)
@@ -294,10 +419,7 @@ try {
     $Results.artifacts.pipe_before_restart = $oldPipeName
     $Results.artifacts.pipe_after_restart = $PipeName
     New-Item -ItemType File -Path $SquatStop -Force | Out-Null
-    $squatter.WaitForExit(15000)
-    if (-not $squatter.HasExited -or $squatter.ExitCode -ne 0) {
-        throw 'pipe squatter did not exit cleanly'
-    }
+    Wait-AsUserCompletion -Handle $squatter -Seconds 15 | Out-Null
     Stop-Service -Name $ServiceName
     Wait-ServiceState -State Stopped
     Invoke-Native {
@@ -329,7 +451,8 @@ try {
     Start-Service -Name $ServiceName
     Wait-ServiceState -State Running
 
-    $burst = Invoke-AsUser -Credential $agent.Credential -Description 'restart burst' -NoWait `
+    $burst = Invoke-AsUser -Credential $agent.Credential -ExpectedSid $agent.Sid `
+        -Workspace $AgentRoot -Description 'restart burst' -NoWait `
         -Arguments @($Helper, 'burst', '--config', $ConfigPath, '--output', $BurstPath,
             '--count', $BurstCount.ToString(), '--workers', '8', '--retries', '40',
             '--retry-delay', '0.5', '--ready', $BurstReady, '--go', $BurstGo)
@@ -364,10 +487,7 @@ try {
         throw 'SCM did not restart the provenance service under a new process'
     }
     Wait-ServiceState -State Running
-    $burst.WaitForExit(90000)
-    if (-not $burst.HasExited -or $burst.ExitCode -ne 0) {
-        throw 'restart burst did not recover successfully'
-    }
+    Wait-AsUserCompletion -Handle $burst -Seconds 90 | Out-Null
     $burstResult = Get-Content -Raw $BurstPath | ConvertFrom-Json
     $Results.checks.crash_restart_burst = [bool]$burstResult.ok -and `
         [int]$burstResult.recovered_after_error_count -gt 0
@@ -418,6 +538,7 @@ try {
     $Results.artifacts.python = (& $PythonExe --version 2>&1).ToString()
 } catch {
     $Results.error = $_.Exception.Message
+    $Results.error_detail = ($_ | Out-String).Trim()
     throw
 } finally {
     if ($TranscriptStarted) {
@@ -438,9 +559,10 @@ try {
             $Results.rollback_error = $_.Exception.Message
         }
     }
-    if (Test-Path -LiteralPath $RuntimeRoot) {
+    foreach ($candidateRuntime in @($RuntimeRoot, $ClientRuntimeRoot)) {
+        if (-not (Test-Path -LiteralPath $candidateRuntime)) { continue }
         $runtimeBase = [IO.Path]::GetFullPath("$env:ProgramData\SelfConnect\Runtime").TrimEnd('\')
-        $resolvedRuntime = (Resolve-Path -LiteralPath $RuntimeRoot).Path
+        $resolvedRuntime = (Resolve-Path -LiteralPath $candidateRuntime).Path
         if ($resolvedRuntime.StartsWith(
             $runtimeBase + '\',
             [StringComparison]::OrdinalIgnoreCase
@@ -464,6 +586,21 @@ try {
     }
     foreach ($name in $CreatedUsers) {
         try { Remove-LocalUser -Name $name -ErrorAction Stop } catch { }
+    }
+    if (Test-Path -LiteralPath $AcceptanceRoot) {
+        $acceptanceBase = [IO.Path]::GetFullPath(
+            "$env:ProgramData\SelfConnect\ProvenanceAcceptance"
+        ).TrimEnd('\')
+        $resolvedAcceptanceRoot = (Resolve-Path -LiteralPath $AcceptanceRoot).Path
+        if ($resolvedAcceptanceRoot.StartsWith(
+            $acceptanceBase + '\',
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            Remove-Item -LiteralPath $resolvedAcceptanceRoot -Recurse -Force
+        } else {
+            $Results.acceptance_cleanup_error = `
+                "Refused to remove acceptance workspace outside $acceptanceBase"
+        }
     }
     $Results.finished_at = (Get-Date).ToUniversalTime().ToString('o')
     $required = @($Results.checks.GetEnumerator() | ForEach-Object { [bool]$_.Value })

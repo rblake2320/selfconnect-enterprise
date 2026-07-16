@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 import tomllib
@@ -58,6 +59,66 @@ def test_acceptance_helper_imports_and_compiles():
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows completion receipt contract")
+def test_acceptance_helper_writes_atomic_completion_receipts(tmp_path):
+    helper = ROOT / "deploy/provenance_acceptance_client.py"
+    identity_dir = tmp_path / "identity"
+    output = tmp_path / "bootstrap.json"
+    completion = tmp_path / "completion.json"
+    invocation_id = "receipt-success"
+    command = [
+        sys.executable,
+        str(helper),
+        "bootstrap",
+        "--identity-dir",
+        str(identity_dir),
+        "--output",
+        str(output),
+        "--completion",
+        str(completion),
+        "--invocation-id",
+        invocation_id,
+    ]
+    completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 0, completed.stderr
+    receipt = json.loads(completion.read_text(encoding="utf-8"))
+    assert receipt["schema"] == "selfconnect.provenance.acceptance-completion.v1"
+    assert receipt["invocation_id"] == invocation_id
+    assert receipt["ok"] is True
+    assert receipt["exit_code"] == 0
+    assert receipt["error_type"] is None
+    assert receipt["sid"].startswith("S-1-")
+    assert not list(tmp_path.glob(".*.tmp"))
+
+    failure_output = tmp_path / "output-is-a-directory"
+    failure_output.mkdir()
+    failure_receipt = tmp_path / "failure-completion.json"
+    failed = subprocess.run(
+        [
+            sys.executable,
+            str(helper),
+            "bootstrap",
+            "--identity-dir",
+            str(tmp_path / "failure-identity"),
+            "--output",
+            str(failure_output),
+            "--completion",
+            str(failure_receipt),
+            "--invocation-id",
+            "receipt-failure",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert failed.returncode != 0
+    receipt = json.loads(failure_receipt.read_text(encoding="utf-8"))
+    assert receipt["ok"] is False
+    assert receipt["exit_code"] == 1
+    assert receipt["error_type"].endswith("Error")
 
 
 def test_wheel_binding_compares_every_runtime_source_file(tmp_path):
@@ -151,14 +212,26 @@ def test_acceptance_requires_exact_source_and_proves_cross_restart_recovery():
     assert "recovered_after_error_count -gt 0" in acceptance
     assert "SelfConnect\\Runtime\\ProvenanceAcceptance-$RunId" in acceptance
     assert "-m venv $RuntimeRoot" in acceptance
-    assert "$ClientRuntimeRoot = Join-Path $AcceptanceRoot 'client-runtime'" in acceptance
+    assert "ProvenanceClientAcceptance-$RunId" in acceptance
     assert "-m venv $ClientRuntimeRoot" in acceptance
     assert "Start-Process -FilePath $ClientPythonExe" in acceptance
     assert "separate_client_runtime_provisioned" in acceptance
     assert "$ClientPythonExe -ne $ServicePythonExe" in acceptance
     assert "-m pip check" in acceptance
     assert "Refused to remove service root outside acceptance scope" in acceptance
-    assert "$process.Refresh()" in acceptance
+    assert "Wait-AsUserCompletion" in acceptance
+    assert "acceptance-completion.v1" in acceptance
+    assert "disposable_user_workspaces_isolated" in acceptance
+    assert "Get-SidAllowMask" in acceptance
+    assert "Test-ReadExecuteOnly" in acceptance
+    assert "$anonymousOnAgent -eq 0" in acceptance
+    assert "$agentOnAnonymous -eq 0" in acceptance
+    assert "*$($agent.Sid):(OI)(CI)M" in acceptance
+    assert "*$($anonymous.Sid):(OI)(CI)M" in acceptance
+    assert "*$($agent.Sid):(OI)(CI)RX" in acceptance
+    assert "*$($anonymous.Sid):(OI)(CI)RX" in acceptance
+    assert "foreach ($candidateRuntime in @($RuntimeRoot, $ClientRuntimeRoot))" in acceptance
+    assert "Refused to remove acceptance workspace outside" in acceptance
     assert "stderr=$stderrDetail stdout=$stdoutDetail" in acceptance
     assert "restartedService.ProcessId -eq $killedProcessId" in acceptance
     assert "pipe_rotation_survives_old_name_squatting" in acceptance
