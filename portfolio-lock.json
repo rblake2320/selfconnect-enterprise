@@ -10,7 +10,7 @@
     },
     "bpc-protocol": {
       "repository": "https://github.com/rblake2320/bpc-protocol.git",
-      "commit": "2aafcec93a1236e9994ba7e75907b398207b270e",
+      "commit": "772271e174769f91a980cc3ee69a6eb9cc36bf39",
       "package_name": "bpc-protocol",
       "package_version": "0.2.0",
       "manifest": "package.json"

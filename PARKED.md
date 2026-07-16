@@ -105,18 +105,23 @@ sources, limitations, and all related records.
 
 **Former wording:** Critical Windows steps ran multiple git, npm, and Python
 commands without enabling native-command error propagation. A later zero exit
-could make a step green after an earlier failure.
+could make a step green after an earlier failure. The development Ultra
+sidecar also started in a separate Actions step from the contracts that used
+it, relying on process lifetime that the runner did not preserve.
 
 **Recovery source:** `.github/workflows/ci.yml` at Enterprise commit
-`e503c86548dfd6b6f608e75a424796ede71956e5` and Actions run `29476950456`.
+`e503c86548dfd6b6f608e75a424796ede71956e5` and Actions runs `29476950456`
+and `29477612730`.
 
 **Reason parked:** The hosted run contained a failed BPC test and failed live
 Node request but concluded success. The green check was therefore not faithful
 evidence for those propositions.
 
-**Replacement:** `$PSNativeCommandUseErrorActionPreference = $true` in each
-named critical Windows step plus portfolio conformance and a negative
-regression.
+**Replacement:** `$ErrorActionPreference = 'Stop'` and
+`$PSNativeCommandUseErrorActionPreference = $true` in each named critical
+Windows step, plus one live-contract step that starts, verifies,
+uses, logs, and stops the sidecar under `try`/`finally`. Portfolio conformance
+and negative regressions bind both requirements.
 
 **Restore when:** Never without an equal or stronger fail-fast shell wrapper
 and executable negative test.
@@ -129,14 +134,15 @@ disposable hosted workflow containing a failing intermediate command followed
 by a successful command; the job must remain failed.
 
 **Recovery rehearsal:** The former behavior was reproduced by Actions run
-`29476950456`; it is retained as failure evidence, not a rollback target.
+`29476950456`; the process-lifetime failure was reproduced by fail-closed run
+`29477612730`. Both are retained as failure evidence, not rollback targets.
 
 **Restoration risks:** False-green release evidence, untested dependency
 composition, and inaccurate security claims.
 
 **Evidence and links:** [LOG-20260716-007](LOG.md#log-20260716-007),
-[WHY-20260716-007](WHY.md#why-20260716-007), Actions run `29476950456`, and
-BPC PR #17.
+[WHY-20260716-007](WHY.md#why-20260716-007), Actions runs `29476950456` and
+`29477612730`, and BPC PR #17.
 
 ## PARK-20260716-006 - Prior BPC portfolio pin
 
@@ -160,8 +166,14 @@ fail-closed Redis replay guard and immutable authorization snapshot, but it
 predates the merged governed Redis replay-continuity work in BPC PR #14.
 
 **Replacement:** BPC
-`2aafcec93a1236e9994ba7e75907b398207b270e` in `portfolio-lock.json`.
+`772271e174769f91a980cc3ee69a6eb9cc36bf39` in `portfolio-lock.json`.
 The TSK pin remains `bc31c234100a6e6432d2ac5de82783fc136bc2ea`.
+
+The intermediate PR #14-only candidate
+`2aafcec93a1236e9994ba7e75907b398207b270e` was preserved in branch history
+but superseded before acceptance after hosted evidence exposed a timing-test
+boundary and Windows result-propagation defect. PR #17's canonical merge is
+the reviewed replacement.
 
 **Restore when:** Hosted composition fails, an incompatible runtime behavior
 is reproduced, or a reviewed security finding requires bounded rollback.
