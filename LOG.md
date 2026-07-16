@@ -115,7 +115,12 @@ workspaces; passed their Node, HA, and typecheck commands; passed the Ultra Node
 suite; and returned `PASS_WITH_NAMED_BLIND_SPOTS` with no failed executable
 controls from the release catalog
 (`f013ae5427170180ebd6b9424e72f3e378a0210f60b7f94fec6cac26e8a69610`).
-Final exact-head independent review is appended before merge.
+Independent read-only review of `10322cc031f01790765072416288fa58fcc86de2`
+approved with no findings after 101 provenance tests, 36 focused
+documentation/deployment tests, Ruff, and `git diff --check`. The reviewer
+confirmed closure of the prior arbitrary-wheel-content, stale-endpoint,
+rollback-exit, and evidence-cleanup findings and confirmed the remaining blind
+spots are stated without expanding the claim.
 
 **Notes:** The run used a local memory witness and does not establish off-host
 immutability. A second Windows host is required to exercise remote-host pipe
