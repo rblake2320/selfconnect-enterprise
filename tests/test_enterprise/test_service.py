@@ -97,6 +97,50 @@ class TestControlPlaneThread:
             t.run()
         assert t.crashed is False
 
+    def test_enterprise_mode_requires_external_provenance_client(self, monkeypatch):
+        from enterprise.audit_config import AuditConfig, AuditMode, WormSinkType
+
+        stop = threading.Event()
+        stop.set()
+        adapter = MagicMock()
+        adapter.session_id = str(__import__("uuid").uuid4())
+        monkeypatch.setattr(
+            "enterprise.audit_config.load_audit_config",
+            lambda: AuditConfig(audit_mode=AuditMode.ENTERPRISE, worm_sink=WormSinkType.MEMORY),
+        )
+        builder = MagicMock(return_value=adapter)
+        monkeypatch.setattr(
+            "enterprise.provenance_client.ProvenanceServiceLedgerAdapter.from_env",
+            builder,
+        )
+        mock_control = MagicMock()
+        mock_control.ControlPlane.return_value = MagicMock()
+        with patch.dict("sys.modules", {"enterprise.control": mock_control}):
+            thread = ControlPlaneThread(stop)
+            thread.run()
+        assert thread.crashed is False
+        assert thread.provenance_recorder is None
+        builder.assert_called_once_with()
+        mock_control.ControlPlane.assert_called_once_with(ledger=adapter)
+
+    def test_enterprise_mode_does_not_fallback_when_provenance_client_fails(self, monkeypatch):
+        from enterprise.audit_config import AuditConfig, AuditMode, WormSinkType
+
+        stop = threading.Event()
+        monkeypatch.setattr(
+            "enterprise.audit_config.load_audit_config",
+            lambda: AuditConfig(audit_mode=AuditMode.ENTERPRISE, worm_sink=WormSinkType.MEMORY),
+        )
+        monkeypatch.setattr(
+            "enterprise.provenance_client.ProvenanceServiceLedgerAdapter.from_env",
+            MagicMock(side_effect=RuntimeError("pipe unavailable")),
+        )
+        thread = ControlPlaneThread(stop)
+        thread.run()
+        assert thread.crashed is True
+        assert stop.is_set()
+        assert thread.provenance_recorder is None
+
 
 class TestPathValidation:
     """WRAITH: env-var path-traversal prevention tests."""

@@ -32,6 +32,7 @@ system boundary.
 | `enterprise/identity.py` | Persistent ed25519 identity with current-user DPAPI protection at rest; not hardware-bound |
 | `enterprise/identity_cng.py` | CNG-backed identity + CngLedger (ECDSA P-384, SHA-384); FIPS status depends on the validated Windows module and configuration |
 | `enterprise/ledger.py` | AgentLedger — signed, tamper-evident SHA-256 chain with verified local segment lifecycle; external witnessing remains separate |
+| `enterprise/provenance_service.py` | Dedicated service-SID provenance writer for hardened profiles; installed-service evidence is deployment-specific |
 | `enterprise/crypto.py` | NCrypt ECDSA P-384 / SHA-384 primitives via Windows CNG |
 | `enterprise/policy.py` | PolicyEnforcer — deny-by-default decision pipeline plus composition gate |
 | `enterprise/policy_sign.py` | ECDSA P-384 policy bundle signing and verification; coverage is run-specific |
@@ -98,6 +99,10 @@ Full details, non-guarantees, and test references in [SECURITY.md](SECURITY.md).
 ## Deployment Profiles
 
 Two hardened baselines are provided. Construct custom profiles via `ClassifiedModeProfile(...)`.
+
+Enterprise and Government runtime evidence is written through the dedicated
+Windows service described in [docs/PROVENANCE_SERVICE.md](docs/PROVENANCE_SERVICE.md).
+There is no automatic in-process fallback for those profiles.
 
 | Profile | Ceiling | CNG Required | Cloud Egress | Export | Operator Approval |
 |---------|---------|-------------|-------------|--------|-------------------|

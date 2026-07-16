@@ -91,6 +91,46 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260716-009 - Hardened profiles writing provenance in process
+
+**Status:** Parked
+**Category:** security property, implementation behavior
+**Former location:** `enterprise/service.py`, `enterprise/control.py`, and
+`enterprise/provenance.py`
+**Source commit:** `b001274419f378d8487e44f980bee3a09464000b`
+**Affected paths:** Hardened runtime construction and authoritative audit writes
+**Action log:** [LOG-20260716-009](LOG.md#log-20260716-009)
+**Why changed:** [WHY-20260716-009](WHY.md#why-20260716-009)
+**Parked by:** commit containing this record
+
+**Former wording:** Enterprise and Government runtime objects could share an
+in-process `ProvenanceRecorder` with the code whose actions were being audited.
+
+**Recovery source:** The named paths at source commit `b0012744`.
+
+**Reason parked:** The composition did not create an OS identity or filesystem
+boundary between an agent process and the authoritative local ledger writer.
+
+**Replacement:** `SelfConnectProvenance`, its service-SID DACL, signed local IPC,
+durable request store, and fail-closed client adapter.
+
+**Restore when:** Only for an explicitly named consumer/development posture.
+Do not restore it as a hardened-profile fallback.
+
+**Restore procedure:** Restore the source paths from the named commit on a new
+branch and select consumer mode explicitly.
+
+**Validation after restore:** Run consumer provenance tests and verify that all
+Enterprise/Government configuration continues to refuse the fallback.
+
+**Recovery rehearsal:** Not rehearsed.
+
+**Restoration risks:** Recombines the audited actor and authoritative writer and
+invalidates service-boundary claims.
+
+**Evidence and links:** [WHY-20260716-009](WHY.md#why-20260716-009) and
+[service guide](docs/PROVENANCE_SERVICE.md).
+
 ## PARK-20260716-008 - Presence-only Windows cleanup conformance
 
 **Status:** Parked

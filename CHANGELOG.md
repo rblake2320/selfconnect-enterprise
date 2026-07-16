@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Dedicated provenance service boundary
+
+- Added a restricted `NT SERVICE\SelfConnectProvenance` Windows service, exact
+  service-SID filesystem ACLs, a bounded signed named-pipe protocol, durable
+  replay/idempotency state, signed high-water recovery, and a fail-closed client
+  adapter for Enterprise and Government runtime composition.
+- Added administrator enrollment and deployment commands plus an installed,
+  distinct-token acceptance drill. Off-host retention and remote-host pipe
+  testing remain separate deployment evidence.
+- Evidence: [LOG-20260716-009](LOG.md#log-20260716-009). Rationale:
+  [WHY-20260716-009](WHY.md#why-20260716-009). Recovery:
+  [PARK-20260716-009](PARKED.md#park-20260716-009).
+
 ### Shared-state Ultra application-node fencing
 
 - Added disabled-by-default, production-only active/passive fencing for two

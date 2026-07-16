@@ -85,6 +85,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 GENESIS_HASH: str = "0" * 96          # SHA-384 zero sentinel (96 hex chars)
+RECORD_VERSION_V2: str = "selfconnect.provenance.record.v2"
 _DEFAULT_SEAL_INTERVAL: int = 100      # Merkle seal every N events
 _DEFAULT_HEARTBEAT_INTERVAL: int = 60  # Heartbeat every N seconds
 _PROVENANCE_DIR_ENV: str = "SC_PROVENANCE_DIR"
@@ -897,7 +898,7 @@ class ProvenanceRecorder:
 
     # ── Public API ────────────────────────────────────────────────────────
 
-    def start(self) -> None:
+    def start(self, *, resume: bool = False) -> None:
         """Initialise the recorder. Must be called before record().
 
         Fail-closed behaviour (Fix 13):
@@ -944,20 +945,37 @@ class ProvenanceRecorder:
                 logger.warning("Provenance sink unavailable (consumer mode): %s", exc)
                 return
 
-            self._started = True
+            had_existing_events = self._log_path.stat().st_size > 0
             self._load_chain_state()
+            if resume and not had_existing_events:
+                raise ProvenanceRecorderError("cannot resume a provenance session with no existing events")
 
-            # Write SESSION_OPEN (not a privileged event — agent writes this)
-            self._append_record(
-                SessionEventType.SESSION_OPEN,
-                payload={
-                    "audit_mode": self._audit_mode.value,
-                    "agent_id": self._agent_id,
-                    "session_state": SessionState.OPEN.value,
-                },
-                agent_id=self._agent_id,
-                _internal=True,
-            )
+            self._started = True
+
+            if resume:
+                self._session_state = SessionState.RECONSTRUCTED
+                self._append_record(
+                    SessionEventType.SESSION_RECONSTRUCTED,
+                    payload={
+                        "audit_mode": self._audit_mode.value,
+                        "agent_id": self._agent_id,
+                        "session_state": SessionState.RECONSTRUCTED.value,
+                    },
+                    agent_id=self._agent_id,
+                    _internal=True,
+                )
+            else:
+                # Write SESSION_OPEN (not a privileged event — agent writes this)
+                self._append_record(
+                    SessionEventType.SESSION_OPEN,
+                    payload={
+                        "audit_mode": self._audit_mode.value,
+                        "agent_id": self._agent_id,
+                        "session_state": SessionState.OPEN.value,
+                    },
+                    agent_id=self._agent_id,
+                    _internal=True,
+                )
 
             # Start heartbeat thread (Fix 1)
             if self._heartbeat_interval > 0:
@@ -1089,6 +1107,32 @@ class ProvenanceRecorder:
                     self._replication_sink.close()
                 except Exception:
                     pass
+
+    def interrupt(self, reason: str = "service_stop") -> None:
+        """Record a non-sealing service interruption for restart recovery.
+
+        This is distinct from ``close()``: an interrupted client session may be
+        verified and reconstructed by the dedicated service after restart.
+        """
+        with self._lock:
+            if self._closed:
+                return
+            self._stop_heartbeat.set()
+            if self._started:
+                self._session_state = SessionState.INTERRUPTED
+                self._append_record(
+                    SessionEventType.SESSION_INTERRUPT,
+                    payload={
+                        "reason": reason,
+                        "session_state": SessionState.INTERRUPTED.value,
+                    },
+                    agent_id=self._agent_id,
+                    _internal=True,
+                )
+                self._write_merkle_seal(final=False)
+            self._closed = True
+            if self._replication_sink is not None:
+                self._replication_sink.close()
 
     def change_audit_mode(
         self,
@@ -1226,6 +1270,7 @@ class ProvenanceRecorder:
         now = datetime.now(timezone.utc).isoformat()
 
         record: dict[str, Any] = {
+            "record_version": RECORD_VERSION_V2,
             "seq": self._seq,
             "ts": now,
             "session_id": self._session_id,
@@ -1238,6 +1283,11 @@ class ProvenanceRecorder:
         if os_corroboration is not None:
             record["os_corroboration"] = os_corroboration
 
+        # The agent signature must be present before the recorder signs. Record
+        # format v2 includes it in both the recorder signature and chain hash.
+        if signature is not None:
+            record["agent_sig"] = signature.hex() if isinstance(signature, bytes) else signature
+
         # Per-event signature from the recorder's own identity (Fix 6)
         if self._identity is not None:
             try:
@@ -1248,10 +1298,6 @@ class ProvenanceRecorder:
                 if self._audit_mode in (AuditMode.ENTERPRISE, AuditMode.MILITARY):
                     raise ProvenanceRecorderError(f"Recorder signing failed: {exc}") from exc
                 logger.warning("Recorder signing failed: %s", exc)
-
-        # Include agent-provided signature if present
-        if signature is not None:
-            record["agent_sig"] = signature.hex() if isinstance(signature, bytes) else signature
 
         # Update chain hash (Fix 4: canonical_bytes is deterministic)
         new_hash = canonical_hash(record)
@@ -1366,7 +1412,18 @@ class ProvenanceRecorder:
                 f"Provenance sink write failed (fail-closed): {exc}"
             ) from exc
 
-    def _replicate(self, record: dict) -> None:
+    def ensure_replicated(self, record: dict) -> bool:
+        """Idempotently repair replication before recovery is acknowledged."""
+        with self._lock:
+            if self._replication_sink is None:
+                if self._audit_mode == AuditMode.MILITARY:
+                    raise ProvenanceRecorderError(
+                        "military recovery cannot acknowledge without a replication sink"
+                    )
+                return False
+            return self._replicate(record)
+
+    def _replicate(self, record: dict) -> bool:
         """Push record to replication sink with fork detection."""
         try:
             receipt = self._replication_sink.push(
@@ -1389,10 +1446,23 @@ class ProvenanceRecorder:
                             json.dumps(ack, separators=(",", ":"), ensure_ascii=True)
                             + "\n"
                         )
+                        fh.flush()
+                        os.fsync(fh.fileno())
                 except OSError:
-                    pass
+                    if self._audit_mode == AuditMode.MILITARY:
+                        raise ProvenanceRecorderError(
+                            "replication succeeded but its local receipt could not be persisted"
+                        )
+                    logger.warning("Replication receipt could not be persisted locally")
+                return True
+            return False
         except NotImplementedError:
-            pass  # Stub not yet implemented
+            if self._audit_mode == AuditMode.MILITARY:
+                raise ProvenanceRecorderError(
+                    "replication sink is not implemented in military mode"
+                )
+            logger.warning("Replication sink is not implemented")
+            return False
         except ReplicationError as exc:
             err_str = str(exc)
             if "fork_detected" in err_str:
@@ -1410,6 +1480,8 @@ class ProvenanceRecorder:
                         f"Replication failed in military mode: {exc}"
                     ) from exc
                 logger.warning("Replication failed (non-fatal): %s", exc)
+            return False
+        return False
 
     def _write_merkle_seal(self, final: bool = False) -> None:
         """Compute Merkle root over recent events and append a seal record."""
@@ -1479,16 +1551,22 @@ class ProvenanceRecorder:
         if not lines:
             return
         try:
-            last = json.loads(lines[-1])
-            seq = last.get("seq", 0)
-            if isinstance(seq, int):
-                self._seq = seq
-            self._prev_hash = canonical_hash(last)
-            if len(lines) >= 1:
-                first = json.loads(lines[0])
-                self._first_event_hash = canonical_hash(first)
-        except (json.JSONDecodeError, KeyError):
-            pass
+            records = [json.loads(line) for line in lines]
+        except json.JSONDecodeError as exc:
+            raise ProvenanceRecorderError(
+                "cannot resume a provenance log containing malformed JSON"
+            ) from exc
+        chain_records = [record for record in records if isinstance(record.get("seq"), int)]
+        if not chain_records:
+            raise ProvenanceRecorderError(
+                "cannot resume a provenance log with no integer-sequence events"
+            )
+        last = chain_records[-1]
+        self._seq = last["seq"]
+        # Replication ACK lines are receipts, not hash-chain members. Resuming
+        # from an ACK would fork the next event from the authoritative chain.
+        self._prev_hash = canonical_hash(last)
+        self._first_event_hash = canonical_hash(chain_records[0])
 
 
 # ---------------------------------------------------------------------------
@@ -1504,6 +1582,8 @@ class VerificationResult:
     high_water_seq: int = 0
     last_heartbeat_ts: Optional[str] = None
     signatures_verified: bool = False
+    agent_attestations_verified: int = 0
+    legacy_agent_signatures_unverified: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -1556,6 +1636,119 @@ def _verify_recorder_signature(record: dict, public_key: bytes) -> bool:
     return False
 
 
+def _verify_service_agent_attestation(record: dict) -> bool | None:
+    """Verify the persisted v1 service request from record fields.
+
+    ``None`` means this is not a dedicated-service record. ``False`` means the
+    record claims that provenance but the persisted attribution is incomplete
+    or invalid.
+    """
+    corroboration = record.get("os_corroboration")
+    if not isinstance(corroboration, dict) or "provenance_service" not in corroboration:
+        return None
+    metadata = corroboration.get("provenance_service")
+    required = {
+        "agent_algorithm",
+        "agent_key_version",
+        "agent_public_key_hex",
+        "caller_sid",
+        "issued_at_ms",
+        "nonce",
+        "operation",
+        "protocol_version",
+        "request_hash",
+        "request_id",
+        "request_signature",
+    }
+    if not isinstance(metadata, dict) or set(metadata) != required:
+        return False
+    if record.get("record_version") != RECORD_VERSION_V2:
+        return False
+    algorithm = metadata.get("agent_algorithm")
+    if algorithm not in {"ed25519", "ecdsa-p384-cng"}:
+        return False
+    if metadata.get("agent_key_version") != 1:
+        return False
+    try:
+        public_key = bytes.fromhex(str(metadata.get("agent_public_key_hex", "")))
+        event_signature = bytes.fromhex(str(record.get("agent_sig", "")))
+        request_signature = bytes.fromhex(str(metadata.get("request_signature", "")))
+    except ValueError:
+        return False
+    expected_key_bytes = 32 if algorithm == "ed25519" else 96
+    expected_signature_bytes = 64 if algorithm == "ed25519" else 96
+    if len(public_key) != expected_key_bytes:
+        return False
+    if len(event_signature) != expected_signature_bytes or len(request_signature) != expected_signature_bytes:
+        return False
+    request = {
+        "agent_id": record.get("agent_id"),
+        "event_signature": record.get("agent_sig"),
+        "event_type": record.get("event_type"),
+        "issued_at_ms": metadata.get("issued_at_ms"),
+        "nonce": metadata.get("nonce"),
+        "operation": metadata.get("operation"),
+        "os_corroboration": corroboration.get("client"),
+        "payload": record.get("payload"),
+        "request_id": metadata.get("request_id"),
+        "session_id": record.get("session_id"),
+        "version": metadata.get("protocol_version"),
+    }
+    actual_request_hash = hashlib.sha384(
+        json.dumps(
+            request,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
+    ).hexdigest()
+    if actual_request_hash != metadata.get("request_hash"):
+        return False
+    event_bytes = json.dumps(
+        {"event_type": record.get("event_type"), "payload": record.get("payload")},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+    request_bytes = json.dumps(
+        request,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+    try:
+        if algorithm == "ed25519":
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+            verifier = Ed25519PublicKey.from_public_bytes(public_key)
+            verifier.verify(event_signature, event_bytes)
+            verifier.verify(request_signature, request_bytes)
+        else:
+            from cryptography.hazmat.primitives import hashes
+            from cryptography.hazmat.primitives.asymmetric import ec
+            from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+
+            verifier = ec.EllipticCurvePublicNumbers(
+                int.from_bytes(public_key[:48], "big"),
+                int.from_bytes(public_key[48:], "big"),
+                ec.SECP384R1(),
+            ).public_key()
+            event_der = encode_dss_signature(
+                int.from_bytes(event_signature[:48], "big"),
+                int.from_bytes(event_signature[48:], "big"),
+            )
+            request_der = encode_dss_signature(
+                int.from_bytes(request_signature[:48], "big"),
+                int.from_bytes(request_signature[48:], "big"),
+            )
+            verifier.verify(event_der, event_bytes, ec.ECDSA(hashes.SHA384()))
+            verifier.verify(request_der, request_bytes, ec.ECDSA(hashes.SHA384()))
+    except Exception:
+        return False
+    digest = hashlib.sha256(public_key) if algorithm == "ed25519" else hashlib.sha384(public_key)
+    return record.get("agent_id") == "SC-" + digest.hexdigest()[:8].upper()
+
+
 def _verify_chain(
     log_path: Path,
     session_id: Optional[str] = None,
@@ -1584,6 +1777,8 @@ def _verify_chain(
     high_water_seq = 0
     last_heartbeat_ts: Optional[str] = None
     has_close = False
+    agent_attestations_verified = 0
+    legacy_agent_signatures_unverified = 0
 
     try:
         with open(log_path, encoding="utf-8") as fh:
@@ -1628,6 +1823,22 @@ def _verify_chain(
                             f"{record.get('seq', '?')} (line {lineno})"
                         ),
                     )
+
+                attestation = _verify_service_agent_attestation(record)
+                if attestation is False:
+                    return VerificationResult(
+                        ok=False,
+                        count=count,
+                        session_state=session_state,
+                        message=(
+                            "agent request attestation invalid or incomplete at seq "
+                            f"{record.get('seq', '?')} (line {lineno})"
+                        ),
+                    )
+                if attestation is True:
+                    agent_attestations_verified += 1
+                elif record.get("agent_sig") and record.get("record_version") != RECORD_VERSION_V2:
+                    legacy_agent_signatures_unverified += 1
 
                 # Timestamp monotonicity check (Fix 1)
                 ts = record.get("ts", "")
@@ -1683,6 +1894,8 @@ def _verify_chain(
         high_water_seq=high_water_seq,
         last_heartbeat_ts=last_heartbeat_ts,
         signatures_verified=require_recorder_signatures,
+        agent_attestations_verified=agent_attestations_verified,
+        legacy_agent_signatures_unverified=legacy_agent_signatures_unverified,
     )
 
 
@@ -1697,14 +1910,16 @@ def canonical_bytes(record: dict) -> bytes:
     - Sort keys alphabetically
     - No whitespace (separators=(',', ':'))
     - ensure_ascii=True (no unicode ambiguity)
-    - Exclude 'recorder_sig', 'agent_sig' fields from the signed payload
-      (signatures cannot sign themselves)
+    - v2 excludes only ``recorder_sig``. The agent signature and persisted
+      request attestation are bound by the recorder signature and chain hash.
+    - Legacy records exclude both signatures to preserve verification of
+      existing ledgers; their agent signatures are reported as unverified.
     - No floats in the record schema; all numeric values are int or str
     """
-    r = {
-        k: v for k, v in record.items()
-        if k not in ("recorder_sig", "agent_sig")
-    }
+    excluded = {"recorder_sig"}
+    if record.get("record_version") != RECORD_VERSION_V2:
+        excluded.add("agent_sig")
+    r = {k: v for k, v in record.items() if k not in excluded}
     return json.dumps(
         r,
         sort_keys=True,

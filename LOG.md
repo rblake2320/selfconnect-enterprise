@@ -54,6 +54,45 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260716-009 - Isolate the authoritative provenance writer
+
+**Timestamp (UTC):** 2026-07-16T07:15:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, test, security, deployment
+**Base commit:** `b001274419f378d8487e44f980bee3a09464000b`
+**Change reference:** commit containing this entry
+**Why:** [WHY-20260716-009](WHY.md#why-20260716-009)
+**Parked records:** [PARK-20260716-009](PARKED.md#park-20260716-009)
+
+**Changed:** Added a dedicated Windows service identity, explicit service-SID
+filesystem ACL construction and verification, a versioned signed local pipe,
+OS-token enrollment binding, durable replay/idempotency state, recovery repair,
+signed high-water updates, an offline verifier for both agent attestations, a
+fail-closed hardened-profile client, administrator enrollment, deployment, and
+installed-service acceptance tooling.
+
+**Reason:** A signed recorder in the same process as the governed runtime did
+not prevent a compromised agent process from attempting direct ledger writes,
+and unit tests did not establish the Windows service boundary required by issue
+#16.
+
+**Full actions and links:** `enterprise/provenance_service.py`,
+`enterprise/provenance_pipe.py`, `enterprise/provenance_service_core.py`,
+`enterprise/provenance_client.py`, `deploy/provenance_service.ps1`,
+`deploy/provenance_service_acceptance.ps1`,
+[service guide](docs/PROVENANCE_SERVICE.md),
+[WHY-20260716-009](WHY.md#why-20260716-009), and
+[PARK-20260716-009](PARKED.md#park-20260716-009).
+
+**Validation:** Focused provenance, service, control-plane, WORM, deployment,
+and real Windows named-pipe tests passed before publication. The installed SCM,
+distinct non-admin token, forced restart, DACL tamper, offline chain, and
+rollback evidence is recorded separately because unit tests cannot close issue
+#16.
+
+**Notes:** A local memory witness does not establish off-host immutability. A
+second Windows host is required to exercise remote-host pipe rejection.
+
 ## LOG-20260716-008 - Bind Windows cleanup evidence to control flow
 
 **Timestamp (UTC):** 2026-07-16T07:16:15Z
