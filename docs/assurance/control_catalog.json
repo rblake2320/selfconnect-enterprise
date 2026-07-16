@@ -114,6 +114,27 @@
       "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_ledger.py", "-q"]
     },
     {
+      "id": "PROVENANCE-SERVICE-CODE-001",
+      "title": "Hardened provenance uses a fail-closed local service contract",
+      "scope": "Dedicated provenance service configuration, signed IPC, endpoint discovery, PID and key binding, durable request recovery, filesystem ACL checks, and hardened-profile client composition",
+      "assertion": "Run the provenance service, IPC, client, Windows pipe, deployment-contract, and hardened runtime composition suites.",
+      "expected": "Named unit and local Windows tests pass for service identity, explicit sessions, replay/freshness/signature denial, PID/key binding, low-integrity denial, ACL drift refusal, recovery, and no hardened-profile in-process fallback.",
+      "evidence": "pytest output, release conformance report, and the separately scoped installed-service acceptance artifact",
+      "blind_spots": "Repository tests do not install through SCM under distinct operating-system tokens, exercise forced service restart, configure off-host retention, prove remote-host rejection, or create an authorization.",
+      "tier": "release",
+      "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_provenance_admin.py", "tests/test_enterprise/test_provenance_client.py", "tests/test_enterprise/test_provenance_deploy.py", "tests/test_enterprise/test_provenance_ipc.py", "tests/test_enterprise/test_provenance_pipe_windows.py", "tests/test_enterprise/test_provenance_service.py", "tests/test_enterprise/test_provenance_service_core.py", "tests/test_enterprise/test_service.py", "-q"]
+    },
+    {
+      "id": "PROVENANCE-SERVICE-LIVE-001",
+      "title": "Installed provenance service boundary is exercised under distinct Windows tokens",
+      "scope": "One reviewed wheel, one Windows host, SCM, a restricted virtual service account, disposable non-admin client tokens, the local named-pipe boundary, signed ledgers, and uninstall cleanup",
+      "assertion": "From elevated PowerShell, run deploy/provenance_service_acceptance.ps1 against the exact reviewed wheel and retain a redacted report.",
+      "expected": "Install, enrollment, valid commit, adversarial denials, low-integrity denial, endpoint rotation, DACL tamper refusal, forced restart recovery, offline chain/index verification, uninstall, and cleanup all pass.",
+      "evidence": "docs/operations/2026-07-16-provenance-service-acceptance.json plus the owner-retained raw report and transcript hashes",
+      "blind_spots": "The recorded run used a local memory witness, not off-host WORM storage. Remote-host pipe rejection requires a second Windows host. One host/build/configuration does not establish other deployments or an authorization.",
+      "tier": "description"
+    },
+    {
       "id": "IRS-EVIDENCE-001",
       "title": "IRS-neutral evidence validates inventory, review, and record kind",
       "scope": "Local IRS use-case/model/data/action evidence schema and its signed AgentLedger recorder",

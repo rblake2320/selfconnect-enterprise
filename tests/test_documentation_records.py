@@ -13,6 +13,9 @@ WHY_PATH = ROOT / "WHY.md"
 CHANGELOG_PATH = ROOT / "CHANGELOG.md"
 README_PATH = ROOT / "README.md"
 CATALOG_PATH = ROOT / "docs" / "assurance" / "control_catalog.json"
+PROVENANCE_ACCEPTANCE_PATH = (
+    ROOT / "docs" / "operations" / "2026-07-16-provenance-service-acceptance.json"
+)
 
 LOG_ID_RE = re.compile(r"^## (LOG-\d{8}-\d{3})\b", re.MULTILINE)
 PARK_ID_RE = re.compile(r"^## (PARK-\d{8}-\d{3})\b", re.MULTILINE)
@@ -210,3 +213,32 @@ def test_control_catalog_has_required_control_fields() -> None:
         else:
             assert control["tier"] in {"quick", "release", "live"}
             assert isinstance(control.get("command"), list) and control["command"]
+
+
+def test_provenance_service_acceptance_artifact_is_bounded_and_redacted() -> None:
+    import json
+
+    evidence = json.loads(_read(PROVENANCE_ACCEPTANCE_PATH))
+    assert evidence["schema"] == "selfconnect.provenance.acceptance-summary.v1"
+    assert evidence["status"] == "implemented_and_exercised"
+    assert all(evidence["lifecycle_checks"].values())
+    assert all(evidence["enrolled_agent_checks"].values())
+    assert evidence["source"]["wheel_source_mismatches"] == []
+    assert evidence["recovery_evidence"]["concurrent_request_count"] == 40
+    assert evidence["recovery_evidence"]["session_ledgers_verified"] == 42
+    assert evidence["recovery_evidence"]["signed_events_verified"] == 168
+    assert evidence["recovery_evidence"]["signed_session_index_entries_verified"] == 126
+    assert evidence["blind_spots"]
+    assert evidence["claim_boundary"]["not_established"]
+
+    encoded = json.dumps(evidence).lower()
+    prohibited = (
+        "c:\\\\users\\\\",
+        "c:\\\\programdata\\\\",
+        "s-1-5-21-",
+        "scpa-",
+        "scpx-",
+        "desktop-",
+    )
+    for value in prohibited:
+        assert value not in encoded

@@ -1,0 +1,110 @@
+# Dedicated Provenance Service
+
+The `SelfConnectProvenance` Windows service is the hardened local write boundary
+for Enterprise and Government audit events. It separates the authoritative
+ledger writer from agent processes; it is not an off-host immutability service,
+an ATO, or a substitute for an independently administered retention system.
+
+## Boundary
+
+- SCM runs the process as `NT SERVICE\SelfConnectProvenance` with a restricted
+  service SID and configured restart actions.
+- Only that service SID, SYSTEM, and Administrators receive authority on the
+  service root. Enrolled client SIDs do not receive ledger write authority.
+- Each service start creates a fresh 128-bit named-pipe endpoint and publishes
+  it only after the pipe is live through the service-owned endpoint file.
+  Clients rediscover that endpoint for each submission, so a process holding a
+  prior pipe name cannot block service restart. The pipe also uses
+  `FILE_FLAG_FIRST_PIPE_INSTANCE`,
+  `PIPE_REJECT_REMOTE_CLIENTS`, an explicit DACL, bounded instances and frames,
+  request deadlines, and client/server SID pinning.
+- A request is accepted only when its OS token presents exactly one enrolled
+  SID and its enrolled agent key verifies the event and complete request.
+- Nonces, receipts, and request IDs are persisted in SQLite. Recovery searches
+  the signed ledger, repairs required replication, advances the signed session
+  high-water index, and returns the original receipt without duplicating the
+  event.
+- Enterprise and Government runtime construction uses the service client and
+  has no automatic in-process fallback. Consumer mode remains an explicit,
+  separate posture.
+
+## Install
+
+Build and review one wheel, then run from an elevated PowerShell:
+
+```powershell
+python -m build
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\deploy\provenance_service.ps1 `
+  -Action Install `
+  -WheelPath .\dist\selfconnect_enterprise-1.2.3-py3-none-any.whl `
+  -AuditMode enterprise `
+  -WormSink memory
+```
+
+`memory` is suitable only for the local service-boundary drill. Government mode
+refuses installation unless `s3` or `r2` is selected, and the chosen provider's
+retention configuration still requires live verification.
+
+Manage enrollments as an administrator, reapply the endpoint read ACL, then
+restart the service:
+
+```powershell
+scent-provenance-admin enroll `
+  --agent-id SC-... `
+  --algorithm ed25519 `
+  --public-key-hex ... `
+  --sid S-1-5-21-...
+.\deploy\provenance_service.ps1 -Action RepairAcl
+Restart-Service SelfConnectProvenance
+```
+
+Hardened clients set `SC_PROVENANCE_ENDPOINT_FILE` to the installed service's
+`endpoint\current.json` path. They still pin the service SID, agent ID, and
+public key; endpoint discovery does not replace cryptographic server
+verification.
+
+## Acceptance Drill
+
+The acceptance script creates disposable non-admin users, installs the reviewed
+wheel through SCM, runs valid and adversarial requests under distinct tokens,
+tests direct filesystem denial, restart while an obsolete pipe name is held,
+DACL tamper refusal on an existing ledger file, forced
+process restart during concurrent submissions, offline signature/chain
+verification of both ledgers and the signed session index, source-to-wheel
+binding, partial-install rollback, and uninstall rollback. It does not print
+passwords or private keys.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\deploy\provenance_service_acceptance.ps1 `
+  -WheelPath .\dist\selfconnect_enterprise-1.2.3-py3-none-any.whl `
+  -EvidencePath .\docs\operations\provenance-service-acceptance.json
+```
+
+The issue is not closed by parser or unit tests. Closure requires a report from
+an installed service and a distinct non-admin token. A second Windows host is
+still required before claiming remote-host rejection was exercised rather than
+inferred from `PIPE_REJECT_REMOTE_CLIENTS`.
+
+The bounded 2026-07-16 run is recorded in
+[`docs/operations/2026-07-16-provenance-service-acceptance.json`](operations/2026-07-16-provenance-service-acceptance.json).
+It exercised one exact wheel on one Windows host and retained only redacted
+evidence in the repository. The artifact records 19/19 lifecycle checks,
+19/19 enrolled-agent checks, a 40-request forced-restart burst, 42 verified
+session ledgers containing 168 signed events, and 126 verified signed index
+entries. It does not establish off-host immutability, remote-host rejection,
+authorization, or behavior outside the recorded environment.
+
+## Recovery
+
+`RepairAcl` reapplies the exact service-SID filesystem contract after an
+authorized review of a detected ACL drift:
+
+```powershell
+.\deploy\provenance_service.ps1 -Action RepairAcl
+```
+
+Uninstall does not silently activate in-process provenance for Enterprise or
+Government. The hardened runtime remains unavailable until the service is
+reinstalled and its pinned identity is configured.

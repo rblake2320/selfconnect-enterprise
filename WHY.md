@@ -51,6 +51,47 @@ related records.
 
 ## Register
 
+## WHY-20260716-009 - Put hardened provenance behind a service SID
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T07:15:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-009](LOG.md#log-20260716-009)
+**Parked records:** [PARK-20260716-009](PARKED.md#park-20260716-009)
+**Source state:** `selfconnect-enterprise`, `hardening/provenance-service-sid`,
+`b001274419f378d8487e44f980bee3a09464000b`
+
+**Decision:** Enterprise and Government profiles use a dedicated, enrolled,
+signed provenance service with no automatic in-process fallback. Consumer mode
+may continue to use the in-process recorder only as an explicit posture.
+
+**Why:** Signatures and hash chains detect mutation but do not create process
+separation. A Windows service SID, exact filesystem DACL, OS-token-bound named
+pipe, durable replay state, and signed recovery receipt make the local writer a
+distinct enforceable boundary while preserving SelfConnect's offline design.
+
+**Alternatives considered:** Keeping the recorder in the main process was
+rejected for hardened profiles. Granting a broad user or service account was
+rejected because it weakens attribution and filesystem isolation. HTTP or a
+network broker was rejected because the boundary is local and must continue to
+work offline. Treating the local service as WORM was rejected as false.
+
+**Consequences:** Hardened runtime startup now requires a live, pinned service
+identity and enrolled client key. Deployment gains SCM, DACL, service recovery,
+and key-provisioning responsibilities. Local administrators and a compromised
+service remain outside this boundary, so off-host retention stays mandatory for
+claims that require tamper resistance beyond the host.
+
+**Rollback conditions:** Roll back only by disabling the hardened runtime. Do
+not silently fall back to in-process provenance. Consumer mode is the explicit
+compatibility path.
+
+**Evidence and links:** [service guide](docs/PROVENANCE_SERVICE.md),
+[redacted installed-service acceptance](docs/operations/2026-07-16-provenance-service-acceptance.json),
+issue #16, the named provenance service tests,
+[LOG-20260716-009](LOG.md#log-20260716-009), and
+[PARK-20260716-009](PARKED.md#park-20260716-009).
+
 ## WHY-20260716-008 - Verify cleanup control flow, not cleanup vocabulary
 
 **Status:** Accepted

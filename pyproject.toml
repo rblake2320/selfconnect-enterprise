@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "selfconnect @ git+https://github.com/rblake2320/selfconnect.git@5c493300b937a0f912e32a131061a132d2c11fe8",
     "cryptography>=48.0.1",
+    "pywin32>=306; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -18,7 +19,6 @@ dev = [
     "comtypes>=1.4; sys_platform == 'win32'",
     "hypothesis>=6.0",
     "pip-audit>=2.7",
-    "pywin32>=306; sys_platform == 'win32'",
     "pytest>=8",
     "rich>=13.0",
     "ruff>=0.4",
@@ -27,6 +27,7 @@ dev = [
 
 [project.scripts]
 scent = "enterprise.cli:main"
+scent-provenance-admin = "enterprise.provenance_admin:main"
 
 [tool.setuptools.packages.find]
 include = ["enterprise*", "experiments*"]

@@ -1,0 +1,98 @@
+{
+  "schema": "selfconnect.provenance.acceptance-summary.v1",
+  "status": "implemented_and_exercised",
+  "scope": "One installed SelfConnectProvenance Windows service lifecycle on one Windows host using distinct disposable non-admin client identities.",
+  "started_at": "2026-07-16T10:11:41.7929603Z",
+  "finished_at": "2026-07-16T10:12:47.0399620Z",
+  "source": {
+    "commit": "9af484ec99c739176a287e9e68d003ffb8f78b88",
+    "runtime_tree_sha256": "bf28c5e83959c195cb937e07843c991be702bfe7790850c9d8c04306a94d2751",
+    "wheel_sha256": "5c15913f0d38ddf70b98b118e80f437b85733bd018417c102a0a47ac2251a838",
+    "wheel_member_count": 68,
+    "wheel_runtime_file_count": 63,
+    "wheel_source_mismatches": []
+  },
+  "environment": {
+    "windows_build": "10.0.26200.0",
+    "python": "Python 3.12.10",
+    "service_account": "NT SERVICE\\SelfConnectProvenance",
+    "service_sid_type": "RESTRICTED",
+    "service_start_mode": "AUTO_START_DELAYED",
+    "client_integrity": "MEDIUM",
+    "pipe_integrity": "MEDIUM",
+    "pipe_mandatory_label_policy": "NO_WRITE_UP"
+  },
+  "lifecycle_checks": {
+    "wheel_matches_source_commit": true,
+    "dedicated_runtime_provisioned": true,
+    "separate_client_runtime_provisioned": true,
+    "disposable_user_workspaces_isolated": true,
+    "partial_install_rolls_back": true,
+    "scm_install": true,
+    "dedicated_service_account": true,
+    "enrolled_agent_contract": true,
+    "anonymous_pipe_denied": true,
+    "pipe_rotation_survives_old_name_squatting": true,
+    "dacl_tamper_blocks_service_readiness": true,
+    "crash_restart_burst": true,
+    "scm_stop": true,
+    "all_chains_verify_offline": true,
+    "session_index_verifies_offline": true,
+    "rollback_uninstall": true,
+    "runtime_cleanup": true,
+    "disposable_user_cleanup": true,
+    "acceptance_workspace_cleanup": true
+  },
+  "enrolled_agent_checks": {
+    "bad_signature_denied": true,
+    "client_medium_integrity": true,
+    "committed": true,
+    "filesystem_append_denied": true,
+    "filesystem_change_dacl_denied": true,
+    "filesystem_create_denied": true,
+    "filesystem_delete_denied": true,
+    "filesystem_rename_denied": true,
+    "filesystem_truncate_denied": true,
+    "idempotent_replay": true,
+    "malformed_denied": true,
+    "nonce_replay_denied": true,
+    "oversized_denied": true,
+    "same_sid_low_integrity_denied": true,
+    "stale_denied": true,
+    "unsupported_version_denied": true,
+    "wrong_agent_denied": true,
+    "wrong_server_pid_denied": true,
+    "wrong_service_key_denied": true
+  },
+  "recovery_evidence": {
+    "concurrent_request_count": 40,
+    "requests_recovered_after_transient_errors": 8,
+    "service_pid_changed_after_forced_termination": true,
+    "pipe_endpoint_rotated_after_restart": true,
+    "session_ledgers_verified": 42,
+    "signed_events_verified": 168,
+    "agent_attestations_verified": 42,
+    "signed_session_index_entries_verified": 126
+  },
+  "artifact_hashes": {
+    "acceptance_helper_sha256": "29e8f62bc6794bbea23a8366312ca88bd1a0d433c157c21db59c00dcedade105",
+    "deployment_script_sha256": "99606fef616c5cff2e568e2f918ae7a36238769fb909aa7dc7190ffd4dce8728",
+    "owner_retained_raw_report_sha256": "cb7d8bcbe898279b27c8acfced96fa176f6841eae5d7938bf1afdf2fe55b7d28",
+    "owner_retained_transcript_sha256": "6e027d1b6afc5e302251fea7d7a9530bf559d825b8d6dfb249f110ebf54076c7"
+  },
+  "claim_boundary": {
+    "permitted": "The dedicated local provenance service boundary was implemented and exercised on the recorded Windows host and source commit.",
+    "not_established": [
+      "Off-host immutability or WORM retention",
+      "Remote-host named-pipe rejection",
+      "Resistance to a compromised service process, local administrator, or kernel",
+      "Government authorization, DoD Impact Level authorization, or regulatory compliance",
+      "Behavior on an untested Windows build or deployment configuration"
+    ]
+  },
+  "blind_spots": [
+    "The drill used a local in-memory witness and did not configure an off-host WORM sink.",
+    "A second Windows host is required to exercise remote-host named-pipe rejection.",
+    "The owner-retained raw report is not published because it contains ephemeral local account SIDs and host paths."
+  ]
+}

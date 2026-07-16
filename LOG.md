@@ -54,6 +54,79 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260716-009 - Isolate the authoritative provenance writer
+
+**Timestamp (UTC):** 2026-07-16T07:15:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, test, security, deployment
+**Base commit:** `b001274419f378d8487e44f980bee3a09464000b`
+**Change reference:** commit containing this entry
+**Why:** [WHY-20260716-009](WHY.md#why-20260716-009)
+**Parked records:** [PARK-20260716-009](PARKED.md#park-20260716-009)
+
+**Changed:** Added a dedicated Windows service identity, explicit service-SID
+filesystem ACL construction and verification, a versioned signed local pipe,
+OS-token enrollment binding, durable replay/idempotency state, recovery repair,
+signed high-water updates, an offline verifier for both agent attestations, a
+fail-closed hardened-profile client, administrator enrollment, deployment, and
+installed-service acceptance tooling. Independent review then reproduced an
+unsigned-index rollback, existing-file ACL drift, restart pipe squatting,
+partial service registration, and unbound wheel evidence. The implementation
+now signs and strictly verifies every index entry, verifies all existing files,
+rotates/discovers a 128-bit endpoint on every service start, rolls back partial
+registration, and binds the wheel's complete runtime tree to the clean commit.
+
+**Reason:** A signed recorder in the same process as the governed runtime did
+not prevent a compromised agent process from attempting direct ledger writes,
+and unit tests did not establish the Windows service boundary required by issue
+#16.
+
+**Full actions and links:** `enterprise/provenance_service.py`,
+`enterprise/provenance_pipe.py`, `enterprise/provenance_service_core.py`,
+`enterprise/provenance_client.py`, `deploy/provenance_service.ps1`,
+`deploy/provenance_service_acceptance.ps1`,
+[service guide](docs/PROVENANCE_SERVICE.md),
+[WHY-20260716-009](WHY.md#why-20260716-009), and
+[PARK-20260716-009](PARKED.md#park-20260716-009).
+
+**Validation:** The exact wheel built from
+`9af484ec99c739176a287e9e68d003ffb8f78b88` matched all 63 runtime source files
+and passed the privileged installed-service lifecycle on Windows build
+`10.0.26200.0` with Python 3.12.10. All 19 lifecycle checks and all 19
+enrolled-agent checks passed. The run exercised a distinct disposable
+non-admin token, Medium/No-Write-Up pipe integrity, live server-PID and service
+key binding, replay/stale/signature/agent/version/frame denials, direct
+filesystem denial, endpoint rotation around old-name squatting, startup refusal
+after DACL tamper, a forced restart with 40 concurrent submissions and eight
+transient recoveries, offline verification of 42 session ledgers containing 168
+signed events, verification of 126 signed index entries, uninstall, and full
+disposable runtime/account/workspace cleanup. The redacted artifact is
+[`docs/operations/2026-07-16-provenance-service-acceptance.json`](docs/operations/2026-07-16-provenance-service-acceptance.json).
+In a fresh Python 3.12 release environment with the declared dependencies,
+including `cryptography==49.0.0`, the full suite passed `1512 passed, 34
+skipped`; Ruff and `pip check` passed; and `pip-audit` found zero vulnerable
+dependencies across 46 scanned packages. The machine-wide interpreter remained
+correctly blocked because it still contained `cryptography==44.0.3`; that
+environment failure is not reported as a branch pass. An isolated portfolio
+layout then checked out Enterprise `4c6bea19e46763ccd29833f8ae5c6520ffc8fbe3`,
+BPC `772271e174769f91a980cc3ee69a6eb9cc36bf39`, and TSK
+`bc31c234100a6e6432d2ac5de82783fc136bc2ea`; installed and built both protocol
+workspaces; passed their Node, HA, and typecheck commands; passed the Ultra Node
+suite; and returned `PASS_WITH_NAMED_BLIND_SPOTS` with no failed executable
+controls from the release catalog
+(`f013ae5427170180ebd6b9424e72f3e378a0210f60b7f94fec6cac26e8a69610`).
+Independent read-only review of `10322cc031f01790765072416288fa58fcc86de2`
+approved with no findings after 101 provenance tests, 36 focused
+documentation/deployment tests, Ruff, and `git diff --check`. The reviewer
+confirmed closure of the prior arbitrary-wheel-content, stale-endpoint,
+rollback-exit, and evidence-cleanup findings and confirmed the remaining blind
+spots are stated without expanding the claim.
+
+**Notes:** The run used a local memory witness and does not establish off-host
+immutability. A second Windows host is required to exercise remote-host pipe
+rejection. It is implementation and one-host runtime evidence, not an
+authorization or a general deployment guarantee.
+
 ## LOG-20260716-008 - Bind Windows cleanup evidence to control flow
 
 **Timestamp (UTC):** 2026-07-16T07:16:15Z
