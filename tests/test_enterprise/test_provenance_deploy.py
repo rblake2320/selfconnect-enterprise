@@ -151,6 +151,11 @@ def test_acceptance_requires_exact_source_and_proves_cross_restart_recovery():
     assert "recovered_after_error_count -gt 0" in acceptance
     assert "SelfConnect\\Runtime\\ProvenanceAcceptance-$RunId" in acceptance
     assert "-m venv $RuntimeRoot" in acceptance
+    assert "$ClientRuntimeRoot = Join-Path $AcceptanceRoot 'client-runtime'" in acceptance
+    assert "-m venv $ClientRuntimeRoot" in acceptance
+    assert "Start-Process -FilePath $ClientPythonExe" in acceptance
+    assert "separate_client_runtime_provisioned" in acceptance
+    assert "$ClientPythonExe -ne $ServicePythonExe" in acceptance
     assert "-m pip check" in acceptance
     assert "Refused to remove service root outside acceptance scope" in acceptance
     assert "$process.Refresh()" in acceptance

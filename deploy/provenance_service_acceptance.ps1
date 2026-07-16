@@ -23,6 +23,8 @@ $AcceptanceRoot = Join-Path $env:ProgramData "SelfConnect\ProvenanceAcceptance\$
 $ServiceRoot = Join-Path $env:ProgramData "SelfConnect\Provenance-$RunId"
 $RuntimeRoot = Join-Path $env:ProgramData "SelfConnect\Runtime\ProvenanceAcceptance-$RunId"
 $ServicePythonExe = Join-Path $RuntimeRoot 'Scripts\python.exe'
+$ClientRuntimeRoot = Join-Path $AcceptanceRoot 'client-runtime'
+$ClientPythonExe = Join-Path $ClientRuntimeRoot 'Scripts\python.exe'
 $Helper = Join-Path $AcceptanceRoot 'provenance_acceptance_client.py'
 $ConfigPath = Join-Path $AcceptanceRoot 'config.json'
 $BootstrapPath = Join-Path $AcceptanceRoot 'bootstrap.json'
@@ -89,9 +91,12 @@ function Invoke-AsUser {
     )
     $stdout = Join-Path $AcceptanceRoot (([Guid]::NewGuid().ToString('N')) + '.stdout.txt')
     $stderr = Join-Path $AcceptanceRoot (([Guid]::NewGuid().ToString('N')) + '.stderr.txt')
-    $process = Start-Process -FilePath $PythonExe -ArgumentList $Arguments `
+    $process = Start-Process -FilePath $ClientPythonExe -ArgumentList $Arguments `
         -Credential $Credential -WorkingDirectory $AcceptanceRoot -WindowStyle Hidden `
         -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+    if ($null -eq $process) {
+        throw "$Description did not return a process handle"
+    }
     if ($NoWait) {
         return $process
     }
@@ -181,6 +186,16 @@ try {
             /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" `
             "*$($agent.Sid):(OI)(CI)M" "*$($anonymous.Sid):(OI)(CI)M"
     } 'acceptance workspace ACL'
+    & $BootstrapPythonExe -m venv $ClientRuntimeRoot
+    if ($LASTEXITCODE -ne 0) { throw 'dedicated acceptance client runtime creation failed' }
+    & $ClientPythonExe -m pip install $wheel
+    if ($LASTEXITCODE -ne 0) { throw 'dedicated acceptance client runtime provisioning failed' }
+    & $ClientPythonExe -m pip check
+    if ($LASTEXITCODE -ne 0) { throw 'dedicated acceptance client dependency check failed' }
+    $Results.checks.separate_client_runtime_provisioned = `
+        (Test-Path -LiteralPath $ClientPythonExe -PathType Leaf) -and `
+        ($ClientPythonExe -ne $ServicePythonExe)
+    $Results.artifacts.client_runtime = $ClientRuntimeRoot
 
     $faultObserved = $false
     try {
