@@ -169,6 +169,7 @@ jobs:
         shell: pwsh
         env:
           ULTRA_ADMIN_TOKEN: ci-live-ultra-admin-token-2026
+          ULTRA_METRICS_TOKEN: ci-live-ultra-metrics-token-2026
         run: |
           $process = Start-Process node -ArgumentList 'server.js' `
             -WorkingDirectory "$env:GITHUB_WORKSPACE\ultra_server" `
@@ -188,6 +189,7 @@ jobs:
         shell: pwsh
         env:
           ULTRA_ADMIN_TOKEN: ci-live-ultra-admin-token-2026
+          ULTRA_METRICS_TOKEN: ci-live-ultra-metrics-token-2026
           SC_REQUIRE_ULTRA_SERVER: "1"
         run: |
           Push-Location ultra_server
@@ -238,6 +240,8 @@ jobs:
       REDIS_URL: redis://127.0.0.1:6379/0
       ULTRA_ADMIN_TOKEN: ci-production-ultra-admin-token-2026
       ULTRA_ADMIN_TOKEN_PREVIOUS: ci-previous-ultra-admin-token-2026-retire-me
+      ULTRA_METRICS_TOKEN: ci-production-ultra-metrics-token-2026
+      ULTRA_METRICS_TOKEN_PREVIOUS: ci-previous-ultra-metrics-token-2026-retire-me
       ULTRA_RECOVERY_HMAC_KEY: ci-production-recovery-hmac-key-2026
       ULTRA_RECOVERY_HMAC_KEY_PREVIOUS: ci-previous-recovery-hmac-key-2026-retire-me
       SC_RECOVERY_WINDOW_SEC: "300"
@@ -317,20 +321,31 @@ jobs:
           }
 
           initial_admin="$ULTRA_ADMIN_TOKEN"
+          initial_metrics="$ULTRA_METRICS_TOKEN"
           initial_recovery="$ULTRA_RECOVERY_HMAC_KEY"
           retired_admin="$ULTRA_ADMIN_TOKEN_PREVIOUS"
+          retired_metrics="$ULTRA_METRICS_TOKEN_PREVIOUS"
           rotated_admin="ci-rotated-ultra-admin-token-2026"
+          rotated_metrics="ci-rotated-ultra-metrics-token-2026"
           rotated_recovery="ci-rotated-recovery-hmac-key-2026"
 
           kill "$(cat "$RUNNER_TEMP/ultra.pid")"
           wait "$(cat "$RUNNER_TEMP/ultra.pid")" || true
           export ULTRA_ADMIN_TOKEN="$rotated_admin"
           export ULTRA_ADMIN_TOKEN_PREVIOUS="$initial_admin"
+          export ULTRA_METRICS_TOKEN="$rotated_metrics"
+          export ULTRA_METRICS_TOKEN_PREVIOUS="$initial_metrics"
           export ULTRA_RECOVERY_HMAC_KEY="$rotated_recovery"
           export ULTRA_RECOVERY_HMAC_KEY_PREVIOUS="$initial_recovery"
           node ultra_server/server.js >>"$RUNNER_TEMP/ultra.stdout.log" 2>>"$RUNNER_TEMP/ultra.stderr.log" &
           echo $! >"$RUNNER_TEMP/ultra.pid"
           wait_for_health
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            -H "Authorization: Bearer $rotated_metrics" http://127.0.0.1:7777/metrics)" = "200"
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            -H "Authorization: Bearer $initial_metrics" http://127.0.0.1:7777/metrics)" = "200"
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            -H "Authorization: Bearer $retired_metrics" http://127.0.0.1:7777/metrics)" = "401"
           ULTRA_EXPECT_RECOVERY_VALID=1 \
           ULTRA_EXPECT_ADMIN_ACCEPT="$initial_admin" \
           ULTRA_EXPECT_ADMIN_REJECT="$retired_admin" \
@@ -339,10 +354,14 @@ jobs:
 
           kill "$(cat "$RUNNER_TEMP/ultra.pid")"
           wait "$(cat "$RUNNER_TEMP/ultra.pid")" || true
-          unset ULTRA_ADMIN_TOKEN_PREVIOUS ULTRA_RECOVERY_HMAC_KEY_PREVIOUS
+          unset ULTRA_ADMIN_TOKEN_PREVIOUS ULTRA_METRICS_TOKEN_PREVIOUS ULTRA_RECOVERY_HMAC_KEY_PREVIOUS
           node ultra_server/server.js >>"$RUNNER_TEMP/ultra.stdout.log" 2>>"$RUNNER_TEMP/ultra.stderr.log" &
           echo $! >"$RUNNER_TEMP/ultra.pid"
           wait_for_health
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            -H "Authorization: Bearer $rotated_metrics" http://127.0.0.1:7777/metrics)" = "200"
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            -H "Authorization: Bearer $initial_metrics" http://127.0.0.1:7777/metrics)" = "401"
           ULTRA_EXPECT_RECOVERY_VALID=0 \
           ULTRA_EXPECT_ADMIN_ACCEPT="$rotated_admin" \
           ULTRA_EXPECT_ADMIN_REJECT="$initial_admin" \

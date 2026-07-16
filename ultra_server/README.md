@@ -14,6 +14,10 @@ gateway.
   operator bearer. Provisioning and binding must resolve to that enrolled
   agent.
 - Administrative inventory and mutation routes require the operator bearer.
+- Prometheus scraping uses a separate current/previous metrics bearer accepted
+  only by `GET /metrics`. The metrics credential cannot authorize inventory or
+  lifecycle routes, and production refuses missing, short, reused, or
+  administrator-equal metrics credentials.
 - Recovery token issuance requires both operator authorization and proof of
   possession of the replacement key. The versioned token binds the agent name,
   derived agent ID, replacement public key, recovery challenge hash, issuance
@@ -27,6 +31,9 @@ gateway.
 - The server binds only to `127.0.0.1`. Production also requires service-account
   isolation and approved secret custody; loopback is not a trust boundary by
   itself.
+- Request, route, status, and authentication-failure metric labels are bounded.
+  Unknown request paths use `__unmatched__`; raw paths never become time-series
+  labels.
 
 ## Runtime Modes
 
@@ -34,16 +41,17 @@ gateway.
 State is lost on restart.
 
 `ULTRA_RUNTIME_MODE=production` refuses startup unless PostgreSQL, Redis,
-`ULTRA_ADMIN_TOKEN`, and `ULTRA_RECOVERY_HMAC_KEY` are configured. PostgreSQL
+`ULTRA_ADMIN_TOKEN`, `ULTRA_METRICS_TOKEN`, and
+`ULTRA_RECOVERY_HMAC_KEY` are configured. PostgreSQL
 stores pairs, complete tumbler records, identity bindings, and idempotency
 responses. Redis supplies shared nonce replay protection and anomaly counters.
 Pair, provisioning, binding, and rotation-prepare mutations serialize on a
 resource lock and reconcile their durable resource before recovering a request
 stranded in `processing`; ambiguous duplicates fail closed.
 The production token and recovery key must each contain at least 32 bytes.
-One distinct previous operator token and recovery key may be configured during
-a bounded rolling rotation. They are verification-only and must be removed
-after the documented drain and token-TTL window.
+One distinct previous operator token, metrics token, and recovery key may be
+configured during a bounded rolling rotation. They are verification-only and
+must be removed after the documented drain and token-TTL window.
 
 The provisioning response omits literal segment `position` fields and never
 returns the complete record verbatim. It does return the owning client's shared
@@ -57,6 +65,9 @@ the deployment's approved secret manager, not a committed environment file.
 See [`ULTRA_KEY_ROTATION.md`](../docs/operations/ULTRA_KEY_ROTATION.md) and
 [`ULTRA_DISASTER_RECOVERY.md`](../docs/operations/ULTRA_DISASTER_RECOVERY.md)
 for the operator procedures and their explicit evidence boundaries.
+The local-only Prometheus/Grafana reference stack and its separate rotation,
+backup, restore, upgrade, rollback, and teardown procedures are in
+[`monitoring/README.md`](monitoring/README.md).
 
 ## Pinned Protocol Sources
 

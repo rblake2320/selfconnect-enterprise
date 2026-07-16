@@ -28,6 +28,13 @@ import {
 } from './recovery-token.js';
 import { enforceBpcAuthorization } from './security-boundary.js';
 import {
+  createMetricsAuthMiddleware,
+  metricAuthFailureLabel,
+  metricMethodLabel,
+  metricRouteLabel,
+  validateMetricsTokenConfiguration,
+} from './monitoring-security.js';
+import {
   MemoryIdempotencyStore,
   MemoryIdentityBindingStore,
   PgIdempotencyStore,
@@ -98,6 +105,17 @@ if (!['development', 'production'].includes(RUNTIME_MODE)) {
 // LIFECYCLE_SECRET remains a development compatibility alias only.
 const ADMIN_TOKEN = process.env.ULTRA_ADMIN_TOKEN ?? process.env.LIFECYCLE_SECRET ?? null;
 const ADMIN_TOKEN_PREVIOUS = process.env.ULTRA_ADMIN_TOKEN_PREVIOUS ?? null;
+const METRICS_TOKEN = process.env.ULTRA_METRICS_TOKEN ?? null;
+const METRICS_TOKEN_PREVIOUS = process.env.ULTRA_METRICS_TOKEN_PREVIOUS ?? null;
+validateMetricsTokenConfiguration({
+  runtimeMode: RUNTIME_MODE,
+  current: METRICS_TOKEN,
+  previous: METRICS_TOKEN_PREVIOUS,
+  adminTokens: [
+    ['ULTRA_ADMIN_TOKEN', ADMIN_TOKEN],
+    ['ULTRA_ADMIN_TOKEN_PREVIOUS', ADMIN_TOKEN_PREVIOUS],
+  ],
+});
 
 // ── Stores ───────────────────────────────────────────────────────────────────
 let pairStore;
@@ -122,7 +140,13 @@ for (const [name, value] of [
 }
 
 if (RUNTIME_MODE === 'production') {
-  const required = ['DATABASE_URL', 'REDIS_URL', 'ULTRA_ADMIN_TOKEN', 'ULTRA_RECOVERY_HMAC_KEY'];
+  const required = [
+    'DATABASE_URL',
+    'REDIS_URL',
+    'ULTRA_ADMIN_TOKEN',
+    'ULTRA_METRICS_TOKEN',
+    'ULTRA_RECOVERY_HMAC_KEY',
+  ];
   const missing = required.filter((name) => !process.env[name]);
   if (missing.length > 0) throw new Error(`production mode missing required settings: ${missing.join(', ')}`);
   if (Buffer.byteLength(process.env.ULTRA_ADMIN_TOKEN, 'utf8') < 32) {
@@ -131,7 +155,10 @@ if (RUNTIME_MODE === 'production') {
   if (Buffer.byteLength(process.env.ULTRA_RECOVERY_HMAC_KEY, 'utf8') < 32) {
     throw new Error('ULTRA_RECOVERY_HMAC_KEY must contain at least 32 bytes in production');
   }
-  for (const name of ['ULTRA_ADMIN_TOKEN_PREVIOUS', 'ULTRA_RECOVERY_HMAC_KEY_PREVIOUS']) {
+  for (const name of [
+    'ULTRA_ADMIN_TOKEN_PREVIOUS',
+    'ULTRA_RECOVERY_HMAC_KEY_PREVIOUS',
+  ]) {
     if (process.env[name] && Buffer.byteLength(process.env[name], 'utf8') < 32) {
       throw new Error(`${name} must contain at least 32 bytes when configured in production`);
     }
@@ -139,7 +166,6 @@ if (RUNTIME_MODE === 'production') {
   if (process.env.ULTRA_ADMIN_TOKEN_PREVIOUS === process.env.ULTRA_ADMIN_TOKEN) {
     throw new Error('ULTRA_ADMIN_TOKEN_PREVIOUS must differ from ULTRA_ADMIN_TOKEN');
   }
-
   const [{ Pool }, { default: Redis }] = await Promise.all([import('pg'), import('ioredis')]);
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   await pool.query('SELECT 1');
@@ -212,6 +238,7 @@ app.use(express.json({
 }));
 const requireAgentAuth = createAgentAuthMiddleware({ nonceStore, windowMs: 30_000 });
 const requireAdminAuth = createAdminAuthMiddleware([ADMIN_TOKEN, ADMIN_TOKEN_PREVIOUS]);
+const requireMetricsAuth = createMetricsAuthMiddleware([METRICS_TOKEN, METRICS_TOKEN_PREVIOUS]);
 const registrationGuards = RUNTIME_MODE === 'production'
   ? [requireAdminAuth, requireAgentAuth]
   : [requireAgentAuth];
@@ -260,8 +287,11 @@ async function finishIdempotent(idem, response) {
 // Count every request after response is sent
 app.use((req, res, next) => {
   res.on('finish', () => {
-    const route = req.route?.path ?? req.path;
-    cHttpRequests.inc({ method: req.method, route, status: String(res.statusCode) });
+    cHttpRequests.inc({
+      method: metricMethodLabel(req.method),
+      route: metricRouteLabel(req.route?.path),
+      status: String(res.statusCode),
+    });
   });
   next();
 });
@@ -648,8 +678,7 @@ app.post('/verify', async (req, res) => {
     );
 
     if (!result.ok) {
-      const failedLayer = result.layers?.find(l => !l.ok);
-      cAuthFailures.inc({ reason: failedLayer?.layer ?? 'unknown' });
+      cAuthFailures.inc({ reason: metricAuthFailureLabel(result.error) });
     }
     return res.json(result);
   } catch (err) {
@@ -817,7 +846,7 @@ app.patch('/bpc/pairs/:pairId', requireAdminAuth, async (req, res) => {
 });
 
 // ── Route: GET /metrics ───────────────────────────────────────────────────────
-app.get('/metrics', requireAdminAuth, async (_req, res) => {
+app.get('/metrics', requireMetricsAuth, async (_req, res) => {
   res.set('Content-Type', register.contentType);
   res.end(await register.metrics());
 });

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Least-privilege Ultra monitoring
+
+- Replaced administrator-token scraping with a dedicated current/previous
+  metrics credential accepted only by `GET /metrics`.
+- Bounded route, method, and authentication-failure labels; unknown hostile
+  paths now collapse to `__unmatched__`.
+- Hardened the Prometheus/Grafana reference stack with digest-pinned current
+  images, loopback-only management ports, ignored credential files, persistent
+  volumes, and install/verify/rotate/backup/restore/upgrade/rollback/teardown
+  procedures.
+- Evidence: [LOG-20260716-005](LOG.md#log-20260716-005).
+- Rationale: [WHY-20260716-005](WHY.md#why-20260716-005).
+- Recovery: [PARK-20260716-005](PARKED.md#park-20260716-005).
+
 ### Portfolio composition identity
 
 - Added one machine-readable lock for the exact SelfConnect SDK, BPC, and TSK

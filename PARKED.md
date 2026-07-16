@@ -91,6 +91,54 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260716-005 - Admin-authorized and unbounded initial monitoring slice
+
+**Status:** Parked
+**Category:** configuration, security property, operations
+**Former location:** `ultra_server/server.js` and `ultra_server/monitoring/`
+**Source commit:** `b3c2707298d3fb92659ab1e574dd4ce3ce77db49`
+**Affected paths:** Ultra metrics middleware and the Prometheus/Grafana
+reference configuration
+**Action log:** [LOG-20260716-005](LOG.md#log-20260716-005)
+**Why changed:** [WHY-20260716-005](WHY.md#why-20260716-005)
+**Parked by:** commit containing this record
+
+**Former wording:** `/metrics` used `requireAdminAuth`; request
+metrics used `req.route?.path ?? req.path`; Prometheus and Grafana used mutable
+version tags, listened on all host interfaces, and Grafana started with the
+inline `admin` password.
+
+**Recovery source:** Restore the affected paths from commit
+`b3c2707298d3fb92659ab1e574dd4ce3ce77db49`.
+
+**Reason parked:** The scraper held mutation authority, hostile unknown paths
+could create unbounded labels, and the deployment defaults exposed management
+interfaces and reusable credentials too broadly.
+
+**Replacement:** Dedicated metrics credentials, closed-set labels,
+digest-pinned images, loopback bindings, ignored secret files, persistent
+volumes, and verified lifecycle instructions.
+
+**Restore when:** Do not restore as a security configuration. A temporary
+diagnostic restoration requires an isolated non-production host, no sensitive
+state, and explicit owner approval.
+
+**Restore procedure:** Restore the source commit on an isolated branch. Never
+copy its credentials or port bindings into an active deployment.
+
+**Validation after restore:** Re-run the metrics authorization, hostile-path
+cardinality, configuration, live HTTP, and Compose tests; expected failures
+demonstrate why the source state remains parked.
+
+**Recovery rehearsal:** Not rehearsed.
+
+**Restoration risks:** Administrator credential exposure, privileged scraper
+compromise, telemetry resource exhaustion, mutable image drift, and management
+UI exposure.
+
+**Evidence and links:** [WHY-20260716-005](WHY.md#why-20260716-005), issue #14,
+and pull request #25.
+
 ## PARK-20260716-004 - Prior core transport composition
 
 **Status:** Parked

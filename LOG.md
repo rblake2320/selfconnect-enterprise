@@ -54,6 +54,55 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260716-005 - Enforce least-privilege bounded Ultra monitoring
+
+**Timestamp (UTC):** 2026-07-16T14:28:08Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, security hardening, test, documentation
+**Base commit:** `b3c2707298d3fb92659ab1e574dd4ce3ce77db49`
+**Change reference:** commit containing this entry
+**Why:** [WHY-20260716-005](WHY.md#why-20260716-005)
+**Parked records:** [PARK-20260716-005](PARKED.md#park-20260716-005)
+
+**Changed:** Replaced administrator authorization on `GET /metrics` with a
+dedicated current/previous metrics bearer, production startup validation, and
+constant-time verification. Request method, route, and authentication-failure
+labels now use closed sets; unknown paths collapse to `__unmatched__`. Expanded
+the reference stack with current digest-pinned Prometheus/Grafana images,
+loopback-only ports, ignored credential files, persistent volumes, provisioning
+validation, and complete lifecycle procedures.
+
+**Reason:** The initial dashboard-only slice gave Prometheus administrator
+authority and allowed attacker-controlled paths to create unbounded time-series
+labels. Its public ports, mutable image tags, and default Grafana credential
+were unsuitable as a least-privilege reference deployment.
+
+**Full actions and links:** `ultra_server/monitoring-security.js`,
+`ultra_server/server.js`, `ultra_server/monitoring/`,
+`.github/workflows/ci.yml`, issue #14, pull request #25, and the linked WHY/PARK
+records.
+
+**Validation:** Node unit suite passed 23 tests with one explicit PostgreSQL
+environment skip. A live development sidecar returned `401` for missing,
+incorrect, and administrator credentials at `/metrics`; accepted current and
+previous metrics credentials; denied the metrics credential at `/status`; and
+collapsed 500 unique hostile paths to `__unmatched__`. Docker Compose parsed
+successfully with synthetic ignored secrets and reported the exact pinned image
+digests. The real Node live contract passed 36 checks and the Python Ultra
+contract passed 33 tests. Real pinned Prometheus and Grafana containers then
+reported the Ultra target `up`, loaded dashboard UID `ultra-server`, queried
+request, registration, provisioning, and Node-memory series, restarted, and
+returned the same series and dashboard afterward. Ruff and `git diff --check`
+passed. The complete Python suite passed 1,459 tests in the existing isolated
+Python 3.12 environment with `cryptography==49.0.0`; the shared machine Python
+still fails its two intended supply-chain gates because it has
+`cryptography==44.0.3`, below the repository's declared `>=48.0.1` floor.
+
+**Notes:** The reference stack is not a claim of remote-access security,
+alerting, retention sizing, SSO, TLS termination, or deployment authorization.
+The local container restart proves this reference stack on the tested Docker
+Desktop host; it does not establish another deployment environment.
+
 ## LOG-20260716-004 - Advance the core lock to fail-closed console transport
 
 **Timestamp (UTC):** 2026-07-16T02:06:16Z
