@@ -91,6 +91,57 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260716-008 - Presence-only Windows cleanup conformance
+
+**Status:** Parked
+**Category:** CI behavior, test evidence, release gate
+**Former location:** `tools/portfolio_conformance.py` and
+`tests/test_portfolio_conformance.py`
+**Source commit:** `eb4e033f3402245ceca6c16c2c4de82ed37694c3`
+**Affected paths:** `.github/workflows/ci.yml`,
+`tools/portfolio_conformance.py`, and `tests/test_portfolio_conformance.py`
+**Action log:** [LOG-20260716-008](LOG.md#log-20260716-008)
+**Why changed:** [WHY-20260716-008](WHY.md#why-20260716-008)
+**Parked by:** Codex, requested by the repository owner
+
+**Former wording:** The conformance gate required `finally {}` and
+`Stop-Process` to occur somewhere in the live-contract step. It did not require
+stop or log capture to be inside the `finally` block.
+
+**Recovery source:** The merged PR #30 source at Enterprise commit
+`eb4e033f3402245ceca6c16c2c4de82ed37694c3`.
+
+**Reason parked:** Independent mutation moved cleanup after an empty `finally`
+while retaining every marker; `run_checks()` returned PASS. The former gate did
+not establish the cleanup-on-failure proposition attributed to it.
+
+**Replacement:** Quote-aware, brace-balanced extraction of the lifecycle `try`
+after `Start-Process` and its immediately paired `finally`; live-contract
+markers required in that try; guarded stop/stdout/stderr required in that exact
+finally; negative outside/later-finally and guard mutations; and an executable
+PowerShell test proving three cleanup failures do not replace a deliberate
+primary contract failure.
+
+**Restore when:** Never without an equal or stronger control-flow-aware and
+failure-injection test.
+
+**Restore procedure:** Not applicable. Implement and review a stronger
+replacement, preserve this record, and rerun the focused and hosted gates.
+
+**Validation after restore:** Outside-cleanup, later-finally cleanup, and
+unguarded-cleanup mutations must fail conformance. Injected cleanup failures
+must leave the primary contract failure as the nonzero process result.
+
+**Recovery rehearsal:** The weakness was independently reproduced against
+commit `eb4e033f3402245ceca6c16c2c4de82ed37694c3`; restoration is not approved.
+
+**Restoration risks:** Leaked sidecar processes, missing failure logs, masked
+contract failures, and false confidence in the release gate.
+
+**Evidence and links:** [LOG-20260716-008](LOG.md#log-20260716-008),
+[WHY-20260716-008](WHY.md#why-20260716-008), merged PR #30, and the repair pull
+request including Actions run `29479444593`.
+
 ## PARK-20260716-007 - Sequential Windows native commands with last-exit evidence
 
 **Status:** Parked
