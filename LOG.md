@@ -54,6 +54,43 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260716-002 - Advance the portfolio lock to merged security heads
+
+**Timestamp (UTC):** 2026-07-16T01:38:40Z
+**Actor:** Codex, requested by the repository owner
+**Category:** release, test, supply-chain hardening
+**Base commit:** `229c5598b2bf4bd3d40cbf2648a412896e96c0bd`
+**Change reference:** commit containing this entry and the associated pull request
+**Why:** [WHY-20260716-002](WHY.md#why-20260716-002)
+**Parked records:** [PARK-20260716-002](PARKED.md#park-20260716-002)
+
+**Changed:** Advanced `portfolio-lock.json` and the matching `pyproject.toml`
+VCS dependency to merged SelfConnect
+`a87e490c88c4ccb18ccaac514d018c7bba779d55`, BPC
+`ad6516698f3bb85a3517577f647cf46901205fd1`, and TSK
+`bc31c234100a6e6432d2ac5de82783fc136bc2ea`. Updated the SelfConnect package
+identity from `0.10.0` to the merged manifest value `0.12.0`.
+
+**Reason:** These are the canonical merge commits for the repaired core CI,
+fail-closed Redis replay guard, immutable BPC authorization snapshot, and strict
+BPC-before-TSK composition boundary. The portfolio gate must test those exact
+merged sources rather than older known-good inputs or pull-request heads.
+
+**Full actions and links:** `portfolio-lock.json`, `pyproject.toml`, SelfConnect
+PR #12, BPC PRs #7 and #8, TSK PR #9,
+[WHY-20260716-002](WHY.md#why-20260716-002), and
+[PARK-20260716-002](PARKED.md#park-20260716-002).
+
+**Validation:** Local lock parsing and focused conformance tests run on the
+commit containing this entry. The authoritative evidence is the associated
+hosted Enterprise composition workflow, which checks out all three locked
+commits, verifies Git/package identity, builds the protocols, and executes the
+Windows live and Linux PostgreSQL/Redis composition lanes.
+
+**Notes:** A green composition run establishes compatibility for this source
+set only. It does not establish deployment configuration, FIPS validation,
+Impact Level authorization, an ATO, external key custody, or immutable storage.
+
 ## LOG-20260716-001 - Make the tested portfolio composition machine-verifiable
 
 **Timestamp (UTC):** 2026-07-16T01:13:16Z

@@ -51,6 +51,45 @@ related records.
 
 ## Register
 
+## WHY-20260716-002 - Pin canonical merge commits after coordinated hardening
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T01:38:40Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-002](LOG.md#log-20260716-002)
+**Parked records:** [PARK-20260716-002](PARKED.md#park-20260716-002)
+**Source state:** `selfconnect-enterprise`,
+`hardening/portfolio-pins-20260715`,
+`229c5598b2bf4bd3d40cbf2648a412896e96c0bd`
+
+**Decision:** Advance the composition lock only to canonical merged component
+commits, then require a new Enterprise composition run before treating the set
+as compatible.
+
+**Why:** Pull-request checks proved each proposed change, but a PR head is not
+the final source identity delivered from the default branch. BPC and TSK also
+changed a shared authorization contract, so repository-local green checks were
+necessary but insufficient. The Enterprise lanes must assemble the final merge
+commits and exercise the real composed boundary.
+
+**Alternatives considered:** Pin PR heads; rejected because they are not the
+canonical delivered state. Follow default branches; rejected because future
+changes would silently alter the composition. Retain the old lock; rejected
+because it would omit the completed security corrections while still appearing
+green.
+
+**Consequences:** The lock records the actual portfolio being evaluated and
+future component changes remain explicit review events. A failed hosted
+composition run blocks this update rather than being reclassified or skipped.
+
+**Rollback conditions:** Restore the former lock only to reproduce historical
+evidence. For an active rollback, create a new decision record naming the
+failed proposition and pin a reviewed set that passes the same composed gates.
+
+**Evidence and links:** [LOG-20260716-002](LOG.md#log-20260716-002),
+[PARK-20260716-002](PARKED.md#park-20260716-002), `portfolio-lock.json`, and
+the associated hosted Enterprise workflow.
+
 ## WHY-20260716-001 - Use one executable lock for portfolio composition
 
 **Status:** Accepted

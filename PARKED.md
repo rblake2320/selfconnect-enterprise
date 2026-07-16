@@ -91,6 +91,41 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260716-002 - Prior tested portfolio composition
+
+**Status:** Parked
+**Category:** configuration, release, security property
+**Former location:** `portfolio-lock.json` and `pyproject.toml`
+**Source commit:** `229c5598b2bf4bd3d40cbf2648a412896e96c0bd`
+**Affected paths:** `portfolio-lock.json`, `pyproject.toml`
+**Action log:** [LOG-20260716-002](LOG.md#log-20260716-002)
+**Why changed:** [WHY-20260716-002](WHY.md#why-20260716-002)
+**Parked by:** Codex, requested by the repository owner
+**Former wording:** SelfConnect
+`8cf151dbc5f312ce888e51aa429f62960e1a2ee6` at package version `0.10.0`, BPC
+`7304e86d1d5df30b63e647146b20312a2a0da0c5`, and TSK
+`63afcb83a033a82ce21f8f473e6a186cc195e801`.
+**Recovery source:** `portfolio-lock.json` and `pyproject.toml` at Git commit
+`229c5598b2bf4bd3d40cbf2648a412896e96c0bd`.
+**Reason parked:** The former set remains valid historical evidence but does not
+contain the completed core CI, Redis replay, immutable snapshot, and strict
+composition corrections.
+**Replacement:** SelfConnect `a87e490c88c4ccb18ccaac514d018c7bba779d55`,
+BPC `ad6516698f3bb85a3517577f647cf46901205fd1`, and TSK
+`bc31c234100a6e6432d2ac5de82783fc136bc2ea` in `portfolio-lock.json`.
+**Restore when:** Historical reproduction only, or after a new decision record
+identifies a regression in the replacement and approves a bounded rollback.
+**Restore procedure:** Create an isolated branch from the source commit and run
+the same hosted composition workflow. Do not silently overwrite the active
+lock.
+**Validation after restore:** Require lock conformance plus both Windows live
+and Linux durable composition lanes, then label the result as historical.
+**Recovery rehearsal:** Not rehearsed; the exact lock is retained in Git.
+**Restoration risks:** Omits merged security fixes and can attach current
+readiness wording to an older portfolio composition.
+**Evidence and links:** [LOG-20260716-002](LOG.md#log-20260716-002),
+[WHY-20260716-002](WHY.md#why-20260716-002), and `portfolio-lock.json`.
+
 ## PARK-20260716-001 - Duplicated protocol commit pins in CI and prose
 
 **Status:** Parked

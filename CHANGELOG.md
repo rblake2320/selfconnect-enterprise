@@ -6,6 +6,8 @@
 
 - Added one machine-readable lock for the exact SelfConnect SDK, BPC, and TSK
   sources consumed by Enterprise.
+- Advanced the lock to the canonical merged core, BPC, and TSK security heads
+  and required a fresh composed workflow before accepting compatibility.
 - Made both protocol composition jobs read the lock and verify actual checkout
   commits, package names, and versions before build or execution.
 - Added fail-closed tests for missing/invalid pins and checkout mismatch while
@@ -13,7 +15,10 @@
 - Evidence: [LOG-20260716-001](LOG.md#log-20260716-001).
 - Rationale: [WHY-20260716-001](WHY.md#why-20260716-001).
 - Parked record:
-  [PARK-20260716-001](PARKED.md#park-20260716-001).
+  [PARK-20260716-001](PARKED.md#park-20260716-001) and
+  [PARK-20260716-002](PARKED.md#park-20260716-002).
+- Pin-update evidence: [LOG-20260716-002](LOG.md#log-20260716-002) and
+  [WHY-20260716-002](WHY.md#why-20260716-002).
 
 ### Authoritative Ultra enforcement and protocol composition
 
