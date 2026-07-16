@@ -10,7 +10,7 @@ test('shadow and ghost decisions cannot authorize an Ultra action', () => {
   ]) {
     const enforced = enforceBpcAuthorization(result);
     assert.equal(enforced.ok, false);
-    assert.equal(enforced.error, 'BPC_SHADOW_QUARANTINED');
+    assert.equal(enforced.error, 'shadow_denied');
     assert.equal(enforced.pairId, result.pairId);
   }
 });
@@ -20,5 +20,5 @@ test('ordinary BPC pass and failure retain their exact decision', () => {
   const failure = { ok: false, error: 'invalid_signature' };
   assert.equal(enforceBpcAuthorization(pass), pass);
   assert.equal(enforceBpcAuthorization(failure), failure);
-  assert.deepEqual(enforceBpcAuthorization(null), { ok: false, error: 'BPC_INVALID_RESULT' });
+  assert.deepEqual(enforceBpcAuthorization(null), { ok: false, error: 'invalid_result' });
 });

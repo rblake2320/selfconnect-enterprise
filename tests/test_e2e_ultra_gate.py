@@ -607,7 +607,9 @@ class TestLiveBpcLockoutBoundary:
         assert decision["ok"] is False, (
             "locked pair crossed shadow mode as authorization"
         )
-        assert "SHADOW_QUARANTINED" in decision["error"]
+        # The bridge accepts only bounded lowercase BPC error codes. Preserve
+        # the shadow denial without exposing arbitrary callback-controlled text.
+        assert decision["error"] == "BPC: shadow_denied"
 
 
 class TestLiveTskRotation:

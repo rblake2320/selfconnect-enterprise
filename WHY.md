@@ -51,6 +51,82 @@ related records.
 
 ## Register
 
+## WHY-20260716-003 - Use bounded BPC error codes across the Ultra boundary
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T01:43:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-003](LOG.md#log-20260716-003)
+**Parked records:** [PARK-20260716-003](PARKED.md#park-20260716-003)
+**Source state:** Enterprise PR #23 at `de9dd25`
+
+**Decision:** Enterprise boundary adapters must emit lowercase bounded BPC
+error codes accepted by the strict TSK bridge. Shadow/ghost responses use
+`shadow_denied`; invalid result shapes use `invalid_result`.
+
+**Why:** The bridge treats BPC callback results as untrusted and accepts only a
+restricted error-code alphabet. Enterprise's earlier uppercase product-specific
+code was therefore sanitized, breaking evidence specificity while correctly
+remaining fail-closed. Aligning the adapter with the bounded contract keeps the
+denial reason useful without widening the bridge's trust boundary.
+
+**Alternatives considered:** Widen the bridge to accept arbitrary uppercase or
+free-form callback errors; rejected because it would reintroduce error-text
+injection. Assert only `ok == false`; rejected because it would stop proving
+that automatic shadow quarantine is the denial source. Keep the generic
+`VERIFICATION_FAILED`; safe but less useful for operational evidence.
+
+**Consequences:** Composed clients receive a stable, bounded shadow denial and
+the live test proves it. Detailed forensic context remains in BPC audit records,
+not in the authorization response.
+
+**Rollback conditions:** Replace these codes only with another closed,
+machine-validated error vocabulary shared by BPC, TSK, and Enterprise. Never
+restore arbitrary callback error propagation.
+
+**Evidence and links:** [LOG-20260716-003](LOG.md#log-20260716-003),
+[PARK-20260716-003](PARKED.md#park-20260716-003), the named unit/live tests,
+and failed hosted job `87515299829`.
+
+## WHY-20260716-002 - Pin canonical merge commits after coordinated hardening
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-16T01:38:40Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260716-002](LOG.md#log-20260716-002)
+**Parked records:** [PARK-20260716-002](PARKED.md#park-20260716-002)
+**Source state:** `selfconnect-enterprise`,
+`hardening/portfolio-pins-20260715`,
+`229c5598b2bf4bd3d40cbf2648a412896e96c0bd`
+
+**Decision:** Advance the composition lock only to canonical merged component
+commits, then require a new Enterprise composition run before treating the set
+as compatible.
+
+**Why:** Pull-request checks proved each proposed change, but a PR head is not
+the final source identity delivered from the default branch. BPC and TSK also
+changed a shared authorization contract, so repository-local green checks were
+necessary but insufficient. The Enterprise lanes must assemble the final merge
+commits and exercise the real composed boundary.
+
+**Alternatives considered:** Pin PR heads; rejected because they are not the
+canonical delivered state. Follow default branches; rejected because future
+changes would silently alter the composition. Retain the old lock; rejected
+because it would omit the completed security corrections while still appearing
+green.
+
+**Consequences:** The lock records the actual portfolio being evaluated and
+future component changes remain explicit review events. A failed hosted
+composition run blocks this update rather than being reclassified or skipped.
+
+**Rollback conditions:** Restore the former lock only to reproduce historical
+evidence. For an active rollback, create a new decision record naming the
+failed proposition and pin a reviewed set that passes the same composed gates.
+
+**Evidence and links:** [LOG-20260716-002](LOG.md#log-20260716-002),
+[PARK-20260716-002](PARKED.md#park-20260716-002), `portfolio-lock.json`, and
+the associated hosted Enterprise workflow.
+
 ## WHY-20260716-001 - Use one executable lock for portfolio composition
 
 **Status:** Accepted

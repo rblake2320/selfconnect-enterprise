@@ -54,6 +54,79 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260716-003 - Normalize Enterprise BPC denial codes at composition
+
+**Timestamp (UTC):** 2026-07-16T01:43:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, test, security hardening
+**Base commit:** `de9dd25`
+**Change reference:** commit containing this entry and Enterprise PR #23
+**Why:** [WHY-20260716-003](WHY.md#why-20260716-003)
+**Parked records:** [PARK-20260716-003](PARKED.md#park-20260716-003)
+
+**Changed:** Normalized Enterprise-generated BPC boundary errors to bounded
+lowercase codes (`shadow_denied`, `invalid_result`) accepted by the strict TSK
+bridge. Updated unit and live lockout assertions to require the exact composed
+denial `BPC: shadow_denied`.
+
+**Reason:** The first hosted run against the merged BPC/TSK commits failed one
+live assertion: Enterprise emitted `BPC_SHADOW_QUARANTINED`, while the hardened
+bridge intentionally converts non-bounded callback text to
+`VERIFICATION_FAILED`. Authorization remained denied, but the adapter contract
+and evidence assertion disagreed. Normalizing at the adapter preserves the
+specific safe denial without allowing arbitrary callback-controlled errors.
+
+**Full actions and links:** `ultra_server/security-boundary.js`,
+`ultra_server/security-boundary.test.mjs`,
+`tests/test_e2e_ultra_gate.py`, [WHY-20260716-003](WHY.md#why-20260716-003),
+[PARK-20260716-003](PARKED.md#park-20260716-003), and Enterprise Actions run
+`29464702436` job `87515299829`.
+
+**Validation:** Unit tests, focused Python tests, and a replacement hosted
+composition run execute on the commit containing this entry. PR #23 remains
+blocked until all Windows live and Linux PostgreSQL/Redis jobs pass.
+
+**Notes:** This changes only the bounded external error contract. Shadow and
+ghost decisions remain hard denials; internal BPC audit detail remains a
+separate evidence source.
+
+## LOG-20260716-002 - Advance the portfolio lock to merged security heads
+
+**Timestamp (UTC):** 2026-07-16T01:38:40Z
+**Actor:** Codex, requested by the repository owner
+**Category:** release, test, supply-chain hardening
+**Base commit:** `229c5598b2bf4bd3d40cbf2648a412896e96c0bd`
+**Change reference:** commit containing this entry and the associated pull request
+**Why:** [WHY-20260716-002](WHY.md#why-20260716-002)
+**Parked records:** [PARK-20260716-002](PARKED.md#park-20260716-002)
+
+**Changed:** Advanced `portfolio-lock.json` and the matching `pyproject.toml`
+VCS dependency to merged SelfConnect
+`a87e490c88c4ccb18ccaac514d018c7bba779d55`, BPC
+`ad6516698f3bb85a3517577f647cf46901205fd1`, and TSK
+`bc31c234100a6e6432d2ac5de82783fc136bc2ea`. Updated the SelfConnect package
+identity from `0.10.0` to the merged manifest value `0.12.0`.
+
+**Reason:** These are the canonical merge commits for the repaired core CI,
+fail-closed Redis replay guard, immutable BPC authorization snapshot, and strict
+BPC-before-TSK composition boundary. The portfolio gate must test those exact
+merged sources rather than older known-good inputs or pull-request heads.
+
+**Full actions and links:** `portfolio-lock.json`, `pyproject.toml`, SelfConnect
+PR #12, BPC PRs #7 and #8, TSK PR #9,
+[WHY-20260716-002](WHY.md#why-20260716-002), and
+[PARK-20260716-002](PARKED.md#park-20260716-002).
+
+**Validation:** Local lock parsing and focused conformance tests run on the
+commit containing this entry. The authoritative evidence is the associated
+hosted Enterprise composition workflow, which checks out all three locked
+commits, verifies Git/package identity, builds the protocols, and executes the
+Windows live and Linux PostgreSQL/Redis composition lanes.
+
+**Notes:** A green composition run establishes compatibility for this source
+set only. It does not establish deployment configuration, FIPS validation,
+Impact Level authorization, an ATO, external key custody, or immutable storage.
+
 ## LOG-20260716-001 - Make the tested portfolio composition machine-verifiable
 
 **Timestamp (UTC):** 2026-07-16T01:13:16Z
