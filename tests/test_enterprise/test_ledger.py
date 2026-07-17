@@ -135,6 +135,35 @@ class TestLog:
         with pytest.raises(LedgerIntegrityError, match="must be an object"):
             ledger.find_entries_by_nested_value("approval_audit", "event_id", "event")
 
+    def test_nested_index_and_return_value_do_not_alias_signed_metadata(self, tmp_path):
+        ledger = make_ledger(tmp_path)
+        assert ledger.find_entries_by_nested_value(
+            "approval_audit", "event_id", "event-1"
+        ) == []
+        metadata = {
+            "approval_audit": {
+                "event_id": "event-1",
+                "transition": "pending",
+                "nested": {"operator": "original"},
+            }
+        }
+        returned = ledger.log("approval", metadata=metadata)
+        metadata["approval_audit"]["nested"]["operator"] = "metadata-forgery"
+        returned["approval_audit"]["nested"]["operator"] = "return-forgery"
+
+        cached = ledger.find_entries_by_nested_value(
+            "approval_audit", "event_id", "event-1"
+        )
+        cached[0]["approval_audit"]["nested"]["operator"] = "cache-forgery"
+        verified = ledger.find_verified_entries_by_nested_value(
+            "approval_audit", "event_id", "event-1"
+        )
+        assert verified[0]["approval_audit"]["nested"]["operator"] == "original"
+        assert ledger.find_entries_by_nested_value(
+            "approval_audit", "event_id", "event-1"
+        )[0]["approval_audit"]["nested"]["operator"] == "original"
+        assert ledger.verify()[0]
+
     def test_first_entry_uses_genesis_hash(self, tmp_path):
         ledger = make_ledger(tmp_path)
         entry = ledger.log("boot")

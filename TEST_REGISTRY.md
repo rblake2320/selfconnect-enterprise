@@ -369,7 +369,7 @@ than one checkout.
 - `TestFullWorkflow::test_denied_action_produces_deny_metadata`
 - `TestFullWorkflow::test_requires_approval_workflow`
 
-### Approval Audit Binding — `test_approval_audit.py` (23 tests)
+### Approval Audit Binding — `test_approval_audit.py` (28 tests)
 
 - `test_required_sink_cannot_be_omitted`
 - `test_unverified_decision_writer_cannot_approve`
@@ -383,6 +383,7 @@ than one checkout.
 - `test_consume_audit_failure_never_returns_authority`
 - `test_consumed_binding_rechecks_signed_ledger_receipt`
 - `test_consumed_binding_fails_when_signed_ledger_chain_is_altered`
+- `test_nested_metadata_alias_cannot_forge_a_ledger_receipt`
 - `test_expiry_is_audited_before_capability_becomes_expired`
 - `test_matching_receipt_from_unverifiable_sink_never_clears_audit_pending`
 - `test_state_changed_during_external_append_is_revalidated_under_write_lock`
@@ -390,10 +391,14 @@ than one checkout.
 - `test_decision_envelope_is_bound_and_raw_proof_is_not_retained`
 - `test_decision_verifier_receives_the_complete_canonical_binding`
 - `test_backward_clock_skew_fails_closed`
+- `test_in_memory_expiry_uses_constructor_clock_without_public_override`
 - `test_purge_uses_terminal_and_delivery_time_not_submission_time`
 - `test_legacy_schema_migrates_to_closed_sets_and_foreign_keys`
 - `test_system_safety_denial_is_not_human_attribution_or_approval_bypass`
 - `test_reused_decision_nonce_fails_closed`
+- `test_decision_nonce_tombstone_survives_approval_purge`
+- `test_modern_approvals_and_legacy_outbox_are_independently_rebuilt`
+- `test_orphaned_legacy_outbox_fails_migration_closed`
 
 ### Identity Gate — `test_identity_gate.py` (46 tests)
 

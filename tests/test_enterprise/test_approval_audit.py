@@ -19,7 +19,7 @@ from enterprise.approval_audit import (
 )
 from enterprise.identity import AgentIdentity
 from enterprise.ledger import ThreadSafeAgentLedger
-from enterprise.operator import DurableOperatorQueue
+from enterprise.operator import DurableOperatorQueue, OperatorQueue
 
 
 class RecordingSink:
@@ -346,18 +346,52 @@ def test_consumed_binding_fails_when_signed_ledger_chain_is_altered(tmp_path):
     )
 
 
+def test_nested_metadata_alias_cannot_forge_a_ledger_receipt(tmp_path):
+    identity = AgentIdentity.init("alias-audit", data_dir=tmp_path / "identities")
+    ledger = ThreadSafeAgentLedger(identity, log_path=tmp_path / "ledger.jsonl")
+    sink = LedgerApprovalDecisionSink(ledger)
+    event = ApprovalAuditEvent(
+        event_id="alias-event",
+        approval_id="alias-approval",
+        transition="pending",
+        agent_id="agent-a",
+        action="export",
+        operator_id="",
+        context_digest=canonical_context_digest({}),
+        transition_ts=time.time(),
+    )
+    assert ledger.find_entries_by_nested_value(
+        "approval_audit", "event_id", event.event_id
+    ) == []
+    aliased_metadata = event.to_dict()
+    entry = ledger.log(
+        "operator_approval_transition",
+        result="recorded",
+        metadata={"approval_audit": aliased_metadata},
+    )
+    authentic_receipt = sink._receipt(entry, event)
+
+    aliased_metadata["transition"] = "denied"
+    aliased_metadata["operator_id"] = "forged-operator"
+    forged_event = ApprovalAuditEvent.from_dict(aliased_metadata)
+    forged_receipt = sink._receipt(entry, forged_event)
+    assert not sink.verify_receipt(forged_event, forged_receipt)
+    assert sink.verify_receipt(event, authentic_receipt)
+
+
 def test_expiry_is_audited_before_capability_becomes_expired(tmp_path):
     sink = RecordingSink()
-    queue = _queue(tmp_path, sink, approval_ttl_seconds=1)
+    now = [time.time()]
+    queue = _queue(tmp_path, sink, approval_ttl_seconds=1, clock=lambda: now[0])
     approval_id = queue.submit("agent-a", "export", {})
     assert queue.approve(approval_id, "operator-a", operator_proof="signed-proof")
     decided_at = queue.get(approval_id).decided_at
     assert decided_at is not None
+    now[0] = decided_at + 2
     assert queue.consume_approved(
         approval_id,
         agent_id="agent-a",
         action="export",
-        now=decided_at + 2,
     ) is None
     assert queue.get_status(approval_id) == "expired"
     assert any(event.transition == "expired" for event in sink.events.values())
@@ -513,18 +547,44 @@ def test_decision_verifier_receives_the_complete_canonical_binding(tmp_path):
 
 
 def test_backward_clock_skew_fails_closed(tmp_path):
-    queue = _queue(tmp_path)
+    now = [time.time()]
+    queue = _queue(tmp_path, clock=lambda: now[0])
     approval_id = queue.submit("agent-a", "export", {})
     assert queue.approve(approval_id, "operator-a", operator_proof="signed-proof")
     decided_at = queue.get(approval_id).decided_at
+    now[0] = decided_at - 1
     with pytest.raises(ApprovalAuditError, match="clock moved backward"):
         queue.consume_approved(
             approval_id,
             agent_id="agent-a",
             action="export",
-            now=decided_at - 1,
+        )
+    with pytest.raises(TypeError, match="unexpected keyword argument 'now'"):
+        queue.consume_approved(
+            approval_id,
+            agent_id="agent-a",
+            action="export",
+            now=decided_at + 10,
         )
     assert queue.get_status(approval_id) == "approved"
+
+
+def test_in_memory_expiry_uses_constructor_clock_without_public_override():
+    now = [time.time()]
+    queue = OperatorQueue(approval_ttl_seconds=1, clock=lambda: now[0])
+    approval_id = queue.submit("agent-a", "export", {})
+    assert queue.approve(approval_id, "operator-a")
+    decided_at = queue.get(approval_id).decided_at
+    now[0] = decided_at - 1
+    with pytest.raises(ApprovalAuditError, match="clock moved backward"):
+        queue.consume_approved(approval_id, agent_id="agent-a", action="export")
+    with pytest.raises(TypeError, match="unexpected keyword argument 'now'"):
+        queue.consume_approved(
+            approval_id,
+            agent_id="agent-a",
+            action="export",
+            now=decided_at + 10,
+        )
 
 
 def test_purge_uses_terminal_and_delivery_time_not_submission_time(tmp_path):
@@ -628,3 +688,91 @@ def test_reused_decision_nonce_fails_closed(tmp_path):
     with pytest.raises(ApprovalAuditError, match="nonce was reused"):
         queue.approve(second, "operator-a", operator_proof="signed-proof")
     assert queue.get_status(second) == "pending"
+
+
+def test_decision_nonce_tombstone_survives_approval_purge(tmp_path):
+    now = [time.time()]
+
+    def fixed_nonce_writer(_payload, proof):
+        if proof != "signed-proof":
+            return None
+        return DecisionProofVerification(
+            verifier_id="test-verifier",
+            key_id="test-key",
+            nonce="purge-resistant-nonce",
+            verified_at=time.time(),
+        )
+
+    queue = DurableOperatorQueue(
+        tmp_path / "approvals.sqlite3",
+        max_age_seconds=10,
+        decision_nonce_retention_seconds=100,
+        audit_sink=RecordingSink(),
+        audit_required=True,
+        decision_writer_verifier=fixed_nonce_writer,
+        clock=lambda: now[0],
+    )
+    first = queue.submit("agent-a", "export", {})
+    assert queue.approve(first, "operator-a", operator_proof="signed-proof")
+    assert queue.consume_approved(first, agent_id="agent-a", action="export")
+    now[0] += 20
+    assert queue.purge_expired() == 1
+    assert queue.get_status(first) == "not_found"
+
+    second = queue.submit("agent-a", "export", {})
+    with pytest.raises(ApprovalAuditError, match="nonce was reused"):
+        queue.approve(second, "operator-a", operator_proof="signed-proof")
+    assert queue.get_status(second) == "pending"
+
+
+def test_modern_approvals_and_legacy_outbox_are_independently_rebuilt(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    queue = DurableOperatorQueue(db_path)
+    approval_id = queue.submit("agent-a", "export", {})
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE approval_audit_outbox")
+        conn.execute(
+            """
+            CREATE TABLE approval_audit_outbox (
+                event_id TEXT PRIMARY KEY, approval_id TEXT NOT NULL,
+                transition TEXT NOT NULL, event_json TEXT NOT NULL,
+                state TEXT NOT NULL, receipt_json TEXT,
+                created_at REAL NOT NULL, delivered_at REAL
+            )
+            """
+        )
+
+    restarted = DurableOperatorQueue(db_path)
+    assert restarted.get_status(approval_id) == "pending"
+    with restarted._connect() as conn:
+        sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='approval_audit_outbox'"
+        ).fetchone()[0]
+        assert "FOREIGN KEY (approval_id)" in sql
+        assert "CHECK (transition IN" in sql
+
+
+def test_orphaned_legacy_outbox_fails_migration_closed(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    queue = DurableOperatorQueue(db_path)
+    queue.submit("agent-a", "export", {})
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("DROP TABLE approval_audit_outbox")
+        conn.execute(
+            """
+            CREATE TABLE approval_audit_outbox (
+                event_id TEXT PRIMARY KEY, approval_id TEXT NOT NULL,
+                transition TEXT NOT NULL, event_json TEXT NOT NULL,
+                state TEXT NOT NULL, receipt_json TEXT,
+                created_at REAL NOT NULL, delivered_at REAL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO approval_audit_outbox VALUES "
+            "('orphan','missing','pending','{}','pending',NULL,1,NULL)"
+        )
+
+    with pytest.raises(ApprovalAuditError, match="orphaned"):
+        DurableOperatorQueue(db_path)

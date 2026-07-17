@@ -27,6 +27,7 @@ checks its agent, action, expiry, and exact bounded context. Merely observing
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import threading
 import time
@@ -84,11 +85,21 @@ class OperatorQueue:
         self,
         max_age_seconds: float = 3600.0,
         approval_ttl_seconds: float = 300.0,
+        *,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self._lock    = threading.Lock()
         self._queue:  dict[str, PendingApproval] = {}
         self._max_age = max_age_seconds
         self._approval_ttl = approval_ttl_seconds
+        self._clock = clock
+        self._now()
+
+    def _now(self) -> float:
+        value = self._clock()
+        if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            raise ApprovalAuditError("approval clock returned an invalid time")
+        return float(value)
 
     # ── Submit / decide ───────────────────────────────────────────────────────
 
@@ -110,7 +121,7 @@ class OperatorQueue:
                 agent_id     = agent_id,
                 action       = action,
                 context      = context or {},
-                submitted_at = time.time(),
+                submitted_at = self._now(),
             )
         return approval_id
 
@@ -131,7 +142,7 @@ class OperatorQueue:
                 return False
             item.status      = "approved"
             item.operator_id = operator_id
-            item.decided_at  = time.time()
+            item.decided_at  = self._now()
         return True
 
     def deny(self, approval_id: str, operator_id: str) -> bool:
@@ -146,7 +157,7 @@ class OperatorQueue:
                 return False
             item.status      = "denied"
             item.operator_id = operator_id
-            item.decided_at  = time.time()
+            item.decided_at  = self._now()
         return True
 
     def consume_approved(
@@ -156,7 +167,6 @@ class OperatorQueue:
         agent_id: str,
         action: str,
         required_context: Optional[dict] = None,
-        now: Optional[float] = None,
     ) -> Optional[PendingApproval]:
         """Atomically consume one matching, unexpired approval.
 
@@ -164,11 +174,13 @@ class OperatorQueue:
         context. Extra submitted keys are permitted, but a required key may not
         be absent or different. Returns the consumed record, or ``None``.
         """
-        current = time.time() if now is None else now
+        current = self._now()
         with self._lock:
             item = self._queue.get(approval_id)
             if item is None or item.status != "approved" or item.decided_at is None:
                 return None
+            if current < item.decided_at:
+                raise ApprovalAuditError("approval clock moved backward before decision time")
             if current - item.decided_at > self._approval_ttl:
                 item.status = "expired"
                 return None
@@ -215,7 +227,7 @@ class OperatorQueue:
         Returns:
             Number of entries removed.
         """
-        cutoff = time.time() - self._max_age
+        cutoff = self._now() - self._max_age
         with self._lock:
             expired = [
                 aid for aid, item in self._queue.items()
@@ -253,6 +265,8 @@ class DurableOperatorQueue:
         decision_writer_verifier: Callable[
             [dict[str, str], str | bytes | None], DecisionProofVerification | None
         ] | None = None,
+        clock: Callable[[], float] = time.time,
+        decision_nonce_retention_seconds: float = 86400.0,
     ) -> None:
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -261,11 +275,26 @@ class DurableOperatorQueue:
         self._audit_sink = audit_sink
         self._audit_required = audit_required
         self._decision_writer_verifier = decision_writer_verifier
+        self._clock = clock
+        self._nonce_retention = decision_nonce_retention_seconds
+        if (
+            not isinstance(self._nonce_retention, (int, float))
+            or not math.isfinite(float(self._nonce_retention))
+            or self._nonce_retention <= 0
+        ):
+            raise ValueError("decision_nonce_retention_seconds must be positive and finite")
+        self._now()
         if audit_required and audit_sink is None:
             raise ApprovalAuditError("required approval audit sink is not configured")
         self._init_db()
         if self._audit_sink is not None:
             self.reconcile()
+
+    def _now(self) -> float:
+        value = self._clock()
+        if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            raise ApprovalAuditError("approval clock returned an invalid time")
+        return float(value)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path, timeout=10.0, isolation_level=None)
@@ -280,21 +309,51 @@ class DurableOperatorQueue:
             approval_sql = conn.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='approvals'"
             ).fetchone()
-            existing_columns = {
+            approval_columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(approvals)")
             }
-            required_columns = {
+            required_approval_columns = {
                 "expires_at", "terminal_at", "decision_proof_json", "decision_nonce",
                 "pending_status", "pending_event_id", "last_audit_event_id",
                 "last_audit_receipt_json",
             }
-            if approval_sql is not None and (
+            outbox_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' "
+                "AND name='approval_audit_outbox'"
+            ).fetchone()
+            outbox_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(approval_audit_outbox)")
+            }
+            required_outbox_columns = {
+                "event_id", "approval_id", "transition", "event_json", "state",
+                "receipt_json", "created_at", "delivered_at",
+            }
+            approval_needs_rebuild = approval_sql is not None and (
                 "CHECK (status IN" not in approval_sql["sql"]
-                or not required_columns.issubset(existing_columns)
-            ):
+                or not required_approval_columns.issubset(approval_columns)
+            )
+            outbox_needs_rebuild = outbox_sql is not None and (
+                "CHECK (transition IN" not in outbox_sql["sql"]
+                or "FOREIGN KEY (approval_id)" not in outbox_sql["sql"]
+                or not required_outbox_columns.issubset(outbox_columns)
+            )
+            if approval_needs_rebuild or outbox_needs_rebuild:
                 self._migrate_schema(conn)
             else:
                 self._create_tables(conn)
+            self._create_nonce_tombstones(conn)
+            now = self._now()
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO decision_nonce_tombstones
+                    (nonce, approval_id, recorded_at, retain_until)
+                SELECT decision_nonce, approval_id, COALESCE(decided_at, submitted_at), ?
+                  FROM approvals
+                 WHERE decision_nonce IS NOT NULL
+                """,
+                (now + self._nonce_retention,),
+            )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status)"
             )
@@ -302,6 +361,24 @@ class DurableOperatorQueue:
                 "CREATE INDEX IF NOT EXISTS idx_approval_outbox_lineage "
                 "ON approval_audit_outbox(approval_id, created_at, event_id)"
             )
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise ApprovalAuditError("approval database foreign-key check failed closed")
+
+    @staticmethod
+    def _create_nonce_tombstones(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS decision_nonce_tombstones (
+                nonce TEXT PRIMARY KEY,
+                approval_id TEXT NOT NULL,
+                recorded_at REAL NOT NULL,
+                retain_until REAL NOT NULL,
+                CHECK (length(nonce) BETWEEN 1 AND 256),
+                CHECK (retain_until > recorded_at)
+            )
+            """
+        )
 
     @staticmethod
     def _create_tables(conn: sqlite3.Connection, suffix: str = "") -> None:
@@ -358,6 +435,14 @@ class DurableOperatorQueue:
         old_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(approvals)")
         }
+        outbox_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='approval_audit_outbox'"
+        ).fetchone() is not None
+        old_outbox_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(approval_audit_outbox)")
+        }
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -383,30 +468,69 @@ class DurableOperatorQueue:
                 f"INSERT INTO approvals_v2 ({','.join(target_columns)}) "
                 f"SELECT {','.join(select_values)} FROM approvals"
             )
-            if conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' "
-                "AND name='approval_audit_outbox'"
-            ).fetchone():
+            if outbox_exists:
+                required_source = {
+                    "event_id", "approval_id", "transition", "event_json", "state",
+                    "created_at",
+                }
+                if not required_source.issubset(old_outbox_columns):
+                    raise ApprovalAuditError(
+                        "legacy approval outbox is missing required evidence fields"
+                    )
+                receipt_expr = (
+                    "receipt_json" if "receipt_json" in old_outbox_columns else "NULL"
+                )
+                delivered_expr = (
+                    "delivered_at" if "delivered_at" in old_outbox_columns else "NULL"
+                )
                 conn.execute(
-                    """
+                    f"""
                     INSERT INTO approval_audit_outbox_v2
                     SELECT event_id, approval_id, transition, event_json, state,
-                           receipt_json, created_at, delivered_at
+                           {receipt_expr}, created_at, {delivered_expr}
                       FROM approval_audit_outbox
                     """
                 )
+                orphan = conn.execute(
+                    """
+                    SELECT event_id FROM approval_audit_outbox_v2 AS o
+                     WHERE NOT EXISTS (
+                         SELECT 1 FROM approvals_v2 AS a
+                          WHERE a.approval_id = o.approval_id
+                     )
+                     LIMIT 1
+                    """
+                ).fetchone()
+                if orphan is not None:
+                    raise ApprovalAuditError(
+                        "legacy approval outbox contains an orphaned event"
+                    )
                 conn.execute("DROP TABLE approval_audit_outbox")
             conn.execute("DROP TABLE approvals")
             conn.execute("ALTER TABLE approvals_v2 RENAME TO approvals")
             conn.execute(
                 "ALTER TABLE approval_audit_outbox_v2 RENAME TO approval_audit_outbox"
             )
+            violations = conn.execute(
+                "PRAGMA foreign_key_check(approval_audit_outbox)"
+            ).fetchall()
+            if violations:
+                raise ApprovalAuditError(
+                    "migrated approval outbox failed foreign-key validation"
+                )
             conn.commit()
+        except ApprovalAuditError:
+            conn.rollback()
+            raise
         except Exception as exc:
             conn.rollback()
             raise ApprovalAuditError("approval schema migration failed closed") from exc
         finally:
             conn.execute("PRAGMA foreign_keys=ON")
+        if conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+            raise ApprovalAuditError("approval database foreign keys are not enabled")
+        if conn.execute("PRAGMA foreign_key_check").fetchall():
+            raise ApprovalAuditError("approval database foreign-key check failed closed")
 
     @staticmethod
     def _from_row(row: sqlite3.Row | None) -> Optional[PendingApproval]:
@@ -455,7 +579,7 @@ class DurableOperatorQueue:
                 verifier_id="selfconnect.system-safety-denial",
                 key_id="runtime-ledger-identity",
                 nonce=str(uuid.uuid4()),
-                verified_at=time.time(),
+                verified_at=self._now(),
             )
             proof = b"internal-safety-denial;not-human-attribution"
         else:
@@ -664,7 +788,7 @@ class DurableOperatorQueue:
             if finalized.rowcount != 1:
                 conn.rollback()
                 raise ApprovalAuditError("approval finalization lost its state race")
-            delivered_at = time.time()
+            delivered_at = self._now()
             delivered = conn.execute(
                 """
                 UPDATE approval_audit_outbox
@@ -727,6 +851,20 @@ class DurableOperatorQueue:
             if (decision_proof or item.decision_proof) is not None
             else None
         )
+        if decision_proof is not None:
+            conn.execute(
+                """
+                INSERT INTO decision_nonce_tombstones
+                    (nonce, approval_id, recorded_at, retain_until)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    decision_proof.nonce,
+                    item.approval_id,
+                    transition_ts,
+                    transition_ts + self._nonce_retention,
+                ),
+            )
         cursor = conn.execute(
             """
             UPDATE approvals
@@ -760,7 +898,7 @@ class DurableOperatorQueue:
         approval_id = str(uuid.uuid4())
         context_json = json.dumps(context or {}, sort_keys=True, separators=(",", ":"))
         if self._audit_sink is not None:
-            submitted_at = time.time()
+            submitted_at = self._now()
             event = ApprovalAuditEvent(
                 event_id=str(uuid.uuid4()),
                 approval_id=approval_id,
@@ -794,7 +932,7 @@ class DurableOperatorQueue:
                      operator_id, decided_at, consumed_at)
                 VALUES (?, ?, ?, ?, ?, 'pending', '', NULL, NULL)
                 """,
-                (approval_id, agent_id, action, context_json, time.time()),
+                (approval_id, agent_id, action, context_json, self._now()),
             )
         return approval_id
 
@@ -818,6 +956,7 @@ class DurableOperatorQueue:
             decision_proof = self._verify_decision_writer(
                 item, operator_id, status, operator_proof
             )
+            transition_ts = self._now()
             if self._audit_sink is None:
                 cursor = conn.execute(
                     """
@@ -829,9 +968,9 @@ class DurableOperatorQueue:
                     (
                         status,
                         operator_id,
-                        time.time(),
-                        time.time() + self._approval_ttl if status == "approved" else None,
-                        time.time() if status == "denied" else None,
+                        transition_ts,
+                        transition_ts + self._approval_ttl if status == "approved" else None,
+                        transition_ts if status == "denied" else None,
                         approval_id,
                     ),
                 )
@@ -843,7 +982,7 @@ class DurableOperatorQueue:
                     item,
                     transition=status,
                     operator_id=operator_id,
-                    transition_ts=time.time(),
+                    transition_ts=transition_ts,
                     decision_proof=decision_proof,
                 )
             except sqlite3.IntegrityError as exc:
@@ -881,9 +1020,8 @@ class DurableOperatorQueue:
         agent_id: str,
         action: str,
         required_context: Optional[dict] = None,
-        now: Optional[float] = None,
     ) -> Optional[PendingApproval]:
-        current = time.time() if now is None else now
+        current = self._now()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -1058,7 +1196,8 @@ class DurableOperatorQueue:
         return self._items()
 
     def purge_expired(self) -> int:
-        cutoff = time.time() - self._max_age
+        current = self._now()
+        cutoff = current - self._max_age
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
@@ -1086,6 +1225,10 @@ class DurableOperatorQueue:
                     "DELETE FROM approvals WHERE approval_id = ?",
                     (approval_id,),
                 )
+            conn.execute(
+                "DELETE FROM decision_nonce_tombstones WHERE retain_until <= ?",
+                (current,),
+            )
             conn.commit()
             return len(approval_ids)
 

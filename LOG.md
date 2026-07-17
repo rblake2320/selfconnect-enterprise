@@ -54,6 +54,55 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260717-002 - Close second-review approval evidence gaps
+
+**Timestamp (UTC):** 2026-07-17T14:58:07Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security fix, migration, adversarial testing, documentation
+**Base commit:** `5e8ffbe6ca0d6ee2eda68b6a88a028d43ecec3a3`
+**Change reference:** commit containing this entry; draft PR #33
+**Why:** [WHY-20260717-002](WHY.md#why-20260717-002)
+**Parked records:** [PARK-20260717-002](PARKED.md#park-20260717-002)
+
+**Changed:** Removed public per-consume time overrides from durable and
+in-memory approval queues and added validated constructor clocks. Added durable
+decision-nonce tombstones with an explicit retention horizon that survives
+approval/outbox purge. Ledger metadata, return values, and indexes now deep
+copy nested values; receipt checks parse matches from the same disk snapshots
+whose complete signatures and chain were verified. Startup independently checks
+approval and outbox schemas, rebuilds both if either is legacy, enables foreign
+keys, and fails closed on orphan or foreign-key-check results.
+
+**Reason:** Independent review found that passing component tests did not cover
+nested cache aliasing, caller-selected expiry time, replay after row purge, or a
+modern-approvals/legacy-outbox migration. These were composition defects, not
+documentation-only gaps.
+
+**Full actions and links:** `enterprise/ledger.py`,
+`enterprise/approval_audit.py`, `enterprise/operator.py`, focused adversarial
+tests in `tests/test_enterprise/test_ledger.py` and
+`tests/test_enterprise/test_approval_audit.py`, PR #33, and the linked
+WHY/PARK/control records.
+
+**Validation:** `python -m pytest -q` passed **1,546 tests** with 34 explicit
+environment/live skips and the two documented immutable-sink warnings. The
+ledger/approval/policy/runtime/MCP selection passed 180 tests. Ruff passed for
+all changed Python files; the same selection plus documentation controls passed
+188 tests. Documentation records passed 8 tests. Quick release conformance
+returned `PASS_WITH_NAMED_BLIND_SPOTS`; release-tier conformance exercised the
+approval control successfully and remained honestly red only for the four
+pre-existing Ultra/SDK environment gates. Portfolio pins passed in `PIN_ONLY`
+mode. The wheel built successfully and contains the approval, operator, and
+ledger modules. `git diff --check` passed. Hosted CI is recorded on the final PR
+revision after push.
+
+**Notes:** The nonce tombstone default horizon is 24 hours and is configurable;
+this is not indefinite replay memory. The clock remains a deployment trust
+dependency. PR #33 remains draft and issue #26 remains open pending independent
+review and deployment-specific operator credential evidence.
+
+---
+
 ## LOG-20260717-001 - Bind durable approval transitions to signed evidence
 
 **Timestamp (UTC):** 2026-07-17T14:04:01Z

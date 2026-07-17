@@ -15,15 +15,24 @@
   before mutation.
 - Publish ledger sequence/hash state only after a durable append; partial write
   or `fsync` failure restores and verifies the previous tail before retry.
-- Added explicit expiry/backward-clock rejection, nonce replay prevention,
-  constrained SQLite migration/foreign keys, transaction-locked finalization,
-  and terminal/delivery-time evidence retention.
+- Added explicit expiry/backward-clock rejection through a constructor-injected
+  validated clock; removed the per-call time override from consume APIs.
+- Decision nonces now leave durable tombstones for an explicit retention
+  horizon, so purging an approval does not immediately reopen replay.
+- Ledger receipt verification reads one exact signature- and chain-verified
+  disk snapshot; public values and indexes cannot alias signed nested metadata.
+- Approval and outbox schemas are validated independently, rebuilt together
+  when either is legacy, and rejected on orphan or foreign-key violations.
+- Finalization remains transaction-locked and purge eligibility remains bound
+  to terminal and delivered-evidence time.
 - Context is represented in evidence only by a canonical SHA-256 digest. This
   supports correlation and integrity checking, not confidentiality against
   low-entropy context guessing.
 - Evidence: [LOG-20260717-001](LOG.md#log-20260717-001). Rationale:
-  [WHY-20260717-001](WHY.md#why-20260717-001). Recovery:
-  [PARK-20260717-001](PARKED.md#park-20260717-001).
+  [WHY-20260717-001](WHY.md#why-20260717-001) and
+  [WHY-20260717-002](WHY.md#why-20260717-002). Recovery:
+  [PARK-20260717-001](PARKED.md#park-20260717-001) and
+  [PARK-20260717-002](PARKED.md#park-20260717-002).
 
 ### Least-privilege Ultra monitoring
 

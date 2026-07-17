@@ -196,10 +196,22 @@ entering the event, but an unkeyed digest is not confidentiality protection for
 guessable context. Deployments select and assess the operator proof verifier;
 the repository does not prescribe a CAC, PKI, or personnel-identity system.
 
+Decision nonces are also retained in a separate durable tombstone table for a
+configured horizon (24 hours by default). Purging terminal approval and outbox
+rows does not remove that replay record before the horizon. This is bounded
+replay retention, not indefinite global nonce history. Expiry is evaluated
+only through the queue's validated clock dependency; consume APIs do not
+accept a caller-supplied current time. Tests may inject a clock at construction,
+while production remains responsible for a trustworthy clock source.
+
 Ledger append state advances only after append, flush, and `fsync` succeed. A
 failed or partial append is truncated to the prior durable length and the tail
 is reverified before retry. This is a single-process/thread-safe writer
 boundary, not multi-process file locking or off-host immutable custody.
+Receipt verification ignores the performance cache and validates the exact
+disk snapshot from which the matching signed entry was parsed. Returned ledger
+objects and nested indexes are deep copies, preventing caller mutation from
+changing the cached interpretation of signed metadata.
 
 This property covers the governed MCP dispatcher. Direct SDK calls and other
 repositories are not globally intercepted.

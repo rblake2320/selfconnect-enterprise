@@ -259,7 +259,7 @@ class LedgerApprovalDecisionSink:
         }
 
     def _existing(self, event: ApprovalAuditEvent) -> dict[str, Any] | None:
-        matches = self._ledger.find_entries_by_nested_value(
+        matches = self._ledger.find_verified_entries_by_nested_value(
             "approval_audit", "event_id", event.event_id
         )
         if not matches:
@@ -292,10 +292,10 @@ class LedgerApprovalDecisionSink:
         receipt: dict[str, Any],
     ) -> bool:
         with self._lock:
-            valid, _count, _message = self._ledger.verify()
-            if not valid:
+            try:
+                entry = self._existing(event)
+            except Exception:
                 return False
-            entry = self._existing(event)
             return entry is not None and self._receipt(entry, event) == receipt
 
 

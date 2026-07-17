@@ -51,6 +51,59 @@ related records.
 
 ## Register
 
+## WHY-20260717-002 - Keep authorization evidence independent of mutable caches and row lifetime
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-17T14:58:07Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260717-002](LOG.md#log-20260717-002)
+**Parked records:** [PARK-20260717-002](PARKED.md#park-20260717-002)
+**Source state:** `selfconnect-enterprise`, PR #33 head
+`5e8ffbe6ca0d6ee2eda68b6a88a028d43ecec3a3`
+
+**Decision:** Authorization receipt checks read and verify one exact ledger disk
+snapshot rather than a mutable performance cache. Ledger inputs, return values,
+and nested indexes are deep-copy boundaries. Decision nonces survive approval
+purge in a separate durable tombstone for a configured horizon. Expiry consumes
+time only from a validated constructor dependency, and approval/outbox schemas
+are validated independently with foreign-key checks at startup and migration.
+
+**Why:** A signed disk record does not protect a shallow in-memory alias. A
+row-local unique nonce stops replay only until that row is purged. A public
+per-call time override lets the authorization caller choose the expiry clock.
+Checking only the approvals schema misses a legacy or orphaned outbox. Each
+condition could make a component test pass while the composed authorization
+boundary accepted evidence it had not actually established.
+
+**Alternatives considered:** Clearing the ledger cache before verification was
+rejected because it would still perform separate verification and lookup reads.
+Keeping approvals forever was rejected because it couples operational retention
+to replay defense. Accepting `now=` only in tests was rejected because Python
+cannot enforce caller intent at that public API. Migrating only whichever table
+looked old was rejected because approvals and outbox form one integrity domain.
+
+**Consequences:** Receipt verification performs a full exact-snapshot ledger
+verification. Replay storage grows with decision volume until the configured
+horizon. Tests inject clocks at construction. Deployments must choose a nonce
+horizon and trustworthy clock appropriate to their threat and recovery window.
+
+**Rollback conditions:** Roll back only if exact-snapshot verification or
+tombstone storage causes a measured operational failure that cannot be bounded,
+and only onto an isolated branch that keeps the four gaps explicit and blocks
+governed authorization.
+
+**Evidence and links:** [LOG-20260717-002](LOG.md#log-20260717-002),
+[PARK-20260717-002](PARKED.md#park-20260717-002),
+`tests/test_enterprise/test_approval_audit.py`,
+`tests/test_enterprise/test_ledger.py`, and `GOV-APPROVAL-001`.
+
+**Claim boundary:** These controls establish bounded single-host replay and
+evidence integrity properties. They do not establish indefinite nonce history,
+multi-host consensus, trusted time infrastructure, off-host custody, or an
+authorization/compliance determination.
+
+---
+
 ## WHY-20260717-001 - Finalize approval state only after signed evidence
 
 **Status:** Accepted

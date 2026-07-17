@@ -91,6 +91,67 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260717-002 - Caller-selected consume time and row-local replay history
+
+**Status:** Parked
+**Category:** authorization integrity, replay retention, migration
+**Parked on (UTC):** 2026-07-17T14:58:07Z
+**Former location:** `enterprise/operator.py`, `enterprise/ledger.py`, and
+`enterprise/approval_audit.py`
+**Source commit:** `5e8ffbe6ca0d6ee2eda68b6a88a028d43ecec3a3`
+**Affected paths:** Approval expiry, decision replay, ledger receipt lookup,
+and approval/outbox schema initialization
+**Action log:** [LOG-20260717-002](LOG.md#log-20260717-002)
+**Why changed:** [WHY-20260717-002](WHY.md#why-20260717-002)
+**Parked by:** commit containing this record
+
+**Former wording:**
+
+> `consume_approved(..., now=...)` selected expiry time per call;
+> `decision_nonce TEXT UNIQUE` retained replay history only on approval rows;
+> ledger nested lookup returned shallow copies.
+
+**Recovery source:** Git objects
+`5e8ffbe6ca0d6ee2eda68b6a88a028d43ecec3a3:enterprise/operator.py`,
+`5e8ffbe6ca0d6ee2eda68b6a88a028d43ecec3a3:enterprise/ledger.py`, and
+`5e8ffbe6ca0d6ee2eda68b6a88a028d43ecec3a3:enterprise/approval_audit.py`.
+
+**Reason parked:** Consume APIs accepted a public `now=` override, decision
+nonce uniqueness disappeared with the approval row, ledger nested indexes used
+shallow copies, receipt lookup depended on that cache after a separate verify
+pass, and schema initialization inspected approvals without independently
+requiring a modern outbox.
+
+**Replacement:** Constructor-injected validated clocks; durable nonce
+tombstones with explicit retention; deep-copy ledger boundaries; exact
+verified-snapshot receipt lookup; and coupled rebuild plus independent schema
+and foreign-key validation.
+
+**Restore when:** Do not restore in a governed authorization path. A research
+fixture may reproduce the former behavior only on an isolated branch with no
+real authorization consumer and with the gap stated explicitly.
+
+**Restore procedure:** Restore the named source object on a separate branch,
+keep current tests intact, and demonstrate why replay-after-purge, clock
+selection, cache aliasing, and orphan migration are acceptable in that bounded
+experiment before changing any claim.
+
+**Validation after restore:** The nested-alias, public-clock, backward-skew,
+nonce-after-purge, mixed-schema, orphan, full approval, and MCP actuation tests
+must be rerun and any expected failures recorded as open gaps.
+
+**Recovery rehearsal:** Not rehearsed; the exact source commit and test boundary
+are recorded.
+
+**Restoration risks:** Reopens caller-selected expiry, replay after row purge,
+mutable-cache receipt interpretation, and orphaned-outbox acceptance.
+
+**Evidence and links:** [WHY-20260717-002](WHY.md#why-20260717-002),
+`tests/test_enterprise/test_approval_audit.py`,
+`tests/test_enterprise/test_ledger.py`, and `GOV-APPROVAL-001`.
+
+---
+
 ## PARK-20260717-001 - Durable approval state without transition evidence
 
 **Status:** Parked
