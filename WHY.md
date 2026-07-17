@@ -65,13 +65,15 @@ related records.
 snapshot rather than a mutable performance cache. Ledger inputs, return values,
 and nested indexes are deep-copy boundaries. Decision nonces survive approval
 purge in a separate durable tombstone for a configured horizon. Expiry consumes
-time only from a validated constructor dependency, and approval/outbox schemas
-are validated independently with foreign-key checks at startup and migration.
+time only from a validated constructor dependency. Approval, outbox,
+replay-tombstone, and version-marker structures are attested using SQLite
+metadata plus behavioral constraint probes at startup and migration.
 
 **Why:** A signed disk record does not protect a shallow in-memory alias. A
 row-local unique nonce stops replay only until that row is purged. A public
 per-call time override lets the authorization caller choose the expiry clock.
-Checking only the approvals schema misses a legacy or orphaned outbox. Each
+Checking only the approvals schema misses a legacy outbox or replay table;
+checking SQL text can be spoofed by comments or partial constraints. Each
 condition could make a component test pass while the composed authorization
 boundary accepted evidence it had not actually established.
 
@@ -80,7 +82,8 @@ rejected because it would still perform separate verification and lookup reads.
 Keeping approvals forever was rejected because it couples operational retention
 to replay defense. Accepting `now=` only in tests was rejected because Python
 cannot enforce caller intent at that public API. Migrating only whichever table
-looked old was rejected because approvals and outbox form one integrity domain.
+looked old was rejected because approvals, outbox evidence, replay tombstones,
+and their version marker form one integrity domain.
 
 **Consequences:** Receipt verification performs a full exact-snapshot ledger
 verification. Replay storage grows with decision volume until the configured

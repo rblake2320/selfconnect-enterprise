@@ -725,7 +725,7 @@ def test_decision_nonce_tombstone_survives_approval_purge(tmp_path):
     assert queue.get_status(second) == "pending"
 
 
-def test_modern_approvals_and_legacy_outbox_are_independently_rebuilt(tmp_path):
+def test_current_schema_outbox_drift_fails_closed_without_rebuild(tmp_path):
     db_path = tmp_path / "approvals.sqlite3"
     queue = DurableOperatorQueue(db_path)
     approval_id = queue.submit("agent-a", "export", {})
@@ -742,14 +742,12 @@ def test_modern_approvals_and_legacy_outbox_are_independently_rebuilt(tmp_path):
             """
         )
 
-    restarted = DurableOperatorQueue(db_path)
-    assert restarted.get_status(approval_id) == "pending"
-    with restarted._connect() as conn:
-        sql = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE name='approval_audit_outbox'"
-        ).fetchone()[0]
-        assert "FOREIGN KEY (approval_id)" in sql
-        assert "CHECK (transition IN" in sql
+    with pytest.raises(ApprovalAuditError, match="columns are invalid"):
+        DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT status FROM approvals WHERE approval_id=?", (approval_id,)
+        ).fetchone()[0] == "pending"
 
 
 def test_orphaned_legacy_outbox_fails_migration_closed(tmp_path):
@@ -774,5 +772,446 @@ def test_orphaned_legacy_outbox_fails_migration_closed(tmp_path):
             "('orphan','missing','pending','{}','pending',NULL,1,NULL)"
         )
 
-    with pytest.raises(ApprovalAuditError, match="orphaned"):
+    with pytest.raises(ApprovalAuditError, match="columns are invalid"):
         DurableOperatorQueue(db_path)
+
+
+def test_current_tombstone_constraint_drift_fails_closed(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    queue = DurableOperatorQueue(db_path)
+    approval_id = queue.submit("agent-a", "export", {})
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE decision_nonce_tombstones RENAME TO tombstones_old")
+        conn.execute(
+            """
+            CREATE TABLE decision_nonce_tombstones (
+                nonce TEXT NOT NULL, approval_id TEXT NOT NULL,
+                recorded_at REAL NOT NULL, retain_until REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO decision_nonce_tombstones VALUES ('legacy-nonce', ?, 1, 100)",
+            (approval_id,),
+        )
+        conn.execute("DROP TABLE tombstones_old")
+
+    with pytest.raises(ApprovalAuditError, match="columns are invalid"):
+        DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT approval_id FROM decision_nonce_tombstones "
+            "WHERE nonce='legacy-nonce'"
+        ).fetchone()[0] == approval_id
+
+
+def test_duplicate_legacy_tombstones_fail_closed_and_rollback(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    queue = DurableOperatorQueue(db_path)
+    approval_id = queue.submit("agent-a", "export", {})
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE decision_nonce_tombstones RENAME TO tombstones_old")
+        conn.execute(
+            """
+            CREATE TABLE decision_nonce_tombstones (
+                nonce TEXT, approval_id TEXT NOT NULL,
+                recorded_at REAL NOT NULL, retain_until REAL NOT NULL
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO decision_nonce_tombstones VALUES ('duplicate', ?, 1, 100)",
+            [(approval_id,), ("different-approval",)],
+        )
+        conn.execute("DROP TABLE tombstones_old")
+
+    with pytest.raises(ApprovalAuditError, match="columns are invalid"):
+        DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM decision_nonce_tombstones WHERE nonce='duplicate'"
+        ).fetchone()[0] == 2
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%_v3'"
+        ).fetchone()[0] == 0
+
+
+def test_conflicting_legacy_tombstone_owner_fails_closed(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    now = time.time()
+
+    def writer(_payload, _proof):
+        return DecisionProofVerification(
+            verifier_id="test", key_id="test", nonce="owned-nonce", verified_at=now
+        )
+
+    queue = DurableOperatorQueue(
+        db_path,
+        audit_sink=RecordingSink(),
+        audit_required=True,
+        decision_writer_verifier=writer,
+    )
+    approval_id = queue.submit("agent-a", "export", {})
+    assert queue.approve(approval_id, "operator-a", operator_proof="proof")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE decision_nonce_tombstones SET approval_id='other' "
+            "WHERE nonce='owned-nonce'"
+        )
+        conn.execute("UPDATE approval_schema_meta SET schema_version=2")
+
+    with pytest.raises(ApprovalAuditError, match="unsupported approval schema version"):
+        DurableOperatorQueue(db_path)
+
+
+def test_comment_spoofed_missing_foreign_key_is_structurally_rebuilt(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    queue = DurableOperatorQueue(db_path)
+    approval_id = queue.submit("agent-a", "export", {})
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("DROP TABLE approval_audit_outbox")
+        conn.execute(
+            """
+            CREATE TABLE approval_audit_outbox (
+                event_id TEXT NOT NULL PRIMARY KEY,
+                approval_id TEXT NOT NULL,
+                transition TEXT NOT NULL CHECK (transition IN
+                    ('pending','approved','denied','consumed','expired')),
+                event_json TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('pending','delivered')),
+                receipt_json TEXT,
+                created_at REAL NOT NULL,
+                delivered_at REAL,
+                -- FOREIGN KEY (approval_id) REFERENCES approvals(approval_id)
+                --     ON DELETE RESTRICT,
+                CHECK ((state = 'delivered') = (receipt_json IS NOT NULL)),
+                CHECK ((state = 'delivered') = (delivered_at IS NOT NULL))
+            )
+            """
+        )
+
+    with pytest.raises(ApprovalAuditError, match="foreign key"):
+        DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT status FROM approvals WHERE approval_id=?", (approval_id,)
+        ).fetchone()[0] == "pending"
+
+
+@pytest.mark.parametrize(
+    ("status", "pending_status", "pending_event_id"),
+    [
+        ("forged", None, None),
+        ("audit_pending", None, None),
+    ],
+)
+def test_forged_approval_rows_fail_migration_without_destroying_source(
+    tmp_path, status, pending_status, pending_event_id
+):
+    db_path = tmp_path / f"approvals-{status}.sqlite3"
+    queue = DurableOperatorQueue(db_path)
+    approval_id = queue.submit("agent-a", "export", {})
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute(
+            "UPDATE approvals SET status=?, pending_status=?, pending_event_id=? "
+            "WHERE approval_id=?",
+            (status, pending_status, pending_event_id, approval_id),
+        )
+
+    with pytest.raises(ApprovalAuditError, match="invalid governed state"):
+        DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT status, pending_status, pending_event_id FROM approvals "
+            "WHERE approval_id=?",
+            (approval_id,),
+        ).fetchone()
+        assert row == (status, pending_status, pending_event_id)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%_v3'"
+        ).fetchone()[0] == 0
+
+
+def test_forged_delivered_outbox_row_fails_closed_and_rolls_back(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    queue = _queue(tmp_path)
+    approval_id = queue.submit("agent-a", "export", {})
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute(
+            "UPDATE approval_audit_outbox SET state='delivered', "
+            "receipt_json=NULL, delivered_at=NULL WHERE approval_id=?",
+            (approval_id,),
+        )
+
+    with pytest.raises(ApprovalAuditError, match="invalid governed state"):
+        DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT state, receipt_json, delivered_at FROM approval_audit_outbox "
+            "WHERE approval_id=?",
+            (approval_id,),
+        ).fetchone() == ("delivered", None, None)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%_v3'"
+        ).fetchone()[0] == 0
+
+
+def test_current_schema_missing_tombstones_fails_closed_without_replay_reset(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO decision_nonce_tombstones VALUES ('burned','purged',1,100)"
+        )
+        conn.execute("DROP TABLE decision_nonce_tombstones")
+
+    with pytest.raises(ApprovalAuditError, match="missing governed state"):
+        DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT schema_version FROM approval_schema_meta WHERE singleton=1"
+        ).fetchone()[0] == 3
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE type='table' AND name='decision_nonce_tombstones'"
+        ).fetchone()[0] == 0
+
+
+def test_future_schema_version_is_never_downgraded_or_stripped(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    queue = DurableOperatorQueue(db_path)
+    approval_id = queue.submit("agent-a", "export", {})
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE approvals ADD COLUMN future_evidence TEXT")
+        conn.execute(
+            "UPDATE approvals SET future_evidence='must-preserve' WHERE approval_id=?",
+            (approval_id,),
+        )
+        conn.execute("UPDATE approval_schema_meta SET schema_version=4")
+
+    with pytest.raises(ApprovalAuditError, match="downgrade refused"):
+        DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT schema_version FROM approval_schema_meta WHERE singleton=1"
+        ).fetchone()[0] == 4
+        assert conn.execute(
+            "SELECT future_evidence FROM approvals WHERE approval_id=?",
+            (approval_id,),
+        ).fetchone()[0] == "must-preserve"
+
+
+def test_conflicting_schema_authority_rows_never_trigger_downgrade(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    queue = DurableOperatorQueue(db_path)
+    approval_id = queue.submit("agent-a", "export", {})
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE approvals ADD COLUMN future_evidence TEXT")
+        conn.execute(
+            "UPDATE approvals SET future_evidence='must-preserve' WHERE approval_id=?",
+            (approval_id,),
+        )
+        conn.execute("DROP TABLE approval_schema_meta")
+        conn.execute(
+            "CREATE TABLE approval_schema_meta "
+            "(singleton INTEGER, schema_version INTEGER NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO approval_schema_meta VALUES (?,?)",
+            [(1, 3), (2, 4)],
+        )
+
+    with pytest.raises(ApprovalAuditError, match="missing or ambiguous"):
+        DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT singleton, schema_version FROM approval_schema_meta "
+            "ORDER BY singleton"
+        ).fetchall() == [(1, 3), (2, 4)]
+        assert conn.execute(
+            "SELECT future_evidence FROM approvals WHERE approval_id=?",
+            (approval_id,),
+        ).fetchone()[0] == "must-preserve"
+
+
+def test_current_partial_nonce_index_fails_closed_without_rebuild(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        approvals_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='approvals'"
+        ).fetchone()[0]
+        outbox_sql = conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='approval_audit_outbox'"
+        ).fetchone()[0]
+        conn.execute("DROP TABLE approval_audit_outbox")
+        conn.execute("ALTER TABLE approvals RENAME TO approvals_old")
+        conn.execute(approvals_sql.replace("decision_nonce TEXT UNIQUE", "decision_nonce TEXT"))
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(approvals)")]
+        joined = ",".join(columns)
+        conn.execute(f"INSERT INTO approvals ({joined}) SELECT {joined} FROM approvals_old")
+        conn.execute("DROP TABLE approvals_old")
+        conn.execute(outbox_sql)
+        conn.execute("CREATE INDEX idx_approvals_status ON approvals(status)")
+        conn.execute(
+            "CREATE UNIQUE INDEX partial_nonce ON approvals(decision_nonce) "
+            "WHERE decision_nonce LIKE 'protected-%'"
+        )
+        conn.execute(
+            "CREATE INDEX idx_approval_outbox_lineage "
+            "ON approval_audit_outbox(approval_id, created_at, event_id)"
+        )
+
+    with pytest.raises(ApprovalAuditError, match="not uniquely indexed"):
+        DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        indexes = conn.execute("PRAGMA index_list(approvals)").fetchall()
+        assert any(row[1] == "partial_nonce" and row[4] == 1 for row in indexes)
+
+
+def test_legacy_null_replay_keys_fail_closed_and_preserve_source(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE decision_nonce_tombstones RENAME TO tombstones_old")
+        conn.execute(
+            "CREATE TABLE decision_nonce_tombstones "
+            "(nonce TEXT PRIMARY KEY, approval_id TEXT NOT NULL, "
+            "recorded_at REAL NOT NULL, retain_until REAL NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO decision_nonce_tombstones VALUES (NULL,?,1,2)",
+            [("owner-a",), ("owner-b",)],
+        )
+        conn.execute("DROP TABLE tombstones_old")
+
+    with pytest.raises(ApprovalAuditError, match="columns are invalid"):
+        DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM decision_nonce_tombstones WHERE nonce IS NULL"
+        ).fetchone()[0] == 2
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%_v3'"
+        ).fetchone()[0] == 0
+
+
+def test_deleted_version_authority_never_strips_unknown_state(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    queue = DurableOperatorQueue(db_path)
+    approval_id = queue.submit("agent-a", "export", {})
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE approvals ADD COLUMN future_evidence TEXT")
+        conn.execute(
+            "UPDATE approvals SET future_evidence='preserve-me' WHERE approval_id=?",
+            (approval_id,),
+        )
+        conn.execute("DROP TABLE approval_schema_meta")
+
+    with pytest.raises(ApprovalAuditError, match="unknown state"):
+        DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT future_evidence FROM approvals WHERE approval_id=?",
+            (approval_id,),
+        ).fetchone()[0] == "preserve-me"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%_v3'"
+        ).fetchone()[0] == 0
+
+
+def test_current_version_unknown_state_is_never_repaired_or_stripped(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    queue = DurableOperatorQueue(db_path)
+    approval_id = queue.submit("agent-a", "export", {})
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE approvals ADD COLUMN unknown_evidence TEXT")
+        conn.execute(
+            "UPDATE approvals SET unknown_evidence='keep' WHERE approval_id=?",
+            (approval_id,),
+        )
+
+    with pytest.raises(ApprovalAuditError, match="columns are invalid"):
+        DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT unknown_evidence FROM approvals WHERE approval_id=?",
+            (approval_id,),
+        ).fetchone()[0] == "keep"
+
+
+@pytest.mark.parametrize("version", [-1, 0, 2])
+def test_unsupported_numbered_schema_is_never_adopted(tmp_path, version):
+    db_path = tmp_path / f"approvals-{version}.sqlite3"
+    DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE approval_schema_meta SET schema_version=?", (version,)
+        )
+
+    with pytest.raises(ApprovalAuditError, match="unsupported approval schema version"):
+        DurableOperatorQueue(db_path)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT schema_version FROM approval_schema_meta WHERE singleton=1"
+        ).fetchone()[0] == version
+
+
+def test_concurrent_fresh_initialization_converges_under_write_lock(tmp_path):
+    for attempt in range(20):
+        db_path = tmp_path / f"fresh-{attempt}.sqlite3"
+        barrier = threading.Barrier(2)
+        errors: list[BaseException] = []
+
+        def initialize() -> None:
+            try:
+                barrier.wait(timeout=5)
+                DurableOperatorQueue(db_path)
+            except BaseException as exc:  # captured for assertion in test thread
+                errors.append(exc)
+
+        threads = [threading.Thread(target=initialize) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        assert not any(thread.is_alive() for thread in threads)
+        assert errors == []
+        queue = DurableOperatorQueue(db_path)
+        with queue._connect() as conn:
+            assert conn.execute(
+                "SELECT schema_version FROM approval_schema_meta WHERE singleton=1"
+            ).fetchone()[0] == 3
+
+
+def test_preexisting_migration_staging_is_never_adopted(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    queue = DurableOperatorQueue(db_path)
+    legitimate = queue.submit("agent-a", "export", {})
+    with queue._connect() as conn:
+        conn.execute("DROP INDEX idx_approvals_status")
+        DurableOperatorQueue._create_tables(conn, "_v3")
+        conn.execute(
+            "INSERT INTO approvals_v3 "
+            "(approval_id,agent_id,action,context_json,submitted_at,status) "
+            "VALUES ('forged','attacker','act','{}',1,'pending')"
+        )
+
+    with queue._connect() as conn:
+        with pytest.raises(ApprovalAuditError, match="staging objects already exist"):
+            queue._migrate_schema(conn)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM approvals WHERE approval_id=?", (legitimate,)
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM approvals WHERE approval_id='forged'"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM approvals_v3 WHERE approval_id='forged'"
+        ).fetchone()[0] == 1

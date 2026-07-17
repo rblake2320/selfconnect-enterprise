@@ -21,8 +21,11 @@
   horizon, so purging an approval does not immediately reopen replay.
 - Ledger receipt verification reads one exact signature- and chain-verified
   disk snapshot; public values and indexes cannot alias signed nested metadata.
-- Approval and outbox schemas are validated independently, rebuilt together
-  when either is legacy, and rejected on orphan or foreign-key violations.
+- Approval, outbox, replay-tombstone, and schema-version structures are
+  attested through SQLite metadata plus behavioral constraint probes and are
+  rebuilt in one transaction when any member is legacy. Duplicate/conflicting
+  replay state, constraint-invalid governed rows, and orphan or foreign-key violations fail
+  closed without replacing the source database.
 - Finalization remains transaction-locked and purge eligibility remains bound
   to terminal and delivered-evidence time.
 - Context is represented in evidence only by a canonical SHA-256 digest. This

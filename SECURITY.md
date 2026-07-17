@@ -204,6 +204,18 @@ only through the queue's validated clock dependency; consume APIs do not
 accept a caller-supplied current time. Tests may inject a clock at construction,
 while production remains responsible for a trustworthy clock source.
 
+The approvals, transition outbox, replay tombstones, required indexes,
+schema-version marker, and foreign-key relationship are one migration domain.
+Startup checks SQLite metadata and exercises the constraints inside a rolled
+back savepoint rather than trusting SQL text. Any legacy member triggers one
+transactional rebuild; duplicate or conflicting nonce ownership, forged
+governed state, orphan evidence, or a failed integrity check aborts the rebuild
+and leaves the source database intact for investigation.
+The behavioral probes establish the named invariants; they are not a byte-for-byte
+attestation of SQLite's stored DDL text. A current version marker with any missing
+governed table and any schema newer than this runtime are rejected without repair
+or downgrade.
+
 Ledger append state advances only after append, flush, and `fsync` succeed. A
 failed or partial append is truncated to the prior durable length and the tail
 is reverified before retry. This is a single-process/thread-safe writer

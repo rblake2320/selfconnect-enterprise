@@ -124,8 +124,9 @@ requiring a modern outbox.
 
 **Replacement:** Constructor-injected validated clocks; durable nonce
 tombstones with explicit retention; deep-copy ledger boundaries; exact
-verified-snapshot receipt lookup; and coupled rebuild plus independent schema
-and foreign-key validation.
+verified-snapshot receipt lookup; and one-transaction rebuild plus versioned
+structural and behavioral attestation of approvals, outbox, replay tombstones,
+indexes, constraints, and foreign keys.
 
 **Restore when:** Do not restore in a governed authorization path. A research
 fixture may reproduce the former behavior only on an isolated branch with no
@@ -137,8 +138,10 @@ selection, cache aliasing, and orphan migration are acceptable in that bounded
 experiment before changing any claim.
 
 **Validation after restore:** The nested-alias, public-clock, backward-skew,
-nonce-after-purge, mixed-schema, orphan, full approval, and MCP actuation tests
-must be rerun and any expected failures recorded as open gaps.
+nonce-after-purge, mixed-schema, orphan, comment-spoof,
+duplicate/conflicting-replay-state, forged-row, migration-rollback, full
+approval, and MCP actuation tests must be rerun and any expected failures
+recorded as open gaps.
 
 **Recovery rehearsal:** Not rehearsed; the exact source commit and test boundary
 are recorded.

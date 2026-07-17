@@ -369,7 +369,7 @@ than one checkout.
 - `TestFullWorkflow::test_denied_action_produces_deny_metadata`
 - `TestFullWorkflow::test_requires_approval_workflow`
 
-### Approval Audit Binding — `test_approval_audit.py` (28 tests)
+### Approval Audit Binding — `test_approval_audit.py` (47 tests)
 
 - `test_required_sink_cannot_be_omitted`
 - `test_unverified_decision_writer_cannot_approve`
@@ -397,8 +397,24 @@ than one checkout.
 - `test_system_safety_denial_is_not_human_attribution_or_approval_bypass`
 - `test_reused_decision_nonce_fails_closed`
 - `test_decision_nonce_tombstone_survives_approval_purge`
-- `test_modern_approvals_and_legacy_outbox_are_independently_rebuilt`
+- `test_current_schema_outbox_drift_fails_closed_without_rebuild`
 - `test_orphaned_legacy_outbox_fails_migration_closed`
+- `test_current_tombstone_constraint_drift_fails_closed`
+- `test_duplicate_legacy_tombstones_fail_closed_and_rollback`
+- `test_conflicting_legacy_tombstone_owner_fails_closed`
+- `test_comment_spoofed_missing_foreign_key_is_structurally_rebuilt`
+- `test_forged_approval_rows_fail_migration_without_destroying_source`
+- `test_forged_delivered_outbox_row_fails_closed_and_rolls_back`
+- `test_current_schema_missing_tombstones_fails_closed_without_replay_reset`
+- `test_future_schema_version_is_never_downgraded_or_stripped`
+- `test_conflicting_schema_authority_rows_never_trigger_downgrade`
+- `test_current_partial_nonce_index_fails_closed_without_rebuild`
+- `test_legacy_null_replay_keys_fail_closed_and_preserve_source`
+- `test_deleted_version_authority_never_strips_unknown_state`
+- `test_current_version_unknown_state_is_never_repaired_or_stripped`
+- `test_unsupported_numbered_schema_is_never_adopted`
+- `test_concurrent_fresh_initialization_converges_under_write_lock`
+- `test_preexisting_migration_staging_is_never_adopted`
 
 ### Identity Gate — `test_identity_gate.py` (46 tests)
 

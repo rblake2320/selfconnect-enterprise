@@ -70,8 +70,11 @@ decision-nonce tombstones with an explicit retention horizon that survives
 approval/outbox purge. Ledger metadata, return values, and indexes now deep
 copy nested values; receipt checks parse matches from the same disk snapshots
 whose complete signatures and chain were verified. Startup independently checks
-approval and outbox schemas, rebuilds both if either is legacy, enables foreign
-keys, and fails closed on orphan or foreign-key-check results.
+approval, outbox, replay-tombstone, and version-marker structures using PRAGMA
+metadata and behavioral constraint probes. It rebuilds the complete integrity
+domain in one transaction if any member is legacy, enables foreign keys, and
+fails closed on duplicate/conflicting replay state, constraint-invalid governed rows,
+orphan state, or foreign-key-check results without destroying the source.
 
 **Reason:** Independent review found that passing component tests did not cover
 nested cache aliasing, caller-selected expiry time, replay after row purge, or a
@@ -84,11 +87,11 @@ tests in `tests/test_enterprise/test_ledger.py` and
 `tests/test_enterprise/test_approval_audit.py`, PR #33, and the linked
 WHY/PARK/control records.
 
-**Validation:** `python -m pytest -q` passed **1,546 tests** with 34 explicit
+**Validation:** `python -m pytest -q` passed **1,565 tests** with 34 explicit
 environment/live skips and the two documented immutable-sink warnings. The
-ledger/approval/policy/runtime/MCP selection passed 180 tests. Ruff passed for
+ledger/approval/policy/runtime/MCP selection passed 199 tests. Ruff passed for
 all changed Python files; the same selection plus documentation controls passed
-188 tests. Documentation records passed 8 tests. Quick release conformance
+207 tests. Documentation records passed 8 tests. Quick release conformance
 returned `PASS_WITH_NAMED_BLIND_SPOTS`; release-tier conformance exercised the
 approval control successfully and remained honestly red only for the four
 pre-existing Ultra/SDK environment gates. Portfolio pins passed in `PIN_ONLY`

@@ -46,6 +46,8 @@ from enterprise.approval_audit import (
     canonical_context_digest,
 )
 
+_APPROVAL_SCHEMA_VERSION = 3
+
 # ── PendingApproval ────────────────────────────────────────────────────────────
 
 @dataclass
@@ -305,89 +307,166 @@ class DurableOperatorQueue:
 
     def _init_db(self) -> None:
         with self._connect() as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            approval_sql = conn.execute(
-                "SELECT sql FROM sqlite_master WHERE type='table' AND name='approvals'"
-            ).fetchone()
-            approval_columns = {
-                row["name"] for row in conn.execute("PRAGMA table_info(approvals)")
-            }
-            required_approval_columns = {
-                "expires_at", "terminal_at", "decision_proof_json", "decision_nonce",
-                "pending_status", "pending_event_id", "last_audit_event_id",
-                "last_audit_receipt_json",
-            }
-            outbox_sql = conn.execute(
-                "SELECT sql FROM sqlite_master WHERE type='table' "
-                "AND name='approval_audit_outbox'"
-            ).fetchone()
-            outbox_columns = {
+            deadline = time.monotonic() + 10.0
+            delay = 0.005
+            while True:
+                try:
+                    mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                    if str(mode).lower() != "wal":
+                        raise ApprovalAuditError(
+                            "approval database did not enter WAL journal mode"
+                        )
+                    break
+                except sqlite3.OperationalError as exc:
+                    if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                        raise ApprovalAuditError(
+                            "approval database WAL initialization failed closed"
+                        ) from exc
+                    time.sleep(delay)
+                    delay = min(delay * 2, 0.1)
+            tables = {
                 row["name"]
-                for row in conn.execute("PRAGMA table_info(approval_audit_outbox)")
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
             }
-            required_outbox_columns = {
-                "event_id", "approval_id", "transition", "event_json", "state",
-                "receipt_json", "created_at", "delivered_at",
+            governed_tables = {
+                "approvals",
+                "approval_audit_outbox",
+                "decision_nonce_tombstones",
+                "approval_schema_meta",
             }
-            approval_needs_rebuild = approval_sql is not None and (
-                "CHECK (status IN" not in approval_sql["sql"]
-                or not required_approval_columns.issubset(approval_columns)
-            )
-            outbox_needs_rebuild = outbox_sql is not None and (
-                "CHECK (transition IN" not in outbox_sql["sql"]
-                or "FOREIGN KEY (approval_id)" not in outbox_sql["sql"]
-                or not required_outbox_columns.issubset(outbox_columns)
-            )
-            if approval_needs_rebuild or outbox_needs_rebuild:
-                self._migrate_schema(conn)
+            if "approval_schema_meta" in tables:
+                try:
+                    version_rows = conn.execute(
+                        "SELECT singleton, schema_version FROM approval_schema_meta"
+                    ).fetchall()
+                except sqlite3.DatabaseError as exc:
+                    raise ApprovalAuditError(
+                        "approval schema version marker is unreadable"
+                    ) from exc
+                if len(version_rows) != 1 or version_rows[0]["singleton"] != 1:
+                    raise ApprovalAuditError(
+                        "approval schema version authority is missing or ambiguous"
+                    )
+                version = version_rows[0]["schema_version"]
+                if not isinstance(version, int) or isinstance(version, bool):
+                    raise ApprovalAuditError(
+                        "approval schema version marker is invalid"
+                    )
+                if version > _APPROVAL_SCHEMA_VERSION:
+                    raise ApprovalAuditError(
+                        "approval schema is newer than this runtime; downgrade refused"
+                    )
+                if version == _APPROVAL_SCHEMA_VERSION:
+                    missing = governed_tables - tables
+                    if missing:
+                        raise ApprovalAuditError(
+                            "current approval schema is missing governed state: "
+                            + ", ".join(sorted(missing))
+                        )
+                    # A current marker makes this an attestation, not a repair
+                    # opportunity. Any drift must remain intact for investigation.
+                    self._validate_schema(conn)
+                    return
+                raise ApprovalAuditError(
+                    f"unsupported approval schema version: {version}"
+                )
+            elif tables.intersection(governed_tables):
+                # An unversioned database is migratable only when it has the
+                # known legacy key shape. Current-schema NOT NULL primary keys
+                # without their authority marker, or unknown future columns,
+                # are corruption/unsupported state and must not be relabelled.
+                legacy_columns = {
+                    "approvals": {
+                        "approval_id", "agent_id", "action", "context_json",
+                        "submitted_at", "status", "operator_id", "decided_at",
+                        "consumed_at", "expires_at", "terminal_at",
+                        "decision_proof_json", "decision_nonce", "pending_status",
+                        "pending_event_id", "last_audit_event_id",
+                        "last_audit_receipt_json",
+                    },
+                    "approval_audit_outbox": {
+                        "event_id", "approval_id", "transition", "event_json",
+                        "state", "receipt_json", "created_at", "delivered_at",
+                    },
+                    "decision_nonce_tombstones": {
+                        "nonce", "approval_id", "recorded_at", "retain_until",
+                    },
+                }
+                for table, allowed in legacy_columns.items():
+                    if table not in tables:
+                        continue
+                    info = conn.execute(f"PRAGMA table_info({table})").fetchall()
+                    if {row["name"] for row in info} - allowed:
+                        raise ApprovalAuditError(
+                            "unversioned approval schema contains unknown state"
+                        )
+                    primary = [row for row in info if row["pk"]]
+                    if any(row["notnull"] == 1 for row in primary):
+                        raise ApprovalAuditError(
+                            "current approval schema is missing its version authority"
+                        )
+            if not tables.intersection(governed_tables):
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    # Another first-start process may have initialized while this
+                    # connection waited for the write lock. Re-inspect under lock.
+                    locked_tables = {
+                        row["name"]
+                        for row in conn.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table'"
+                        )
+                    }
+                    if locked_tables.intersection(governed_tables):
+                        self._validate_schema(conn)
+                    else:
+                        self._create_tables(conn)
+                        self._create_schema_metadata(conn)
+                        self._create_indexes(conn)
+                    self._validate_schema(conn)
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
             else:
-                self._create_tables(conn)
-            self._create_nonce_tombstones(conn)
-            now = self._now()
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO decision_nonce_tombstones
-                    (nonce, approval_id, recorded_at, retain_until)
-                SELECT decision_nonce, approval_id, COALESCE(decided_at, submitted_at), ?
-                  FROM approvals
-                 WHERE decision_nonce IS NOT NULL
-                """,
-                (now + self._nonce_retention,),
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_approval_outbox_lineage "
-                "ON approval_audit_outbox(approval_id, created_at, event_id)"
-            )
-            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
-            if violations:
-                raise ApprovalAuditError("approval database foreign-key check failed closed")
+                try:
+                    self._validate_schema(conn)
+                except (ApprovalAuditError, sqlite3.DatabaseError):
+                    self._migrate_schema(conn)
 
     @staticmethod
-    def _create_nonce_tombstones(conn: sqlite3.Connection) -> None:
+    def _create_schema_metadata(conn: sqlite3.Connection) -> None:
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS decision_nonce_tombstones (
-                nonce TEXT PRIMARY KEY,
-                approval_id TEXT NOT NULL,
-                recorded_at REAL NOT NULL,
-                retain_until REAL NOT NULL,
-                CHECK (length(nonce) BETWEEN 1 AND 256),
-                CHECK (retain_until > recorded_at)
+            CREATE TABLE approval_schema_meta (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                schema_version INTEGER NOT NULL
             )
             """
+        )
+        conn.execute(
+            "INSERT INTO approval_schema_meta VALUES (1, ?)",
+            (_APPROVAL_SCHEMA_VERSION,),
+        )
+
+    @staticmethod
+    def _create_indexes(conn: sqlite3.Connection) -> None:
+        conn.execute("CREATE INDEX idx_approvals_status ON approvals(status)")
+        conn.execute(
+            "CREATE INDEX idx_approval_outbox_lineage "
+            "ON approval_audit_outbox(approval_id, created_at, event_id)"
         )
 
     @staticmethod
     def _create_tables(conn: sqlite3.Connection, suffix: str = "") -> None:
         approvals = f"approvals{suffix}"
         outbox = f"approval_audit_outbox{suffix}"
+        tombstones = f"decision_nonce_tombstones{suffix}"
         conn.execute(
             f"""
             CREATE TABLE IF NOT EXISTS {approvals} (
-                approval_id TEXT PRIMARY KEY,
+                approval_id TEXT NOT NULL PRIMARY KEY,
                 agent_id TEXT NOT NULL,
                 action TEXT NOT NULL,
                 context_json TEXT NOT NULL,
@@ -414,7 +493,7 @@ class DurableOperatorQueue:
         conn.execute(
             f"""
             CREATE TABLE IF NOT EXISTS {outbox} (
-                event_id TEXT PRIMARY KEY,
+                event_id TEXT NOT NULL PRIMARY KEY,
                 approval_id TEXT NOT NULL,
                 transition TEXT NOT NULL CHECK (transition IN
                     ('pending','approved','denied','consumed','expired')),
@@ -423,30 +502,345 @@ class DurableOperatorQueue:
                 receipt_json TEXT,
                 created_at REAL NOT NULL,
                 delivered_at REAL,
-                FOREIGN KEY (approval_id) REFERENCES {approvals}(approval_id),
+                FOREIGN KEY (approval_id) REFERENCES {approvals}(approval_id)
+                    ON DELETE RESTRICT,
                 CHECK ((state = 'delivered') = (receipt_json IS NOT NULL)),
                 CHECK ((state = 'delivered') = (delivered_at IS NOT NULL))
             )
             """
         )
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {tombstones} (
+                nonce TEXT NOT NULL PRIMARY KEY,
+                approval_id TEXT NOT NULL,
+                recorded_at REAL NOT NULL,
+                retain_until REAL NOT NULL,
+                CHECK (length(nonce) BETWEEN 1 AND 256),
+                CHECK (retain_until > recorded_at)
+            )
+            """
+        )
+
+    @staticmethod
+    def _table_columns(conn: sqlite3.Connection, table: str) -> list[sqlite3.Row]:
+        return conn.execute(f"PRAGMA table_info({table})").fetchall()
+
+    @classmethod
+    def _require_columns(
+        cls,
+        conn: sqlite3.Connection,
+        table: str,
+        expected: list[tuple[str, str, int, int]],
+    ) -> None:
+        actual = [
+            (row["name"], row["type"].upper(), row["notnull"], row["pk"])
+            for row in cls._table_columns(conn, table)
+        ]
+        if actual != expected:
+            raise ApprovalAuditError(f"approval schema columns are invalid for {table}")
+
+    @staticmethod
+    def _require_index(
+        conn: sqlite3.Connection,
+        table: str,
+        name: str,
+        columns: list[str],
+    ) -> None:
+        indexes = {row["name"] for row in conn.execute(f"PRAGMA index_list({table})")}
+        if name not in indexes:
+            raise ApprovalAuditError(f"required approval index is missing: {name}")
+        actual = [row["name"] for row in conn.execute(f"PRAGMA index_info({name})")]
+        if actual != columns:
+            raise ApprovalAuditError(f"approval index columns are invalid: {name}")
+
+    @staticmethod
+    def _must_reject(
+        conn: sqlite3.Connection,
+        sql: str,
+        args: tuple[Any, ...],
+        description: str,
+    ) -> None:
+        try:
+            conn.execute(sql, args)
+        except sqlite3.IntegrityError:
+            return
+        raise ApprovalAuditError(f"approval schema accepted {description}")
+
+    @classmethod
+    def _validate_schema(
+        cls,
+        conn: sqlite3.Connection,
+        *,
+        probe_foreign_key: bool = True,
+    ) -> None:
+        meta = conn.execute(
+            "SELECT singleton, schema_version FROM approval_schema_meta"
+        ).fetchall() if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='approval_schema_meta'"
+        ).fetchone() else []
+        if len(meta) != 1 or tuple(meta[0]) != (1, _APPROVAL_SCHEMA_VERSION):
+            raise ApprovalAuditError("approval schema version marker is absent or invalid")
+        cls._require_columns(conn, "approval_schema_meta", [
+            ("singleton", "INTEGER", 0, 1),
+            ("schema_version", "INTEGER", 1, 0),
+        ])
+
+        cls._require_columns(conn, "approvals", [
+            ("approval_id", "TEXT", 1, 1), ("agent_id", "TEXT", 1, 0),
+            ("action", "TEXT", 1, 0), ("context_json", "TEXT", 1, 0),
+            ("submitted_at", "REAL", 1, 0), ("status", "TEXT", 1, 0),
+            ("operator_id", "TEXT", 1, 0), ("decided_at", "REAL", 0, 0),
+            ("consumed_at", "REAL", 0, 0), ("expires_at", "REAL", 0, 0),
+            ("terminal_at", "REAL", 0, 0), ("decision_proof_json", "TEXT", 0, 0),
+            ("decision_nonce", "TEXT", 0, 0), ("pending_status", "TEXT", 0, 0),
+            ("pending_event_id", "TEXT", 0, 0),
+            ("last_audit_event_id", "TEXT", 1, 0),
+            ("last_audit_receipt_json", "TEXT", 0, 0),
+        ])
+        cls._require_columns(conn, "approval_audit_outbox", [
+            ("event_id", "TEXT", 1, 1), ("approval_id", "TEXT", 1, 0),
+            ("transition", "TEXT", 1, 0), ("event_json", "TEXT", 1, 0),
+            ("state", "TEXT", 1, 0), ("receipt_json", "TEXT", 0, 0),
+            ("created_at", "REAL", 1, 0), ("delivered_at", "REAL", 0, 0),
+        ])
+        cls._require_columns(conn, "decision_nonce_tombstones", [
+            ("nonce", "TEXT", 1, 1), ("approval_id", "TEXT", 1, 0),
+            ("recorded_at", "REAL", 1, 0), ("retain_until", "REAL", 1, 0),
+        ])
+
+        foreign_keys = conn.execute(
+            "PRAGMA foreign_key_list(approval_audit_outbox)"
+        ).fetchall()
+        if len(foreign_keys) != 1:
+            raise ApprovalAuditError("approval outbox foreign key is missing or ambiguous")
+        fk = foreign_keys[0]
+        if (
+            fk["table"], fk["from"], fk["to"], fk["on_update"], fk["on_delete"]
+        ) != ("approvals", "approval_id", "approval_id", "NO ACTION", "RESTRICT"):
+            raise ApprovalAuditError("approval outbox foreign key contract is invalid")
+
+        cls._require_index(conn, "approvals", "idx_approvals_status", ["status"])
+        cls._require_index(
+            conn,
+            "approval_audit_outbox",
+            "idx_approval_outbox_lineage",
+            ["approval_id", "created_at", "event_id"],
+        )
+        decision_nonce_unique = False
+        for index in conn.execute("PRAGMA index_list(approvals)"):
+            columns = [
+                row["name"]
+                for row in conn.execute(f"PRAGMA index_info({index['name']})")
+            ]
+            if (
+                index["unique"] == 1
+                and index["partial"] == 0
+                and index["origin"] == "u"
+                and columns == ["decision_nonce"]
+            ):
+                decision_nonce_unique = True
+        if not decision_nonce_unique:
+            raise ApprovalAuditError("approval decision nonce is not uniquely indexed")
+        duplicate_nonce = conn.execute(
+            """
+            SELECT decision_nonce FROM approvals
+             WHERE decision_nonce IS NOT NULL
+             GROUP BY decision_nonce HAVING COUNT(*) > 1
+             LIMIT 1
+            """
+        ).fetchone()
+        if duplicate_nonce is not None:
+            raise ApprovalAuditError("approval decision nonce replay state is duplicated")
+
+        invalid_approval = conn.execute(
+            """
+            SELECT approval_id FROM approvals
+             WHERE status NOT IN ('pending','audit_pending','approved','denied','consumed','expired')
+                OR ((status = 'audit_pending') != (pending_status IS NOT NULL))
+                OR ((status = 'audit_pending') != (pending_event_id IS NOT NULL))
+                OR (pending_status IS NOT NULL AND pending_status NOT IN
+                    ('pending','approved','denied','consumed','expired'))
+             LIMIT 1
+            """
+        ).fetchone()
+        invalid_outbox = conn.execute(
+            """
+            SELECT event_id FROM approval_audit_outbox
+             WHERE transition NOT IN ('pending','approved','denied','consumed','expired')
+                OR state NOT IN ('pending','delivered')
+                OR ((state = 'delivered') != (receipt_json IS NOT NULL))
+                OR ((state = 'delivered') != (delivered_at IS NOT NULL))
+             LIMIT 1
+            """
+        ).fetchone()
+        invalid_tombstone = conn.execute(
+            """
+            SELECT nonce FROM decision_nonce_tombstones
+             WHERE length(nonce) NOT BETWEEN 1 AND 256 OR retain_until <= recorded_at
+             LIMIT 1
+            """
+        ).fetchone()
+        if invalid_approval or invalid_outbox or invalid_tombstone:
+            raise ApprovalAuditError("approval database contains invalid governed state")
+        if conn.execute("PRAGMA foreign_key_check").fetchall():
+            raise ApprovalAuditError("approval database foreign-key check failed closed")
+
+        probe = f"schema-probe-{uuid.uuid4()}"
+        conn.execute("SAVEPOINT approval_schema_probe")
+        try:
+            cls._must_reject(
+                conn,
+                "INSERT INTO approval_schema_meta VALUES (2, ?)",
+                (_APPROVAL_SCHEMA_VERSION,),
+                "a second schema-version authority row",
+            )
+            cls._must_reject(
+                conn,
+                "INSERT INTO approvals "
+                "(approval_id,agent_id,action,context_json,submitted_at,status) "
+                "VALUES (?,?,?,?,?,'comment-says-CHECK (status IN)')",
+                (probe + "-status", "a", "x", "{}", 1.0),
+                "an invalid approval status",
+            )
+            cls._must_reject(
+                conn,
+                "INSERT INTO approvals "
+                "(approval_id,agent_id,action,context_json,submitted_at,status) "
+                "VALUES (NULL,?,?,?,?,'pending')",
+                ("a", "x", "{}", 1.0),
+                "a NULL approval identifier",
+            )
+            cls._must_reject(
+                conn,
+                "INSERT INTO approvals "
+                "(approval_id,agent_id,action,context_json,submitted_at,status) "
+                "VALUES (?,?,?,?,?,'audit_pending')",
+                (probe + "-pending", "a", "x", "{}", 1.0),
+                "an incomplete audit_pending approval",
+            )
+            conn.execute(
+                "INSERT INTO approvals "
+                "(approval_id,agent_id,action,context_json,submitted_at,status) "
+                "VALUES (?,?,?,?,?,'pending')",
+                (probe, "a", "x", "{}", 1.0),
+            )
+            conn.execute(
+                "INSERT INTO approvals "
+                "(approval_id,agent_id,action,context_json,submitted_at,status,decision_nonce) "
+                "VALUES (?,?,?,?,?,'pending',?)",
+                (probe + "-nonce-owner", "a", "x", "{}", 1.0, probe),
+            )
+            cls._must_reject(
+                conn,
+                "INSERT INTO approvals "
+                "(approval_id,agent_id,action,context_json,submitted_at,status,decision_nonce) "
+                "VALUES (?,?,?,?,?,'pending',?)",
+                (probe + "-nonce-replay", "a", "x", "{}", 1.0, probe),
+                "a duplicate approval decision nonce",
+            )
+            cls._must_reject(
+                conn,
+                "INSERT INTO approval_audit_outbox "
+                "(event_id,approval_id,transition,event_json,state,created_at) "
+                "VALUES (?,?,'forged','{}','pending',1)",
+                (probe + "-transition", probe),
+                "an invalid outbox transition",
+            )
+            cls._must_reject(
+                conn,
+                "INSERT INTO approval_audit_outbox "
+                "(event_id,approval_id,transition,event_json,state,created_at) "
+                "VALUES (NULL,?,'pending','{}','pending',1)",
+                (probe,),
+                "a NULL outbox event identifier",
+            )
+            cls._must_reject(
+                conn,
+                "INSERT INTO approval_audit_outbox "
+                "(event_id,approval_id,transition,event_json,state,created_at) "
+                "VALUES (?,?,'pending','{}','delivered',1)",
+                (probe + "-delivered", probe),
+                "an incomplete delivered outbox row",
+            )
+            if probe_foreign_key:
+                cls._must_reject(
+                    conn,
+                    "INSERT INTO approval_audit_outbox "
+                    "(event_id,approval_id,transition,event_json,state,created_at) "
+                    "VALUES (?,'missing','pending','{}','pending',1)",
+                    (probe + "-orphan",),
+                    "an orphaned outbox row",
+                )
+            conn.execute(
+                "INSERT INTO decision_nonce_tombstones VALUES (?,?,1,2)",
+                (probe, probe),
+            )
+            cls._must_reject(
+                conn,
+                "INSERT INTO decision_nonce_tombstones VALUES (NULL,?,1,2)",
+                (probe,),
+                "a NULL decision nonce",
+            )
+            cls._must_reject(
+                conn,
+                "INSERT INTO decision_nonce_tombstones VALUES (?,?,1,2)",
+                (probe, probe + "-other"),
+                "a duplicate decision nonce",
+            )
+            cls._must_reject(
+                conn,
+                "INSERT INTO decision_nonce_tombstones VALUES (?,?,2,1)",
+                (probe + "-retention", probe),
+                "an invalid nonce retention interval",
+            )
+        finally:
+            conn.execute("ROLLBACK TO approval_schema_probe")
+            conn.execute("RELEASE approval_schema_probe")
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
-        """Rebuild the pre-audit schema with closed-set constraints."""
-        old_columns = {
-            row["name"] for row in conn.execute("PRAGMA table_info(approvals)")
-        }
-        outbox_exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' "
-            "AND name='approval_audit_outbox'"
-        ).fetchone() is not None
-        old_outbox_columns = {
-            row["name"]
-            for row in conn.execute("PRAGMA table_info(approval_audit_outbox)")
-        }
+        """Atomically rebuild approvals, outbox, and replay tombstones."""
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute("BEGIN IMMEDIATE")
         try:
-            self._create_tables(conn, "_v2")
+            # Inspect only after owning the write lock. A second startup process
+            # may have completed migration while this connection was waiting.
+            approvals_exist = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='approvals'"
+            ).fetchone() is not None
+            old_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(approvals)")
+            }
+            outbox_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='approval_audit_outbox'"
+            ).fetchone() is not None
+            old_outbox_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(approval_audit_outbox)")
+            }
+            tombstones_exist = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='decision_nonce_tombstones'"
+            ).fetchone() is not None
+            old_tombstone_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(decision_nonce_tombstones)")
+            }
+            staging = conn.execute(
+                "SELECT name FROM sqlite_master WHERE name IN "
+                "('approvals_v3','approval_audit_outbox_v3',"
+                "'decision_nonce_tombstones_v3')"
+            ).fetchall()
+            if staging:
+                raise ApprovalAuditError(
+                    "approval migration staging objects already exist"
+                )
+            if not approvals_exist and (outbox_exists or tombstones_exist):
+                raise ApprovalAuditError(
+                    "approval schema has dependent state without approvals"
+                )
+            self._create_tables(conn, "_v3")
             target_columns = [
                 "approval_id", "agent_id", "action", "context_json", "submitted_at",
                 "status", "operator_id", "decided_at", "consumed_at", "expires_at",
@@ -464,10 +858,19 @@ class DurableOperatorQueue:
             select_values = [
                 name if name in old_columns else defaults[name] for name in target_columns
             ]
-            conn.execute(
-                f"INSERT INTO approvals_v2 ({','.join(target_columns)}) "
-                f"SELECT {','.join(select_values)} FROM approvals"
-            )
+            if approvals_exist:
+                required_approval_source = {
+                    "approval_id", "agent_id", "action", "context_json",
+                    "submitted_at", "status",
+                }
+                if not required_approval_source.issubset(old_columns):
+                    raise ApprovalAuditError(
+                        "legacy approvals are missing required state fields"
+                    )
+                conn.execute(
+                    f"INSERT INTO approvals_v3 ({','.join(target_columns)}) "
+                    f"SELECT {','.join(select_values)} FROM approvals"
+                )
             if outbox_exists:
                 required_source = {
                     "event_id", "approval_id", "transition", "event_json", "state",
@@ -485,7 +888,7 @@ class DurableOperatorQueue:
                 )
                 conn.execute(
                     f"""
-                    INSERT INTO approval_audit_outbox_v2
+                    INSERT INTO approval_audit_outbox_v3
                     SELECT event_id, approval_id, transition, event_json, state,
                            {receipt_expr}, created_at, {delivered_expr}
                       FROM approval_audit_outbox
@@ -493,9 +896,9 @@ class DurableOperatorQueue:
                 )
                 orphan = conn.execute(
                     """
-                    SELECT event_id FROM approval_audit_outbox_v2 AS o
+                    SELECT event_id FROM approval_audit_outbox_v3 AS o
                      WHERE NOT EXISTS (
-                         SELECT 1 FROM approvals_v2 AS a
+                         SELECT 1 FROM approvals_v3 AS a
                           WHERE a.approval_id = o.approval_id
                      )
                      LIMIT 1
@@ -505,19 +908,80 @@ class DurableOperatorQueue:
                     raise ApprovalAuditError(
                         "legacy approval outbox contains an orphaned event"
                     )
-                conn.execute("DROP TABLE approval_audit_outbox")
-            conn.execute("DROP TABLE approvals")
-            conn.execute("ALTER TABLE approvals_v2 RENAME TO approvals")
-            conn.execute(
-                "ALTER TABLE approval_audit_outbox_v2 RENAME TO approval_audit_outbox"
-            )
-            violations = conn.execute(
-                "PRAGMA foreign_key_check(approval_audit_outbox)"
-            ).fetchall()
-            if violations:
-                raise ApprovalAuditError(
-                    "migrated approval outbox failed foreign-key validation"
+            if tombstones_exist:
+                required_tombstone_source = {
+                    "nonce", "approval_id", "recorded_at", "retain_until"
+                }
+                if not required_tombstone_source.issubset(old_tombstone_columns):
+                    raise ApprovalAuditError(
+                        "legacy nonce tombstones are missing required fields"
+                    )
+                duplicate = conn.execute(
+                    """
+                    SELECT nonce FROM decision_nonce_tombstones
+                     GROUP BY nonce HAVING COUNT(*) != 1
+                     LIMIT 1
+                    """
+                ).fetchone()
+                if duplicate is not None:
+                    raise ApprovalAuditError(
+                        "legacy nonce tombstones contain duplicate replay state"
+                    )
+                conn.execute(
+                    """
+                    INSERT INTO decision_nonce_tombstones_v3
+                    SELECT nonce, approval_id, recorded_at, retain_until
+                      FROM decision_nonce_tombstones
+                    """
                 )
+            conflict = conn.execute(
+                """
+                SELECT a.decision_nonce
+                  FROM approvals_v3 AS a
+                  JOIN decision_nonce_tombstones_v3 AS t
+                    ON t.nonce = a.decision_nonce
+                 WHERE a.decision_nonce IS NOT NULL
+                   AND t.approval_id != a.approval_id
+                 LIMIT 1
+                """
+            ).fetchone()
+            if conflict is not None:
+                raise ApprovalAuditError(
+                    "approval and tombstone nonce ownership conflicts"
+                )
+            now = self._now()
+            conn.execute(
+                """
+                INSERT INTO decision_nonce_tombstones_v3
+                    (nonce, approval_id, recorded_at, retain_until)
+                SELECT decision_nonce, approval_id,
+                       COALESCE(decided_at, submitted_at),
+                       MAX(?, COALESCE(decided_at, submitted_at) + ?)
+                  FROM approvals_v3 AS a
+                 WHERE decision_nonce IS NOT NULL
+                   AND NOT EXISTS (
+                       SELECT 1 FROM decision_nonce_tombstones_v3 AS t
+                        WHERE t.nonce = a.decision_nonce
+                   )
+                """,
+                (now + self._nonce_retention, self._nonce_retention),
+            )
+            for table in (
+                "approval_audit_outbox", "approvals", "decision_nonce_tombstones",
+                "approval_schema_meta",
+            ):
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.execute("ALTER TABLE approvals_v3 RENAME TO approvals")
+            conn.execute(
+                "ALTER TABLE approval_audit_outbox_v3 RENAME TO approval_audit_outbox"
+            )
+            conn.execute(
+                "ALTER TABLE decision_nonce_tombstones_v3 "
+                "RENAME TO decision_nonce_tombstones"
+            )
+            self._create_schema_metadata(conn)
+            self._create_indexes(conn)
+            self._validate_schema(conn, probe_foreign_key=False)
             conn.commit()
         except ApprovalAuditError:
             conn.rollback()
@@ -529,8 +993,7 @@ class DurableOperatorQueue:
             conn.execute("PRAGMA foreign_keys=ON")
         if conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
             raise ApprovalAuditError("approval database foreign keys are not enabled")
-        if conn.execute("PRAGMA foreign_key_check").fetchall():
-            raise ApprovalAuditError("approval database foreign-key check failed closed")
+        self._validate_schema(conn)
 
     @staticmethod
     def _from_row(row: sqlite3.Row | None) -> Optional[PendingApproval]:
