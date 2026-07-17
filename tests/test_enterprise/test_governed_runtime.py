@@ -62,7 +62,7 @@ def _target(hwnd: int, **kwargs) -> dict:
     return values
 
 
-def _signed_policy(tmp_path):
+def _signed_policy(tmp_path, *, require_approval: bool = False):
     identity_dir = tmp_path / "identities"
     actor = AgentIdentity.init("runtime-actor", data_dir=identity_dir)
     admin = AgentIdentity.init("runtime-admin", data_dir=identity_dir)
@@ -76,7 +76,7 @@ def _signed_policy(tmp_path):
                 "allowed_apps": ["WindowsTerminal.exe"],
                 "blocked_apps": [],
                 "allowed_actions": ["sc_inject_text", "sc_read_output"],
-                "requires_operator_approval": [],
+                "requires_operator_approval": ["sc_inject_text"] if require_approval else [],
                 "max_classification": "CUI",
                 "revoked": False,
             }
@@ -157,6 +157,61 @@ def test_external_policy_trust_root_is_mandatory(tmp_path):
             agent_name="runtime-actor",
             identity_data_dir=identity_dir,
         )
+
+
+def test_governed_approval_is_signed_and_bound_before_actuation(tmp_path):
+    identity_dir, policy_path, trust_root, actor_id = _signed_policy(
+        tmp_path,
+        require_approval=True,
+    )
+    router = _DeterministicRouter()
+    runtime = GovernedRuntime.from_signed_policy(
+        policy_path=policy_path,
+        trust_root_pub=trust_root,
+        agent_name="runtime-actor",
+        identity_data_dir=identity_dir,
+        ledger_path=tmp_path / "runtime-ledger.jsonl",
+        router=router,
+        target_verifier=_target,
+        output_reader=lambda _hwnd: router.rendered,
+        decision_writer_verifier=lambda operator, _aid, decision, proof: (
+            operator == "operator-1" and decision == "approved" and proof == "signed-proof"
+        ),
+    )
+    lease = runtime.dispatcher.call_tool(
+        "sc_request_lease",
+        {"hwnd": 1234, "role": "sender", "agent_id": actor_id, "ttl_seconds": 300},
+    )
+    lease_id = lease["result"]["lease_id"]
+    context = runtime.dispatcher.approval_context_for(
+        lease_id,
+        {"hwnd": 1234, "text": "approved payload", "classification": "CUI"},
+        action="sc_inject_text",
+    )
+    approval_id = runtime.operator_queue.submit(actor_id, "sc_inject_text", context)
+    assert runtime.operator_queue.approve(
+        approval_id,
+        "operator-1",
+        operator_proof="signed-proof",
+    )
+    result = runtime.dispatcher.call_tool(
+        "sc_inject_text",
+        {
+            "lease_id": lease_id,
+            "hwnd": 1234,
+            "text": "approved payload",
+            "classification": "CUI",
+            "approval_id": approval_id,
+        },
+    )
+    assert result["ok"], result
+    transitions = [
+        entry["approval_audit"]["transition"]
+        for entry in runtime.ledger.tail(runtime.ledger.entry_count())
+        if "approval_audit" in entry
+    ]
+    assert transitions == ["pending", "approved", "consumed"]
+    assert runtime.verify_audit()[0] is True
 
 
 def test_government_profile_cannot_silently_use_dpapi_factory(tmp_path):

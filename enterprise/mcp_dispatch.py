@@ -498,6 +498,21 @@ class MCPDispatcher:
                     "operator approval is missing, expired, consumed, or not bound "
                     "to the exact action context"
                 )
+            binding_verifier = getattr(
+                self._operator_queue,
+                "verify_consumed_binding",
+                None,
+            )
+            if binding_verifier is not None and not binding_verifier(
+                approval,
+                agent_id=lease.agent_id,
+                action=action,
+                required_context=approval_context,
+            ):
+                raise MCPDispatchError(
+                    "operator approval audit receipt is missing or does not match "
+                    "the exact action context"
+                )
             operator_id = approval.operator_id
 
         return {

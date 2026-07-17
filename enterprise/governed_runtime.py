@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from enterprise.classified_mode import ClassifiedModeProfile
+from enterprise.approval_audit import LedgerApprovalDecisionSink
 from enterprise.composition_monitor import CompositionMonitor
 from enterprise.control import ControlPlane
 from enterprise.identity import AgentIdentity
@@ -50,6 +51,9 @@ class GovernedRuntime:
         router: Any | None = None,
         target_verifier: Callable[..., dict[str, Any]] | None = None,
         output_reader: Callable[[int], str] | None = None,
+        decision_writer_verifier: (
+            Callable[[str, str, str, str | bytes | None], bool] | None
+        ) = None,
         profile: str = "enterprise",
         ledger_max_entries_per_segment: int = 100_000,
         ledger_max_bytes_per_segment: int = 128 * 1024 * 1024,
@@ -88,7 +92,12 @@ class GovernedRuntime:
             if approval_db_path is not None
             else resolved_ledger_path.with_suffix(resolved_ledger_path.suffix + ".approvals.sqlite3")
         )
-        operator_queue = DurableOperatorQueue(resolved_approval_path)
+        operator_queue = DurableOperatorQueue(
+            resolved_approval_path,
+            audit_sink=LedgerApprovalDecisionSink(ledger),
+            audit_required=True,
+            decision_writer_verifier=decision_writer_verifier,
+        )
         control_plane = ControlPlane(ledger=ledger, operator_queue=operator_queue)
         composition_monitor = CompositionMonitor(
             effect_map={"sc_inject_text": "egress"},

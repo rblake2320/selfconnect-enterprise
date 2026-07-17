@@ -499,6 +499,48 @@ class TestLeaseRuntime:
         assert replay["ok"] is False
         assert "consumed" in replay["error"]
 
+    def test_mutation_stops_when_consumed_approval_receipt_binding_fails(self):
+        class ReceiptRejectingQueue(OperatorQueue):
+            @staticmethod
+            def verify_consumed_binding(*_args, **_kwargs) -> bool:
+                return False
+
+        queue = ReceiptRejectingQueue()
+        router = FakeRouter()
+        dispatcher = MCPDispatcher(
+            router=router,
+            ledger=RecordingLedger(),
+            policy_enforcer=AllowPolicyEnforcer(requires_approval=True),
+            operator_queue=queue,
+            target_verifier=verified_target,
+            output_reader=lambda _hwnd: router.rendered,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1021)
+        approval_context = dispatcher.approval_context_for(
+            lease_id,
+            {
+                "hwnd": 1021,
+                "text": "must-not-route",
+                "classification": "UNCLASSIFIED",
+            },
+            action="sc_inject_text",
+        )
+        approval_id = queue.submit("SC-AGENT", "sc_inject_text", approval_context)
+        assert queue.approve(approval_id, "operator-1")
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {
+                "lease_id": lease_id,
+                "hwnd": 1021,
+                "text": "must-not-route",
+                "approval_id": approval_id,
+            },
+        )
+        assert result["ok"] is False
+        assert "audit receipt" in result["error"]
+        assert router.routes == []
+
     def test_read_output_is_lease_gated(self):
         dispatcher = make_dispatcher()
         result = dispatcher.call_tool(
