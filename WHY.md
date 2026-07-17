@@ -83,9 +83,11 @@ trust and custody boundaries.
 **Consequences:** Approval transitions incur synchronous durable audit work and
 ledger verification before actuation. Interrupted operations may remain
 `audit_pending` until reconciliation, and the caller receives a recoverable
-approval identifier. Ledger lookup is linear in retained entries; deployments
-must measure and bound retention/latency. The exact-once argument assumes one
-ledger writer; this change does not provide cross-process ledger coordination.
+approval identifier. Approval event lookup builds a typed in-memory index from
+retained entries on first use and updates it on append; deployments must measure
+index build time and memory under their retention policy. The exact-once
+argument assumes one ledger writer; this change does not provide cross-process
+ledger coordination.
 An unkeyed context digest supports
 correlation but can reveal low-entropy values by guessing.
 

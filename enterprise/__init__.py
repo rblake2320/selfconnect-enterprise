@@ -28,7 +28,10 @@ from enterprise.approval_audit import (  # noqa: F401
     ApprovalAuditError,
     ApprovalAuditEvent,
     ApprovalDecisionSink,
+    DecisionProofEnvelope,
+    DecisionProofVerification,
     LedgerApprovalDecisionSink,
+    approval_event_digest,
     canonical_context_digest,
 )
 from enterprise.control import AgentControlRecord, ControlPlane  # noqa: F401

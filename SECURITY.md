@@ -181,12 +181,25 @@ identity, classification, and payload hash, and is consumed once.
 
 Durable approval transitions use a SQLite outbox in the same transaction as
 the queue state change. Hardened transitions remain `audit_pending` and cannot
-authorize work until their matching signed-ledger receipt is durable. The
-dispatcher rechecks the consumed record, receipt, context digest, and ledger
-chain before actuation. The SHA-256 context digest prevents raw context from
+authorize work until their matching receipt passes full signed-ledger
+verification. Finalization revalidates the complete queue and outbox state
+under a SQLite write transaction. The dispatcher requires one unique ordered
+`pending -> approved -> consumed` lineage, with no deny, expiry, duplicate, or
+conflicting transition, and rechecks every receipt and the full ledger chain.
+The verified operator proof is retained only as a ledger-signed bounded
+envelope containing verifier/key identifiers, nonce, verification time, proof
+digest, and a digest binding the approval, actor, action, context, decision,
+and operator. Raw proof bytes are not stored. Internal `system/` identities may
+create safety denials only; that path is explicitly not human attribution and
+cannot approve. The SHA-256 context digest prevents raw context from
 entering the event, but an unkeyed digest is not confidentiality protection for
 guessable context. Deployments select and assess the operator proof verifier;
 the repository does not prescribe a CAC, PKI, or personnel-identity system.
+
+Ledger append state advances only after append, flush, and `fsync` succeed. A
+failed or partial append is truncated to the prior durable length and the tail
+is reverified before retry. This is a single-process/thread-safe writer
+boundary, not multi-process file locking or off-host immutable custody.
 
 This property covers the governed MCP dispatcher. Direct SDK calls and other
 repositories are not globally intercepted.

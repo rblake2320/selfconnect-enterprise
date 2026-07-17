@@ -39,6 +39,9 @@ from enterprise.approval_audit import (
     ApprovalAuditError,
     ApprovalAuditEvent,
     ApprovalDecisionSink,
+    DecisionProofEnvelope,
+    DecisionProofVerification,
+    approval_event_digest,
     canonical_context_digest,
 )
 
@@ -56,6 +59,9 @@ class PendingApproval:
     operator_id:  str          = ""           # set on approve/deny
     decided_at:   Optional[float] = None
     consumed_at:  Optional[float] = None
+    expires_at: Optional[float] = None
+    terminal_at: Optional[float] = None
+    decision_proof: Optional[DecisionProofEnvelope] = None
     audit_event_id: str = ""
     audit_receipt: Optional[dict[str, Any]] = None
 
@@ -244,7 +250,9 @@ class DurableOperatorQueue:
         approval_ttl_seconds: float = 300.0,
         audit_sink: ApprovalDecisionSink | None = None,
         audit_required: bool = False,
-        decision_writer_verifier: Callable[[str, str, str, str | bytes | None], bool] | None = None,
+        decision_writer_verifier: Callable[
+            [dict[str, str], str | bytes | None], DecisionProofVerification | None
+        ] | None = None,
     ) -> None:
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -263,62 +271,149 @@ class DurableOperatorQueue:
         conn = sqlite3.connect(self._path, timeout=10.0, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=10000")
+        conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS approvals (
-                    approval_id TEXT PRIMARY KEY,
-                    agent_id TEXT NOT NULL,
-                    action TEXT NOT NULL,
-                    context_json TEXT NOT NULL,
-                    submitted_at REAL NOT NULL,
-                    status TEXT NOT NULL,
-                    operator_id TEXT NOT NULL DEFAULT '',
-                    decided_at REAL,
-                    consumed_at REAL
-                )
-                """
-            )
-            columns = {
-                row["name"]
-                for row in conn.execute("PRAGMA table_info(approvals)").fetchall()
+            approval_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='approvals'"
+            ).fetchone()
+            existing_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(approvals)")
             }
-            additions = {
-                "pending_status": "TEXT",
-                "pending_event_id": "TEXT",
-                "last_audit_event_id": "TEXT NOT NULL DEFAULT ''",
-                "last_audit_receipt_json": "TEXT",
+            required_columns = {
+                "expires_at", "terminal_at", "decision_proof_json", "decision_nonce",
+                "pending_status", "pending_event_id", "last_audit_event_id",
+                "last_audit_receipt_json",
             }
-            for name, definition in additions.items():
-                if name not in columns:
-                    conn.execute(f"ALTER TABLE approvals ADD COLUMN {name} {definition}")
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS approval_audit_outbox (
-                    event_id TEXT PRIMARY KEY,
-                    approval_id TEXT NOT NULL,
-                    transition TEXT NOT NULL,
-                    event_json TEXT NOT NULL,
-                    state TEXT NOT NULL,
-                    receipt_json TEXT,
-                    created_at REAL NOT NULL,
-                    delivered_at REAL,
-                    FOREIGN KEY (approval_id) REFERENCES approvals(approval_id)
-                )
-                """
-            )
+            if approval_sql is not None and (
+                "CHECK (status IN" not in approval_sql["sql"]
+                or not required_columns.issubset(existing_columns)
+            ):
+                self._migrate_schema(conn)
+            else:
+                self._create_tables(conn)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status)"
             )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_approval_outbox_lineage "
+                "ON approval_audit_outbox(approval_id, created_at, event_id)"
+            )
+
+    @staticmethod
+    def _create_tables(conn: sqlite3.Connection, suffix: str = "") -> None:
+        approvals = f"approvals{suffix}"
+        outbox = f"approval_audit_outbox{suffix}"
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {approvals} (
+                approval_id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                context_json TEXT NOT NULL,
+                submitted_at REAL NOT NULL,
+                status TEXT NOT NULL CHECK (status IN
+                    ('pending','audit_pending','approved','denied','consumed','expired')),
+                operator_id TEXT NOT NULL DEFAULT '',
+                decided_at REAL,
+                consumed_at REAL,
+                expires_at REAL,
+                terminal_at REAL,
+                decision_proof_json TEXT,
+                decision_nonce TEXT UNIQUE,
+                pending_status TEXT CHECK (pending_status IS NULL OR pending_status IN
+                    ('pending','approved','denied','consumed','expired')),
+                pending_event_id TEXT,
+                last_audit_event_id TEXT NOT NULL DEFAULT '',
+                last_audit_receipt_json TEXT,
+                CHECK ((status = 'audit_pending') = (pending_status IS NOT NULL)),
+                CHECK ((status = 'audit_pending') = (pending_event_id IS NOT NULL))
+            )
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {outbox} (
+                event_id TEXT PRIMARY KEY,
+                approval_id TEXT NOT NULL,
+                transition TEXT NOT NULL CHECK (transition IN
+                    ('pending','approved','denied','consumed','expired')),
+                event_json TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('pending','delivered')),
+                receipt_json TEXT,
+                created_at REAL NOT NULL,
+                delivered_at REAL,
+                FOREIGN KEY (approval_id) REFERENCES {approvals}(approval_id),
+                CHECK ((state = 'delivered') = (receipt_json IS NOT NULL)),
+                CHECK ((state = 'delivered') = (delivered_at IS NOT NULL))
+            )
+            """
+        )
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """Rebuild the pre-audit schema with closed-set constraints."""
+        old_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(approvals)")
+        }
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._create_tables(conn, "_v2")
+            target_columns = [
+                "approval_id", "agent_id", "action", "context_json", "submitted_at",
+                "status", "operator_id", "decided_at", "consumed_at", "expires_at",
+                "terminal_at", "decision_proof_json", "pending_status", "pending_event_id",
+                "decision_nonce", "last_audit_event_id", "last_audit_receipt_json",
+            ]
+            defaults = {
+                "operator_id": "''", "last_audit_event_id": "''",
+                "expires_at": "NULL", "terminal_at": "NULL",
+                "decision_proof_json": "NULL", "pending_status": "NULL",
+                "decision_nonce": "NULL",
+                "pending_event_id": "NULL", "last_audit_receipt_json": "NULL",
+                "decided_at": "NULL", "consumed_at": "NULL",
+            }
+            select_values = [
+                name if name in old_columns else defaults[name] for name in target_columns
+            ]
+            conn.execute(
+                f"INSERT INTO approvals_v2 ({','.join(target_columns)}) "
+                f"SELECT {','.join(select_values)} FROM approvals"
+            )
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='approval_audit_outbox'"
+            ).fetchone():
+                conn.execute(
+                    """
+                    INSERT INTO approval_audit_outbox_v2
+                    SELECT event_id, approval_id, transition, event_json, state,
+                           receipt_json, created_at, delivered_at
+                      FROM approval_audit_outbox
+                    """
+                )
+                conn.execute("DROP TABLE approval_audit_outbox")
+            conn.execute("DROP TABLE approvals")
+            conn.execute("ALTER TABLE approvals_v2 RENAME TO approvals")
+            conn.execute(
+                "ALTER TABLE approval_audit_outbox_v2 RENAME TO approval_audit_outbox"
+            )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            raise ApprovalAuditError("approval schema migration failed closed") from exc
+        finally:
+            conn.execute("PRAGMA foreign_keys=ON")
 
     @staticmethod
     def _from_row(row: sqlite3.Row | None) -> Optional[PendingApproval]:
         if row is None:
             return None
+        proof_value = json.loads(row["decision_proof_json"]) if row["decision_proof_json"] else None
+        proof = DecisionProofEnvelope(**proof_value) if proof_value is not None else None
         return PendingApproval(
             approval_id=row["approval_id"],
             agent_id=row["agent_id"],
@@ -329,6 +424,9 @@ class DurableOperatorQueue:
             operator_id=row["operator_id"],
             decided_at=row["decided_at"],
             consumed_at=row["consumed_at"],
+            expires_at=row["expires_at"],
+            terminal_at=row["terminal_at"],
+            decision_proof=proof,
             audit_event_id=(row["last_audit_event_id"] if "last_audit_event_id" in row.keys() else ""),
             audit_receipt=(
                 json.loads(row["last_audit_receipt_json"])
@@ -344,23 +442,50 @@ class DurableOperatorQueue:
 
     def _verify_decision_writer(
         self,
-        approval_id: str,
+        item: PendingApproval,
         operator_id: str,
         status: str,
         proof: str | bytes | None,
-    ) -> None:
+    ) -> DecisionProofEnvelope | None:
         self._validate_operator_id(operator_id)
         if not self._audit_required:
-            return
+            return None
         if status == "denied" and operator_id.startswith("system/"):
-            return
-        if self._decision_writer_verifier is None or not self._decision_writer_verifier(
-            operator_id,
-            approval_id,
-            status,
-            proof,
-        ):
+            verification = DecisionProofVerification(
+                verifier_id="selfconnect.system-safety-denial",
+                key_id="runtime-ledger-identity",
+                nonce=str(uuid.uuid4()),
+                verified_at=time.time(),
+            )
+            proof = b"internal-safety-denial;not-human-attribution"
+        else:
+            if proof is None or len(proof) == 0 or len(proof) > 16384:
+                raise ApprovalAuditError("decision writer proof is absent or unbounded")
+            decision_payload = {
+                "approval_id": item.approval_id,
+                "agent_id": item.agent_id,
+                "action": item.action,
+                "context_digest": canonical_context_digest(item.context),
+                "decision": status,
+                "operator_id": operator_id,
+            }
+            verification = (
+                self._decision_writer_verifier(decision_payload, proof)
+                if self._decision_writer_verifier is not None
+                else None
+            )
+        if not isinstance(verification, DecisionProofVerification):
             raise ApprovalAuditError("decision writer is unidentified or its proof is invalid")
+        return DecisionProofEnvelope.create(
+            verification,
+            proof=proof or b"",
+            approval_id=item.approval_id,
+            agent_id=item.agent_id,
+            action=item.action,
+            context_digest=canonical_context_digest(item.context),
+            decision=status,
+            operator_id=operator_id,
+        )
 
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> ApprovalAuditEvent:
@@ -376,6 +501,7 @@ class DurableOperatorQueue:
             "action": event.action,
             "operator_id": event.operator_id,
             "context_digest": event.context_digest,
+            "event_digest": approval_event_digest(event),
         }
         return all(receipt.get(key) == value for key, value in expected.items())
 
@@ -395,51 +521,81 @@ class DurableOperatorQueue:
             ),
         )
 
+    @staticmethod
+    def _event_state_row(conn: sqlite3.Connection, event_id: str) -> sqlite3.Row | None:
+        return conn.execute(
+            """
+            SELECT o.*, a.agent_id, a.action, a.context_json, a.operator_id,
+                   a.status AS approval_status, a.pending_status, a.pending_event_id,
+                   a.last_audit_event_id, a.last_audit_receipt_json,
+                   a.decision_proof_json, a.decided_at, a.consumed_at,
+                   a.expires_at, a.terminal_at
+              FROM approval_audit_outbox AS o
+              JOIN approvals AS a ON a.approval_id = o.approval_id
+             WHERE o.event_id = ?
+            """,
+            (event_id,),
+        ).fetchone()
+
+    def _validate_event_state(
+        self,
+        row: sqlite3.Row,
+        event: ApprovalAuditEvent,
+    ) -> None:
+        proof_json = (
+            json.dumps(event.decision_proof.__dict__, sort_keys=True, separators=(",", ":"))
+            if event.decision_proof is not None
+            else None
+        )
+        common = (
+            event.approval_id == row["approval_id"]
+            and event.transition == row["transition"]
+            and event.agent_id == row["agent_id"]
+            and event.action == row["action"]
+            and event.context_digest
+            == canonical_context_digest(json.loads(row["context_json"]))
+            and event.operator_id == row["operator_id"]
+            and proof_json == row["decision_proof_json"]
+        )
+        if event.transition == "pending":
+            common = common and not event.operator_id and event.decision_proof is None
+        elif event.transition in {"approved", "denied", "consumed", "expired"}:
+            common = common and bool(event.operator_id) and event.decision_proof is not None
+        if row["state"] == "pending":
+            common = common and (
+                row["approval_status"] == "audit_pending"
+                and row["pending_status"] == event.transition
+                and row["pending_event_id"] == event.event_id
+                and row["receipt_json"] is None
+                and row["delivered_at"] is None
+            )
+        elif row["state"] == "delivered":
+            common = common and (
+                row["approval_status"] == event.transition
+                and row["last_audit_event_id"] == event.event_id
+                and row["receipt_json"] is not None
+                and row["delivered_at"] is not None
+            )
+        else:
+            common = False
+        if not common:
+            raise ApprovalAuditError(
+                "approval audit event conflicts with durable approval state",
+                approval_id=event.approval_id,
+                event_id=event.event_id,
+            )
+
     def _flush_event(self, event_id: str) -> None:
         if self._audit_sink is None:
             if self._audit_required:
                 raise ApprovalAuditError("required approval audit sink is unavailable")
             return
         with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT o.*, a.agent_id, a.action, a.context_json, a.operator_id,
-                       a.status AS approval_status, a.pending_status, a.pending_event_id,
-                       a.last_audit_event_id, a.last_audit_receipt_json
-                  FROM approval_audit_outbox AS o
-                  JOIN approvals AS a ON a.approval_id = o.approval_id
-                 WHERE o.event_id = ?
-                """,
-                (event_id,),
-            ).fetchone()
+            row = self._event_state_row(conn, event_id)
         if row is None:
             raise ApprovalAuditError("approval audit outbox event is missing")
         event = self._event_from_row(row)
-        event_matches_row = (
-            event.approval_id == row["approval_id"]
-            and event.agent_id == row["agent_id"]
-            and event.action == row["action"]
-            and event.context_digest
-            == canonical_context_digest(json.loads(row["context_json"]))
-            and event.operator_id == row["operator_id"]
-        )
-        if row["state"] == "pending":
-            event_matches_row = event_matches_row and (
-                row["approval_status"] == "audit_pending"
-                and row["pending_status"] == event.transition
-                and row["pending_event_id"] == event.event_id
-            )
-        else:
-            event_matches_row = event_matches_row and (
-                row["approval_status"] == event.transition
-                and row["last_audit_event_id"] == event.event_id
-            )
-        if not event_matches_row:
-            raise ApprovalAuditError(
-                "approval audit event conflicts with durable approval state",
-                approval_id=event.approval_id,
-                event_id=event.event_id,
-            )
+        self._validate_event_state(row, event)
         if row["state"] == "delivered":
             receipt = json.loads(row["receipt_json"])
         else:
@@ -457,41 +613,70 @@ class DurableOperatorQueue:
                 approval_id=event.approval_id,
                 event_id=event.event_id,
             )
+        try:
+            receipt_verified = self._audit_sink.verify_receipt(event, receipt)
+        except Exception as exc:
+            raise ApprovalAuditError(
+                "approval audit receipt verification failed",
+                approval_id=event.approval_id,
+                event_id=event.event_id,
+            ) from exc
+        if not receipt_verified:
+            raise ApprovalAuditError(
+                "approval audit receipt is not backed by the signed ledger",
+                approval_id=event.approval_id,
+                event_id=event.event_id,
+            )
         receipt_json = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            current = conn.execute(
-                "SELECT state FROM approval_audit_outbox WHERE event_id = ?",
-                (event_id,),
-            ).fetchone()
+            current = self._event_state_row(conn, event_id)
             if current is None:
                 conn.rollback()
                 raise ApprovalAuditError("approval audit outbox event disappeared")
-            approval = conn.execute(
-                "SELECT pending_status, pending_event_id FROM approvals WHERE approval_id = ?",
-                (event.approval_id,),
-            ).fetchone()
-            if approval is not None and approval["pending_event_id"] == event_id:
-                conn.execute(
-                    """
-                    UPDATE approvals
-                       SET status = pending_status,
-                           pending_status = NULL,
-                           pending_event_id = NULL,
-                           last_audit_event_id = ?,
-                           last_audit_receipt_json = ?
-                     WHERE approval_id = ? AND status = 'audit_pending'
-                    """,
-                    (event_id, receipt_json, event.approval_id),
-                )
-            conn.execute(
+            current_event = self._event_from_row(current)
+            if current_event != event:
+                conn.rollback()
+                raise ApprovalAuditError("approval audit event changed during delivery")
+            self._validate_event_state(current, event)
+            if current["state"] == "delivered":
+                if current["receipt_json"] != receipt_json:
+                    conn.rollback()
+                    raise ApprovalAuditError("delivered approval receipt changed")
+                conn.commit()
+                return
+            finalized = conn.execute(
+                """
+                UPDATE approvals
+                   SET status = pending_status,
+                       pending_status = NULL,
+                       pending_event_id = NULL,
+                       last_audit_event_id = ?,
+                       last_audit_receipt_json = ?
+                 WHERE approval_id = ? AND status = 'audit_pending'
+                   AND pending_status = ? AND pending_event_id = ?
+                """,
+                (
+                    event_id, receipt_json, event.approval_id,
+                    event.transition, event_id,
+                ),
+            )
+            if finalized.rowcount != 1:
+                conn.rollback()
+                raise ApprovalAuditError("approval finalization lost its state race")
+            delivered_at = time.time()
+            delivered = conn.execute(
                 """
                 UPDATE approval_audit_outbox
                    SET state = 'delivered', receipt_json = ?, delivered_at = ?
-                 WHERE event_id = ?
+                 WHERE event_id = ? AND state = 'pending'
+                   AND receipt_json IS NULL AND delivered_at IS NULL
                 """,
-                (receipt_json, time.time(), event_id),
+                (receipt_json, delivered_at, event_id),
             )
+            if delivered.rowcount != 1:
+                conn.rollback()
+                raise ApprovalAuditError("approval outbox delivery lost its state race")
             conn.commit()
 
     def reconcile(self) -> int:
@@ -512,6 +697,7 @@ class DurableOperatorQueue:
         transition: str,
         operator_id: str,
         transition_ts: float,
+        decision_proof: DecisionProofEnvelope | None = None,
     ) -> str:
         event = ApprovalAuditEvent(
             event_id=str(uuid.uuid4()),
@@ -522,14 +708,31 @@ class DurableOperatorQueue:
             operator_id=operator_id,
             context_digest=canonical_context_digest(item.context),
             transition_ts=transition_ts,
+            decision_proof=decision_proof or item.decision_proof,
         )
         decided_at = transition_ts if transition in {"approved", "denied"} else item.decided_at
         consumed_at = transition_ts if transition == "consumed" else item.consumed_at
+        expires_at = (
+            transition_ts + self._approval_ttl
+            if transition == "approved"
+            else item.expires_at
+        )
+        terminal_at = transition_ts if transition in {"denied", "consumed", "expired"} else item.terminal_at
+        proof_json = (
+            json.dumps(
+                (decision_proof or item.decision_proof).__dict__,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if (decision_proof or item.decision_proof) is not None
+            else None
+        )
         cursor = conn.execute(
             """
             UPDATE approvals
                SET status = 'audit_pending', pending_status = ?, pending_event_id = ?,
-                   operator_id = ?, decided_at = ?, consumed_at = ?
+                   operator_id = ?, decided_at = ?, consumed_at = ?, expires_at = ?,
+                   terminal_at = ?, decision_proof_json = ?, decision_nonce = ?
              WHERE approval_id = ? AND status = ?
             """,
             (
@@ -538,6 +741,12 @@ class DurableOperatorQueue:
                 operator_id or item.operator_id,
                 decided_at,
                 consumed_at,
+                expires_at,
+                terminal_at,
+                proof_json,
+                (decision_proof or item.decision_proof).nonce
+                if (decision_proof or item.decision_proof) is not None
+                else None,
                 item.approval_id,
                 item.status,
             ),
@@ -596,7 +805,6 @@ class DurableOperatorQueue:
         status: str,
         operator_proof: str | bytes | None = None,
     ) -> bool:
-        self._verify_decision_writer(approval_id, operator_id, status, operator_proof)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -607,24 +815,43 @@ class DurableOperatorQueue:
             if item is None or item.status != "pending":
                 conn.rollback()
                 return False
+            decision_proof = self._verify_decision_writer(
+                item, operator_id, status, operator_proof
+            )
             if self._audit_sink is None:
                 cursor = conn.execute(
                     """
                     UPDATE approvals
-                       SET status = ?, operator_id = ?, decided_at = ?
+                       SET status = ?, operator_id = ?, decided_at = ?,
+                           expires_at = ?, terminal_at = ?
                      WHERE approval_id = ? AND status = 'pending'
                     """,
-                    (status, operator_id, time.time(), approval_id),
+                    (
+                        status,
+                        operator_id,
+                        time.time(),
+                        time.time() + self._approval_ttl if status == "approved" else None,
+                        time.time() if status == "denied" else None,
+                        approval_id,
+                    ),
                 )
                 conn.commit()
                 return cursor.rowcount == 1
-            event_id = self._stage_existing(
-                conn,
-                item,
-                transition=status,
-                operator_id=operator_id,
-                transition_ts=time.time(),
-            )
+            try:
+                event_id = self._stage_existing(
+                    conn,
+                    item,
+                    transition=status,
+                    operator_id=operator_id,
+                    transition_ts=time.time(),
+                    decision_proof=decision_proof,
+                )
+            except sqlite3.IntegrityError as exc:
+                conn.rollback()
+                raise ApprovalAuditError(
+                    "decision proof nonce was reused or approval state is invalid",
+                    approval_id=approval_id,
+                ) from exc
             conn.commit()
         self._flush_event(event_id)
         return True
@@ -667,11 +894,20 @@ class DurableOperatorQueue:
             if item is None or item.status != "approved" or item.decided_at is None:
                 conn.rollback()
                 return None
-            if current - item.decided_at > self._approval_ttl:
+            if current < item.decided_at:
+                conn.rollback()
+                raise ApprovalAuditError("approval clock moved backward before decision time")
+            if item.expires_at is None:
+                conn.rollback()
+                if self._audit_required:
+                    raise ApprovalAuditError("approved capability has no explicit expiry")
+                return None
+            if current >= item.expires_at:
                 if self._audit_sink is None:
                     conn.execute(
-                        "UPDATE approvals SET status = 'expired' WHERE approval_id = ?",
-                        (approval_id,),
+                        "UPDATE approvals SET status = 'expired', terminal_at = ? "
+                        "WHERE approval_id = ? AND status = 'approved'",
+                        (current, approval_id),
                     )
                     conn.commit()
                     return None
@@ -732,32 +968,70 @@ class DurableOperatorQueue:
         if not _context_matches(item.context, required_context or {}):
             return False
         with self._connect() as conn:
-            row = conn.execute(
+            rows = conn.execute(
                 """
                 SELECT * FROM approval_audit_outbox
-                 WHERE event_id = ? AND approval_id = ? AND state = 'delivered'
+                 WHERE approval_id = ? AND state = 'delivered'
                 """,
-                (item.audit_event_id, item.approval_id),
-            ).fetchone()
-        if row is None or not item.audit_receipt:
+                (item.approval_id,),
+            ).fetchall()
+        if len(rows) != 3 or not item.audit_receipt or item.decision_proof is None:
             return False
-        event = self._event_from_row(row)
-        outbox_receipt = json.loads(row["receipt_json"])
-        expected = (
-            event.transition == "consumed"
+        pairs = [
+            (row, self._event_from_row(row), json.loads(row["receipt_json"]))
+            for row in rows
+        ]
+        if not all(isinstance(pair[2].get("ledger_seq"), int) for pair in pairs):
+            return False
+        pairs.sort(key=lambda pair: pair[2]["ledger_seq"])
+        rows = [pair[0] for pair in pairs]
+        events = [pair[1] for pair in pairs]
+        if [event.transition for event in events] != ["pending", "approved", "consumed"]:
+            return False
+        pending, approved, consumed = events
+        digest = canonical_context_digest(item.context)
+        common = all(
+            event.approval_id == item.approval_id
             and event.agent_id == agent_id
             and event.action == action
-            and event.operator_id == item.operator_id
-            and event.context_digest == canonical_context_digest(item.context)
-            and self._receipt_matches_event(item.audit_receipt, event)
-            and outbox_receipt == item.audit_receipt
+            and event.context_digest == digest
+            for event in events
+        )
+        receipts = [pair[2] for pair in pairs]
+        ledger_sequences = [receipt.get("ledger_seq") for receipt in receipts]
+        expected = (
+            common
+            and pending.operator_id == ""
+            and pending.decision_proof is None
+            and approved.operator_id == item.operator_id
+            and consumed.operator_id == item.operator_id
+            and approved.decision_proof == item.decision_proof
+            and consumed.decision_proof == item.decision_proof
+            and item.decision_proof.verifies_binding(
+                approval_id=item.approval_id,
+                agent_id=agent_id,
+                action=action,
+                context_digest=digest,
+                decision="approved",
+                operator_id=item.operator_id,
+            )
+            and pending.transition_ts <= approved.transition_ts <= consumed.transition_ts
+            and all(isinstance(seq, int) for seq in ledger_sequences)
+            and ledger_sequences[0] < ledger_sequences[1] < ledger_sequences[2]
+            and consumed.event_id == item.audit_event_id
+            and receipts[-1] == item.audit_receipt
         )
         if not expected:
             return False
-        try:
-            return self._audit_sink.verify_receipt(event, item.audit_receipt)
-        except Exception:
-            return False
+        for event, receipt in zip(events, receipts, strict=True):
+            if not self._receipt_matches_event(receipt, event):
+                return False
+            try:
+                if not self._audit_sink.verify_receipt(event, receipt):
+                    return False
+            except Exception:
+                return False
+        return True
 
     def get(self, approval_id: str) -> Optional[PendingApproval]:
         with self._connect() as conn:
@@ -789,10 +1063,18 @@ class DurableOperatorQueue:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
                 """
-                SELECT approval_id FROM approvals
-                 WHERE status NOT IN ('pending', 'audit_pending') AND submitted_at < ?
+                SELECT a.approval_id
+                  FROM approvals AS a
+                 WHERE a.status IN ('denied', 'consumed', 'expired')
+                   AND a.terminal_at IS NOT NULL AND a.terminal_at < ?
+                   AND NOT EXISTS (
+                       SELECT 1 FROM approval_audit_outbox AS o
+                        WHERE o.approval_id = a.approval_id
+                          AND (o.state != 'delivered' OR o.delivered_at IS NULL
+                               OR o.delivered_at >= ?)
+                   )
                 """,
-                (cutoff,),
+                (cutoff, cutoff),
             ).fetchall()
             approval_ids = [row["approval_id"] for row in rows]
             for approval_id in approval_ids:

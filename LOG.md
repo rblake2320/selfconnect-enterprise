@@ -66,10 +66,14 @@ related records sufficient to reconstruct the action.
 
 **Changed:** Added canonical approval audit events, a same-SQLite-transaction
 transition outbox, non-authorizing `audit_pending` states, idempotent signed
-ledger append/reconciliation, bounded decision-writer verification, and
-pre-actuation receipt/binding/chain verification. Added adversarial coverage
-for unavailable sinks, unverified writers, concurrent decisions, raw-context
-exclusion, append-before-marker recovery, outbox and receipt tampering, expiry,
+ledger append/reconciliation, bounded decision-proof envelopes, explicit
+expiry, closed-set schema migration, and pre-actuation lineage/receipt/chain
+verification. Ledger state now publishes only after append/flush/fsync and
+restores the prior verified tail after partial I/O failure. Added adversarial
+coverage for unavailable or lying sinks, unverified/replayed writers,
+concurrent decisions, raw-context exclusion, append-before-marker recovery,
+post-append TOCTOU, SQLite approval forgery, outbox and receipt tampering,
+backward clock movement, evidence retention, schema constraints, expiry,
 denial, consumption failure, and full governed-runtime composition.
 
 **Reason:** The prior durable queue made approval decisions durable but recorded
@@ -83,10 +87,10 @@ record, and the dispatcher did not bind actuation to that evidence.
 the governed-runtime/MCP tests, [GAPS.md](GAPS.md), the executable control
 catalog, and the linked WHY/PARK records.
 
-**Validation:** The final Python suite passed 1,527 tests with 34 explicit
+**Validation:** The final Python suite passed 1,540 tests with 34 explicit
 environment/live skips and two known warnings about an absent immutable sink.
-The approval release-control selection passed 119 tests, the broader targeted
-selection passed 127 tests, Ruff and `git diff --check` passed, portfolio pins
+The approval release-control selection passed 174 tests, the broader targeted
+selection including documentation passed 182 tests, Ruff and `git diff --check` passed, portfolio pins
 verified in `PIN_ONLY` mode, and the built wheel contains
 `enterprise/approval_audit.py`. Full release conformance remains red for four
 pre-existing environment gates (`ULTRA-AUTH-001`, `ULTRA-BOUNDARY-001`,
@@ -100,6 +104,9 @@ digest is unkeyed and is not a confidentiality control. The deployment supplies
 the decision-writer proof verifier and remains responsible for operator
 credential custody and identity assurance. Exact-once reconciliation is scoped
 to one ledger writer; cross-process ledger coordination is not established.
+System-generated safety denials are signed runtime actions, not human
+attribution, and cannot approve. The event index trades first-use scan and
+memory cost for bounded repeated lookup.
 
 ## LOG-20260716-010 - Enforce least-privilege bounded Ultra monitoring
 

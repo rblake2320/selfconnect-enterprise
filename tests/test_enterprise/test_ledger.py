@@ -62,6 +62,79 @@ class TestLog:
         assert e2["seq"] == 2
         assert e3["seq"] == 3
 
+    def test_partial_append_failure_restores_tail_for_retry_and_restart(
+        self, tmp_path, monkeypatch
+    ):
+        identity = make_identity(tmp_path)
+        ledger = make_ledger(tmp_path, identity)
+        original_open = Path.open
+        failed = False
+
+        class PartialWriter:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                self.handle.__enter__()
+                return self
+
+            def __exit__(self, *args):
+                return self.handle.__exit__(*args)
+
+            def write(self, value):
+                self.handle.write(value[: max(1, len(value) // 2)])
+                self.handle.flush()
+                raise OSError("simulated partial append")
+
+            def __getattr__(self, name):
+                return getattr(self.handle, name)
+
+        def failing_open(path, mode="r", *args, **kwargs):
+            nonlocal failed
+            handle = original_open(path, mode, *args, **kwargs)
+            if path == ledger.log_path and mode == "a" and not failed:
+                failed = True
+                return PartialWriter(handle)
+            return handle
+
+        monkeypatch.setattr(Path, "open", failing_open)
+        with pytest.raises(OSError, match="partial append"):
+            ledger.log("first")
+        assert ledger.entry_count() == 0
+        first = ledger.log("retry")
+        assert first["seq"] == 1
+        restarted = AgentLedger(identity, log_path=ledger.log_path)
+        second = restarted.log("after-restart")
+        assert second["seq"] == 2
+        assert restarted.verify()[0]
+
+    def test_fsync_failure_does_not_publish_sequence(self, tmp_path, monkeypatch):
+        ledger = make_ledger(tmp_path)
+        import enterprise.ledger as ledger_module
+
+        real_fsync = ledger_module.os.fsync
+        calls = 0
+
+        def fail_once(fd):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("simulated fsync failure")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(ledger_module.os, "fsync", fail_once)
+        with pytest.raises(OSError, match="fsync failure"):
+            ledger.log("not-durable")
+        assert ledger.entry_count() == 0
+        assert ledger.log("durable")["seq"] == 1
+        assert ledger.verify()[0]
+
+    def test_nested_index_rejects_wrong_metadata_type(self, tmp_path):
+        ledger = make_ledger(tmp_path)
+        ledger.log("bad", metadata={"approval_audit": "not-an-object"})
+        with pytest.raises(LedgerIntegrityError, match="must be an object"):
+            ledger.find_entries_by_nested_value("approval_audit", "event_id", "event")
+
     def test_first_entry_uses_genesis_hash(self, tmp_path):
         ledger = make_ledger(tmp_path)
         entry = ledger.log("boot")

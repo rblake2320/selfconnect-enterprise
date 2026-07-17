@@ -37,7 +37,7 @@ system boundary.
 | `enterprise/policy.py` | PolicyEnforcer — deny-by-default decision pipeline plus composition gate |
 | `enterprise/policy_sign.py` | ECDSA P-384 policy bundle signing and verification; coverage is run-specific |
 | `enterprise/operator.py` | One-time context-bound approvals; SQLite WAL queue with non-authorizing audit-pending transitions for governed runtime |
-| `enterprise/approval_audit.py` | Idempotent signed-ledger approval evidence and bounded context correlation |
+| `enterprise/approval_audit.py` | Idempotent signed-ledger transition lineage and bounded decision-proof/context digests |
 | `enterprise/control.py` | ControlPlane — pause / quarantine / revoke / kill_all state machine |
 | `enterprise/governed_runtime.py` | Mandatory enterprise composition for policy, approval, target binding, identity, and signed audit |
 | `enterprise/irs_evidence.py` | Structured IRS integration evidence records; not an IRS system-of-record submission |

@@ -7,10 +7,12 @@ live HWND/Win32 execution is intentionally a separate conformance run.
 from __future__ import annotations
 
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
 
+from enterprise.approval_audit import DecisionProofVerification
 from enterprise.governed_runtime import GovernedRuntime, RuntimeConfigurationError
 from enterprise.identity import AgentIdentity
 from enterprise.policy import make_bundle
@@ -174,8 +176,17 @@ def test_governed_approval_is_signed_and_bound_before_actuation(tmp_path):
         router=router,
         target_verifier=_target,
         output_reader=lambda _hwnd: router.rendered,
-        decision_writer_verifier=lambda operator, _aid, decision, proof: (
-            operator == "operator-1" and decision == "approved" and proof == "signed-proof"
+        decision_writer_verifier=lambda payload, proof: (
+            DecisionProofVerification(
+                verifier_id="test-verifier",
+                key_id="test-key",
+                nonce=f"{payload['approval_id']}-{payload['decision']}",
+                verified_at=time.time(),
+            )
+            if payload["operator_id"] == "operator-1"
+            and payload["decision"] == "approved"
+            and proof == "signed-proof"
+            else None
         ),
     )
     lease = runtime.dispatcher.call_tool(

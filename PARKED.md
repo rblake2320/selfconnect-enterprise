@@ -116,8 +116,10 @@ to the authoritative signed ledger. The dispatcher trusted the consumed queue
 record without requiring a matching durable audit receipt.
 
 **Replacement:** Same-transaction transition outbox, non-authorizing
-`audit_pending`, idempotent signed-ledger reconciliation, deployment-provided
-decision-writer verification, and receipt/chain binding before actuation.
+`audit_pending`, durable ledger append rollback, transaction-locked idempotent
+reconciliation, deployment-provided decision-writer verification with a bounded
+nonce-bound envelope, and exact transition-lineage/receipt/chain binding before
+actuation.
 
 **Restore when:** Do not restore for hardened profiles. A non-audited queue may
 remain only as an explicitly selected consumer/test implementation outside the

@@ -12,7 +12,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from enterprise.classified_mode import ClassifiedModeProfile
-from enterprise.approval_audit import LedgerApprovalDecisionSink
+from enterprise.approval_audit import (
+    DecisionProofVerification,
+    LedgerApprovalDecisionSink,
+)
 from enterprise.composition_monitor import CompositionMonitor
 from enterprise.control import ControlPlane
 from enterprise.identity import AgentIdentity
@@ -52,7 +55,10 @@ class GovernedRuntime:
         target_verifier: Callable[..., dict[str, Any]] | None = None,
         output_reader: Callable[[int], str] | None = None,
         decision_writer_verifier: (
-            Callable[[str, str, str, str | bytes | None], bool] | None
+            Callable[
+                [dict[str, str], str | bytes | None],
+                DecisionProofVerification | None,
+            ] | None
         ) = None,
         profile: str = "enterprise",
         ledger_max_entries_per_segment: int = 100_000,

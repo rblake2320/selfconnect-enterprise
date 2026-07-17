@@ -4,13 +4,18 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 
 import pytest
 
 from enterprise.approval_audit import (
     ApprovalAuditError,
     ApprovalAuditEvent,
+    DecisionProofEnvelope,
+    DecisionProofVerification,
     LedgerApprovalDecisionSink,
+    approval_event_digest,
+    canonical_context_digest,
 )
 from enterprise.identity import AgentIdentity
 from enterprise.ledger import ThreadSafeAgentLedger
@@ -29,6 +34,7 @@ class RecordingSink:
             **event.to_dict(),
             "ledger_seq": 1,
             "ledger_sig": "test-signature",
+            "event_digest": approval_event_digest(event),
         }
 
     def record(self, event: ApprovalAuditEvent) -> dict:
@@ -46,8 +52,15 @@ class RecordingSink:
         return self.events.get(event.event_id) == event and receipt == self._receipt(event)
 
 
-def _writer(_operator: str, _approval: str, _decision: str, proof) -> bool:
-    return proof == "signed-proof"
+def _writer(payload: dict[str, str], proof):
+    if proof != "signed-proof":
+        return None
+    return DecisionProofVerification(
+        verifier_id="test-verifier",
+        key_id="test-key-1",
+        nonce=f"nonce-{payload['approval_id']}-{payload['decision']}",
+        verified_at=time.time(),
+    )
 
 
 def _queue(tmp_path, sink=None, **kwargs) -> DurableOperatorQueue:
@@ -348,3 +361,270 @@ def test_expiry_is_audited_before_capability_becomes_expired(tmp_path):
     ) is None
     assert queue.get_status(approval_id) == "expired"
     assert any(event.transition == "expired" for event in sink.events.values())
+
+
+def test_matching_receipt_from_unverifiable_sink_never_clears_audit_pending(tmp_path):
+    class LyingSink(RecordingSink):
+        def verify_receipt(self, event, receipt):
+            return False
+
+    sink = LyingSink()
+    queue = _queue(tmp_path, sink)
+    with pytest.raises(ApprovalAuditError, match="signed ledger") as captured:
+        queue.submit("agent-a", "export", {})
+    assert queue.get_status(captured.value.approval_id) == "audit_pending"
+
+
+def test_state_changed_during_external_append_is_revalidated_under_write_lock(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+
+    class MutatingSink(RecordingSink):
+        armed = False
+
+        def record(self, event):
+            receipt = super().record(event)
+            if self.armed:
+                with sqlite3.connect(db_path) as conn:
+                    altered = {**event.to_dict(), "action": "tampered-during-append"}
+                    conn.execute(
+                        "UPDATE approval_audit_outbox SET event_json = ? WHERE event_id = ?",
+                        (json.dumps(altered), event.event_id),
+                    )
+            return receipt
+
+    sink = MutatingSink()
+    queue = _queue(tmp_path, sink)
+    approval_id = queue.submit("agent-a", "export", {})
+    sink.armed = True
+    with pytest.raises(ApprovalAuditError, match="changed during delivery"):
+        queue.approve(approval_id, "operator-a", operator_proof="signed-proof")
+    assert queue.get_status(approval_id) == "audit_pending"
+
+
+def test_direct_sqlite_approved_forgery_cannot_create_valid_lineage(tmp_path):
+    identity = AgentIdentity.init("forged-lineage", data_dir=tmp_path / "identities")
+    ledger = ThreadSafeAgentLedger(identity, log_path=tmp_path / "ledger.jsonl")
+    queue = _queue(tmp_path, LedgerApprovalDecisionSink(ledger))
+    approval_id = queue.submit("agent-a", "export", {"scope": "bounded"})
+    verification = _writer(
+        {
+            "approval_id": approval_id,
+            "agent_id": "agent-a",
+            "action": "export",
+            "context_digest": queue.get(approval_id).audit_receipt["context_digest"],
+            "decision": "approved",
+            "operator_id": "operator-a",
+        },
+        "signed-proof",
+    )
+    assert verification is not None
+    proof = DecisionProofEnvelope.create(
+        verification,
+        proof="signed-proof",
+        approval_id=approval_id,
+        agent_id="agent-a",
+        action="export",
+        context_digest=queue.get(approval_id).audit_receipt["context_digest"],
+        decision="approved",
+        operator_id="operator-a",
+    )
+    now = time.time()
+    with sqlite3.connect(tmp_path / "approvals.sqlite3") as conn:
+        conn.execute(
+            """
+            UPDATE approvals
+               SET status='approved', operator_id='operator-a', decided_at=?, expires_at=?,
+                   decision_proof_json=?, decision_nonce=?
+             WHERE approval_id=?
+            """,
+            (
+                now, now + 300,
+                json.dumps(proof.__dict__, sort_keys=True, separators=(",", ":")),
+                proof.nonce, approval_id,
+            ),
+        )
+    consumed = queue.consume_approved(
+        approval_id,
+        agent_id="agent-a",
+        action="export",
+        required_context={"scope": "bounded"},
+    )
+    assert consumed is not None
+    assert not queue.verify_consumed_binding(
+        consumed,
+        agent_id="agent-a",
+        action="export",
+        required_context={"scope": "bounded"},
+    )
+
+
+def test_decision_envelope_is_bound_and_raw_proof_is_not_retained(tmp_path):
+    sink = RecordingSink()
+    queue = _queue(tmp_path, sink)
+    approval_id = queue.submit("agent-a", "export", {"scope": "bounded"})
+    assert queue.approve(approval_id, "operator-a", operator_proof="signed-proof")
+    item = queue.get(approval_id)
+    assert item.decision_proof is not None
+    assert item.decision_proof.verifier_id == "test-verifier"
+    assert item.decision_proof.key_id == "test-key-1"
+    assert item.decision_proof.verifies_binding(
+        approval_id=approval_id,
+        agent_id="agent-a",
+        action="export",
+        context_digest=canonical_context_digest({"scope": "bounded"}),
+        decision="approved",
+        operator_id="operator-a",
+    )
+    database = (tmp_path / "approvals.sqlite3").read_bytes()
+    assert b"signed-proof" not in database
+
+
+def test_decision_verifier_receives_the_complete_canonical_binding(tmp_path):
+    captured = None
+
+    def verifier(payload, proof):
+        nonlocal captured
+        captured = dict(payload)
+        if proof != "signed-proof":
+            return None
+        return DecisionProofVerification(
+            verifier_id="binding-verifier",
+            key_id="binding-key",
+            nonce="binding-nonce",
+            verified_at=time.time(),
+        )
+
+    queue = DurableOperatorQueue(
+        tmp_path / "approvals.sqlite3",
+        audit_sink=RecordingSink(),
+        audit_required=True,
+        decision_writer_verifier=verifier,
+    )
+    approval_id = queue.submit("agent-a", "export", {"scope": "bounded"})
+    assert queue.approve(approval_id, "operator-a", operator_proof="signed-proof")
+    assert captured == {
+        "approval_id": approval_id,
+        "agent_id": "agent-a",
+        "action": "export",
+        "context_digest": canonical_context_digest({"scope": "bounded"}),
+        "decision": "approved",
+        "operator_id": "operator-a",
+    }
+
+
+def test_backward_clock_skew_fails_closed(tmp_path):
+    queue = _queue(tmp_path)
+    approval_id = queue.submit("agent-a", "export", {})
+    assert queue.approve(approval_id, "operator-a", operator_proof="signed-proof")
+    decided_at = queue.get(approval_id).decided_at
+    with pytest.raises(ApprovalAuditError, match="clock moved backward"):
+        queue.consume_approved(
+            approval_id,
+            agent_id="agent-a",
+            action="export",
+            now=decided_at - 1,
+        )
+    assert queue.get_status(approval_id) == "approved"
+
+
+def test_purge_uses_terminal_and_delivery_time_not_submission_time(tmp_path):
+    queue = _queue(tmp_path, max_age_seconds=60)
+    approval_id = queue.submit("agent-a", "export", {})
+    with sqlite3.connect(tmp_path / "approvals.sqlite3") as conn:
+        conn.execute(
+            "UPDATE approvals SET submitted_at = ? WHERE approval_id = ?",
+            (time.time() - 3600, approval_id),
+        )
+    assert queue.approve(approval_id, "operator-a", operator_proof="signed-proof")
+    assert queue.consume_approved(approval_id, agent_id="agent-a", action="export")
+    assert queue.purge_expired() == 0
+    with sqlite3.connect(tmp_path / "approvals.sqlite3") as conn:
+        conn.execute(
+            "UPDATE approvals SET terminal_at = ? WHERE approval_id = ?",
+            (time.time() - 120, approval_id),
+        )
+        conn.execute(
+            "UPDATE approval_audit_outbox SET delivered_at = ? WHERE approval_id = ?",
+            (time.time() - 120, approval_id),
+        )
+    assert queue.purge_expired() == 1
+
+
+def test_legacy_schema_migrates_to_closed_sets_and_foreign_keys(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE approvals (
+                approval_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL,
+                action TEXT NOT NULL, context_json TEXT NOT NULL,
+                submitted_at REAL NOT NULL, status TEXT NOT NULL,
+                operator_id TEXT NOT NULL DEFAULT '', decided_at REAL, consumed_at REAL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO approvals VALUES ('a','agent','act','{}',1,'pending','',NULL,NULL)"
+        )
+    queue = DurableOperatorQueue(db_path)
+    assert queue.get_status("a") == "pending"
+    with queue._connect() as conn:
+        sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='approvals'"
+        ).fetchone()[0]
+        assert "CHECK (status IN" in sql
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO approvals "
+                "(approval_id,agent_id,action,context_json,submitted_at,status) "
+                "VALUES ('bad','a','b','{}',1,'forged')"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO approval_audit_outbox "
+                "(event_id,approval_id,transition,event_json,state,created_at) "
+                "VALUES ('e','missing','pending','{}','pending',1)"
+            )
+
+
+def test_system_safety_denial_is_not_human_attribution_or_approval_bypass(tmp_path):
+    queue = _queue(tmp_path)
+    denied_id = queue.submit("agent-a", "export", {})
+    assert queue.deny(denied_id, "system/control-plane-quarantine")
+    denied = queue.get(denied_id)
+    assert denied.status == "denied"
+    assert denied.decision_proof.verifier_id == "selfconnect.system-safety-denial"
+    assert denied.decision_proof.key_id == "runtime-ledger-identity"
+
+    approval_id = queue.submit("agent-a", "export", {})
+    with pytest.raises(ApprovalAuditError, match="proof"):
+        queue.approve(approval_id, "system/control-plane-quarantine")
+    assert queue.get_status(approval_id) == "pending"
+
+
+def test_reused_decision_nonce_fails_closed(tmp_path):
+    fixed_time = time.time()
+
+    def fixed_nonce_writer(_payload, proof):
+        if proof != "signed-proof":
+            return None
+        return DecisionProofVerification(
+            verifier_id="test-verifier",
+            key_id="test-key",
+            nonce="one-use-nonce",
+            verified_at=fixed_time,
+        )
+
+    queue = DurableOperatorQueue(
+        tmp_path / "approvals.sqlite3",
+        audit_sink=RecordingSink(),
+        audit_required=True,
+        decision_writer_verifier=fixed_nonce_writer,
+    )
+    first = queue.submit("agent-a", "export", {})
+    second = queue.submit("agent-a", "export", {})
+    assert queue.approve(first, "operator-a", operator_proof="signed-proof")
+    with pytest.raises(ApprovalAuditError, match="nonce was reused"):
+        queue.approve(second, "operator-a", operator_proof="signed-proof")
+    assert queue.get_status(second) == "pending"

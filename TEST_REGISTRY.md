@@ -369,7 +369,7 @@ than one checkout.
 - `TestFullWorkflow::test_denied_action_produces_deny_metadata`
 - `TestFullWorkflow::test_requires_approval_workflow`
 
-### Approval Audit Binding — `test_approval_audit.py` (13 tests)
+### Approval Audit Binding — `test_approval_audit.py` (23 tests)
 
 - `test_required_sink_cannot_be_omitted`
 - `test_unverified_decision_writer_cannot_approve`
@@ -384,6 +384,16 @@ than one checkout.
 - `test_consumed_binding_rechecks_signed_ledger_receipt`
 - `test_consumed_binding_fails_when_signed_ledger_chain_is_altered`
 - `test_expiry_is_audited_before_capability_becomes_expired`
+- `test_matching_receipt_from_unverifiable_sink_never_clears_audit_pending`
+- `test_state_changed_during_external_append_is_revalidated_under_write_lock`
+- `test_direct_sqlite_approved_forgery_cannot_create_valid_lineage`
+- `test_decision_envelope_is_bound_and_raw_proof_is_not_retained`
+- `test_decision_verifier_receives_the_complete_canonical_binding`
+- `test_backward_clock_skew_fails_closed`
+- `test_purge_uses_terminal_and_delivery_time_not_submission_time`
+- `test_legacy_schema_migrates_to_closed_sets_and_foreign_keys`
+- `test_system_safety_denial_is_not_human_attribution_or_approval_bypass`
+- `test_reused_decision_nonce_fails_closed`
 
 ### Identity Gate — `test_identity_gate.py` (46 tests)
 
@@ -645,11 +655,14 @@ than one checkout.
 - `TestNamedEvents::test_wait_for_returns_false_on_timeout`
 - `TestHeartbeatDaemon::test_daemon_calls_update_heartbeat`
 
-### AgentLedger / Hash Chain — `test_enterprise/test_ledger.py` (30 tests)
+### AgentLedger / Hash Chain — `test_enterprise/test_ledger.py` (45 tests)
 
 - `TestLog::test_creates_log_file`
 - `TestLog::test_entry_has_required_fields`
 - `TestLog::test_seq_increments`
+- `TestLog::test_partial_append_failure_restores_tail_for_retry_and_restart`
+- `TestLog::test_fsync_failure_does_not_publish_sequence`
+- `TestLog::test_nested_index_rejects_wrong_metadata_type`
 - `TestLog::test_first_entry_uses_genesis_hash`
 - `TestLog::test_second_entry_prev_hash_matches_first`
 - `TestLog::test_agent_id_matches_identity`

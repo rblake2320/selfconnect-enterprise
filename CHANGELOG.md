@@ -10,8 +10,14 @@
   state until a matching signed-ledger receipt is durable; restart
   reconciliation is idempotent across the append-before-receipt crash window.
 - Added decision-writer verification and required the dispatcher to recheck the
-  consumed approval, outbox receipt, context digest, and signed ledger chain
+  unique ordered request/approval/consumption lineage, each outbox receipt,
+  bounded decision-proof envelope, context digest, and signed ledger chain
   before mutation.
+- Publish ledger sequence/hash state only after a durable append; partial write
+  or `fsync` failure restores and verifies the previous tail before retry.
+- Added explicit expiry/backward-clock rejection, nonce replay prevention,
+  constrained SQLite migration/foreign keys, transaction-locked finalization,
+  and terminal/delivery-time evidence retention.
 - Context is represented in evidence only by a canonical SHA-256 digest. This
   supports correlation and integrity checking, not confidentiality against
   low-entropy context guessing.
