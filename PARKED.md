@@ -91,6 +91,54 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260717-001 - Durable approval state without transition evidence
+
+**Status:** Parked
+**Category:** security property, audit durability
+**Former location:** `enterprise/operator.py`, `enterprise/mcp_dispatch.py`
+**Source commit:** `7c2ce4c4bba1313a5fe187129062180aa4e37af8`
+**Affected paths:** DurableOperatorQueue and governed MCP approval consumption
+**Action log:** [LOG-20260717-001](LOG.md#log-20260717-001)
+**Why changed:** [WHY-20260717-001](WHY.md#why-20260717-001)
+**Parked by:** commit containing this record
+
+**Former wording:**
+
+> `DurableOperatorQueue` stores the same state in SQLite, uses transactional
+> state changes, and is the required governed-runtime path.
+
+**Recovery source:** Git object
+`7c2ce4c4bba1313a5fe187129062180aa4e37af8:enterprise/operator.py`.
+
+**Reason parked:** SQLite made approval state restart-safe, but request,
+approve, deny, consume, and expiry transitions were not independently appended
+to the authoritative signed ledger. The dispatcher trusted the consumed queue
+record without requiring a matching durable audit receipt.
+
+**Replacement:** Same-transaction transition outbox, non-authorizing
+`audit_pending`, idempotent signed-ledger reconciliation, deployment-provided
+decision-writer verification, and receipt/chain binding before actuation.
+
+**Restore when:** Do not restore for hardened profiles. A non-audited queue may
+remain only as an explicitly selected consumer/test implementation outside the
+governed-runtime claim.
+
+**Restore procedure:** Restore the named source object on a separate branch,
+retain the current audited implementation, label every caller posture, and
+update linked LOG/WHY/control records before review.
+
+**Validation after restore:** Run approval concurrency, restart, audit failure,
+receipt tamper, MCP actuation, full release, and live Windows suites.
+
+**Recovery rehearsal:** Not rehearsed; source object and bounded restoration
+conditions are recorded.
+
+**Restoration risks:** Reopens approved-but-unaudited and
+consumed-without-evidence failure windows.
+
+**Evidence and links:** [WHY-20260717-001](WHY.md#why-20260717-001),
+`tests/test_enterprise/test_approval_audit.py`, and `GOV-APPROVAL-001`.
+
 ## PARK-20260716-010 - Admin-authorized and unbounded initial monitoring slice
 
 **Status:** Parked

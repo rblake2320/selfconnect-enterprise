@@ -51,6 +51,54 @@ related records.
 
 ## Register
 
+## WHY-20260717-001 - Finalize approval state only after signed evidence
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-17T14:04:01Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260717-001](LOG.md#log-20260717-001)
+**Parked records:** [PARK-20260717-001](PARKED.md#park-20260717-001)
+**Source state:** `selfconnect-enterprise`, `origin/master`,
+`7c2ce4c4bba1313a5fe187129062180aa4e37af8`
+
+**Decision:** Hardened approval transitions are staged with their evidence
+event in one SQLite transaction, remain non-authorizing while audit is pending,
+and finalize only after an idempotently recorded signed-ledger receipt. MCP
+actuation revalidates that evidence and the ledger chain.
+
+**Why:** Calling the ledger after committing an approved state creates an
+approved-but-unaudited crash window. Calling it before the database commit can
+create evidence for a transition that never became durable. A transactional
+outbox plus an intermediate non-authorizing state preserves fail-closed behavior
+across both sides of that boundary.
+
+**Alternatives considered:** Best-effort post-commit logging was rejected
+because it leaves usable unaudited authority. A distributed transaction between
+SQLite and JSONL was rejected because neither resource supports that protocol.
+Storing raw context in evidence was rejected because prompts and credentials
+could leak. Automatically selecting a universal operator credential format was
+rejected because CAC, enterprise PKI, and local operator systems have different
+trust and custody boundaries.
+
+**Consequences:** Approval transitions incur synchronous durable audit work and
+ledger verification before actuation. Interrupted operations may remain
+`audit_pending` until reconciliation, and the caller receives a recoverable
+approval identifier. Ledger lookup is linear in retained entries; deployments
+must measure and bound retention/latency. The exact-once argument assumes one
+ledger writer; this change does not provide cross-process ledger coordination.
+An unkeyed context digest supports
+correlation but can reveal low-entropy values by guessing.
+
+**Rollback conditions:** Revert only to an approval backend that preserves the
+same non-authorizing transition, idempotent reconciliation, exact binding, and
+signed evidence guarantees. Disabling the audit sink is permitted only for an
+explicit non-hardened consumer/test posture and must not be described as the
+governed runtime.
+
+**Evidence and links:** [LOG-20260717-001](LOG.md#log-20260717-001),
+[PARK-20260717-001](PARKED.md#park-20260717-001),
+`tests/test_enterprise/test_approval_audit.py`, and control `GOV-APPROVAL-001`.
+
 ## WHY-20260716-010 - Separate monitoring authority and bound telemetry labels
 
 **Status:** Accepted

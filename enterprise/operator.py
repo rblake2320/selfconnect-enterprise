@@ -8,25 +8,17 @@ Workflow:
     1. Agent calls enforcer.check() → decision.requires_approval = True
     2. Agent calls queue.submit(agent_id, action, context) → approval_id
     3. Agent waits / polls queue.get_status(approval_id)
-    4. Operator calls queue.approve(approval_id, operator_id="CAC:12345")
-    5. Agent receives "approved", executes action
-    6. Agent logs entry with metadata:
-           approval_mode = "human_approved"
-           operator_id   = queue.get(approval_id).operator_id
-
-Ledger integration:
-    entry = ledger.log(
-        action,
-        result=result,
-        metadata={
-            **decision.to_ledger_metadata(),
-            "operator_id": queue.get(approval_id).operator_id,
-        },
-    )
+    4. Operator supplies its deployment-verified proof to approve or deny.
+    5. Durable queue stages the transition and audit outbox atomically.
+    6. Transition remains audit_pending until signed evidence is durable.
+    7. Dispatcher consumes once and revalidates the evidence before execution.
 
 ``OperatorQueue`` is an in-process implementation for component tests and
 short-lived tools. ``DurableOperatorQueue`` stores the same state in SQLite,
 uses transactional state changes, and is the required governed-runtime path.
+The governed runtime always configures its audit sink as required. Constructing
+the durable queue without a sink remains an explicit compatibility posture and
+does not carry the governed-runtime audit guarantee.
 
 An approval is a single-use capability. Execution consumes it atomically and
 checks its agent, action, expiry, and exact bounded context. Merely observing
@@ -794,14 +786,26 @@ class DurableOperatorQueue:
     def purge_expired(self) -> int:
         cutoff = time.time() - self._max_age
         with self._connect() as conn:
-            cursor = conn.execute(
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
                 """
-                DELETE FROM approvals
+                SELECT approval_id FROM approvals
                  WHERE status NOT IN ('pending', 'audit_pending') AND submitted_at < ?
                 """,
                 (cutoff,),
-            )
-            return cursor.rowcount
+            ).fetchall()
+            approval_ids = [row["approval_id"] for row in rows]
+            for approval_id in approval_ids:
+                conn.execute(
+                    "DELETE FROM approval_audit_outbox WHERE approval_id = ? AND state = 'delivered'",
+                    (approval_id,),
+                )
+                conn.execute(
+                    "DELETE FROM approvals WHERE approval_id = ?",
+                    (approval_id,),
+                )
+            conn.commit()
+            return len(approval_ids)
 
     def __len__(self) -> int:
         with self._connect() as conn:

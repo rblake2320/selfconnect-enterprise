@@ -93,6 +93,35 @@ def test_audit_failure_leaves_transition_non_authorizing_until_reconciled(tmp_pa
     assert queue.get_status(approval_id) == "approved"
 
 
+def test_submit_failure_exposes_recoverable_approval_identifier(tmp_path):
+    sink = RecordingSink()
+    sink.fail = True
+    queue = _queue(tmp_path, sink)
+    with pytest.raises(ApprovalAuditError) as captured:
+        queue.submit("agent-a", "export", {"scope": "bounded"})
+    approval_id = captured.value.approval_id
+    assert approval_id
+    assert queue.get_status(approval_id) == "audit_pending"
+    sink.fail = False
+    restarted = _queue(tmp_path, sink)
+    assert restarted.get_status(approval_id) == "pending"
+
+
+def test_deny_transition_is_recorded_before_state_changes(tmp_path):
+    sink = RecordingSink()
+    queue = _queue(tmp_path, sink)
+    approval_id = queue.submit("agent-a", "export", {})
+    assert queue.deny(
+        approval_id,
+        "operator-a",
+        operator_proof="signed-proof",
+    )
+    assert queue.get_status(approval_id) == "denied"
+    denied = [event for event in sink.events.values() if event.transition == "denied"]
+    assert len(denied) == 1
+    assert denied[0].operator_id == "operator-a"
+
+
 def test_raw_context_is_not_written_to_audit_event(tmp_path):
     sink = RecordingSink()
     queue = _queue(tmp_path, sink)
@@ -180,6 +209,55 @@ def test_append_before_receipt_marker_is_reconciled_without_duplicate(tmp_path):
     assert ledger.entry_count() == count_after_append
 
 
+def test_tampered_pending_outbox_cannot_be_reconciled(tmp_path):
+    sink = RecordingSink()
+    queue = _queue(tmp_path, sink)
+    approval_id = queue.submit("agent-a", "export", {"scope": "bounded"})
+    sink.fail = True
+    with pytest.raises(ApprovalAuditError):
+        queue.approve(approval_id, "operator-a", operator_proof="signed-proof")
+    with sqlite3.connect(tmp_path / "approvals.sqlite3") as conn:
+        row = conn.execute(
+            "SELECT event_id, event_json FROM approval_audit_outbox WHERE state = 'pending'"
+        ).fetchone()
+        event = json.loads(row[1])
+        event["transition"] = "denied"
+        conn.execute(
+            "UPDATE approval_audit_outbox SET event_json = ? WHERE event_id = ?",
+            (json.dumps(event), row[0]),
+        )
+    sink.fail = False
+    with pytest.raises(ApprovalAuditError, match="conflicts"):
+        queue.reconcile()
+    assert queue.get_status(approval_id) == "audit_pending"
+
+
+def test_consume_audit_failure_never_returns_authority(tmp_path):
+    sink = RecordingSink()
+    queue = _queue(tmp_path, sink)
+    context = {"scope": "bounded"}
+    approval_id = queue.submit("agent-a", "export", context)
+    assert queue.approve(approval_id, "operator-a", operator_proof="signed-proof")
+    sink.fail = True
+    with pytest.raises(ApprovalAuditError):
+        queue.consume_approved(
+            approval_id,
+            agent_id="agent-a",
+            action="export",
+            required_context=context,
+        )
+    assert queue.get_status(approval_id) == "audit_pending"
+    sink.fail = False
+    queue.reconcile()
+    assert queue.get_status(approval_id) == "consumed"
+    assert queue.consume_approved(
+        approval_id,
+        agent_id="agent-a",
+        action="export",
+        required_context=context,
+    ) is None
+
+
 def test_consumed_binding_rechecks_signed_ledger_receipt(tmp_path):
     identity = AgentIdentity.init("binding-audit", data_dir=tmp_path / "identities")
     ledger = ThreadSafeAgentLedger(identity, log_path=tmp_path / "ledger.jsonl")
@@ -222,6 +300,36 @@ def test_consumed_binding_rechecks_signed_ledger_receipt(tmp_path):
         agent_id="agent-a",
         action="export",
         required_context=context,
+    )
+
+
+def test_consumed_binding_fails_when_signed_ledger_chain_is_altered(tmp_path):
+    identity = AgentIdentity.init("chain-audit", data_dir=tmp_path / "identities")
+    ledger_path = tmp_path / "ledger.jsonl"
+    ledger = ThreadSafeAgentLedger(identity, log_path=ledger_path)
+    queue = DurableOperatorQueue(
+        tmp_path / "approvals.sqlite3",
+        audit_sink=LedgerApprovalDecisionSink(ledger),
+        audit_required=True,
+        decision_writer_verifier=_writer,
+    )
+    approval_id = queue.submit("agent-a", "export", {})
+    assert queue.approve(approval_id, "operator-a", operator_proof="signed-proof")
+    consumed = queue.consume_approved(
+        approval_id,
+        agent_id="agent-a",
+        action="export",
+    )
+    assert consumed is not None
+    lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    altered = json.loads(lines[0])
+    altered["action"] = "altered-after-signing"
+    lines[0] = json.dumps(altered)
+    ledger_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert not queue.verify_consumed_binding(
+        consumed,
+        agent_id="agent-a",
+        action="export",
     )
 
 

@@ -369,6 +369,22 @@ than one checkout.
 - `TestFullWorkflow::test_denied_action_produces_deny_metadata`
 - `TestFullWorkflow::test_requires_approval_workflow`
 
+### Approval Audit Binding — `test_approval_audit.py` (13 tests)
+
+- `test_required_sink_cannot_be_omitted`
+- `test_unverified_decision_writer_cannot_approve`
+- `test_audit_failure_leaves_transition_non_authorizing_until_reconciled`
+- `test_submit_failure_exposes_recoverable_approval_identifier`
+- `test_deny_transition_is_recorded_before_state_changes`
+- `test_raw_context_is_not_written_to_audit_event`
+- `test_concurrent_decision_race_records_exactly_one_approval`
+- `test_append_before_receipt_marker_is_reconciled_without_duplicate`
+- `test_tampered_pending_outbox_cannot_be_reconciled`
+- `test_consume_audit_failure_never_returns_authority`
+- `test_consumed_binding_rechecks_signed_ledger_receipt`
+- `test_consumed_binding_fails_when_signed_ledger_chain_is_altered`
+- `test_expiry_is_audited_before_capability_becomes_expired`
+
 ### Identity Gate — `test_identity_gate.py` (46 tests)
 
 - `TestBPCCrypto::test_b64url_roundtrip`

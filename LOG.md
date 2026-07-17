@@ -54,6 +54,53 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260717-001 - Bind durable approval transitions to signed evidence
+
+**Timestamp (UTC):** 2026-07-17T14:04:01Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security fix, durability, audit, adversarial testing
+**Base commit:** `7c2ce4c4bba1313a5fe187129062180aa4e37af8`
+**Change reference:** commit containing this entry
+**Why:** [WHY-20260717-001](WHY.md#why-20260717-001)
+**Parked records:** [PARK-20260717-001](PARKED.md#park-20260717-001)
+
+**Changed:** Added canonical approval audit events, a same-SQLite-transaction
+transition outbox, non-authorizing `audit_pending` states, idempotent signed
+ledger append/reconciliation, bounded decision-writer verification, and
+pre-actuation receipt/binding/chain verification. Added adversarial coverage
+for unavailable sinks, unverified writers, concurrent decisions, raw-context
+exclusion, append-before-marker recovery, outbox and receipt tampering, expiry,
+denial, consumption failure, and full governed-runtime composition.
+
+**Reason:** The prior durable queue made approval decisions durable but recorded
+only policy and eventual actuation events. A crash or audit failure could leave
+an approved or consumed capability without an independently signed transition
+record, and the dispatcher did not bind actuation to that evidence.
+
+**Full actions and links:** `enterprise/approval_audit.py`,
+`enterprise/operator.py`, `enterprise/governed_runtime.py`,
+`enterprise/mcp_dispatch.py`, `tests/test_enterprise/test_approval_audit.py`,
+the governed-runtime/MCP tests, [GAPS.md](GAPS.md), the executable control
+catalog, and the linked WHY/PARK records.
+
+**Validation:** The final Python suite passed 1,527 tests with 34 explicit
+environment/live skips and two known warnings about an absent immutable sink.
+The approval release-control selection passed 119 tests, the broader targeted
+selection passed 127 tests, Ruff and `git diff --check` passed, portfolio pins
+verified in `PIN_ONLY` mode, and the built wheel contains
+`enterprise/approval_audit.py`. Full release conformance remains red for four
+pre-existing environment gates (`ULTRA-AUTH-001`, `ULTRA-BOUNDARY-001`,
+`ULTRA-ROTATE-001`, and `SDK-PIN-001`); this change does not relabel those gaps
+as approval-audit failures. Machine-wide `pip-audit --local` is not valid
+release evidence because that shared environment contains unrelated packages
+and vulnerabilities.
+
+**Notes:** Ledger events contain a context digest, not raw approval context. The
+digest is unkeyed and is not a confidentiality control. The deployment supplies
+the decision-writer proof verifier and remains responsible for operator
+credential custody and identity assurance. Exact-once reconciliation is scoped
+to one ledger writer; cross-process ledger coordination is not established.
+
 ## LOG-20260716-010 - Enforce least-privilege bounded Ultra monitoring
 
 **Timestamp (UTC):** 2026-07-16T14:28:08Z

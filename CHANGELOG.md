@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Audit-bound operator approvals
+
+- Added a same-transaction SQLite transition outbox for durable approval
+  request, approve, deny, consume, and expiry events.
+- Hardened profiles keep transitions in a non-authorizing `audit_pending`
+  state until a matching signed-ledger receipt is durable; restart
+  reconciliation is idempotent across the append-before-receipt crash window.
+- Added decision-writer verification and required the dispatcher to recheck the
+  consumed approval, outbox receipt, context digest, and signed ledger chain
+  before mutation.
+- Context is represented in evidence only by a canonical SHA-256 digest. This
+  supports correlation and integrity checking, not confidentiality against
+  low-entropy context guessing.
+- Evidence: [LOG-20260717-001](LOG.md#log-20260717-001). Rationale:
+  [WHY-20260717-001](WHY.md#why-20260717-001). Recovery:
+  [PARK-20260717-001](PARKED.md#park-20260717-001).
+
 ### Least-privilege Ultra monitoring
 
 - Replaced administrator-token scraping with a dedicated current/previous

@@ -46,6 +46,17 @@
       "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_governed_runtime.py", "tests/test_enterprise/test_mcp_dispatch.py", "-q"]
     },
     {
+      "id": "GOV-APPROVAL-001",
+      "title": "Durable operator transitions require signed evidence before authority",
+      "scope": "DurableOperatorQueue, GovernedRuntime approval composition, and MCP mutation through the governed dispatcher",
+      "assertion": "Run approval-audit, governed-runtime, policy, and MCP dispatcher tests.",
+      "expected": "Approval transitions remain non-authorizing during audit failure, reconcile idempotently after interruption, reject unverified writers and mismatched receipts, omit raw context, and block mutation unless the consumed binding and signed ledger chain verify.",
+      "evidence": "pytest output, hosted CI, and the release conformance JSON report",
+      "blind_spots": "The repository does not select or assess a deployment's CAC/PKI/operator credential verifier; the unkeyed context digest is not confidentiality protection; direct SDK and non-governed queue use are outside scope; exact-once reconciliation assumes one ledger writer and does not coordinate multiple processes; ledger lookup cost grows with retained entries.",
+      "tier": "release",
+      "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_approval_audit.py", "tests/test_enterprise/test_governed_runtime.py", "tests/test_enterprise/test_policy.py", "tests/test_enterprise/test_mcp_dispatch.py", "-q"]
+    },
+    {
       "id": "WIN32-TARGET-001",
       "title": "Terminal target identity uses protected image paths",
       "scope": "Current target_guard mappings for Windows Terminal and classic Windows console classes",

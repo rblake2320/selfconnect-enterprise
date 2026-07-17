@@ -24,6 +24,13 @@ from enterprise.cache_bus import (  # noqa: F401
     unregister_exit_callback,
 )
 from enterprise.classified_mode import ClassifiedModeProfile  # noqa: F401
+from enterprise.approval_audit import (  # noqa: F401
+    ApprovalAuditError,
+    ApprovalAuditEvent,
+    ApprovalDecisionSink,
+    LedgerApprovalDecisionSink,
+    canonical_context_digest,
+)
 from enterprise.control import AgentControlRecord, ControlPlane  # noqa: F401
 from enterprise.egress_guard import EgressGuard  # noqa: F401
 from enterprise.export_guard import ExportGuard  # noqa: F401

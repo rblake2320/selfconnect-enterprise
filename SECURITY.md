@@ -179,6 +179,15 @@ persistent signed ledger. The dispatcher fails closed if those required
 components are absent. Approval context includes the action, lease, target
 identity, classification, and payload hash, and is consumed once.
 
+Durable approval transitions use a SQLite outbox in the same transaction as
+the queue state change. Hardened transitions remain `audit_pending` and cannot
+authorize work until their matching signed-ledger receipt is durable. The
+dispatcher rechecks the consumed record, receipt, context digest, and ledger
+chain before actuation. The SHA-256 context digest prevents raw context from
+entering the event, but an unkeyed digest is not confidentiality protection for
+guessable context. Deployments select and assess the operator proof verifier;
+the repository does not prescribe a CAC, PKI, or personnel-identity system.
+
 This property covers the governed MCP dispatcher. Direct SDK calls and other
 repositories are not globally intercepted.
 

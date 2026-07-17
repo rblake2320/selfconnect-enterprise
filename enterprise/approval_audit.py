@@ -125,6 +125,9 @@ class LedgerApprovalDecisionSink:
         receipt: dict[str, Any],
     ) -> bool:
         with self._lock:
+            valid, _count, _message = self._ledger.verify()
+            if not valid:
+                return False
             entry = self._existing(event)
             return entry is not None and self._receipt(entry, event) == receipt
 
