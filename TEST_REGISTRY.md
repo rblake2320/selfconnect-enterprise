@@ -369,6 +369,53 @@ than one checkout.
 - `TestFullWorkflow::test_denied_action_produces_deny_metadata`
 - `TestFullWorkflow::test_requires_approval_workflow`
 
+### Approval Audit Binding — `test_approval_audit.py` (47 tests)
+
+- `test_required_sink_cannot_be_omitted`
+- `test_unverified_decision_writer_cannot_approve`
+- `test_audit_failure_leaves_transition_non_authorizing_until_reconciled`
+- `test_submit_failure_exposes_recoverable_approval_identifier`
+- `test_deny_transition_is_recorded_before_state_changes`
+- `test_raw_context_is_not_written_to_audit_event`
+- `test_concurrent_decision_race_records_exactly_one_approval`
+- `test_append_before_receipt_marker_is_reconciled_without_duplicate`
+- `test_tampered_pending_outbox_cannot_be_reconciled`
+- `test_consume_audit_failure_never_returns_authority`
+- `test_consumed_binding_rechecks_signed_ledger_receipt`
+- `test_consumed_binding_fails_when_signed_ledger_chain_is_altered`
+- `test_nested_metadata_alias_cannot_forge_a_ledger_receipt`
+- `test_expiry_is_audited_before_capability_becomes_expired`
+- `test_matching_receipt_from_unverifiable_sink_never_clears_audit_pending`
+- `test_state_changed_during_external_append_is_revalidated_under_write_lock`
+- `test_direct_sqlite_approved_forgery_cannot_create_valid_lineage`
+- `test_decision_envelope_is_bound_and_raw_proof_is_not_retained`
+- `test_decision_verifier_receives_the_complete_canonical_binding`
+- `test_backward_clock_skew_fails_closed`
+- `test_in_memory_expiry_uses_constructor_clock_without_public_override`
+- `test_purge_uses_terminal_and_delivery_time_not_submission_time`
+- `test_legacy_schema_migrates_to_closed_sets_and_foreign_keys`
+- `test_system_safety_denial_is_not_human_attribution_or_approval_bypass`
+- `test_reused_decision_nonce_fails_closed`
+- `test_decision_nonce_tombstone_survives_approval_purge`
+- `test_current_schema_outbox_drift_fails_closed_without_rebuild`
+- `test_orphaned_legacy_outbox_fails_migration_closed`
+- `test_current_tombstone_constraint_drift_fails_closed`
+- `test_duplicate_legacy_tombstones_fail_closed_and_rollback`
+- `test_conflicting_legacy_tombstone_owner_fails_closed`
+- `test_comment_spoofed_missing_foreign_key_is_structurally_rebuilt`
+- `test_forged_approval_rows_fail_migration_without_destroying_source`
+- `test_forged_delivered_outbox_row_fails_closed_and_rolls_back`
+- `test_current_schema_missing_tombstones_fails_closed_without_replay_reset`
+- `test_future_schema_version_is_never_downgraded_or_stripped`
+- `test_conflicting_schema_authority_rows_never_trigger_downgrade`
+- `test_current_partial_nonce_index_fails_closed_without_rebuild`
+- `test_legacy_null_replay_keys_fail_closed_and_preserve_source`
+- `test_deleted_version_authority_never_strips_unknown_state`
+- `test_current_version_unknown_state_is_never_repaired_or_stripped`
+- `test_unsupported_numbered_schema_is_never_adopted`
+- `test_concurrent_fresh_initialization_converges_under_write_lock`
+- `test_preexisting_migration_staging_is_never_adopted`
+
 ### Identity Gate — `test_identity_gate.py` (46 tests)
 
 - `TestBPCCrypto::test_b64url_roundtrip`
@@ -629,11 +676,14 @@ than one checkout.
 - `TestNamedEvents::test_wait_for_returns_false_on_timeout`
 - `TestHeartbeatDaemon::test_daemon_calls_update_heartbeat`
 
-### AgentLedger / Hash Chain — `test_enterprise/test_ledger.py` (30 tests)
+### AgentLedger / Hash Chain — `test_enterprise/test_ledger.py` (45 tests)
 
 - `TestLog::test_creates_log_file`
 - `TestLog::test_entry_has_required_fields`
 - `TestLog::test_seq_increments`
+- `TestLog::test_partial_append_failure_restores_tail_for_retry_and_restart`
+- `TestLog::test_fsync_failure_does_not_publish_sequence`
+- `TestLog::test_nested_index_rejects_wrong_metadata_type`
 - `TestLog::test_first_entry_uses_genesis_hash`
 - `TestLog::test_second_entry_prev_hash_matches_first`
 - `TestLog::test_agent_id_matches_identity`

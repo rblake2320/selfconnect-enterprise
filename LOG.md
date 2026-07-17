@@ -54,6 +54,112 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260717-002 - Close second-review approval evidence gaps
+
+**Timestamp (UTC):** 2026-07-17T14:58:07Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security fix, migration, adversarial testing, documentation
+**Base commit:** `5e8ffbe6ca0d6ee2eda68b6a88a028d43ecec3a3`
+**Change reference:** commit containing this entry; draft PR #33
+**Why:** [WHY-20260717-002](WHY.md#why-20260717-002)
+**Parked records:** [PARK-20260717-002](PARKED.md#park-20260717-002)
+
+**Changed:** Removed public per-consume time overrides from durable and
+in-memory approval queues and added validated constructor clocks. Added durable
+decision-nonce tombstones with an explicit retention horizon that survives
+approval/outbox purge. Ledger metadata, return values, and indexes now deep
+copy nested values; receipt checks parse matches from the same disk snapshots
+whose complete signatures and chain were verified. Startup independently checks
+approval, outbox, replay-tombstone, and version-marker structures using PRAGMA
+metadata and behavioral constraint probes. It rebuilds the complete integrity
+domain in one transaction if any member is legacy, enables foreign keys, and
+fails closed on duplicate/conflicting replay state, constraint-invalid governed rows,
+orphan state, or foreign-key-check results without destroying the source.
+
+**Reason:** Independent review found that passing component tests did not cover
+nested cache aliasing, caller-selected expiry time, replay after row purge, or a
+modern-approvals/legacy-outbox migration. These were composition defects, not
+documentation-only gaps.
+
+**Full actions and links:** `enterprise/ledger.py`,
+`enterprise/approval_audit.py`, `enterprise/operator.py`, focused adversarial
+tests in `tests/test_enterprise/test_ledger.py` and
+`tests/test_enterprise/test_approval_audit.py`, PR #33, and the linked
+WHY/PARK/control records.
+
+**Validation:** `python -m pytest -q` passed **1,565 tests** with 34 explicit
+environment/live skips and the two documented immutable-sink warnings. The
+ledger/approval/policy/runtime/MCP selection passed 199 tests. Ruff passed for
+all changed Python files; the same selection plus documentation controls passed
+207 tests. Documentation records passed 8 tests. Quick release conformance
+returned `PASS_WITH_NAMED_BLIND_SPOTS`; release-tier conformance exercised the
+approval control successfully and remained honestly red only for the four
+pre-existing Ultra/SDK environment gates. Portfolio pins passed in `PIN_ONLY`
+mode. The wheel built successfully and contains the approval, operator, and
+ledger modules. `git diff --check` passed. Hosted CI is recorded on the final PR
+revision after push.
+
+**Notes:** The nonce tombstone default horizon is 24 hours and is configurable;
+this is not indefinite replay memory. The clock remains a deployment trust
+dependency. PR #33 remains draft and issue #26 remains open pending independent
+review and deployment-specific operator credential evidence.
+
+---
+
+## LOG-20260717-001 - Bind durable approval transitions to signed evidence
+
+**Timestamp (UTC):** 2026-07-17T14:04:01Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security fix, durability, audit, adversarial testing
+**Base commit:** `7c2ce4c4bba1313a5fe187129062180aa4e37af8`
+**Change reference:** commit containing this entry
+**Why:** [WHY-20260717-001](WHY.md#why-20260717-001)
+**Parked records:** [PARK-20260717-001](PARKED.md#park-20260717-001)
+
+**Changed:** Added canonical approval audit events, a same-SQLite-transaction
+transition outbox, non-authorizing `audit_pending` states, idempotent signed
+ledger append/reconciliation, bounded decision-proof envelopes, explicit
+expiry, closed-set schema migration, and pre-actuation lineage/receipt/chain
+verification. Ledger state now publishes only after append/flush/fsync and
+restores the prior verified tail after partial I/O failure. Added adversarial
+coverage for unavailable or lying sinks, unverified/replayed writers,
+concurrent decisions, raw-context exclusion, append-before-marker recovery,
+post-append TOCTOU, SQLite approval forgery, outbox and receipt tampering,
+backward clock movement, evidence retention, schema constraints, expiry,
+denial, consumption failure, and full governed-runtime composition.
+
+**Reason:** The prior durable queue made approval decisions durable but recorded
+only policy and eventual actuation events. A crash or audit failure could leave
+an approved or consumed capability without an independently signed transition
+record, and the dispatcher did not bind actuation to that evidence.
+
+**Full actions and links:** `enterprise/approval_audit.py`,
+`enterprise/operator.py`, `enterprise/governed_runtime.py`,
+`enterprise/mcp_dispatch.py`, `tests/test_enterprise/test_approval_audit.py`,
+the governed-runtime/MCP tests, [GAPS.md](GAPS.md), the executable control
+catalog, and the linked WHY/PARK records.
+
+**Validation:** The final Python suite passed 1,540 tests with 34 explicit
+environment/live skips and two known warnings about an absent immutable sink.
+The approval release-control selection passed 174 tests, the broader targeted
+selection including documentation passed 182 tests, Ruff and `git diff --check` passed, portfolio pins
+verified in `PIN_ONLY` mode, and the built wheel contains
+`enterprise/approval_audit.py`. Full release conformance remains red for four
+pre-existing environment gates (`ULTRA-AUTH-001`, `ULTRA-BOUNDARY-001`,
+`ULTRA-ROTATE-001`, and `SDK-PIN-001`); this change does not relabel those gaps
+as approval-audit failures. Machine-wide `pip-audit --local` is not valid
+release evidence because that shared environment contains unrelated packages
+and vulnerabilities.
+
+**Notes:** Ledger events contain a context digest, not raw approval context. The
+digest is unkeyed and is not a confidentiality control. The deployment supplies
+the decision-writer proof verifier and remains responsible for operator
+credential custody and identity assurance. Exact-once reconciliation is scoped
+to one ledger writer; cross-process ledger coordination is not established.
+System-generated safety denials are signed runtime actions, not human
+attribution, and cannot approve. The event index trades first-use scan and
+memory cost for bounded repeated lookup.
+
 ## LOG-20260716-010 - Enforce least-privilege bounded Ultra monitoring
 
 **Timestamp (UTC):** 2026-07-16T14:28:08Z

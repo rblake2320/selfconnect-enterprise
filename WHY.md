@@ -51,6 +51,112 @@ related records.
 
 ## Register
 
+## WHY-20260717-002 - Keep authorization evidence independent of mutable caches and row lifetime
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-17T14:58:07Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260717-002](LOG.md#log-20260717-002)
+**Parked records:** [PARK-20260717-002](PARKED.md#park-20260717-002)
+**Source state:** `selfconnect-enterprise`, PR #33 head
+`5e8ffbe6ca0d6ee2eda68b6a88a028d43ecec3a3`
+
+**Decision:** Authorization receipt checks read and verify one exact ledger disk
+snapshot rather than a mutable performance cache. Ledger inputs, return values,
+and nested indexes are deep-copy boundaries. Decision nonces survive approval
+purge in a separate durable tombstone for a configured horizon. Expiry consumes
+time only from a validated constructor dependency. Approval, outbox,
+replay-tombstone, and version-marker structures are attested using SQLite
+metadata plus behavioral constraint probes at startup and migration.
+
+**Why:** A signed disk record does not protect a shallow in-memory alias. A
+row-local unique nonce stops replay only until that row is purged. A public
+per-call time override lets the authorization caller choose the expiry clock.
+Checking only the approvals schema misses a legacy outbox or replay table;
+checking SQL text can be spoofed by comments or partial constraints. Each
+condition could make a component test pass while the composed authorization
+boundary accepted evidence it had not actually established.
+
+**Alternatives considered:** Clearing the ledger cache before verification was
+rejected because it would still perform separate verification and lookup reads.
+Keeping approvals forever was rejected because it couples operational retention
+to replay defense. Accepting `now=` only in tests was rejected because Python
+cannot enforce caller intent at that public API. Migrating only whichever table
+looked old was rejected because approvals, outbox evidence, replay tombstones,
+and their version marker form one integrity domain.
+
+**Consequences:** Receipt verification performs a full exact-snapshot ledger
+verification. Replay storage grows with decision volume until the configured
+horizon. Tests inject clocks at construction. Deployments must choose a nonce
+horizon and trustworthy clock appropriate to their threat and recovery window.
+
+**Rollback conditions:** Roll back only if exact-snapshot verification or
+tombstone storage causes a measured operational failure that cannot be bounded,
+and only onto an isolated branch that keeps the four gaps explicit and blocks
+governed authorization.
+
+**Evidence and links:** [LOG-20260717-002](LOG.md#log-20260717-002),
+[PARK-20260717-002](PARKED.md#park-20260717-002),
+`tests/test_enterprise/test_approval_audit.py`,
+`tests/test_enterprise/test_ledger.py`, and `GOV-APPROVAL-001`.
+
+**Claim boundary:** These controls establish bounded single-host replay and
+evidence integrity properties. They do not establish indefinite nonce history,
+multi-host consensus, trusted time infrastructure, off-host custody, or an
+authorization/compliance determination.
+
+---
+
+## WHY-20260717-001 - Finalize approval state only after signed evidence
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-17T14:04:01Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260717-001](LOG.md#log-20260717-001)
+**Parked records:** [PARK-20260717-001](PARKED.md#park-20260717-001)
+**Source state:** `selfconnect-enterprise`, `origin/master`,
+`7c2ce4c4bba1313a5fe187129062180aa4e37af8`
+
+**Decision:** Hardened approval transitions are staged with their evidence
+event in one SQLite transaction, remain non-authorizing while audit is pending,
+and finalize only after an idempotently recorded signed-ledger receipt. MCP
+actuation revalidates that evidence and the ledger chain.
+
+**Why:** Calling the ledger after committing an approved state creates an
+approved-but-unaudited crash window. Calling it before the database commit can
+create evidence for a transition that never became durable. A transactional
+outbox plus an intermediate non-authorizing state preserves fail-closed behavior
+across both sides of that boundary.
+
+**Alternatives considered:** Best-effort post-commit logging was rejected
+because it leaves usable unaudited authority. A distributed transaction between
+SQLite and JSONL was rejected because neither resource supports that protocol.
+Storing raw context in evidence was rejected because prompts and credentials
+could leak. Automatically selecting a universal operator credential format was
+rejected because CAC, enterprise PKI, and local operator systems have different
+trust and custody boundaries.
+
+**Consequences:** Approval transitions incur synchronous durable audit work and
+ledger verification before actuation. Interrupted operations may remain
+`audit_pending` until reconciliation, and the caller receives a recoverable
+approval identifier. Approval event lookup builds a typed in-memory index from
+retained entries on first use and updates it on append; deployments must measure
+index build time and memory under their retention policy. The exact-once
+argument assumes one ledger writer; this change does not provide cross-process
+ledger coordination.
+An unkeyed context digest supports
+correlation but can reveal low-entropy values by guessing.
+
+**Rollback conditions:** Revert only to an approval backend that preserves the
+same non-authorizing transition, idempotent reconciliation, exact binding, and
+signed evidence guarantees. Disabling the audit sink is permitted only for an
+explicit non-hardened consumer/test posture and must not be described as the
+governed runtime.
+
+**Evidence and links:** [LOG-20260717-001](LOG.md#log-20260717-001),
+[PARK-20260717-001](PARKED.md#park-20260717-001),
+`tests/test_enterprise/test_approval_audit.py`, and control `GOV-APPROVAL-001`.
+
 ## WHY-20260716-010 - Separate monitoring authority and bound telemetry labels
 
 **Status:** Accepted

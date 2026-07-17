@@ -179,6 +179,52 @@ persistent signed ledger. The dispatcher fails closed if those required
 components are absent. Approval context includes the action, lease, target
 identity, classification, and payload hash, and is consumed once.
 
+Durable approval transitions use a SQLite outbox in the same transaction as
+the queue state change. Hardened transitions remain `audit_pending` and cannot
+authorize work until their matching receipt passes full signed-ledger
+verification. Finalization revalidates the complete queue and outbox state
+under a SQLite write transaction. The dispatcher requires one unique ordered
+`pending -> approved -> consumed` lineage, with no deny, expiry, duplicate, or
+conflicting transition, and rechecks every receipt and the full ledger chain.
+The verified operator proof is retained only as a ledger-signed bounded
+envelope containing verifier/key identifiers, nonce, verification time, proof
+digest, and a digest binding the approval, actor, action, context, decision,
+and operator. Raw proof bytes are not stored. Internal `system/` identities may
+create safety denials only; that path is explicitly not human attribution and
+cannot approve. The SHA-256 context digest prevents raw context from
+entering the event, but an unkeyed digest is not confidentiality protection for
+guessable context. Deployments select and assess the operator proof verifier;
+the repository does not prescribe a CAC, PKI, or personnel-identity system.
+
+Decision nonces are also retained in a separate durable tombstone table for a
+configured horizon (24 hours by default). Purging terminal approval and outbox
+rows does not remove that replay record before the horizon. This is bounded
+replay retention, not indefinite global nonce history. Expiry is evaluated
+only through the queue's validated clock dependency; consume APIs do not
+accept a caller-supplied current time. Tests may inject a clock at construction,
+while production remains responsible for a trustworthy clock source.
+
+The approvals, transition outbox, replay tombstones, required indexes,
+schema-version marker, and foreign-key relationship are one migration domain.
+Startup checks SQLite metadata and exercises the constraints inside a rolled
+back savepoint rather than trusting SQL text. Any legacy member triggers one
+transactional rebuild; duplicate or conflicting nonce ownership, forged
+governed state, orphan evidence, or a failed integrity check aborts the rebuild
+and leaves the source database intact for investigation.
+The behavioral probes establish the named invariants; they are not a byte-for-byte
+attestation of SQLite's stored DDL text. A current version marker with any missing
+governed table and any schema newer than this runtime are rejected without repair
+or downgrade.
+
+Ledger append state advances only after append, flush, and `fsync` succeed. A
+failed or partial append is truncated to the prior durable length and the tail
+is reverified before retry. This is a single-process/thread-safe writer
+boundary, not multi-process file locking or off-host immutable custody.
+Receipt verification ignores the performance cache and validates the exact
+disk snapshot from which the matching signed entry was parsed. Returned ledger
+objects and nested indexes are deep copies, preventing caller mutation from
+changing the cached interpretation of signed metadata.
+
 This property covers the governed MCP dispatcher. Direct SDK calls and other
 repositories are not globally intercepted.
 

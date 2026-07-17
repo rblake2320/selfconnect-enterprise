@@ -91,6 +91,120 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260717-002 - Caller-selected consume time and row-local replay history
+
+**Status:** Parked
+**Category:** authorization integrity, replay retention, migration
+**Parked on (UTC):** 2026-07-17T14:58:07Z
+**Former location:** `enterprise/operator.py`, `enterprise/ledger.py`, and
+`enterprise/approval_audit.py`
+**Source commit:** `5e8ffbe6ca0d6ee2eda68b6a88a028d43ecec3a3`
+**Affected paths:** Approval expiry, decision replay, ledger receipt lookup,
+and approval/outbox schema initialization
+**Action log:** [LOG-20260717-002](LOG.md#log-20260717-002)
+**Why changed:** [WHY-20260717-002](WHY.md#why-20260717-002)
+**Parked by:** commit containing this record
+
+**Former wording:**
+
+> `consume_approved(..., now=...)` selected expiry time per call;
+> `decision_nonce TEXT UNIQUE` retained replay history only on approval rows;
+> ledger nested lookup returned shallow copies.
+
+**Recovery source:** Git objects
+`5e8ffbe6ca0d6ee2eda68b6a88a028d43ecec3a3:enterprise/operator.py`,
+`5e8ffbe6ca0d6ee2eda68b6a88a028d43ecec3a3:enterprise/ledger.py`, and
+`5e8ffbe6ca0d6ee2eda68b6a88a028d43ecec3a3:enterprise/approval_audit.py`.
+
+**Reason parked:** Consume APIs accepted a public `now=` override, decision
+nonce uniqueness disappeared with the approval row, ledger nested indexes used
+shallow copies, receipt lookup depended on that cache after a separate verify
+pass, and schema initialization inspected approvals without independently
+requiring a modern outbox.
+
+**Replacement:** Constructor-injected validated clocks; durable nonce
+tombstones with explicit retention; deep-copy ledger boundaries; exact
+verified-snapshot receipt lookup; and one-transaction rebuild plus versioned
+structural and behavioral attestation of approvals, outbox, replay tombstones,
+indexes, constraints, and foreign keys.
+
+**Restore when:** Do not restore in a governed authorization path. A research
+fixture may reproduce the former behavior only on an isolated branch with no
+real authorization consumer and with the gap stated explicitly.
+
+**Restore procedure:** Restore the named source object on a separate branch,
+keep current tests intact, and demonstrate why replay-after-purge, clock
+selection, cache aliasing, and orphan migration are acceptable in that bounded
+experiment before changing any claim.
+
+**Validation after restore:** The nested-alias, public-clock, backward-skew,
+nonce-after-purge, mixed-schema, orphan, comment-spoof,
+duplicate/conflicting-replay-state, forged-row, migration-rollback, full
+approval, and MCP actuation tests must be rerun and any expected failures
+recorded as open gaps.
+
+**Recovery rehearsal:** Not rehearsed; the exact source commit and test boundary
+are recorded.
+
+**Restoration risks:** Reopens caller-selected expiry, replay after row purge,
+mutable-cache receipt interpretation, and orphaned-outbox acceptance.
+
+**Evidence and links:** [WHY-20260717-002](WHY.md#why-20260717-002),
+`tests/test_enterprise/test_approval_audit.py`,
+`tests/test_enterprise/test_ledger.py`, and `GOV-APPROVAL-001`.
+
+---
+
+## PARK-20260717-001 - Durable approval state without transition evidence
+
+**Status:** Parked
+**Category:** security property, audit durability
+**Former location:** `enterprise/operator.py`, `enterprise/mcp_dispatch.py`
+**Source commit:** `7c2ce4c4bba1313a5fe187129062180aa4e37af8`
+**Affected paths:** DurableOperatorQueue and governed MCP approval consumption
+**Action log:** [LOG-20260717-001](LOG.md#log-20260717-001)
+**Why changed:** [WHY-20260717-001](WHY.md#why-20260717-001)
+**Parked by:** commit containing this record
+
+**Former wording:**
+
+> `DurableOperatorQueue` stores the same state in SQLite, uses transactional
+> state changes, and is the required governed-runtime path.
+
+**Recovery source:** Git object
+`7c2ce4c4bba1313a5fe187129062180aa4e37af8:enterprise/operator.py`.
+
+**Reason parked:** SQLite made approval state restart-safe, but request,
+approve, deny, consume, and expiry transitions were not independently appended
+to the authoritative signed ledger. The dispatcher trusted the consumed queue
+record without requiring a matching durable audit receipt.
+
+**Replacement:** Same-transaction transition outbox, non-authorizing
+`audit_pending`, durable ledger append rollback, transaction-locked idempotent
+reconciliation, deployment-provided decision-writer verification with a bounded
+nonce-bound envelope, and exact transition-lineage/receipt/chain binding before
+actuation.
+
+**Restore when:** Do not restore for hardened profiles. A non-audited queue may
+remain only as an explicitly selected consumer/test implementation outside the
+governed-runtime claim.
+
+**Restore procedure:** Restore the named source object on a separate branch,
+retain the current audited implementation, label every caller posture, and
+update linked LOG/WHY/control records before review.
+
+**Validation after restore:** Run approval concurrency, restart, audit failure,
+receipt tamper, MCP actuation, full release, and live Windows suites.
+
+**Recovery rehearsal:** Not rehearsed; source object and bounded restoration
+conditions are recorded.
+
+**Restoration risks:** Reopens approved-but-unaudited and
+consumed-without-evidence failure windows.
+
+**Evidence and links:** [WHY-20260717-001](WHY.md#why-20260717-001),
+`tests/test_enterprise/test_approval_audit.py`, and `GOV-APPROVAL-001`.
+
 ## PARK-20260716-010 - Admin-authorized and unbounded initial monitoring slice
 
 **Status:** Parked

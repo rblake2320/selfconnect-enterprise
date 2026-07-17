@@ -73,6 +73,7 @@ import json
 import os
 import threading
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Optional
 
@@ -137,6 +138,9 @@ class AgentLedger:
             )
         self._seq          = self._load_last_seq()
         self._prev_hash    = self._load_last_hash()
+        self._nested_indexes: dict[
+            tuple[str, str], dict[str, list[dict]]
+        ] = {}
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -180,7 +184,8 @@ class AgentLedger:
             )
 
         self._rotate_if_needed()
-        self._seq += 1
+        candidate_seq = self._seq + 1
+        candidate_prev_hash = self._prev_hash
 
         # Determine if this is a deny entry that should be redacted (G-1 fix)
         _is_deny = (
@@ -189,12 +194,12 @@ class AgentLedger:
         )
 
         entry: dict = {
-            "seq":       self._seq,
+            "seq":       candidate_seq,
             "agent_id":  self._identity.agent_id,
             "action":    action,
             "result":    result,
             "ts":        time.time(),
-            "prev_hash": self._prev_hash,
+            "prev_hash": candidate_prev_hash,
         }
         if self._redact_denied and _is_deny:
             # Replace metadata with a redacted stub — preserves the fact of denial
@@ -203,26 +208,140 @@ class AgentLedger:
             entry["redacted"] = True
         else:
             if metadata:
-                entry.update(metadata)
+                entry.update(deepcopy(metadata))
             if label is not None:
-                entry.update(label.to_dict())
+                entry.update(deepcopy(label.to_dict()))
 
         # Sign the entry (canonical JSON, sorted keys, no sig field yet)
         entry_bytes = json.dumps(entry, sort_keys=True, separators=(",", ":")).encode()
         sig_bytes   = self._identity.sign(entry_bytes)
         entry["sig"] = sig_bytes.hex()
 
-        # Advance the chain
-        self._prev_hash = hashlib.sha256(entry_bytes).hexdigest()
+        candidate_hash = hashlib.sha256(entry_bytes).hexdigest()
 
-        # Append to log (atomic line write)
+        # Publish in-memory chain state only after the line is durable.  If a
+        # partial append occurs, restore the previous file length before a
+        # retry so this process and a restarted process see the same tail.
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._log_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
+        original_size = self._log_path.stat().st_size if self._log_path.exists() else 0
+        try:
+            with self._log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+        except Exception:
+            try:
+                if self._log_path.exists():
+                    with self._log_path.open("r+b") as recovery:
+                        recovery.truncate(original_size)
+                        recovery.flush()
+                        os.fsync(recovery.fileno())
+                valid, _count, message = self.verify()
+                if not valid:
+                    raise LedgerIntegrityError(
+                        f"ledger append recovery failed verification: {message}"
+                    )
+                self._seq = self._load_last_seq()
+                self._prev_hash = self._load_last_hash()
+            except Exception as recovery_error:
+                raise LedgerIntegrityError(
+                    "ledger append failed and the previous durable tail could not be restored"
+                ) from recovery_error
+            raise
 
-        return entry
+        self._seq = candidate_seq
+        self._prev_hash = candidate_hash
+        self._update_nested_indexes(entry)
+
+        return deepcopy(entry)
+
+    def find_entries_by_nested_value(
+        self,
+        container: str,
+        field: str,
+        value: str,
+    ) -> list[dict]:
+        """Return indexed entries whose typed nested metadata matches ``value``.
+
+        The first lookup builds one streaming in-memory index. Subsequent
+        lookups and appends are O(1) for the requested metadata path. The
+        single-writer ledger boundary still applies.
+        """
+        if not all(isinstance(part, str) and part for part in (container, field, value)):
+            raise TypeError("nested ledger index keys and value must be non-empty strings")
+        index_key = (container, field)
+        index = self._nested_indexes.get(index_key)
+        if index is None:
+            index = {}
+            for path in self._ledger_paths():
+                with path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        if not line.strip():
+                            continue
+                        entry = json.loads(line)
+                        nested = entry.get(container)
+                        if nested is None:
+                            continue
+                        if not isinstance(nested, dict):
+                            raise LedgerIntegrityError(
+                                f"ledger field {container!r} must be an object"
+                            )
+                        nested_value = nested.get(field)
+                        if nested_value is None:
+                            continue
+                        if not isinstance(nested_value, str):
+                            raise LedgerIntegrityError(
+                                f"ledger field {container}.{field} must be a string"
+                            )
+                        index.setdefault(nested_value, []).append(deepcopy(entry))
+            self._nested_indexes[index_key] = index
+        return deepcopy(index.get(value, []))
+
+    def find_verified_entries_by_nested_value(
+        self,
+        container: str,
+        field: str,
+        value: str,
+    ) -> list[dict]:
+        """Return matches from one signature- and chain-verified disk snapshot.
+
+        Unlike the performance index, this method never trusts cached objects.
+        Receipts and authorization checks use the exact entries parsed from the
+        same immutable byte snapshots whose signatures and links were verified.
+        """
+        if not all(isinstance(part, str) and part for part in (container, field, value)):
+            raise TypeError("nested ledger index keys and value must be non-empty strings")
+        valid, _count, message, entries = self._verify_snapshot()
+        if not valid:
+            raise LedgerIntegrityError(message)
+        matches: list[dict] = []
+        for entry in entries:
+            nested = entry.get(container)
+            if nested is None:
+                continue
+            if not isinstance(nested, dict):
+                raise LedgerIntegrityError(f"ledger field {container!r} must be an object")
+            nested_value = nested.get(field)
+            if nested_value is None:
+                continue
+            if not isinstance(nested_value, str):
+                raise LedgerIntegrityError(
+                    f"ledger field {container}.{field} must be a string"
+                )
+            if nested_value == value:
+                matches.append(deepcopy(entry))
+        return matches
+
+    def _update_nested_indexes(self, entry: dict) -> None:
+        for (container, field), index in self._nested_indexes.items():
+            nested = entry.get(container)
+            if nested is None:
+                continue
+            if not isinstance(nested, dict) or not isinstance(nested.get(field), str):
+                raise LedgerIntegrityError(
+                    f"ledger field {container}.{field} must be a string"
+                )
+            index.setdefault(nested[field], []).append(deepcopy(entry))
 
     def verify(self) -> tuple[bool, int, str]:
         """Verify all signatures and hash chain integrity.
@@ -232,85 +351,116 @@ class AgentLedger:
             valid=True means every signature is valid and every hash link is intact.
             valid=False includes a message describing the first failure.
         """
+        valid, count, message, _entries = self._verify_snapshot()
+        return valid, count, message
+
+    def _verify_snapshot(self) -> tuple[bool, int, str, list[dict]]:
+        """Read each ledger segment once and verify those exact bytes."""
         paths = self._ledger_paths()
         if not paths:
-            return True, 0, "ledger is empty"
+            return True, 0, "ledger is empty", []
+
+        try:
+            snapshots = [(path, path.read_bytes()) for path in paths]
+        except OSError as exc:
+            return False, 0, f"ledger snapshot read failed: {exc}", []
 
         prev_hash = GENESIS_HASH
         count     = 0
         expected_seq = 1
+        verified_entries: list[dict] = []
 
-        for path in paths:
-            with path.open("r", encoding="utf-8") as fh:
-                for lineno, line in enumerate(fh, start=1):
-                    line = line.strip()
-                    if not line:
-                        continue
+        for path, snapshot in snapshots:
+            for lineno, raw_line in enumerate(snapshot.splitlines(), start=1):
+                line = raw_line.strip()
+                if not line:
+                    continue
 
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError as exc:
-                        return (
-                            False,
-                            count,
-                            f"{path.name} line {lineno}: JSON parse error: {exc}",
-                        )
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                    return (
+                        False,
+                        count,
+                        f"{path.name} line {lineno}: JSON parse error: {exc}",
+                        [],
+                    )
 
-                    sig_hex = entry.pop("sig", None)
-                    if sig_hex is None:
-                        return (
-                            False,
-                            count,
-                            f"{path.name} line {lineno}: missing 'sig' field",
-                        )
-                    if entry.get("seq") != expected_seq:
-                        return (
-                            False,
-                            count,
-                            f"{path.name} line {lineno}: sequence mismatch "
-                            f"(expected {expected_seq}, got {entry.get('seq')!r})",
-                        )
-                    if entry.get("agent_id") != self._identity.agent_id:
-                        return (
-                            False,
-                            count,
-                            f"{path.name} line {lineno}: agent identity mismatch",
-                        )
+                if not isinstance(entry, dict):
+                    return (
+                        False,
+                        count,
+                        f"{path.name} line {lineno}: entry is not an object",
+                        [],
+                    )
+                signed_entry = dict(entry)
+                sig_hex = signed_entry.pop("sig", None)
+                if sig_hex is None:
+                    return (
+                        False,
+                        count,
+                        f"{path.name} line {lineno}: missing 'sig' field",
+                        [],
+                    )
+                if signed_entry.get("seq") != expected_seq:
+                    return (
+                        False,
+                        count,
+                        f"{path.name} line {lineno}: sequence mismatch "
+                        f"(expected {expected_seq}, got {signed_entry.get('seq')!r})",
+                        [],
+                    )
+                if signed_entry.get("agent_id") != self._identity.agent_id:
+                    return (
+                        False,
+                        count,
+                        f"{path.name} line {lineno}: agent identity mismatch",
+                        [],
+                    )
 
-                    stored_prev = entry.get("prev_hash", "")
-                    if stored_prev != prev_hash:
-                        return (
-                            False,
-                            count,
-                            f"{path.name} line {lineno}: hash chain broken "
-                            f"(expected {prev_hash[:12]}..., got {stored_prev[:12]}...)",
-                        )
+                stored_prev = signed_entry.get("prev_hash", "")
+                if stored_prev != prev_hash:
+                    return (
+                        False,
+                        count,
+                        f"{path.name} line {lineno}: hash chain broken "
+                        f"(expected {prev_hash[:12]}..., got {stored_prev!r})",
+                        [],
+                    )
 
-                    entry_bytes = json.dumps(
-                        entry, sort_keys=True, separators=(",", ":")
-                    ).encode()
-                    try:
-                        sig_bytes = bytes.fromhex(sig_hex)
-                    except ValueError:
-                        return (
-                            False,
-                            count,
-                            f"{path.name} line {lineno}: invalid sig hex",
-                        )
+                entry_bytes = json.dumps(
+                    signed_entry, sort_keys=True, separators=(",", ":")
+                ).encode()
+                try:
+                    sig_bytes = bytes.fromhex(sig_hex)
+                except (TypeError, ValueError):
+                    return (
+                        False,
+                        count,
+                        f"{path.name} line {lineno}: invalid sig hex",
+                        [],
+                    )
 
-                    pub_key_bytes = self._identity.public_key_bytes
-                    if not AgentIdentity.verify(entry_bytes, sig_bytes, pub_key_bytes):
-                        return (
-                            False,
-                            count,
-                            f"{path.name} line {lineno}: signature invalid",
-                        )
+                pub_key_bytes = self._identity.public_key_bytes
+                if not AgentIdentity.verify(entry_bytes, sig_bytes, pub_key_bytes):
+                    return (
+                        False,
+                        count,
+                        f"{path.name} line {lineno}: signature invalid",
+                        [],
+                    )
 
-                    prev_hash = hashlib.sha256(entry_bytes).hexdigest()
-                    count += 1
-                    expected_seq += 1
+                prev_hash = hashlib.sha256(entry_bytes).hexdigest()
+                count += 1
+                expected_seq += 1
+                verified_entries.append(entry)
 
-        return True, count, f"{count} entries, all signatures valid, chain intact"
+        return (
+            True,
+            count,
+            f"{count} entries, all signatures valid, chain intact",
+            verified_entries,
+        )
 
     def tail(self, n: int = 10) -> list[dict]:
         """Return the last n entries from the ledger (most recent last)."""
@@ -507,4 +657,24 @@ class ThreadSafeAgentLedger(AgentLedger):
         """Thread-safe entry_count() — serialised through an RLock."""
         with self._lock:
             return super().entry_count()
+
+    def find_entries_by_nested_value(
+        self,
+        container: str,
+        field: str,
+        value: str,
+    ) -> list[dict]:
+        """Thread-safe indexed nested metadata lookup."""
+        with self._lock:
+            return super().find_entries_by_nested_value(container, field, value)
+
+    def find_verified_entries_by_nested_value(
+        self,
+        container: str,
+        field: str,
+        value: str,
+    ) -> list[dict]:
+        """Thread-safe lookup from one verified disk snapshot."""
+        with self._lock:
+            return super().find_verified_entries_by_nested_value(container, field, value)
 

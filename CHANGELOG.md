@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Audit-bound operator approvals
+
+- Added a same-transaction SQLite transition outbox for durable approval
+  request, approve, deny, consume, and expiry events.
+- Hardened profiles keep transitions in a non-authorizing `audit_pending`
+  state until a matching signed-ledger receipt is durable; restart
+  reconciliation is idempotent across the append-before-receipt crash window.
+- Added decision-writer verification and required the dispatcher to recheck the
+  unique ordered request/approval/consumption lineage, each outbox receipt,
+  bounded decision-proof envelope, context digest, and signed ledger chain
+  before mutation.
+- Publish ledger sequence/hash state only after a durable append; partial write
+  or `fsync` failure restores and verifies the previous tail before retry.
+- Added explicit expiry/backward-clock rejection through a constructor-injected
+  validated clock; removed the per-call time override from consume APIs.
+- Decision nonces now leave durable tombstones for an explicit retention
+  horizon, so purging an approval does not immediately reopen replay.
+- Ledger receipt verification reads one exact signature- and chain-verified
+  disk snapshot; public values and indexes cannot alias signed nested metadata.
+- Approval, outbox, replay-tombstone, and schema-version structures are
+  attested through SQLite metadata plus behavioral constraint probes and are
+  rebuilt in one transaction when any member is legacy. Duplicate/conflicting
+  replay state, constraint-invalid governed rows, and orphan or foreign-key violations fail
+  closed without replacing the source database.
+- Finalization remains transaction-locked and purge eligibility remains bound
+  to terminal and delivered-evidence time.
+- Context is represented in evidence only by a canonical SHA-256 digest. This
+  supports correlation and integrity checking, not confidentiality against
+  low-entropy context guessing.
+- Evidence: [LOG-20260717-001](LOG.md#log-20260717-001). Rationale:
+  [WHY-20260717-001](WHY.md#why-20260717-001) and
+  [WHY-20260717-002](WHY.md#why-20260717-002). Recovery:
+  [PARK-20260717-001](PARKED.md#park-20260717-001) and
+  [PARK-20260717-002](PARKED.md#park-20260717-002).
+
 ### Least-privilege Ultra monitoring
 
 - Replaced administrator-token scraping with a dedicated current/previous
