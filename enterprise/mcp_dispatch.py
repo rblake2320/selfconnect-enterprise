@@ -19,10 +19,12 @@ import os
 import re
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
+from types import MappingProxyType
 from typing import Any, Callable
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from enterprise.control import ControlPlane
@@ -61,6 +63,15 @@ _MAX_READ_CHARS = 65_536
 _DEFAULT_DELIVERY_TIMEOUT_MS = 3_000
 _ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 _VALID_PROFILES = frozenset({"normal", "enterprise", "government"})
+_VALID_LEASE_ROLES = frozenset({"sender", "receiver", "observer"})
+_LEASE_TOOL_ROLES = MappingProxyType(
+    {
+        "sc_inject_text": frozenset({"sender"}),
+        # Sender reads are part of the existing request/response flow. Receiver
+        # and observer leases are explicitly read-only at this boundary.
+        "sc_read_output": frozenset({"sender", "receiver", "observer"}),
+    }
+)
 
 
 class MCPDispatchError(RuntimeError):
@@ -103,6 +114,93 @@ class RuntimeLease:
 
 
 @dataclass(frozen=True)
+class _LeaseAuthority:
+    """Signed snapshot of every issuance-time RuntimeLease authority field."""
+
+    lease: RuntimeLease
+    signature: bytes
+
+
+class _LeaseAuthorityError(RuntimeError):
+    def __init__(self, reason: str, *, issued_role: str = "missing") -> None:
+        super().__init__(reason)
+        self.issued_role = issued_role
+
+
+class _LeaseAuthorityStore:
+    """Own signed authority records and revocation state for one dispatcher.
+
+    This boundary protects against replacement or deserialization of runtime
+    lease/authority records. It is not a sandbox against arbitrary Python code
+    execution or hostile reflection inside this process.
+    """
+
+    __slots__ = ("__private_key", "__public_key", "__records", "__revoked")
+
+    def __init__(self) -> None:
+        self.__private_key = Ed25519PrivateKey.generate()
+        self.__public_key = self.__private_key.public_key()
+        self.__records: dict[str, _LeaseAuthority] = {}
+        self.__revoked: set[str] = set()
+
+    def issue(self, lease: RuntimeLease) -> None:
+        if lease.lease_id in self.__records or lease.lease_id in self.__revoked:
+            raise MCPDispatchError("lease authority already exists")
+        self.__records[lease.lease_id] = _LeaseAuthority(
+            lease=lease,
+            signature=self.__private_key.sign(_lease_authority_payload(lease)),
+        )
+
+    def revoke(self, lease: RuntimeLease) -> None:
+        if lease.lease_id not in self.__records:
+            raise MCPDispatchError("lease issuance authority is missing")
+        revoked = replace(lease, revoked=True)
+        self.__records[lease.lease_id] = _LeaseAuthority(
+            lease=revoked,
+            signature=self.__private_key.sign(_lease_authority_payload(revoked)),
+        )
+        self.__revoked.add(lease.lease_id)
+
+    def verify(
+        self,
+        requested_lease_id: str,
+        lease: RuntimeLease,
+        *,
+        allow_revoked: bool = False,
+    ) -> RuntimeLease:
+        if lease.lease_id != requested_lease_id:
+            raise _LeaseAuthorityError(
+                "lease storage key does not match the embedded signed lease id",
+                issued_role=lease.role,
+            )
+        authority = self.__records.get(requested_lease_id)
+        if authority is None:
+            raise _LeaseAuthorityError("lease issuance authority is missing")
+        issued_role = authority.lease.role
+        try:
+            self.__public_key.verify(
+                authority.signature,
+                _lease_authority_payload(authority.lease),
+            )
+        except (InvalidSignature, TypeError, ValueError) as exc:
+            raise _LeaseAuthorityError(
+                "lease issuance authority signature is invalid",
+                issued_role=issued_role,
+            ) from exc
+        if lease != authority.lease:
+            raise _LeaseAuthorityError(
+                "lease no longer matches its signed issuance authority",
+                issued_role=issued_role,
+            )
+        if requested_lease_id in self.__revoked and not allow_revoked:
+            raise _LeaseAuthorityError(
+                "lease issuance authority is revoked",
+                issued_role=issued_role,
+            )
+        return authority.lease
+
+
+@dataclass(frozen=True)
 class AuditEvent:
     event_id: str
     timestamp: float
@@ -122,6 +220,18 @@ def _now() -> float:
 
 def _hash_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _lease_authority_payload(lease: RuntimeLease) -> bytes:
+    return json.dumps(
+        {
+            **asdict(lease),
+            "schema": "selfconnect.lease-authority.v1",
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
 
 
 def _bound_error(value: str) -> str:
@@ -294,6 +404,7 @@ class MCPDispatcher:
         self._identity_type = identity_type
         self._now = now
         self._leases: dict[str, RuntimeLease] = {}
+        self.__lease_authority_store = _LeaseAuthorityStore()
         self._audit: list[AuditEvent] = []
         self._read_snapshots: dict[str, str] = {}
         self._injected_text: dict[str, str] = {}
@@ -352,7 +463,19 @@ class MCPDispatcher:
 
     def active_leases(self) -> list[RuntimeLease]:
         now = self._now()
-        return [lease for lease in self._leases.values() if lease.is_active(now)]
+        leases = []
+        for lease_id, lease in self._leases.items():
+            try:
+                verified = self.__lease_authority_store.verify(
+                    lease_id,
+                    lease,
+                    allow_revoked=True,
+                )
+            except _LeaseAuthorityError:
+                continue
+            if verified.is_active(now):
+                leases.append(verified)
+        return leases
 
     def audit_events(self) -> list[AuditEvent]:
         return list(self._audit)
@@ -401,7 +524,62 @@ class MCPDispatcher:
             )
         return event
 
-    def _require_lease(self, lease_id: str, hwnd: int | None = None) -> RuntimeLease:
+    def _record_lease_role_denial(
+        self,
+        *,
+        lease_id: str,
+        tool: str,
+        stored_role: str,
+        issued_role: str,
+        reason: str,
+    ) -> None:
+        if self._ledger is None:
+            raise MCPDispatchError(
+                "persistent lease role denial evidence is unavailable"
+            )
+        self._ledger.log(
+            "lease_role_decision",
+            result="denied",
+            metadata={
+                "lease_id": lease_id,
+                "tool": tool,
+                "stored_role": stored_role,
+                "issued_role": issued_role,
+                "allowed_roles": sorted(_LEASE_TOOL_ROLES.get(tool, frozenset())),
+                "reason": reason,
+            },
+        )
+
+    def _deny_lease_role(
+        self,
+        *,
+        lease_id: str,
+        tool: str,
+        stored_role: str,
+        issued_role: str,
+        reason: str,
+    ) -> None:
+        try:
+            self._record_lease_role_denial(
+                lease_id=lease_id,
+                tool=tool,
+                stored_role=stored_role,
+                issued_role=issued_role,
+                reason=reason,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise MCPDispatchError(
+                f"{reason}; lease role denial evidence could not be persisted: {exc}"
+            ) from exc
+        raise MCPDispatchError(reason)
+
+    def _require_lease(
+        self,
+        lease_id: str,
+        hwnd: int | None = None,
+        *,
+        tool: str,
+    ) -> RuntimeLease:
         lease = self._leases.get(lease_id)
         if lease is None:
             raise MCPDispatchError(f"lease {lease_id!r} not found")
@@ -409,6 +587,37 @@ class MCPDispatcher:
             raise MCPDispatchError(f"lease {lease_id!r} is expired or revoked")
         if hwnd is not None and int(hwnd) != int(lease.hwnd):
             raise MCPDispatchError("lease is not bound to requested HWND")
+
+        try:
+            authority = self.__lease_authority_store.verify(lease_id, lease)
+        except _LeaseAuthorityError as exc:
+            self._deny_lease_role(
+                lease_id=lease_id,
+                tool=tool,
+                stored_role=lease.role,
+                issued_role=exc.issued_role,
+                reason=str(exc),
+            )
+        assert authority is not None
+
+        allowed_roles = _LEASE_TOOL_ROLES.get(tool)
+        if allowed_roles is None:
+            self._deny_lease_role(
+                lease_id=lease_id,
+                tool=tool,
+                stored_role=lease.role,
+                issued_role=authority.role,
+                reason=f"tool {tool!r} has no lease-role authorization contract",
+            )
+        assert allowed_roles is not None
+        if authority.role not in allowed_roles:
+            self._deny_lease_role(
+                lease_id=lease_id,
+                tool=tool,
+                stored_role=lease.role,
+                issued_role=authority.role,
+                reason=f"lease role {authority.role!r} is not authorized for {tool}",
+            )
         return lease
 
     @staticmethod
@@ -625,7 +834,7 @@ class MCPDispatcher:
         action: str,
     ) -> dict[str, Any]:
         """Return a freshly target-verified context for operator review."""
-        lease = self._require_lease(lease_id, int(arguments["hwnd"]))
+        lease = self._require_lease(lease_id, int(arguments["hwnd"]), tool=action)
         target = self._verify_live_target(lease.hwnd, expected=lease)
         return self.build_approval_context(
             lease,
@@ -641,12 +850,15 @@ class MCPDispatcher:
     def _sc_request_lease(self, args: dict[str, Any]) -> dict[str, Any]:
         ttl = int(args.get("ttl_seconds", 300))
         now = self._now()
+        role = args.get("role")
+        if role not in _VALID_LEASE_ROLES:
+            raise MCPDispatchError(f"unknown lease role {role!r}")
         target = self._verify_live_target(int(args["hwnd"]))
         lease = RuntimeLease(
             lease_id="lease-" + uuid.uuid4().hex[:24],
             agent_id=args["agent_id"],
             hwnd=int(args["hwnd"]),
-            role=args["role"],
+            role=role,
             issued_at=now,
             expires_at=now + ttl,
             target_pid=int(target["pid"]),
@@ -655,30 +867,24 @@ class MCPDispatcher:
             target_class=str(target["class"]),
             target_title_hash=_hash_text(str(target.get("title", ""))),
         )
+        self.__lease_authority_store.issue(lease)
         self._leases[lease.lease_id] = lease
         self._control.register(lease.agent_id)
         return lease.to_dict(now)
 
     def _sc_revoke_lease(self, args: dict[str, Any]) -> dict[str, Any]:
-        lease = self._leases.get(args["lease_id"])
+        lease_id = args["lease_id"]
+        lease = self._leases.get(lease_id)
         if lease is None:
-            raise MCPDispatchError(f"lease {args['lease_id']!r} not found")
-        revoked = RuntimeLease(
-            lease_id=lease.lease_id,
-            agent_id=lease.agent_id,
-            hwnd=lease.hwnd,
-            role=lease.role,
-            issued_at=lease.issued_at,
-            expires_at=lease.expires_at,
-            revoked=True,
-            target_pid=lease.target_pid,
-            target_exe=lease.target_exe,
-            target_exe_path=lease.target_exe_path,
-            target_class=lease.target_class,
-            target_title_hash=lease.target_title_hash,
-        )
-        self._leases[lease.lease_id] = revoked
-        return {"lease_id": lease.lease_id, "revoked": True, "reason": args.get("reason", "")}
+            raise MCPDispatchError(f"lease {lease_id!r} not found")
+        try:
+            canonical = self.__lease_authority_store.verify(lease_id, lease)
+        except _LeaseAuthorityError as exc:
+            raise MCPDispatchError(str(exc)) from exc
+        revoked = replace(canonical, revoked=True)
+        self.__lease_authority_store.revoke(canonical)
+        self._leases[lease_id] = revoked
+        return {"lease_id": lease_id, "revoked": True, "reason": args.get("reason", "")}
 
     def _sc_list_leases(self, args: dict[str, Any]) -> dict[str, Any]:
         now = self._now()
@@ -686,7 +892,15 @@ class MCPDispatcher:
         agent_id = args.get("filter_agent_id")
         include_expired = bool(args.get("include_expired", False))
         leases = []
-        for lease in self._leases.values():
+        for lease_id, lease in self._leases.items():
+            try:
+                lease = self.__lease_authority_store.verify(
+                    lease_id,
+                    lease,
+                    allow_revoked=True,
+                )
+            except _LeaseAuthorityError:
+                continue
             if role not in (None, "all") and lease.role != role:
                 continue
             if agent_id and lease.agent_id != agent_id:
@@ -697,14 +911,27 @@ class MCPDispatcher:
         return {"leases": leases, "count": len(leases)}
 
     def _sc_get_lease_info(self, args: dict[str, Any]) -> dict[str, Any]:
-        lease = self._leases.get(args["lease_id"])
+        lease_id = args["lease_id"]
+        lease = self._leases.get(lease_id)
         if lease is None:
-            raise MCPDispatchError(f"lease {args['lease_id']!r} not found")
-        return lease.to_dict(self._now())
+            raise MCPDispatchError(f"lease {lease_id!r} not found")
+        try:
+            canonical = self.__lease_authority_store.verify(
+                lease_id,
+                lease,
+                allow_revoked=True,
+            )
+        except _LeaseAuthorityError as exc:
+            raise MCPDispatchError(str(exc)) from exc
+        return canonical.to_dict(self._now())
 
     def _sc_inject_text(self, args: dict[str, Any]) -> dict[str, Any]:
         probe = _delivery_probe(args["text"])
-        lease = self._require_lease(args["lease_id"], int(args["hwnd"]))
+        lease = self._require_lease(
+            args["lease_id"],
+            int(args["hwnd"]),
+            tool="sc_inject_text",
+        )
         target = self._verify_live_target(int(args["hwnd"]), expected=lease)
         governance = self._require_execution_authorization(
             lease,
@@ -822,7 +1049,11 @@ class MCPDispatcher:
         return data
 
     def _sc_read_output(self, args: dict[str, Any]) -> dict[str, Any]:
-        lease = self._require_lease(args["lease_id"], int(args["hwnd"]))
+        lease = self._require_lease(
+            args["lease_id"],
+            int(args["hwnd"]),
+            tool="sc_read_output",
+        )
         target = self._verify_live_target(int(args["hwnd"]), expected=lease)
         governance = self._require_execution_authorization(
             lease,

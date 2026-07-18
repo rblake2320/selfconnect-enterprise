@@ -54,6 +54,108 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260718-005 - Bound the candidate-local CI gate
+
+**Timestamp (UTC):** 2026-07-18T16:54:14Z
+**Actor:** Codex, requested by the repository owner
+**Category:** evidence boundary, documentation
+**Base commit:** `8a4cdad4f1a723f4bb03e5d07ba73a12d974b87b`
+**Change reference:** commit containing this entry; draft pull request #37
+**Why:** [WHY-20260718-005](WHY.md#why-20260718-005)
+**Parked records:** [PARK-20260718-005](PARKED.md#park-20260718-005)
+
+**Changed:** Classified collection, skip, conftest, and installed-pytest
+consistency checks as a candidate-local regression gate, not an external
+supply-chain authority. Pinned pytest 9.1.1 and the exact reviewed skip set.
+
+**Reason:** Candidate code controls its workflow, runner, and expected hashes.
+Those checks detect drift but do not establish independent custody.
+
+**Full actions and links:** `.github/workflows/ci.yml`, `tools/ci_test_gate.py`,
+draft PR #37, and the linked WHY/PARK records.
+
+**Validation:** Focused tests, one full candidate-local run, Ruff, actionlint,
+and hosted CI on the final commit.
+
+**Notes:** External wheel hashes, protected reusable workflow custody, and a
+clean bootstrap runner remain parked as a separate control.
+
+## LOG-20260718-004 - Make one test execution authoritative and observable
+
+**Timestamp (UTC):** 2026-07-18T15:57:48Z
+**Actor:** Codex, requested by the repository owner
+**Category:** CI reliability, test evidence
+**Base commit:** `f0e2d820f4488f4ff0622f213220cc5da45d8439`
+**Change reference:** commit containing this entry; draft pull request #37
+**Why:** [WHY-20260718-004](WHY.md#why-20260718-004)
+**Parked records:** [PARK-20260718-004](PARKED.md#park-20260718-004)
+
+**Changed:** Replaced the Windows unit-test and result-policy steps with one
+dedicated runner. A pytest plugin records structured report objects directly,
+while pytest prints its normal diagnostics. Workflow and AST regressions enforce
+the unit lane's sole entrypoint and one `pytest.main` call without
+shell/subprocess aliases. Safe-path/environment flags prevent repository-path
+shadowing, plugin autoload is disabled, pytest's candidate-local RECORD hashes
+are checked before import, and the conftest hash, complete collection
+digest, and 38 exact skip node/reason pairs are pinned.
+
+**Reason:** Hosted run 29650683874 passed its first full suite (1,639 passed)
+then failed a redundant second run. The second step captured and suppressed the
+failing test identity, leaving only a count. That design created avoidable
+nondeterminism and made the failure irrecoverable from the Actions log.
+
+**Full actions and links:** `.github/workflows/ci.yml`,
+`tests/test_enterprise/test_ci_test_execution.py`, and draft PR #37.
+
+**Validation:** actionlint v1.7.12 passed; focused workflow and dispatcher tests
+passed 84/84; one local full execution passed 1,641 with 38 named skips and two
+known warnings. Hosted validation is pending on the commit containing this
+entry.
+
+**Notes:** This change does not classify the suppressed second-run failure as a
+product defect because the former workflow did not retain its identity.
+
+## LOG-20260718-003 - Enforce issued lease roles as runtime authority
+
+**Timestamp (UTC):** 2026-07-18T15:36:54Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security fix, adversarial testing, documentation
+**Base commit:** `c094fb3c2de238aeb3c8411dd7366b7c4b6f246f`
+**Change reference:** commit containing this entry; draft pull request for issue #27
+**Why:** [WHY-20260718-003](WHY.md#why-20260718-003)
+**Parked records:** [PARK-20260718-003](PARKED.md#park-20260718-003)
+
+**Changed:** Added a closed lease-role capability matrix, a private authority
+store whose records sign every immutable `RuntimeLease` field, per-operation
+signature and exact snapshot revalidation, independent revocation retention,
+and explicit denial evidence. `sc_inject_text` is sender-only. Existing sender,
+receiver, and observer roles may read output. Unknown, wildcard, missing,
+store-mutated, double-replaced, or deserialized-forged roles cannot create or
+widen actuation authority.
+
+**Reason:** The tool schema constrained role names, but the runtime used the
+stored role only for display and filtering. A valid observer lease could invoke
+`sc_inject_text` and reach the router.
+
+**Full actions and links:** `enterprise/mcp_dispatch.py`,
+`enterprise/mcp_tools.py`, `tests/test_enterprise/test_mcp_dispatch.py`,
+`docs/assurance/control_catalog.json`, issue #27, and the linked WHY/PARK
+records.
+
+**Validation:** The final full local suite passed **1,639 tests** with 38 named
+environment/platform/live skips and the two pre-existing immutable-sink
+warnings; repository-wide Ruff passed. The focused dispatcher,
+governed-runtime, MCP-tool, and documentation set passed **137 tests**. Release
+conformance passed `LEASE-ROLE-001` and every locally available Python control;
+its overall local result remained failed because the isolated worktree lacked
+the pinned `@tsk/server` checkout and a Git-traceable installed SelfConnect SDK.
+Hosted CI remains the composition check for those dependencies.
+
+**Notes:** This closes the current lease-role confusion path only. It does not
+restore the historical participant-mode registry, generalized executor,
+logical target registry, or product-specific bridge, and it does not close
+issue #27.
+
 ## LOG-20260718-002 - Close approval identity and local ownership gaps
 
 **Timestamp (UTC):** 2026-07-18T12:52:54Z

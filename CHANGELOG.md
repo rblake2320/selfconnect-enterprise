@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Observable CI test gate
+
+- Replaced two independent full-suite executions with one candidate-local pytest
+  run whose complete output is printed before result and skip-policy checks.
+- Added a regression test that prevents a second full-suite invocation or a
+  return to hidden failure output. The runner disables plugin autoload, verifies
+  pytest's candidate-local Python RECORD closure, and pins the reviewed
+  conftest, collected-test digest, and exact 38-pair skip set. These checks
+  detect candidate drift; they are not an external supply-chain trust anchor.
+  Evidence: [LOG-20260718-004](LOG.md#log-20260718-004),
+  rationale: [WHY-20260718-004](WHY.md#why-20260718-004), recovery:
+  [PARK-20260718-004](PARKED.md#park-20260718-004).
+- Parked external wheel-hash custody, a protected reusable workflow, and clean
+  bootstrap execution as a separate supply-chain control:
+  [PARK-20260718-005](PARKED.md#park-20260718-005).
+
+### Lease role authority
+
+- Bound every immutable field of each issued channel lease to an Ed25519-signed
+  authority-store record, including expiry and target identity. Revocation is
+  retained independently so replaying an older runtime lease cannot revive it.
+- Restricted `sc_inject_text` to sender leases. Receiver and observer leases
+  remain read-only; current sender, receiver, and observer leases may use
+  `sc_read_output`.
+- Reject missing, unknown, wildcard, mutated, or signature-invalid roles without
+  routing. Persist role-specific denial evidence when a ledger is configured;
+  fail closed if that evidence cannot be persisted. Evidence:
+  [LOG-20260718-003](LOG.md#log-20260718-003), rationale:
+  [WHY-20260718-003](WHY.md#why-20260718-003), recovery:
+  [PARK-20260718-003](PARKED.md#park-20260718-003).
+
 ### Governed target binding reconciliation
 
 - Enforced the lease's exact title hash alongside PID, executable path, and

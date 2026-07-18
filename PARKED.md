@@ -91,6 +91,136 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260718-005 - External CI supply-chain custody
+
+**Status:** Parked
+**Category:** supply-chain evidence
+**Former location:** Not implemented; separate control boundary
+**Source commit:** `8a4cdad4f1a723f4bb03e5d07ba73a12d974b87b`
+**Affected paths:** Release workflow, dependency artifacts, runner bootstrap
+**Action log:** [LOG-20260718-005](LOG.md#log-20260718-005)
+**Why changed:** [WHY-20260718-005](WHY.md#why-20260718-005)
+**Parked by:** commit containing this record
+
+**Former wording:** Candidate-local RECORD and workflow checks risked being
+described as supply-chain trust evidence.
+
+**Recovery source:** This record; no removed implementation exists.
+
+**Reason parked:** Candidate code controls its expected hashes and runner, so
+it cannot establish independent custody.
+
+**Replacement:** Candidate-local deterministic drift detection with bounded
+claims.
+
+**Restore when:** A protected reusable workflow or equivalent external gate
+owns exact wheel hashes and runs from a clean bootstrap outside candidate
+control.
+
+**Restore procedure:** Provision protected workflow custody, pin externally
+reviewed wheel hashes, execute from a clean bootstrap runner, and bind evidence
+to the reviewed commit.
+
+**Validation after restore:** Change candidate runner/hash files and prove the
+external gate still rejects them.
+
+**Recovery rehearsal:** Not rehearsed.
+
+**Restoration risks:** A nominally external workflow that candidates can edit
+would reproduce the same self-attestation gap.
+
+**Evidence and links:** [WHY-20260718-005](WHY.md#why-20260718-005).
+
+## PARK-20260718-004 - Duplicate hidden CI test execution
+
+**Status:** Parked
+**Category:** test evidence
+**Former location:** `.github/workflows/ci.yml`, `Unit tests` and
+`Verify test count` steps
+**Source commit:** `f0e2d820f4488f4ff0622f213220cc5da45d8439`
+**Affected paths:** `.github/workflows/ci.yml`
+**Action log:** [LOG-20260718-004](LOG.md#log-20260718-004)
+**Why changed:** [WHY-20260718-004](WHY.md#why-20260718-004)
+**Parked by:** commit containing this record
+
+**Former wording:** The workflow contained a `Unit tests` step that ran pytest,
+followed by `Verify test count`, which ran the complete pytest suite again with
+captured output.
+
+**Recovery source:** Git object
+`f0e2d820f4488f4ff0622f213220cc5da45d8439:.github/workflows/ci.yml`.
+
+**Reason parked:** The workflow ran the full suite twice and suppressed the
+captured second run's failure identity. The two executions could produce
+different results while the gate reported only a count.
+**Replacement:** One candidate-local dedicated pytest runner prints complete
+output, checks pytest's installed distribution and repository test inputs,
+and applies the result, collection, and exact skip policy to structured pytest
+report objects.
+
+**Restore when:** A demonstrated requirement for two independent suite
+executions that cannot be met by repeatability or stress jobs with retained
+artifacts.
+
+**Restore procedure:** Restore the source commit's two steps, make both runs
+fully observable, and explicitly treat them as separate evidence.
+
+**Validation after restore:** Run actionlint, the workflow regression test, and
+a hosted Windows CI job.
+
+**Recovery rehearsal:** Not rehearsed.
+
+**Restoration risks:** Duplicate cost, nondeterministic disagreement between
+runs, and loss of failure diagnostics if captured output is hidden again.
+
+**Evidence and links:** Hosted run 29650683874,
+`tests/test_enterprise/test_ci_test_execution.py`, and
+[WHY-20260718-004](WHY.md#why-20260718-004).
+
+## PARK-20260718-003 - Descriptive lease roles without capability enforcement
+
+**Status:** Parked security behavior; do not restore.
+**Category:** runtime authorization
+**Former location:** `enterprise/mcp_dispatch.py`, lease issuance and
+`_require_lease`
+**Source commit:** `c094fb3c2de238aeb3c8411dd7366b7c4b6f246f`
+**Affected paths:** Channel lease issuance, injection, output reads, audit evidence
+**Action log:** [LOG-20260718-003](LOG.md#log-20260718-003)
+**Why changed:** [WHY-20260718-003](WHY.md#why-20260718-003)
+**Parked by:** commit containing this record
+
+**Former wording:** The schema accepted `sender`, `receiver`, or `observer`, but
+`_require_lease` checked only existence, expiry/revocation, and HWND. Any valid
+role could therefore call `sc_inject_text`.
+
+**Recovery source:** Git object
+`c094fb3c2de238aeb3c8411dd7366b7c4b6f246f:enterprise/mcp_dispatch.py`.
+
+**Reason parked:** A role presented as part of a security lease did not restrict
+the authority that lease carried. Observer and receiver leases could actuate a
+target, and replacing the stored frozen lease object could rewrite its role.
+
+**Replacement:** Closed `_LEASE_TOOL_ROLES`, a dedicated authority store with
+full-lease Ed25519 snapshots and independent revocation state, per-operation
+signature and exact binding checks, and fail-closed role-denial evidence.
+
+**Restore when:** Do not restore. Replace only with a stronger capability system
+that proves equivalent sender-only actuation and fail-closed role mutation.
+
+**Restore procedure:** None for production. The former file remains available
+from the named Git object for isolated regression reproduction.
+
+**Validation after restore:** Not applicable; restoration reopens the verified
+observer-to-inject authorization bypass.
+
+**Recovery rehearsal:** Not rehearsed.
+
+**Restoration risks:** Restores role confusion, read-only-to-actuator privilege
+escalation, and misleading audit metadata.
+
+**Evidence and links:** `tests/test_enterprise/test_mcp_dispatch.py`, issue #27,
+and [WHY-20260718-003](WHY.md#why-20260718-003).
+
 ## PARK-20260718-002 - Caller-selected system denial and unbound operator subject
 
 **Status:** Parked security behavior; do not restore.

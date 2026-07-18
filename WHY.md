@@ -51,6 +51,122 @@ related records.
 
 ## Register
 
+## WHY-20260718-005 - Treat candidate CI as regression evidence, not custody
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-18T16:54:14Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260718-005](LOG.md#log-20260718-005)
+**Parked records:** [PARK-20260718-005](PARKED.md#park-20260718-005)
+**Source state:** `selfconnect-enterprise` draft PR #37 at `8a4cdad`
+
+**Decision:** Retain the observable run and exact drift checks, but call them
+candidate-local deterministic regression evidence only.
+
+**Why:** Candidate code controls the workflow, runner, expected hashes, and
+collection. It cannot independently attest its own supply chain.
+
+**Alternatives considered:** Expand candidate-local attestation; rejected
+because it does not cross the custody boundary. Remove drift checks; rejected
+because they still catch accidental candidate changes.
+
+**Consequences:** A separate externally controlled release gate is needed for
+supply-chain assurance.
+
+**Rollback conditions:** Supersede when protected external infrastructure owns
+the hashes, workflow, and clean-bootstrap evidence.
+
+**Evidence and links:** `.github/workflows/ci.yml`, `tools/ci_test_gate.py`, and
+[PARK-20260718-005](PARKED.md#park-20260718-005).
+
+## WHY-20260718-004 - Validate one observable test execution
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-18T15:57:48Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260718-004](LOG.md#log-20260718-004)
+**Parked records:** [PARK-20260718-004](PARKED.md#park-20260718-004)
+**Source state:** `selfconnect-enterprise` draft PR #37 at
+`f0e2d820f4488f4ff0622f213220cc5da45d8439`
+
+**Decision:** Run the complete pytest suite once through one candidate-local Windows
+CI runner. Derive pass, failure, and skip policy from pytest report objects,
+while retaining pytest's complete human-readable output. Start Python without
+repository/environment import-path injection, disable plugin autoload, verify
+the candidate-local pytest Python closure against installed RECORD hashes,
+and pin the reviewed conftest, complete collection identity, and exact skip
+identities and reasons.
+
+**Why:** Re-executing the suite does not strengthen evidence: it evaluates a
+different run. Capturing that second run without printing its failure details
+also prevented diagnosis. One observable execution binds diagnostics, exit
+status, counts, and skip policy to the same evidence.
+
+**Alternatives considered:** Retain two executions and print the second output;
+rejected because it preserves duplicate cost and nondeterminism. Persist the
+first step's console output for a later step; rejected because the combined
+step is simpler and keeps result ownership explicit.
+
+**Consequences:** CI runs faster, every pytest failure remains visible, and
+crafted terminal text cannot spoof the structured result policy. The dedicated
+runner is now part of the test-control boundary.
+
+**Rollback conditions:** Restore the prior two-step gate only if a separately
+versioned evidence artifact is required and both executions are intentionally
+treated as distinct tests with complete diagnostics.
+
+**Evidence and links:** Hosted run 29650683874, actionlint, and
+`tests/test_enterprise/test_ci_test_execution.py`.
+
+## WHY-20260718-003 - Treat signed channel lease roles as authority
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-18T15:36:54Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260718-003](LOG.md#log-20260718-003)
+**Parked records:** [PARK-20260718-003](PARKED.md#park-20260718-003)
+**Source state:** `selfconnect-enterprise`, `origin/master`,
+`c094fb3c2de238aeb3c8411dd7366b7c4b6f246f`
+
+**Decision:** Sign every immutable channel-lease field at issuance with a
+process-local Ed25519 key owned by a dedicated authority store and enforce a
+closed tool-to-role capability matrix on every lease-authorized inject/read
+path. Runtime storage must exactly match a signature-valid snapshot. Revocation
+is tracked independently so restoring an older signed snapshot cannot revive a
+lease.
+
+**Why:** Role validation in JSON Schema prevented unknown values at the public
+tool boundary but did not authorize behavior. The dispatcher accepted any
+active lease for text injection, including a read-only observer lease. A
+replacement `RuntimeLease` could also change the stored role without evidence
+of the original issuance decision.
+
+**Alternatives considered:** Restoring the historical participant-mode policy
+was rejected because unknown modes became unrestricted and invalid Win32 tags
+downgraded to `agent`. Treating the frozen `RuntimeLease` alone as authority was
+rejected because the containing dictionary can replace the object. A role check
+only at issuance was rejected because it would not protect later tool calls.
+An unsigned duplicate authority map was rejected after adversarial review
+showed that replacing both runtime records could otherwise widen authority.
+
+**Consequences:** Injection is sender-only and denial occurs before target
+verification, policy/approval consumption, or routing. Existing request/response
+behavior is preserved by explicitly allowing sender, receiver, and observer
+leases to read. When a persistent ledger is configured, role-denial evidence
+names the tool, issued/stored role, allowed roles, and reason without storing
+payload content; unavailable or failing denial evidence fails the request.
+The boundary covers record replacement and deserialization, not arbitrary code
+execution or hostile reflection inside the dispatcher process.
+
+**Rollback conditions:** Replace this binding only with an equal or stronger
+cryptographically or durably bound capability model. Do not restore descriptive
+roles or unknown-mode defaults.
+
+**Evidence and links:** `tests/test_enterprise/test_mcp_dispatch.py`,
+`docs/assurance/control_catalog.json`, issue #27,
+[LOG-20260718-003](LOG.md#log-20260718-003), and
+[PARK-20260718-003](PARKED.md#park-20260718-003).
+
 ## WHY-20260718-001 - Harden the current actuator and park the stale feature branch
 
 **Status:** Accepted

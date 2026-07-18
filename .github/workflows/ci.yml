@@ -34,7 +34,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --upgrade pip
-          pip install "pytest>=8" "ruff>=0.4" "hypothesis>=6.0" "pip-audit>=2.7" pywin32 "cryptography>=48.0.1" comtypes "rich>=13.0"
+          pip install "pytest==9.1.1" "ruff>=0.4" "hypothesis>=6.0" "pip-audit>=2.7" pywin32 "cryptography>=48.0.1" comtypes "rich>=13.0"
           $portfolio = Get-Content portfolio-lock.json | ConvertFrom-Json
           $sdk = $portfolio.components.selfconnect
           pip install "selfconnect @ git+$($sdk.repository)@$($sdk.commit)"
@@ -43,81 +43,8 @@ jobs:
       - name: Lint (ruff — complete repository)
         run: python -m ruff check .
 
-      - name: Unit tests
-        run: python -m pytest -q --tb=short
-
-      - name: Verify test count
-        shell: python
-        run: |
-          import subprocess, sys, re
-
-          result = subprocess.run(
-              ["python", "-m", "pytest", "-q", "--tb=no", "-rs"],
-              capture_output=True, text=True
-          )
-          output = result.stdout + result.stderr
-
-          # Parse pytest's summary without hard-coding a release-wide result.
-          m = re.search(r'(\d+) passed', output)
-          if not m:
-              print("FAIL: could not parse test count from pytest output.")
-              print("Output was:")
-              print(output[-1000:])
-              sys.exit(1)
-
-          passed = int(m.group(1))
-          failed_m = re.search(r'(\d+) failed', output)
-          failed = int(failed_m.group(1)) if failed_m else 0
-          skipped_m = re.search(r'(\d+) skipped', output)
-          skipped = int(skipped_m.group(1)) if skipped_m else 0
-
-          print(f"Results: {passed} passed, {failed} failed, {skipped} skipped")
-
-          if failed > 0:
-              print(f"FAIL: {failed} test(s) failed")
-              sys.exit(1)
-
-          # Only live-Ultra tests may skip in this unit lane. They are executed
-          # against a real sidecar in the dedicated Windows contract job.
-          skip_lines = [line for line in output.splitlines() if line.startswith("SKIPPED [")]
-          normalized_skip_lines = [line.replace("\\", "/") for line in skip_lines]
-          allowed = (
-              "tests/test_e2e_ultra_gate.py" in line
-              or (
-                  "tests/test_identity_gate.py" in line
-                  and (
-                      "Ultra Server not available" in line
-                      or "ULTRA_ADMIN_TOKEN is not configured" in line
-                  )
-              )
-              or (
-                  "tests/test_enterprise/test_runtime_ownership.py" in line
-                  and any(reason in line for reason in (
-                      "POSIX ownership/mode semantics",
-                      "POSIX ownership semantics",
-                      "Windows denies unlink of locked file",
-                      "POSIX no-follow file-symlink semantics",
-                  ))
-              )
-              for line in normalized_skip_lines
-          )
-          if not all(allowed):
-              print("FAIL: unexpected skipped test or reason")
-              print("\n".join(skip_lines))
-              sys.exit(1)
-          reported_skip_count = sum(
-              int(re.match(r"SKIPPED \[(\d+)\]", line).group(1))
-              for line in skip_lines
-          )
-          if reported_skip_count != skipped:
-              print(f"FAIL: {skipped} skips reported but only {reported_skip_count} are allowlisted")
-              sys.exit(1)
-
-          if passed < 880:
-              print(f"FAIL: only {passed} tests passed (expected >= 880)")
-              sys.exit(1)
-
-          print(f"OK: {passed} passed, {failed} failed, {skipped} named live-Ultra skips")
+      - name: Unit tests and result policy
+        run: python -I -c "import runpy; runpy.run_path('tools/ci_test_gate.py', run_name='__main__')"
 
   ultra-contract-windows:
     name: Ultra live contract (Windows)

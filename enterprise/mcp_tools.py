@@ -70,7 +70,8 @@ _TOOLS: list[dict[str, Any]] = [
         "name": "sc_inject_text",
         "description": (
             "Inject text to a verified terminal target via WM_CHAR PostMessage. "
-            "Requires an active channel lease. Target must pass fail-closed HWND/PID/class checks. "
+            "Requires an active sender-role channel lease. Receiver and observer leases are "
+            "read-only. Target must pass fail-closed HWND/PID/class checks. "
             "Returns success only after UIA readback confirms a new visible payload occurrence."
         ),
         "inputSchema": {
@@ -126,7 +127,8 @@ _TOOLS: list[dict[str, Any]] = [
         "name": "sc_read_output",
         "description": (
             "Read terminal output via UIA TextPattern. Echo-filtered: injected text is stripped "
-            "so only true peer/model output is returned. Returns delta since last read."
+            "so only true peer/model output is returned. Sender, receiver, and observer leases "
+            "may read; this capability never actuates the target. Returns delta since last read."
         ),
         "inputSchema": {
             "type": "object",
@@ -204,7 +206,8 @@ _TOOLS: list[dict[str, Any]] = [
         "name": "sc_request_lease",
         "description": (
             "Request a short-lived channel lease binding the supplied agent ID and role to the "
-            "target HWND's current PID, executable name and path, window class, and title hash."
+            "target HWND's current PID, executable name and path, window class, and title hash. "
+            "The role is issuance-time authority, not descriptive metadata, and cannot be widened."
         ),
         "inputSchema": {
             "type": "object",
