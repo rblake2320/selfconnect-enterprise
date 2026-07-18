@@ -91,6 +91,49 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260718-003 - Descriptive lease roles without capability enforcement
+
+**Status:** Parked security behavior; do not restore.
+**Category:** runtime authorization
+**Former location:** `enterprise/mcp_dispatch.py`, lease issuance and
+`_require_lease`
+**Source commit:** `c094fb3c2de238aeb3c8411dd7366b7c4b6f246f`
+**Affected paths:** Channel lease issuance, injection, output reads, audit evidence
+**Action log:** [LOG-20260718-003](LOG.md#log-20260718-003)
+**Why changed:** [WHY-20260718-003](WHY.md#why-20260718-003)
+**Parked by:** commit containing this record
+
+**Former wording:** The schema accepted `sender`, `receiver`, or `observer`, but
+`_require_lease` checked only existence, expiry/revocation, and HWND. Any valid
+role could therefore call `sc_inject_text`.
+
+**Recovery source:** Git object
+`c094fb3c2de238aeb3c8411dd7366b7c4b6f246f:enterprise/mcp_dispatch.py`.
+
+**Reason parked:** A role presented as part of a security lease did not restrict
+the authority that lease carried. Observer and receiver leases could actuate a
+target, and replacing the stored frozen lease object could rewrite its role.
+
+**Replacement:** Closed `_LEASE_TOOL_ROLES`, independent `_LeaseAuthority`,
+per-operation binding checks, and role-denial evidence.
+
+**Restore when:** Do not restore. Replace only with a stronger capability system
+that proves equivalent sender-only actuation and fail-closed role mutation.
+
+**Restore procedure:** None for production. The former file remains available
+from the named Git object for isolated regression reproduction.
+
+**Validation after restore:** Not applicable; restoration reopens the verified
+observer-to-inject authorization bypass.
+
+**Recovery rehearsal:** Not rehearsed.
+
+**Restoration risks:** Restores role confusion, read-only-to-actuator privilege
+escalation, and misleading audit metadata.
+
+**Evidence and links:** `tests/test_enterprise/test_mcp_dispatch.py`, issue #27,
+and [WHY-20260718-003](WHY.md#why-20260718-003).
+
 ## PARK-20260718-002 - Caller-selected system denial and unbound operator subject
 
 **Status:** Parked security behavior; do not restore.

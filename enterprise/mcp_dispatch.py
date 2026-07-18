@@ -20,6 +20,7 @@ import re
 import time
 import uuid
 from dataclasses import asdict, dataclass
+from types import MappingProxyType
 from typing import Any, Callable
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
@@ -61,6 +62,15 @@ _MAX_READ_CHARS = 65_536
 _DEFAULT_DELIVERY_TIMEOUT_MS = 3_000
 _ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 _VALID_PROFILES = frozenset({"normal", "enterprise", "government"})
+_VALID_LEASE_ROLES = frozenset({"sender", "receiver", "observer"})
+_LEASE_TOOL_ROLES = MappingProxyType(
+    {
+        "sc_inject_text": frozenset({"sender"}),
+        # Sender reads are part of the existing request/response flow. Receiver
+        # and observer leases are explicitly read-only at this boundary.
+        "sc_read_output": frozenset({"sender", "receiver", "observer"}),
+    }
+)
 
 
 class MCPDispatchError(RuntimeError):
@@ -100,6 +110,16 @@ class RuntimeLease:
         data["ttl_seconds"] = max(0.0, self.expires_at - ts)
         data["active"] = self.is_active(ts)
         return data
+
+
+@dataclass(frozen=True)
+class _LeaseAuthority:
+    """Issuance-time authority that mutable runtime lease storage cannot widen."""
+
+    lease_id: str
+    agent_id: str
+    hwnd: int
+    role: str
 
 
 @dataclass(frozen=True)
@@ -294,6 +314,7 @@ class MCPDispatcher:
         self._identity_type = identity_type
         self._now = now
         self._leases: dict[str, RuntimeLease] = {}
+        self._lease_authorities: dict[str, _LeaseAuthority] = {}
         self._audit: list[AuditEvent] = []
         self._read_snapshots: dict[str, str] = {}
         self._injected_text: dict[str, str] = {}
@@ -401,7 +422,60 @@ class MCPDispatcher:
             )
         return event
 
-    def _require_lease(self, lease_id: str, hwnd: int | None = None) -> RuntimeLease:
+    def _record_lease_role_denial(
+        self,
+        *,
+        lease_id: str,
+        tool: str,
+        stored_role: str,
+        issued_role: str,
+        reason: str,
+    ) -> None:
+        if self._ledger is None:
+            return
+        self._ledger.log(
+            "lease_role_decision",
+            result="denied",
+            metadata={
+                "lease_id": lease_id,
+                "tool": tool,
+                "stored_role": stored_role,
+                "issued_role": issued_role,
+                "allowed_roles": sorted(_LEASE_TOOL_ROLES.get(tool, frozenset())),
+                "reason": reason,
+            },
+        )
+
+    def _deny_lease_role(
+        self,
+        *,
+        lease_id: str,
+        tool: str,
+        stored_role: str,
+        issued_role: str,
+        reason: str,
+    ) -> None:
+        try:
+            self._record_lease_role_denial(
+                lease_id=lease_id,
+                tool=tool,
+                stored_role=stored_role,
+                issued_role=issued_role,
+                reason=reason,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise MCPDispatchError(
+                f"{reason}; lease role denial evidence could not be persisted: {exc}"
+            ) from exc
+        raise MCPDispatchError(reason)
+
+    def _require_lease(
+        self,
+        lease_id: str,
+        hwnd: int | None = None,
+        *,
+        tool: str,
+    ) -> RuntimeLease:
         lease = self._leases.get(lease_id)
         if lease is None:
             raise MCPDispatchError(f"lease {lease_id!r} not found")
@@ -409,6 +483,49 @@ class MCPDispatcher:
             raise MCPDispatchError(f"lease {lease_id!r} is expired or revoked")
         if hwnd is not None and int(hwnd) != int(lease.hwnd):
             raise MCPDispatchError("lease is not bound to requested HWND")
+
+        authority = self._lease_authorities.get(lease_id)
+        if authority is None:
+            self._deny_lease_role(
+                lease_id=lease_id,
+                tool=tool,
+                stored_role=lease.role,
+                issued_role="missing",
+                reason="lease issuance authority is missing",
+            )
+        assert authority is not None
+        if (
+            lease.lease_id != authority.lease_id
+            or lease.agent_id != authority.agent_id
+            or int(lease.hwnd) != authority.hwnd
+            or lease.role != authority.role
+        ):
+            self._deny_lease_role(
+                lease_id=lease_id,
+                tool=tool,
+                stored_role=lease.role,
+                issued_role=authority.role,
+                reason="lease no longer matches its immutable issuance authority",
+            )
+
+        allowed_roles = _LEASE_TOOL_ROLES.get(tool)
+        if allowed_roles is None:
+            self._deny_lease_role(
+                lease_id=lease_id,
+                tool=tool,
+                stored_role=lease.role,
+                issued_role=authority.role,
+                reason=f"tool {tool!r} has no lease-role authorization contract",
+            )
+        assert allowed_roles is not None
+        if authority.role not in allowed_roles:
+            self._deny_lease_role(
+                lease_id=lease_id,
+                tool=tool,
+                stored_role=lease.role,
+                issued_role=authority.role,
+                reason=f"lease role {authority.role!r} is not authorized for {tool}",
+            )
         return lease
 
     @staticmethod
@@ -625,7 +742,7 @@ class MCPDispatcher:
         action: str,
     ) -> dict[str, Any]:
         """Return a freshly target-verified context for operator review."""
-        lease = self._require_lease(lease_id, int(arguments["hwnd"]))
+        lease = self._require_lease(lease_id, int(arguments["hwnd"]), tool=action)
         target = self._verify_live_target(lease.hwnd, expected=lease)
         return self.build_approval_context(
             lease,
@@ -641,12 +758,15 @@ class MCPDispatcher:
     def _sc_request_lease(self, args: dict[str, Any]) -> dict[str, Any]:
         ttl = int(args.get("ttl_seconds", 300))
         now = self._now()
+        role = args.get("role")
+        if role not in _VALID_LEASE_ROLES:
+            raise MCPDispatchError(f"unknown lease role {role!r}")
         target = self._verify_live_target(int(args["hwnd"]))
         lease = RuntimeLease(
             lease_id="lease-" + uuid.uuid4().hex[:24],
             agent_id=args["agent_id"],
             hwnd=int(args["hwnd"]),
-            role=args["role"],
+            role=role,
             issued_at=now,
             expires_at=now + ttl,
             target_pid=int(target["pid"]),
@@ -655,6 +775,13 @@ class MCPDispatcher:
             target_class=str(target["class"]),
             target_title_hash=_hash_text(str(target.get("title", ""))),
         )
+        authority = _LeaseAuthority(
+            lease_id=lease.lease_id,
+            agent_id=lease.agent_id,
+            hwnd=lease.hwnd,
+            role=lease.role,
+        )
+        self._lease_authorities[lease.lease_id] = authority
         self._leases[lease.lease_id] = lease
         self._control.register(lease.agent_id)
         return lease.to_dict(now)
@@ -704,7 +831,11 @@ class MCPDispatcher:
 
     def _sc_inject_text(self, args: dict[str, Any]) -> dict[str, Any]:
         probe = _delivery_probe(args["text"])
-        lease = self._require_lease(args["lease_id"], int(args["hwnd"]))
+        lease = self._require_lease(
+            args["lease_id"],
+            int(args["hwnd"]),
+            tool="sc_inject_text",
+        )
         target = self._verify_live_target(int(args["hwnd"]), expected=lease)
         governance = self._require_execution_authorization(
             lease,
@@ -822,7 +953,11 @@ class MCPDispatcher:
         return data
 
     def _sc_read_output(self, args: dict[str, Any]) -> dict[str, Any]:
-        lease = self._require_lease(args["lease_id"], int(args["hwnd"]))
+        lease = self._require_lease(
+            args["lease_id"],
+            int(args["hwnd"]),
+            tool="sc_read_output",
+        )
         target = self._verify_live_target(int(args["hwnd"]), expected=lease)
         governance = self._require_execution_authorization(
             lease,

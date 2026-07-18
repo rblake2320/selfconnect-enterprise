@@ -54,6 +54,45 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260718-003 - Enforce issued lease roles as runtime authority
+
+**Timestamp (UTC):** 2026-07-18T15:36:54Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security fix, adversarial testing, documentation
+**Base commit:** `c094fb3c2de238aeb3c8411dd7366b7c4b6f246f`
+**Change reference:** commit containing this entry; draft pull request for issue #27
+**Why:** [WHY-20260718-003](WHY.md#why-20260718-003)
+**Parked records:** [PARK-20260718-003](PARKED.md#park-20260718-003)
+
+**Changed:** Added a closed lease-role capability matrix, a separate immutable
+issuance-authority record, per-operation authority revalidation, and explicit
+denial evidence. `sc_inject_text` is sender-only. Existing sender, receiver, and
+observer roles may read output. Unknown, wildcard, missing, or store-mutated
+roles cannot create or widen actuation authority.
+
+**Reason:** The tool schema constrained role names, but the runtime used the
+stored role only for display and filtering. A valid observer lease could invoke
+`sc_inject_text` and reach the router.
+
+**Full actions and links:** `enterprise/mcp_dispatch.py`,
+`enterprise/mcp_tools.py`, `tests/test_enterprise/test_mcp_dispatch.py`,
+`docs/assurance/control_catalog.json`, issue #27, and the linked WHY/PARK
+records.
+
+**Validation:** The final full local suite passed **1,639 tests** with 38 named
+environment/platform/live skips and the two pre-existing immutable-sink
+warnings; repository-wide Ruff passed. The focused dispatcher,
+governed-runtime, MCP-tool, and documentation set passed **137 tests**. Release
+conformance passed `LEASE-ROLE-001` and every locally available Python control;
+its overall local result remained failed because the isolated worktree lacked
+the pinned `@tsk/server` checkout and a Git-traceable installed SelfConnect SDK.
+Hosted CI remains the composition check for those dependencies.
+
+**Notes:** This closes the current lease-role confusion path only. It does not
+restore the historical participant-mode registry, generalized executor,
+logical target registry, or product-specific bridge, and it does not close
+issue #27.
+
 ## LOG-20260718-002 - Close approval identity and local ownership gaps
 
 **Timestamp (UTC):** 2026-07-18T12:52:54Z

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -131,10 +132,16 @@ def make_dispatcher(now_value: float = 1000.0, *, profile: str = "normal") -> MC
     )
 
 
-def issue_lease(dispatcher: MCPDispatcher, *, hwnd: int = 1234, agent_id: str = "SC-AGENT") -> str:
+def issue_lease(
+    dispatcher: MCPDispatcher,
+    *,
+    hwnd: int = 1234,
+    agent_id: str = "SC-AGENT",
+    role: str = "sender",
+) -> str:
     result = dispatcher.call_tool(
         "sc_request_lease",
-        {"hwnd": hwnd, "role": "sender", "agent_id": agent_id, "ttl_seconds": 300},
+        {"hwnd": hwnd, "role": role, "agent_id": agent_id, "ttl_seconds": 300},
     )
     assert result["ok"], result
     return result["result"]["lease_id"]
@@ -281,6 +288,116 @@ class TestLeaseRuntime:
         )
         assert result["ok"] is False
         assert "not found" in result["error"]
+
+    @pytest.mark.parametrize("role", ["receiver", "observer"])
+    def test_read_only_lease_roles_cannot_inject_and_denial_is_evidenced(self, role):
+        dispatcher = make_dispatcher()
+        lease_id = issue_lease(dispatcher, hwnd=889, role=role)
+
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 889, "text": "must not route"},
+        )
+
+        assert result["ok"] is False
+        assert f"lease role {role!r} is not authorized" in result["error"]
+        assert dispatcher._router.routes == []
+        decisions = [
+            entry
+            for entry in dispatcher._ledger.entries
+            if entry["action"] == "lease_role_decision"
+        ]
+        assert decisions[-1]["result"] == "denied"
+        assert decisions[-1]["metadata"]["tool"] == "sc_inject_text"
+        assert decisions[-1]["metadata"]["issued_role"] == role
+        assert decisions[-1]["metadata"]["allowed_roles"] == ["sender"]
+
+    @pytest.mark.parametrize("role", ["unknown", "*", "admin", ""])
+    def test_unknown_or_wildcard_lease_role_is_rejected_at_issuance(self, role):
+        dispatcher = make_dispatcher()
+
+        result = dispatcher.call_tool(
+            "sc_request_lease",
+            {"hwnd": 890, "role": role, "agent_id": "SC-AGENT", "ttl_seconds": 300},
+        )
+
+        assert result["ok"] is False
+        assert dispatcher.active_leases() == []
+
+    def test_missing_lease_role_does_not_default_to_sender(self):
+        dispatcher = make_dispatcher()
+
+        result = dispatcher.call_tool(
+            "sc_request_lease",
+            {"hwnd": 891, "agent_id": "SC-AGENT", "ttl_seconds": 300},
+        )
+
+        assert result["ok"] is False
+        assert "missing required field: role" in result["error"]
+        assert dispatcher.active_leases() == []
+
+    def test_stored_role_mutation_cannot_widen_issuance_authority(self):
+        dispatcher = make_dispatcher()
+        lease_id = issue_lease(dispatcher, hwnd=892, role="observer")
+        dispatcher._leases[lease_id] = replace(
+            dispatcher._leases[lease_id],
+            role="sender",
+        )
+
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 892, "text": "must not route"},
+        )
+
+        assert result["ok"] is False
+        assert "immutable issuance authority" in result["error"]
+        assert dispatcher._router.routes == []
+        decisions = [
+            entry
+            for entry in dispatcher._ledger.entries
+            if entry["action"] == "lease_role_decision"
+        ]
+        assert decisions[-1]["metadata"]["stored_role"] == "sender"
+        assert decisions[-1]["metadata"]["issued_role"] == "observer"
+
+    def test_missing_issuance_authority_cannot_fall_back_to_stored_role(self):
+        dispatcher = make_dispatcher()
+        lease_id = issue_lease(dispatcher, hwnd=895, role="sender")
+        dispatcher._lease_authorities.pop(lease_id)
+
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 895, "text": "must not route"},
+        )
+
+        assert result["ok"] is False
+        assert "issuance authority is missing" in result["error"]
+        assert dispatcher._router.routes == []
+
+    def test_sender_role_can_inject(self):
+        dispatcher = make_dispatcher()
+        lease_id = issue_lease(dispatcher, hwnd=893, role="sender")
+
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 893, "text": "sender payload"},
+        )
+
+        assert result["ok"] is True
+        assert dispatcher._router.routes == [(893, "sender payload", lease_id)]
+
+    @pytest.mark.parametrize("role", ["sender", "receiver", "observer"])
+    def test_read_output_roles_are_explicitly_authorized(self, role):
+        dispatcher = make_dispatcher()
+        lease_id = issue_lease(dispatcher, hwnd=894, role=role)
+
+        result = dispatcher.call_tool(
+            "sc_read_output",
+            {"lease_id": lease_id, "hwnd": 894, "timeout_ms": 100},
+        )
+
+        assert result["ok"] is True
+        assert result["result"]["method"] == "uia_textpattern"
 
     def test_inject_rejects_wrong_hwnd_for_lease(self):
         dispatcher = make_dispatcher()

@@ -46,6 +46,17 @@
       "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_governed_runtime.py", "tests/test_enterprise/test_mcp_dispatch.py", "-q"]
     },
     {
+      "id": "LEASE-ROLE-001",
+      "title": "Channel lease roles bound explicit runtime capabilities",
+      "scope": "Enterprise MCP channel lease issuance plus governed text injection and output reads",
+      "assertion": "Run MCP dispatcher and governed-runtime tests, including adversarial role-confusion cases.",
+      "expected": "Only sender leases inject; sender, receiver, and observer leases read; missing, unknown, wildcard, issuance-authority-missing, or store-mutated roles deny before routing or approval consumption and produce denial evidence.",
+      "evidence": "pytest output, hosted CI, signed ledger role-decision entries, and the release conformance JSON report",
+      "blind_spots": "This in-process authority binding does not prevent hostile reflection that mutates both private authority and lease stores, direct SDK calls outside MCPDispatcher, or establish the historical participant-mode, logical-target, generalized-executor, or bridge features.",
+      "tier": "release",
+      "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_mcp_dispatch.py", "tests/test_enterprise/test_governed_runtime.py", "-q"]
+    },
+    {
       "id": "WIN32-BINDING-001",
       "title": "Governed mutation revalidates an immutable target binding",
       "scope": "Governed MCP text injection and the canonical Win32 channel router",

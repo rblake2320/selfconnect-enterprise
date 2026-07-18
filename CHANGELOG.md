@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Lease role authority
+
+- Bound each issued channel lease to a separate immutable authority record and
+  enforce a closed capability matrix at every governed inject/read check.
+- Restricted `sc_inject_text` to sender leases. Receiver and observer leases
+  remain read-only; current sender, receiver, and observer leases may use
+  `sc_read_output`.
+- Reject missing, unknown, wildcard, or mutated roles without routing and record
+  role-specific denial evidence. Evidence:
+  [LOG-20260718-003](LOG.md#log-20260718-003), rationale:
+  [WHY-20260718-003](WHY.md#why-20260718-003), recovery:
+  [PARK-20260718-003](PARKED.md#park-20260718-003).
+
 ### Governed target binding reconciliation
 
 - Enforced the lease's exact title hash alongside PID, executable path, and

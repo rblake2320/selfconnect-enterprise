@@ -51,6 +51,48 @@ related records.
 
 ## Register
 
+## WHY-20260718-003 - Treat channel lease roles as immutable authority
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-18T15:36:54Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260718-003](LOG.md#log-20260718-003)
+**Parked records:** [PARK-20260718-003](PARKED.md#park-20260718-003)
+**Source state:** `selfconnect-enterprise`, `origin/master`,
+`c094fb3c2de238aeb3c8411dd7366b7c4b6f246f`
+
+**Decision:** Bind each channel lease's role at issuance and enforce a closed
+tool-to-role capability matrix on every lease-authorized inject/read path.
+Runtime lease storage must match the independent issuance authority before the
+role can authorize an operation.
+
+**Why:** Role validation in JSON Schema prevented unknown values at the public
+tool boundary but did not authorize behavior. The dispatcher accepted any
+active lease for text injection, including a read-only observer lease. A
+replacement `RuntimeLease` could also change the stored role without evidence
+of the original issuance decision.
+
+**Alternatives considered:** Restoring the historical participant-mode policy
+was rejected because unknown modes became unrestricted and invalid Win32 tags
+downgraded to `agent`. Treating the frozen `RuntimeLease` alone as authority was
+rejected because the containing dictionary can replace the object. A role check
+only at issuance was rejected because it would not protect later tool calls.
+
+**Consequences:** Injection is sender-only and denial occurs before target
+verification, policy/approval consumption, or routing. Existing request/response
+behavior is preserved by explicitly allowing sender, receiver, and observer
+leases to read. Role-denial evidence names the tool, issued/stored role, allowed
+roles, and reason without storing payload content.
+
+**Rollback conditions:** Replace this binding only with an equal or stronger
+cryptographically or durably bound capability model. Do not restore descriptive
+roles or unknown-mode defaults.
+
+**Evidence and links:** `tests/test_enterprise/test_mcp_dispatch.py`,
+`docs/assurance/control_catalog.json`, issue #27,
+[LOG-20260718-003](LOG.md#log-20260718-003), and
+[PARK-20260718-003](PARKED.md#park-20260718-003).
+
 ## WHY-20260718-001 - Harden the current actuator and park the stale feature branch
 
 **Status:** Accepted
