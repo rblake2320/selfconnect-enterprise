@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Immutable logical target leases
+
+- Added strict trusted-startup terminal aliases that enumerate a bounded live
+  window snapshot, run every candidate through the canonical target guard, and
+  deny unless exactly one complete identity matches.
+- Added `sc_request_target_lease`, which binds the logical ID and resolved
+  PID/executable path/class/title hash into the existing signed process-local
+  lease. Later actuation still re-verifies the live HWND.
+- Did not restore historical participant modes, generalized Win32 actions,
+  product-specific browser bridges, classification routing, or restart-durable
+  authority. Evidence: [LOG-20260718-006](LOG.md#log-20260718-006), rationale:
+  [WHY-20260718-006](WHY.md#why-20260718-006), recovery:
+  [PARK-20260718-006](PARKED.md#park-20260718-006).
+
 ### Observable CI test gate
 
 - Replaced two independent full-suite executions with one candidate-local pytest

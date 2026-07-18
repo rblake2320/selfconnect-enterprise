@@ -91,6 +91,51 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260718-006 - Historical participant, executor, and bridge expansion
+
+**Status:** Parked
+**Category:** security boundary and deferred capability
+**Former location:** `feat/participant-mode` at `125c24d70526ba29f42ba7c3d408b89ccddba0a8`
+**Source commit:** `125c24d70526ba29f42ba7c3d408b89ccddba0a8`
+**Affected paths:** `enterprise/registry.py`, `enterprise/policy.py`,
+`enterprise/target_registry.py`, `enterprise/executor_win32.py`, and
+`enterprise/bridge_connector.py`
+**Action log:** [LOG-20260718-006](LOG.md#log-20260718-006)
+**Why changed:** [WHY-20260718-006](WHY.md#why-20260718-006)
+**Parked by:** commit containing this record
+
+**Former wording:** The preserved branch described participant modes, five
+built-in logical targets, a generalized Win32 executor, and a GenAI.mil bridge.
+
+**Recovery source:** Git commit `125c24d70526ba29f42ba7c3d408b89ccddba0a8`.
+
+**Reason parked:** Unknown historical participant modes fall through, target
+selection uses the first class match, runtime target definitions can overwrite
+built-ins, and broad direct Win32/file/subprocess operations do not use the
+current governed dispatcher boundary.
+
+**Replacement:** Only the bounded immutable logical-terminal alias and signed
+lease issuance path in `enterprise/logical_targets.py`.
+
+**Restore when:** A specific new action has a reviewed use case and is rebuilt
+individually on the current policy, approval, audit, transport, and verification
+contracts. Do not restore the old modules wholesale.
+
+**Restore procedure:** Start from current master, recover only the required
+behavior, reject unknown authority states, use the canonical guard/router, and
+add real adapter evidence where feasible.
+
+**Validation after restore:** Adversarial policy, target-replacement, approval,
+pre-effect evidence, post-effect verification, and current full-suite gates.
+
+**Recovery rehearsal:** Not rehearsed.
+
+**Restoration risks:** Directly restoring the branch can reintroduce ambiguous
+window selection, prompt-to-actuation coupling, weak path checks, and broader
+execution authority.
+
+**Evidence and links:** Issue #27 and `docs/LOGICAL_TARGET_LEASES.md`.
+
 ## PARK-20260718-005 - External CI supply-chain custody
 
 **Status:** Parked

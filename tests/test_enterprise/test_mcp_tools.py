@@ -113,6 +113,7 @@ class TestGovernanceCoverage:
     def test_lease_management_tools_exist(self):
         names = {t["name"] for t in get_tool_registry()}
         assert "sc_request_lease" in names
+        assert "sc_request_target_lease" in names
         assert "sc_revoke_lease" in names
         assert "sc_list_leases" in names
 
@@ -200,6 +201,16 @@ class TestSecurityConstraints:
             "sc_request_lease must require agent_id — "
             "optional agent_id allows unauthenticated/unauditable lease requests"
         )
+
+    def test_request_target_lease_is_strict_and_hwnd_free(self):
+        tool = get_tool("sc_request_target_lease")
+        schema = tool["inputSchema"]
+        assert set(schema["required"]) == {"logical_target_id", "role", "agent_id"}
+        assert "hwnd" not in schema["properties"]
+        alias = schema["properties"]["logical_target_id"]
+        assert alias["maxLength"] == 128
+        assert "pattern" in alias
+        assert schema["additionalProperties"] is False
 
     def test_target_metadata_does_not_claim_unverified_bindings(self):
         lease = get_tool("sc_request_lease")
