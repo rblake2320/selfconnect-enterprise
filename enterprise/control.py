@@ -100,12 +100,21 @@ class ControlPlane:
         self,
         ledger: Any = None,
         operator_queue: Any = None,
+        *,
+        _system_denier: Any = None,
     ) -> None:
         self._lock           = threading.Lock()
         self._states:  dict[str, str] = {}        # agent_id → state
         self._history: list[AgentControlRecord] = []
         self._ledger: Any    = ledger
         self._queue: Any     = operator_queue
+        self._system_deny = _system_denier
+        if self._system_deny is None and operator_queue is not None:
+            # Compatibility-only in-memory queues have no privileged proof path.
+            from enterprise.operator import OperatorQueue
+
+            if type(operator_queue) is OperatorQueue:
+                self._system_deny = operator_queue.deny
 
     # ── Registration ─────────────────────────────────────────────────────────
 
@@ -301,7 +310,9 @@ class ControlPlane:
         denied = 0
         for item in self._queue.get_pending():
             if item.agent_id == agent_id:
-                self._queue.deny(item.approval_id, f"system/quarantine:{operator_id}")
+                if self._system_deny is None:
+                    raise RuntimeError("safety-denial capability is unavailable")
+                self._system_deny(item.approval_id, f"system/quarantine:{operator_id}")
                 denied += 1
         return denied
 
@@ -311,7 +322,9 @@ class ControlPlane:
             return 0
         denied = 0
         for item in self._queue.get_pending():
-            self._queue.deny(item.approval_id, f"system/kill_all:{operator_id}")
+            if self._system_deny is None:
+                raise RuntimeError("safety-denial capability is unavailable")
+            self._system_deny(item.approval_id, f"system/kill_all:{operator_id}")
             denied += 1
         return denied
 

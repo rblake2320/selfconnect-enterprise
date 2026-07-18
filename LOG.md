@@ -54,13 +54,51 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260718-001 - Close approval identity and local ownership gaps
+
+**Timestamp (UTC):** 2026-07-18T12:52:54Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security fix, adversarial testing, documentation
+**Base commit:** `b58353dc9fdd2551014ccfd2253091e868b96854`
+**Change reference:** commit containing this entry; draft PR for issue #26
+**Why:** [WHY-20260718-001](WHY.md#why-20260718-001)
+**Parked records:** [PARK-20260718-001](PARKED.md#park-20260718-001)
+
+**Changed:** Bound verified operator subjects to claimed operators, replaced the
+public system-prefix denial bypass with a private runtime capability, added an
+exclusive single-host process locks for each governed approval database and
+ledger resource, made proof freshness sample the injected queue clock only
+after SQLite writer ownership, and made the live
+conformance verifier/proof explicitly test-only and mandatory for approval.
+
+**Reason:** PR #33 durably bound transitions to ledger evidence but did not prove
+the credential subject named the claimed operator, allowed callers to imitate an
+internal prefix, and did not enforce the documented single-writer composition.
+
+**Full actions and links:** `enterprise/approval_audit.py`,
+`enterprise/operator.py`, `enterprise/control.py`,
+`enterprise/governed_runtime.py`, `enterprise/runtime_ownership.py`,
+`tools/irs_runtime_conformance.py`, issue #26, and the linked WHY/PARK/control
+records.
+
+**Validation:** Focused approval, governed-runtime, control-plane, MCP profile,
+clock-contention, independent-resource, hard-link-alias, and cross-process
+ownership tests. The full suite passed **1,582 tests** with 34 explicit
+environment/live skips and the two pre-existing immutable-sink warnings.
+
+**Notes:** Single-host mechanism only. Persistence directories and path entries
+must remain owner-controlled after startup binding; privileged post-binding
+rename/replacement is outside this advisory-lock control. External credential
+custody, trusted time, keyed context-digest custody, and distributed approval
+authority remain outside the repository claim.
+
 ## LOG-20260717-002 - Close second-review approval evidence gaps
 
 **Timestamp (UTC):** 2026-07-17T14:58:07Z
 **Actor:** Codex, requested by the repository owner
 **Category:** security fix, migration, adversarial testing, documentation
 **Base commit:** `5e8ffbe6ca0d6ee2eda68b6a88a028d43ecec3a3`
-**Change reference:** commit containing this entry; draft PR #33
+**Change reference:** merged PR #33 (`b58353dc9fdd2551014ccfd2253091e868b96854`)
 **Why:** [WHY-20260717-002](WHY.md#why-20260717-002)
 **Parked records:** [PARK-20260717-002](PARKED.md#park-20260717-002)
 
@@ -101,7 +139,7 @@ revision after push.
 
 **Notes:** The nonce tombstone default horizon is 24 hours and is configurable;
 this is not indefinite replay memory. The clock remains a deployment trust
-dependency. PR #33 remains draft and issue #26 remains open pending independent
+dependency. PR #33 merged and issue #26 remains open pending independent
 review and deployment-specific operator credential evidence.
 
 ---

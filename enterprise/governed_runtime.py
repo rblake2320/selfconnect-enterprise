@@ -21,8 +21,9 @@ from enterprise.control import ControlPlane
 from enterprise.identity import AgentIdentity
 from enterprise.ledger import ThreadSafeAgentLedger
 from enterprise.mcp_dispatch import MCPDispatcher
-from enterprise.operator import DurableOperatorQueue
+from enterprise.operator import DurableOperatorQueue, _bind_system_denier
 from enterprise.policy import PolicyBundle, PolicyEnforcer
+from enterprise.runtime_ownership import RuntimeOwnershipLock
 
 
 class RuntimeConfigurationError(RuntimeError):
@@ -40,6 +41,7 @@ class GovernedRuntime:
     policy_enforcer: PolicyEnforcer
     composition_monitor: CompositionMonitor
     dispatcher: MCPDispatcher
+    ownership_lock: RuntimeOwnershipLock
 
     @classmethod
     def from_signed_policy(
@@ -78,6 +80,10 @@ class GovernedRuntime:
                 "from_signed_policy currently supports only the enterprise profile; "
                 "government deployments require an explicitly provisioned CNG/TPM runtime"
             )
+        if decision_writer_verifier is None:
+            raise RuntimeConfigurationError(
+                "governed runtime requires an operator decision proof verifier"
+            )
 
         policy = PolicyBundle.from_file(Path(policy_path))
         if AgentIdentity.exists(agent_name, data_dir=identity_data_dir):
@@ -85,60 +91,85 @@ class GovernedRuntime:
         else:
             identity = AgentIdentity.init(agent_name, data_dir=identity_data_dir)
 
-        ledger = ThreadSafeAgentLedger(
-            identity,
-            log_path=ledger_path,
-            redact_denied=True,
-            max_entries_per_segment=ledger_max_entries_per_segment,
-            max_bytes_per_segment=ledger_max_bytes_per_segment,
+        resolved_ledger_path = (
+            Path(ledger_path)
+            if ledger_path is not None
+            else ThreadSafeAgentLedger._default_path(agent_name)
         )
-        resolved_ledger_path = Path(ledger.log_path)
         resolved_approval_path = (
             Path(approval_db_path)
             if approval_db_path is not None
             else resolved_ledger_path.with_suffix(resolved_ledger_path.suffix + ".approvals.sqlite3")
         )
-        operator_queue = DurableOperatorQueue(
-            resolved_approval_path,
-            audit_sink=LedgerApprovalDecisionSink(ledger),
-            audit_required=True,
-            decision_writer_verifier=decision_writer_verifier,
-        )
-        control_plane = ControlPlane(ledger=ledger, operator_queue=operator_queue)
-        composition_monitor = CompositionMonitor(
-            effect_map={"sc_inject_text": "egress"},
-            ledger=ledger,
-        )
-        classified_profile = ClassifiedModeProfile.cui_baseline()
-        policy_enforcer = PolicyEnforcer(
-            policy,
-            trust_root_pub=trust_root_pub,
-            require_signature=True,
-            control_plane=control_plane,
-            profile=classified_profile,
-            composition_monitor=composition_monitor,
-            ledger=ledger,
-        )
-        dispatcher = MCPDispatcher(
-            profile=profile,
-            router=router,
-            control_plane=control_plane,
-            ledger=ledger,
-            policy_enforcer=policy_enforcer,
-            operator_queue=operator_queue,
-            target_verifier=target_verifier,
-            output_reader=output_reader,
-            identity_type="dpapi",
-        )
-        return cls(
-            identity=identity,
-            ledger=ledger,
-            operator_queue=operator_queue,
-            control_plane=control_plane,
-            policy_enforcer=policy_enforcer,
-            composition_monitor=composition_monitor,
-            dispatcher=dispatcher,
-        )
+        # Acquire stable path locks and reject identical/cross-linked resources
+        # before either persistence constructor can open them.
+        ownership_lock = RuntimeOwnershipLock(resolved_ledger_path, resolved_approval_path)
+        try:
+            ledger = ThreadSafeAgentLedger(
+                identity,
+                log_path=resolved_ledger_path,
+                redact_denied=True,
+                max_entries_per_segment=ledger_max_entries_per_segment,
+                max_bytes_per_segment=ledger_max_bytes_per_segment,
+            )
+            # Bind any existing resource file identities before queue startup
+            # reconciliation can append approval evidence to the ledger.
+            ownership_lock.bind_opened_resources()
+            operator_queue = DurableOperatorQueue(
+                resolved_approval_path,
+                audit_sink=LedgerApprovalDecisionSink(ledger),
+                audit_required=True,
+                decision_writer_verifier=decision_writer_verifier,
+            )
+            # A fresh approval database now has an OS file identity; bind and
+            # revalidate both paths again before exposing the runtime.
+            ownership_lock.bind_opened_resources()
+            control_plane = ControlPlane(
+                ledger=ledger,
+                operator_queue=operator_queue,
+                _system_denier=_bind_system_denier(operator_queue),
+            )
+            composition_monitor = CompositionMonitor(
+                effect_map={"sc_inject_text": "egress"},
+                ledger=ledger,
+            )
+            classified_profile = ClassifiedModeProfile.cui_baseline()
+            policy_enforcer = PolicyEnforcer(
+                policy,
+                trust_root_pub=trust_root_pub,
+                require_signature=True,
+                control_plane=control_plane,
+                profile=classified_profile,
+                composition_monitor=composition_monitor,
+                ledger=ledger,
+            )
+            dispatcher = MCPDispatcher(
+                profile=profile,
+                router=router,
+                control_plane=control_plane,
+                ledger=ledger,
+                policy_enforcer=policy_enforcer,
+                operator_queue=operator_queue,
+                target_verifier=target_verifier,
+                output_reader=output_reader,
+                identity_type="dpapi",
+            )
+            return cls(
+                identity=identity,
+                ledger=ledger,
+                operator_queue=operator_queue,
+                control_plane=control_plane,
+                policy_enforcer=policy_enforcer,
+                composition_monitor=composition_monitor,
+                dispatcher=dispatcher,
+                ownership_lock=ownership_lock,
+            )
+        except Exception:
+            ownership_lock.close()
+            raise
+
+    def close(self) -> None:
+        self.ownership_lock.close()
 
     def verify_audit(self) -> tuple[bool, int, str]:
         """Verify every signature and hash link in the runtime action ledger."""

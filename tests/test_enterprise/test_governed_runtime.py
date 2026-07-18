@@ -7,6 +7,7 @@ live HWND/Win32 execution is intentionally a separate conformance run.
 from __future__ import annotations
 
 import json
+import os
 import time
 from types import SimpleNamespace
 
@@ -17,6 +18,7 @@ from enterprise.governed_runtime import GovernedRuntime, RuntimeConfigurationErr
 from enterprise.identity import AgentIdentity
 from enterprise.policy import make_bundle
 from enterprise.policy_sign import sign_policy
+from enterprise.runtime_ownership import RuntimeOwnershipError
 
 
 class _DeterministicRouter:
@@ -91,6 +93,18 @@ def _signed_policy(tmp_path, *, require_approval: bool = False):
     return identity_dir, policy_path, admin.public_key_bytes, actor.agent_id
 
 
+def _test_decision_verifier(payload, proof):
+    if proof != "test-proof":
+        return None
+    return DecisionProofVerification(
+        verifier_id="test-runtime-verifier",
+        key_id="test-runtime-key",
+        nonce=f"{payload['approval_id']}-{payload['decision']}",
+        verified_at=time.time(),
+        operator_subject=payload["operator_id"],
+    )
+
+
 def test_real_signed_composition_executes_and_verifies_ledger(tmp_path):
     identity_dir, policy_path, trust_root, actor_id = _signed_policy(tmp_path)
     router = _DeterministicRouter()
@@ -103,6 +117,7 @@ def test_real_signed_composition_executes_and_verifies_ledger(tmp_path):
         router=router,
         target_verifier=_target,
         output_reader=lambda _hwnd: router.rendered,
+        decision_writer_verifier=_test_decision_verifier,
     )
     lease = runtime.dispatcher.call_tool(
         "sc_request_lease",
@@ -136,6 +151,7 @@ def test_real_signed_composition_executes_and_verifies_ledger(tmp_path):
     assert read["ok"], read
     assert read["result"]["text"] == "runtime output"
     assert runtime.verify_audit()[0] is True
+    runtime.close()
 
     restarted = GovernedRuntime.from_signed_policy(
         policy_path=policy_path,
@@ -146,6 +162,7 @@ def test_real_signed_composition_executes_and_verifies_ledger(tmp_path):
         router=_DeterministicRouter(),
         target_verifier=_target,
         output_reader=lambda _hwnd: "runtime output",
+        decision_writer_verifier=_test_decision_verifier,
     )
     assert restarted.operator_queue is not None
 
@@ -159,6 +176,77 @@ def test_external_policy_trust_root_is_mandatory(tmp_path):
             agent_name="runtime-actor",
             identity_data_dir=identity_dir,
         )
+
+
+def test_governed_runtime_requires_operator_proof_verifier_at_startup(tmp_path):
+    identity_dir, policy_path, trust_root, _actor_id = _signed_policy(tmp_path)
+    with pytest.raises(RuntimeConfigurationError, match="decision proof verifier"):
+        GovernedRuntime.from_signed_policy(
+            policy_path=policy_path,
+            trust_root_pub=trust_root,
+            agent_name="runtime-actor",
+            identity_data_dir=identity_dir,
+        )
+
+
+def test_second_governed_runtime_for_same_persistence_pair_fails_startup(tmp_path):
+    identity_dir, policy_path, trust_root, _actor_id = _signed_policy(tmp_path)
+    values = dict(
+        policy_path=policy_path,
+        trust_root_pub=trust_root,
+        agent_name="runtime-actor",
+        identity_data_dir=identity_dir,
+        ledger_path=tmp_path / "runtime-ledger.jsonl",
+        approval_db_path=tmp_path / "approvals.sqlite3",
+        decision_writer_verifier=_test_decision_verifier,
+    )
+    first = GovernedRuntime.from_signed_policy(**values)
+    try:
+        with pytest.raises(RuntimeOwnershipError, match="already has a writer"):
+            GovernedRuntime.from_signed_policy(**values)
+    finally:
+        first.close()
+    restarted = GovernedRuntime.from_signed_policy(**values)
+    restarted.close()
+
+
+def test_governed_runtime_rejects_same_ledger_and_approval_path_before_open(tmp_path):
+    identity_dir, policy_path, trust_root, _actor_id = _signed_policy(tmp_path)
+    shared = tmp_path / "shared-persistence"
+    with pytest.raises(RuntimeOwnershipError, match="distinct persistence resources"):
+        GovernedRuntime.from_signed_policy(
+            policy_path=policy_path,
+            trust_root_pub=trust_root,
+            agent_name="runtime-actor",
+            identity_data_dir=identity_dir,
+            ledger_path=shared,
+            approval_db_path=shared,
+            decision_writer_verifier=_test_decision_verifier,
+        )
+    assert not shared.exists()
+
+
+def test_governed_runtime_rejects_cross_resource_hardlink_before_open(tmp_path):
+    identity_dir, policy_path, trust_root, _actor_id = _signed_policy(tmp_path)
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_bytes(b"")
+    approvals = tmp_path / "approvals.sqlite3"
+    try:
+        os.link(ledger, approvals)
+    except OSError as exc:  # pragma: no cover - filesystem capability boundary
+        pytest.skip(f"hard links unavailable: {exc}")
+
+    with pytest.raises(RuntimeOwnershipError, match="distinct persistence resources"):
+        GovernedRuntime.from_signed_policy(
+            policy_path=policy_path,
+            trust_root_pub=trust_root,
+            agent_name="runtime-actor",
+            identity_data_dir=identity_dir,
+            ledger_path=ledger,
+            approval_db_path=approvals,
+            decision_writer_verifier=_test_decision_verifier,
+        )
+    assert ledger.read_bytes() == b""
 
 
 def test_governed_approval_is_signed_and_bound_before_actuation(tmp_path):
@@ -182,6 +270,7 @@ def test_governed_approval_is_signed_and_bound_before_actuation(tmp_path):
                 key_id="test-key",
                 nonce=f"{payload['approval_id']}-{payload['decision']}",
                 verified_at=time.time(),
+                operator_subject=payload["operator_id"],
             )
             if payload["operator_id"] == "operator-1"
             and payload["decision"] == "approved"

@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from enterprise.cli import main
 from enterprise.mcp_dispatch import MCPDispatcher, SchemaValidator
 from enterprise.mcp_tools import get_tool_registry
@@ -102,9 +104,10 @@ def verified_target(hwnd: int, **kwargs) -> dict:
             target["reasons"].append(f"{target_key} changed")
     return target
 
-def make_dispatcher(now_value: float = 1000.0) -> MCPDispatcher:
+def make_dispatcher(now_value: float = 1000.0, *, profile: str = "normal") -> MCPDispatcher:
     router = FakeRouter()
     return MCPDispatcher(
+        profile=profile,
         router=router,
         ledger=RecordingLedger(),
         policy_enforcer=AllowPolicyEnforcer(),
@@ -126,10 +129,25 @@ def issue_lease(dispatcher: MCPDispatcher, *, hwnd: int = 1234, agent_id: str = 
 
 
 class TestDispatcherCoverage:
-    def test_default_profile_is_enterprise(self):
+    def test_default_profile_is_enterprise_and_rejects_legacy_queue(self):
+        with pytest.raises(ValueError, match="exact durable operator queue"):
+            MCPDispatcher(operator_queue=OperatorQueue())
+
+    def test_enterprise_rejects_duck_typed_binding_verifier(self):
+        class FakeQueue:
+            @staticmethod
+            def verify_consumed_binding(*_args, **_kwargs) -> bool:
+                return True
+
+        with pytest.raises(ValueError, match="exact durable operator queue"):
+            MCPDispatcher(operator_queue=FakeQueue())
+
+    def test_normal_profile_allows_component_testing_with_legacy_queue(self):
         dispatcher = make_dispatcher()
-        result = dispatcher.call_tool("sc_echo_filter", {"raw_text": "hello", "injected_text": "hello"})
-        assert result["result"]["profile"] == "enterprise"
+        result = dispatcher.call_tool(
+            "sc_echo_filter", {"raw_text": "hello", "injected_text": "hello"}
+        )
+        assert result["result"]["profile"] == "normal"
 
     def test_invalid_profile_rejected(self):
         try:
@@ -265,6 +283,7 @@ class TestLeaseRuntime:
     def test_inject_calls_router_with_lease_id(self):
         router = FakeRouter()
         dispatcher = MCPDispatcher(
+            profile="normal",
             router=router,
             ledger=RecordingLedger(),
             policy_enforcer=AllowPolicyEnforcer(),
@@ -286,6 +305,7 @@ class TestLeaseRuntime:
 
     def test_inject_fails_closed_without_signed_policy_enforcer(self):
         dispatcher = MCPDispatcher(
+            profile="normal",
             router=FakeRouter(),
             ledger=RecordingLedger(),
             target_verifier=verified_target,
@@ -303,6 +323,7 @@ class TestLeaseRuntime:
         router = FakeRouter()
         router.route_success = False
         dispatcher = MCPDispatcher(
+            profile="normal",
             router=router,
             ledger=RecordingLedger(),
             policy_enforcer=AllowPolicyEnforcer(),
@@ -322,6 +343,7 @@ class TestLeaseRuntime:
     def test_inject_rejects_enqueue_without_new_readback(self):
         router = FakeRouter()
         dispatcher = MCPDispatcher(
+            profile="normal",
             router=router,
             ledger=RecordingLedger(),
             policy_enforcer=AllowPolicyEnforcer(),
@@ -347,6 +369,7 @@ class TestLeaseRuntime:
     def test_inject_does_not_accept_stale_matching_text(self):
         router = FakeRouter()
         dispatcher = MCPDispatcher(
+            profile="normal",
             router=router,
             ledger=RecordingLedger(),
             policy_enforcer=AllowPolicyEnforcer(),
@@ -370,6 +393,7 @@ class TestLeaseRuntime:
 
     def test_inject_fails_closed_without_persistent_ledger(self):
         dispatcher = MCPDispatcher(
+            profile="normal",
             router=FakeRouter(),
             policy_enforcer=AllowPolicyEnforcer(),
             target_verifier=verified_target,
@@ -395,6 +419,7 @@ class TestLeaseRuntime:
             return report
 
         dispatcher = MCPDispatcher(
+            profile="normal",
             router=FakeRouter(),
             ledger=RecordingLedger(),
             policy_enforcer=AllowPolicyEnforcer(),
@@ -428,6 +453,7 @@ class TestLeaseRuntime:
 
         router = FakeRouter()
         dispatcher = MCPDispatcher(
+            profile="normal",
             router=router,
             ledger=RecordingLedger(),
             policy_enforcer=AllowPolicyEnforcer(),
@@ -449,6 +475,7 @@ class TestLeaseRuntime:
         queue = OperatorQueue()
         router = FakeRouter()
         dispatcher = MCPDispatcher(
+            profile="normal",
             router=router,
             ledger=RecordingLedger(),
             policy_enforcer=AllowPolicyEnforcer(requires_approval=True),
@@ -508,6 +535,7 @@ class TestLeaseRuntime:
         queue = ReceiptRejectingQueue()
         router = FakeRouter()
         dispatcher = MCPDispatcher(
+            profile="normal",
             router=router,
             ledger=RecordingLedger(),
             policy_enforcer=AllowPolicyEnforcer(requires_approval=True),
@@ -553,6 +581,7 @@ class TestLeaseRuntime:
     def test_read_output_uses_real_adapter_contract_and_delta(self):
         snapshots = iter(["prompt> hello", "prompt> hello\nmodel reply"])
         dispatcher = MCPDispatcher(
+            profile="normal",
             router=FakeRouter(),
             ledger=RecordingLedger(),
             policy_enforcer=AllowPolicyEnforcer(),
@@ -582,6 +611,7 @@ class TestLeaseRuntime:
             raise RuntimeError("no TextPattern")
 
         dispatcher = MCPDispatcher(
+            profile="normal",
             router=FakeRouter(),
             ledger=RecordingLedger(),
             policy_enforcer=AllowPolicyEnforcer(),
@@ -602,7 +632,7 @@ class TestLeaseRuntime:
 class TestRuntimeTools:
     def test_channel_route_delegates_to_router(self):
         router = FakeRouter()
-        dispatcher = MCPDispatcher(router=router)
+        dispatcher = MCPDispatcher(profile="normal", router=router)
         result = dispatcher.call_tool("sc_channel_route", {"hwnd": 2020})
         assert result["ok"] is True
         assert result["result"]["channel"] == "wm_char"
@@ -755,7 +785,7 @@ class TestRuntimeTools:
             {"action_type": "read", "agent_id": "SC-A", "target_hwnd": 1},
         )
         assert allowed["result"]["allowed"] is True
-        assert allowed["result"]["governance_profile"] == "enterprise"
+        assert allowed["result"]["governance_profile"] == "normal"
         dispatcher._control.pause("SC-A", "operator", "test")
         denied = dispatcher.call_tool(
             "sc_policy_check",
@@ -795,7 +825,10 @@ class TestRuntimeTools:
 
 
 class TestCliMcpCall:
-    def test_cli_mcp_call_executes_echo_filter(self, capsys):
+    def test_cli_mcp_call_executes_echo_filter(self, capsys, monkeypatch):
+        import enterprise.mcp_dispatch as mcp_dispatch
+
+        monkeypatch.setattr(mcp_dispatch, "_DEFAULT_DISPATCHER", make_dispatcher())
         code = main(
             [
                 "mcp-call",

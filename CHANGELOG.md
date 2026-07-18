@@ -4,6 +4,19 @@
 
 ### Audit-bound operator approvals
 
+- Human decisions now require the verifier's authenticated operator subject to
+  equal the claimed operator. Caller-selected `system/` identities cannot
+  synthesize proof; ControlPlane safety denials use a private capability.
+- The governed runtime refuses startup without an injected operator proof
+  verifier, rather than deferring the configuration failure until a decision.
+- Governed runtime startup independently locks both its approval database and
+  signed ledger on one host. Recombining either resource with another runtime,
+  using the same resource for both roles, or presenting a hard-link alias during
+  acquisition/startup binding fails closed. Resource path entries must remain
+  owner-controlled after binding.
+- The default unkeyed context digest remains explicitly non-confidential;
+  rotation-stable keyed digest storage remains parked until its key custody and
+  persisted-version migration are designed together.
 - Added a same-transaction SQLite transition outbox for durable approval
   request, approve, deny, consume, and expiry events.
 - Hardened profiles keep transitions in a non-authorizing `audit_pending`
@@ -33,9 +46,11 @@
   low-entropy context guessing.
 - Evidence: [LOG-20260717-001](LOG.md#log-20260717-001). Rationale:
   [WHY-20260717-001](WHY.md#why-20260717-001) and
-  [WHY-20260717-002](WHY.md#why-20260717-002). Recovery:
+  [WHY-20260717-002](WHY.md#why-20260717-002), plus
+  [WHY-20260718-001](WHY.md#why-20260718-001). Recovery:
   [PARK-20260717-001](PARKED.md#park-20260717-001) and
-  [PARK-20260717-002](PARKED.md#park-20260717-002).
+  [PARK-20260717-002](PARKED.md#park-20260717-002), plus
+  [PARK-20260718-001](PARKED.md#park-20260718-001).
 
 ### Least-privilege Ultra monitoring
 

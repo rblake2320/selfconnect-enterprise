@@ -91,6 +91,60 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260718-001 - Caller-selected system denial and unbound operator subject
+
+**Status:** Parked security behavior; do not restore.
+**Category:** operator attribution and persistence ownership
+**Former location:** `enterprise/operator.py` and `enterprise/governed_runtime.py`
+**Source commit:** `b58353dc9fdd2551014ccfd2253091e868b96854`
+**Affected paths:** Governed approve/deny and runtime persistence composition
+**Action log:** [LOG-20260718-001](LOG.md#log-20260718-001)
+**Why changed:** [WHY-20260718-001](WHY.md#why-20260718-001)
+**Parked by:** commit containing this record
+
+**Former wording:**
+
+> A durable denial whose caller-supplied operator id began with `system/` could
+> synthesize internal proof. Verifier metadata did not identify the operator
+> subject, and runtime startup did not own the approval and ledger resources.
+
+**Recovery source:** Git object
+`b58353dc9fdd2551014ccfd2253091e868b96854:enterprise/operator.py`.
+
+**Reason parked:** Durable approval denial treated any operator identifier
+starting with `system/` as an internal safety action and synthesized proof.
+Decision verification metadata did not carry an authenticated operator subject,
+so a verifier result could be accepted without proving it named the claimed
+operator. Governed runtime instances also lacked a shared process-ownership lock
+for their approval database and signed ledger resources.
+
+**Replacement:** Human approve/deny always requires injected proof verification
+whose authenticated subject equals `operator_id`. `ControlPlane` obtains a
+private queue capability for safety denials. `RuntimeOwnershipLock`
+independently rejects a second local writer for either persistence resource and
+rejects same-resource and hard-link aliases present during acquisition or
+startup revalidation. Owner-controlled immutable path entries are a deployment
+precondition because advisory locks cannot prevent privileged later replacement.
+
+**Restore when:** Never restore the public prefix bypass or unbound subject.
+A future replacement for the local ownership lock must provide stronger tested
+multi-host fencing and must preserve fail-closed startup.
+
+**Restore procedure:** Work only on an isolated branch and replace the local
+ownership mechanism with stronger fencing while retaining all adversarial tests.
+
+**Validation after restore:** Wrong-subject, spoofed-prefix, concurrent
+writer, restart, audit reconciliation, and complete governed-runtime suites.
+
+**Recovery rehearsal:** Reconstruct the former behavior only from the named Git
+object in a disposable test workspace; never use it with real authority.
+
+**Restoration risks:** Operator impersonation, unaudited internal-denial
+spoofing, and ambiguous approval/ledger lineage from concurrent writers.
+
+**Evidence and links:** [WHY-20260718-001](WHY.md#why-20260718-001), issue #26,
+and `tests/test_enterprise/test_runtime_ownership.py`.
+
 ## PARK-20260717-002 - Caller-selected consume time and row-local replay history
 
 **Status:** Parked

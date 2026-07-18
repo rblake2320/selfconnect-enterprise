@@ -37,7 +37,10 @@ python -m tools.create_conformance_fixture `
 The generator writes only a public trust root, signed policy, non-secret
 manifest, and DPAPI-protected identities. Run `tools.irs_runtime_conformance`
 with an inspected target HWND and the generated paths. The operator must type
-the exact approval phrase when execution is requested. A full `PASS` also
+the exact approval phrase when execution is requested and provide an explicit
+`--test-only-operator-proof`; that local verifier is conformance-only and is not
+a production operator identity. Without an explicit proof, an approval-required
+execution fails closed. A full `PASS` also
 requires `--expect-output`; that token must be absent from `--text` and must
 newly appear after the command executes. An `--execute` run without an effect
 token is delivery evidence only and returns `PARTIAL`.
