@@ -91,6 +91,50 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260718-004 - Duplicate hidden CI test execution
+
+**Status:** Parked
+**Category:** test evidence
+**Former location:** `.github/workflows/ci.yml`, `Unit tests` and
+`Verify test count` steps
+**Source commit:** `f0e2d820f4488f4ff0622f213220cc5da45d8439`
+**Affected paths:** `.github/workflows/ci.yml`
+**Action log:** [LOG-20260718-004](LOG.md#log-20260718-004)
+**Why changed:** [WHY-20260718-004](WHY.md#why-20260718-004)
+**Parked by:** commit containing this record
+
+**Former wording:** The workflow contained a `Unit tests` step that ran pytest,
+followed by `Verify test count`, which ran the complete pytest suite again with
+captured output.
+
+**Recovery source:** Git object
+`f0e2d820f4488f4ff0622f213220cc5da45d8439:.github/workflows/ci.yml`.
+
+**Reason parked:** The workflow ran the full suite twice and suppressed the
+captured second run's failure identity. The two executions could produce
+different results while the gate reported only a count.
+**Replacement:** One authoritative pytest execution prints complete output and
+then enforces its return code, test floor, and skip allowlist.
+
+**Restore when:** A demonstrated requirement for two independent suite
+executions that cannot be met by repeatability or stress jobs with retained
+artifacts.
+
+**Restore procedure:** Restore the source commit's two steps, make both runs
+fully observable, and explicitly treat them as separate evidence.
+
+**Validation after restore:** Run actionlint, the workflow regression test, and
+a hosted Windows CI job.
+
+**Recovery rehearsal:** Not rehearsed.
+
+**Restoration risks:** Duplicate cost, nondeterministic disagreement between
+runs, and loss of failure diagnostics if captured output is hidden again.
+
+**Evidence and links:** Hosted run 29650683874,
+`tests/test_enterprise/test_ci_test_execution.py`, and
+[WHY-20260718-004](WHY.md#why-20260718-004).
+
 ## PARK-20260718-003 - Descriptive lease roles without capability enforcement
 
 **Status:** Parked security behavior; do not restore.

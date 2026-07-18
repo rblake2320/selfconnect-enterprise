@@ -43,19 +43,23 @@ jobs:
       - name: Lint (ruff — complete repository)
         run: python -m ruff check .
 
-      - name: Unit tests
-        run: python -m pytest -q --tb=short
-
-      - name: Verify test count
+      - name: Unit tests and result policy
         shell: python
         run: |
           import subprocess, sys, re
 
           result = subprocess.run(
-              ["python", "-m", "pytest", "-q", "--tb=no", "-rs"],
-              capture_output=True, text=True
+              ["python", "-m", "pytest", "-q", "--tb=short", "-rs"],
+              capture_output=True,
+              text=True,
+              encoding="utf-8",
+              errors="strict",
           )
           output = result.stdout + result.stderr
+          # Keep the one authoritative test execution fully observable. The
+          # former two-step gate reran the suite and hid the second run's
+          # failure details inside captured output.
+          print(output, end="")
 
           # Parse pytest's summary without hard-coding a release-wide result.
           m = re.search(r'(\d+) passed', output)
@@ -73,8 +77,8 @@ jobs:
 
           print(f"Results: {passed} passed, {failed} failed, {skipped} skipped")
 
-          if failed > 0:
-              print(f"FAIL: {failed} test(s) failed")
+          if result.returncode != 0:
+              print(f"FAIL: pytest exited with status {result.returncode}")
               sys.exit(1)
 
           # Only live-Ultra tests may skip in this unit lane. They are executed

@@ -51,6 +51,40 @@ related records.
 
 ## Register
 
+## WHY-20260718-004 - Validate one observable test execution
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-18T15:57:48Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260718-004](LOG.md#log-20260718-004)
+**Parked records:** [PARK-20260718-004](PARKED.md#park-20260718-004)
+**Source state:** `selfconnect-enterprise` draft PR #37 at
+`f0e2d820f4488f4ff0622f213220cc5da45d8439`
+
+**Decision:** Run the complete pytest suite once in the Windows CI lane, expose
+its full output, and apply the count and named-skip policy to that same result.
+
+**Why:** Re-executing the suite does not strengthen evidence: it evaluates a
+different run. Capturing that second run without printing its failure details
+also prevented diagnosis. One observable execution binds diagnostics, exit
+status, counts, and skip policy to the same evidence.
+
+**Alternatives considered:** Retain two executions and print the second output;
+rejected because it preserves duplicate cost and nondeterminism. Persist the
+first step's console output for a later step; rejected because the combined
+step is simpler and keeps result ownership explicit.
+
+**Consequences:** CI runs faster and every pytest failure remains visible. The
+workflow depends on pytest's stable terminal summary for count parsing, as it
+did previously.
+
+**Rollback conditions:** Restore the prior two-step gate only if a separately
+versioned evidence artifact is required and both executions are intentionally
+treated as distinct tests with complete diagnostics.
+
+**Evidence and links:** Hosted run 29650683874, actionlint, and
+`tests/test_enterprise/test_ci_test_execution.py`.
+
 ## WHY-20260718-003 - Treat channel lease roles as immutable authority
 
 **Status:** Accepted

@@ -54,6 +54,36 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260718-004 - Make one test execution authoritative and observable
+
+**Timestamp (UTC):** 2026-07-18T15:57:48Z
+**Actor:** Codex, requested by the repository owner
+**Category:** CI reliability, test evidence
+**Base commit:** `f0e2d820f4488f4ff0622f213220cc5da45d8439`
+**Change reference:** commit containing this entry; draft pull request #37
+**Why:** [WHY-20260718-004](WHY.md#why-20260718-004)
+**Parked records:** [PARK-20260718-004](PARKED.md#park-20260718-004)
+
+**Changed:** Combined the Windows unit-test and result-policy steps into one
+pytest execution, print its complete output before enforcing its return code,
+and added a workflow regression test.
+
+**Reason:** Hosted run 29650683874 passed its first full suite (1,639 passed)
+then failed a redundant second run. The second step captured and suppressed the
+failing test identity, leaving only a count. That design created avoidable
+nondeterminism and made the failure irrecoverable from the Actions log.
+
+**Full actions and links:** `.github/workflows/ci.yml`,
+`tests/test_enterprise/test_ci_test_execution.py`, and draft PR #37.
+
+**Validation:** actionlint v1.7.12 passed; focused workflow and dispatcher tests
+passed 84/84; one local full execution passed 1,641 with 38 named skips and two
+known warnings. Hosted validation is pending on the commit containing this
+entry.
+
+**Notes:** This change does not classify the suppressed second-run failure as a
+product defect because the former workflow did not retain its identity.
+
 ## LOG-20260718-003 - Enforce issued lease roles as runtime authority
 
 **Timestamp (UTC):** 2026-07-18T15:36:54Z
