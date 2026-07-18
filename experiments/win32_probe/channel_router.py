@@ -20,6 +20,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Callable
 
 try:
     import win32api
@@ -63,6 +64,17 @@ class ActionReceipt:
     success: bool
     transport_enqueued: bool = False
     delivery_confirmed: bool = False
+
+
+@dataclass(frozen=True)
+class TargetBinding:
+    """Immutable target identity captured when a governed lease is issued."""
+
+    pid: int
+    exe: str
+    exe_path: str
+    window_class: str
+    title_sha256: str
 
 
 TERMINAL_CLASSES = frozenset({
@@ -134,9 +146,14 @@ def _get_window_pid(hwnd: int) -> int:
 class ChannelRouter:
     """Classify an HWND and route actions through the appropriate channel."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        target_verifier: Callable[..., dict[str, Any]] | None = None,
+    ) -> None:
         self._decisions: list[RoutingDecision] = []
         self._lock = threading.Lock()
+        self._target_verifier = target_verifier
 
     def classify(self, hwnd: int) -> RoutingDecision:
         """Classify hwnd → ChannelType. Fail-closed: unknown → DENY.
@@ -193,7 +210,14 @@ class ChannelRouter:
             self._decisions.append(decision)
         return decision
 
-    def route(self, hwnd: int, text: str, lease_id: str | None = None) -> ActionReceipt:
+    def route(
+        self,
+        hwnd: int,
+        text: str,
+        lease_id: str | None = None,
+        *,
+        expected_binding: TargetBinding | None = None,
+    ) -> ActionReceipt:
         """Route text injection through the appropriate channel. Raises on DENY.
 
         Security invariants:
@@ -228,6 +252,8 @@ class ChannelRouter:
             raise ChannelRoutingError(
                 f"Routing denied for HWND {hwnd}: {decision.reason}"
             )
+        if expected_binding is not None:
+            self._verify_final_target(hwnd, expected_binding, decision.channel)
         payload_hash = hashlib.sha256(text.encode()).hexdigest()
         readback_hash = ""
         success = False
@@ -251,6 +277,42 @@ class ChannelRouter:
             transport_enqueued=success,
             delivery_confirmed=False,
         )
+
+    def _verify_final_target(
+        self,
+        hwnd: int,
+        expected: TargetBinding,
+        channel: ChannelType,
+    ) -> None:
+        verifier = self._target_verifier
+        if verifier is None:
+            try:
+                from experiments.win32_probe.target_guard import verify_target
+            except Exception as exc:  # noqa: BLE001
+                raise ChannelRoutingError(
+                    f"Final target verification unavailable for HWND {hwnd}: {exc}"
+                ) from exc
+            verifier = verify_target
+        report = verifier(
+            hwnd,
+            expect_pid=expected.pid,
+            expect_exe=expected.exe,
+            expect_exe_path=expected.exe_path,
+            expect_class=expected.window_class,
+            expect_title_sha256=expected.title_sha256,
+            require_terminal=channel == ChannelType.WM_CHAR,
+        )
+        if not report.get("ok"):
+            reasons = report.get("reasons") or ["target identity changed"]
+            raise ChannelRoutingError(
+                f"Final target verification denied HWND {hwnd}: "
+                + "; ".join(str(reason) for reason in reasons)
+            )
+        title_sha256 = hashlib.sha256(str(report.get("title", "")).encode("utf-8")).hexdigest()
+        if title_sha256 != expected.title_sha256:
+            raise ChannelRoutingError(
+                f"Final target verification denied HWND {hwnd}: title hash changed"
+            )
 
     def _inject_wm_char(self, hwnd: int, text: str) -> bool:
         if not _WIN32_AVAILABLE:

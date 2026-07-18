@@ -54,6 +54,44 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260718-001 - Reconcile issue 27 without reviving unsafe historical actuators
+
+**Timestamp (UTC):** 2026-07-18T12:46:07Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security fix, test, audit, documentation
+**Base commit:** `b58353dc9fdd2551014ccfd2253091e868b96854`
+**Change reference:** commit containing this entry; draft pull request for issue #27
+**Why:** [WHY-20260718-001](WHY.md#why-20260718-001)
+**Parked records:** [PARK-20260718-001](PARKED.md#park-20260718-001)
+
+**Changed:** Bound governed leases to the exact window-title hash; carried an
+immutable PID, executable name/path, class, and title binding to the canonical
+router; revalidated it immediately before mutation; added replacement,
+precommit-ledger, and delivery-state tests; and narrowed MCP descriptions to
+implemented properties.
+
+**Reason:** Current master already had a narrower governed text path. The May
+participant-mode branch duplicated weaker target and execution boundaries and
+failed several issue #27 adversarial requirements.
+
+**Full actions and links:** `enterprise/mcp_dispatch.py`,
+`enterprise/mcp_tools.py`, `experiments/win32_probe/target_guard.py`,
+`experiments/win32_probe/channel_router.py`, their named tests, control
+`WIN32-BINDING-001`, issue #27, and the linked WHY/PARK records.
+
+**Validation:** On this Windows checkout, repository-wide Ruff passed; the full
+suite passed 1,575 tests with 34 explicit environment/live skips and two
+existing immutable-sink warnings; the focused MCP, router, target-guard, and
+documentation set passed 145 tests; and quick release conformance returned
+`PASS_WITH_NAMED_BLIND_SPOTS`. A built wheel contained 69 entries, included the
+current dispatcher/router, and excluded `target_registry.py`,
+`executor_win32.py`, and `bridge_connector.py`. Hosted CI remains pending.
+Historical counts from `125c24d` are not reused.
+
+**Notes:** Issue #27 remains open until independent review and merge. This work
+does not add participant modes, a logical target registry, a generalized Win32
+executor, a GenAI.mil interface, or a government authorization claim.
+
 ## LOG-20260717-002 - Close second-review approval evidence gaps
 
 **Timestamp (UTC):** 2026-07-17T14:58:07Z

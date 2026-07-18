@@ -199,6 +199,19 @@ class TestSecurityConstraints:
             "optional agent_id allows unauthenticated/unauditable lease requests"
         )
 
+    def test_target_metadata_does_not_claim_unverified_bindings(self):
+        lease = get_tool("sc_request_lease")
+        guard = get_tool("sc_target_guard_check")
+        verify = get_tool("sc_verify_target")
+        stamp = get_tool("sc_session_stamp")
+
+        assert "SID" not in lease["description"]
+        assert "birth" not in lease["description"].lower()
+        assert "generation" not in lease["description"].lower()
+        assert set(guard["inputSchema"]["properties"]) == {"hwnd"}
+        assert "title" not in verify["description"].lower()
+        assert "process-identity verification" in stamp["description"]
+
     # HIGH: MISSING VALIDATION — sc_audit_search.limit must have a maximum
     def test_audit_search_limit_has_maximum(self):
         """Unbounded limit allows an attacker to dump the entire audit log."""

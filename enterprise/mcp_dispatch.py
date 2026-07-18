@@ -30,10 +30,15 @@ from enterprise.mcp_tools import get_tool, get_tool_registry
 from enterprise.operator import OperatorQueue
 
 try:
-    from experiments.win32_probe.channel_router import ChannelRouter, ChannelRoutingError
+    from experiments.win32_probe.channel_router import (
+        ChannelRouter,
+        ChannelRoutingError,
+        TargetBinding,
+    )
 except Exception:  # noqa: BLE001
     ChannelRouter = None  # type: ignore[assignment]
     ChannelRoutingError = RuntimeError  # type: ignore[assignment]
+    TargetBinding = None  # type: ignore[assignment,misc]
 
 try:
     from enterprise.tpm_attestation import (
@@ -255,7 +260,10 @@ class MCPDispatcher:
             raise ValueError(f"profile must be one of {sorted(_VALID_PROFILES)}, got {profile!r}")
         self.profile = profile
         self._validator = SchemaValidator()
-        self._router = router if router is not None else (ChannelRouter() if ChannelRouter else None)
+        self._target_verifier = target_verifier or self._load_target_verifier()
+        self._router = router if router is not None else (
+            ChannelRouter(target_verifier=self._target_verifier) if ChannelRouter else None
+        )
         self._operator_queue = operator_queue
         self._control = control_plane or ControlPlane(
             ledger=ledger,
@@ -263,7 +271,6 @@ class MCPDispatcher:
         )
         self._ledger = ledger
         self._policy_enforcer = policy_enforcer
-        self._target_verifier = target_verifier or self._load_target_verifier()
         self._output_reader = output_reader or self._load_output_reader()
         self._identity_type = identity_type
         self._now = now
@@ -415,11 +422,16 @@ class MCPDispatcher:
                 expect_exe=expected.target_exe,
                 expect_exe_path=expected.target_exe_path,
                 expect_class=expected.target_class,
+                expect_title_sha256=expected.target_title_hash,
             )
         report = self._target_verifier(int(hwnd), **kwargs)
         if not report.get("ok"):
             reasons = report.get("reasons") or ["target verification failed"]
             raise MCPDispatchError("unsafe target: " + "; ".join(str(item) for item in reasons))
+        if expected is not None:
+            actual_title_hash = _hash_text(str(report.get("title", "")))
+            if actual_title_hash != expected.target_title_hash:
+                raise MCPDispatchError("unsafe target: title hash changed")
         required = {
             "pid": report.get("pid"),
             "exe": report.get("exe"),
@@ -428,6 +440,18 @@ class MCPDispatcher:
         if not required["pid"] or not required["exe"] or not required["class"]:
             raise MCPDispatchError("target verifier returned an incomplete identity binding")
         return report
+
+    @staticmethod
+    def _target_binding(lease: RuntimeLease) -> Any:
+        if TargetBinding is None:
+            raise MCPDispatchError("immutable target binding support is unavailable")
+        return TargetBinding(
+            pid=lease.target_pid,
+            exe=lease.target_exe,
+            exe_path=lease.target_exe_path,
+            window_class=lease.target_class,
+            title_sha256=lease.target_title_hash,
+        )
 
     def _require_execution_authorization(
         self,
@@ -648,12 +672,25 @@ class MCPDispatcher:
         probe = _delivery_probe(args["text"])
         before = self._read_output_once(lease.hwnd)
         before_count = _normalise_terminal_text(before).count(probe)
+        self._verify_live_target(lease.hwnd, expected=lease)
         try:
-            receipt = self._router.route(int(args["hwnd"]), args["text"], lease_id=lease.lease_id)
+            receipt = self._router.route(
+                int(args["hwnd"]),
+                args["text"],
+                lease_id=lease.lease_id,
+                expected_binding=self._target_binding(lease),
+            )
         except ChannelRoutingError as exc:
             raise MCPDispatchError(str(exc)) from exc
         if not bool(getattr(receipt, "success", False)):
             raise MCPDispatchError("transport refused or failed to enqueue the payload")
+        try:
+            self._verify_live_target(lease.hwnd, expected=lease)
+        except MCPDispatchError as exc:
+            raise MCPDispatchError(
+                "transport was enqueued but post-action target verification failed; "
+                f"delivery state is unknown and must not be retried automatically: {exc}"
+            ) from exc
 
         timeout_ms = int(args.get("delivery_timeout_ms", _DEFAULT_DELIVERY_TIMEOUT_MS))
         deadline = time.monotonic() + (timeout_ms / 1000.0)
@@ -746,10 +783,7 @@ class MCPDispatcher:
         return self._run_target_guard(args)
 
     def _sc_target_guard_check(self, args: dict[str, Any]) -> dict[str, Any]:
-        report = self._run_target_guard(args)
-        report["birth_id_checked"] = bool(args.get("birth_id"))
-        report["generation_checked"] = "generation" in args
-        return report
+        return self._run_target_guard(args)
 
     def _run_target_guard(self, args: dict[str, Any]) -> dict[str, Any]:
         try:

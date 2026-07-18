@@ -6,6 +6,7 @@ live HWND/Win32 execution is intentionally a separate conformance run.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from types import SimpleNamespace
@@ -23,7 +24,14 @@ class _DeterministicRouter:
     def __init__(self) -> None:
         self.rendered = "runtime prompt> "
 
-    def route(self, hwnd: int, text: str, lease_id: str | None = None):
+    def route(
+        self,
+        hwnd: int,
+        text: str,
+        lease_id: str | None = None,
+        *,
+        expected_binding=None,
+    ):
         self.rendered += text
         return SimpleNamespace(
             receipt_id="receipt-runtime-test",
@@ -61,6 +69,12 @@ def _target(hwnd: int, **kwargs) -> dict:
         if expected is not None and expected != values[key]:
             values["ok"] = False
             values["reasons"].append(f"{key} mismatch")
+    expected_title = kwargs.get("expect_title_sha256")
+    if expected_title is not None:
+        actual_title = hashlib.sha256(values["title"].encode("utf-8")).hexdigest()
+        if expected_title != actual_title:
+            values["ok"] = False
+            values["reasons"].append("title mismatch")
     return values
 
 

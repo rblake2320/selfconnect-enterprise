@@ -1,6 +1,7 @@
 """Tests for experiments/win32_probe/channel_router.py."""
 from __future__ import annotations
 
+import hashlib
 import threading
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ from experiments.win32_probe.channel_router import (
     ChannelRoutingError,
     ChannelType,
     ActionReceipt,
+    TargetBinding,
 )
 
 
@@ -131,6 +133,65 @@ class TestClassify:
 
 
 class TestRoute:
+    def test_matching_expected_binding_reaches_mutation(self):
+        title = "Bound Terminal"
+        binding = TargetBinding(
+            pid=4242,
+            exe="WindowsTerminal.exe",
+            exe_path=r"C:\Program Files\WindowsApps\Terminal\WindowsTerminal.exe",
+            window_class="CASCADIA_HOSTING_WINDOW_CLASS",
+            title_sha256=hashlib.sha256(title.encode("utf-8")).hexdigest(),
+        )
+
+        def accept_binding(hwnd, **_kwargs):
+            return {"ok": True, "reasons": [], "hwnd": hwnd, "title": title}
+
+        router = ChannelRouter(target_verifier=accept_binding)
+        with (
+            patch(
+                "experiments.win32_probe.channel_router._get_window_class",
+                return_value="CASCADIA_HOSTING_WINDOW_CLASS",
+            ),
+            patch("experiments.win32_probe.channel_router._get_window_title", return_value=title),
+            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=4242),
+            patch.object(router, "_inject_wm_char", return_value=True) as inject,
+        ):
+            receipt = router.route(8006, "hello", expected_binding=binding)
+        assert receipt.success is True
+        inject.assert_called_once_with(8006, "hello")
+
+    def test_expected_binding_is_revalidated_before_mutation(self):
+        calls = []
+
+        def reject_replacement(hwnd, **kwargs):
+            calls.append((hwnd, kwargs))
+            return {"ok": False, "reasons": ["pid changed at final boundary"]}
+
+        router = ChannelRouter(target_verifier=reject_replacement)
+        binding = TargetBinding(
+            pid=4242,
+            exe="WindowsTerminal.exe",
+            exe_path=r"C:\Program Files\WindowsApps\Terminal\WindowsTerminal.exe",
+            window_class="CASCADIA_HOSTING_WINDOW_CLASS",
+            title_sha256="a" * 64,
+        )
+        with (
+            patch(
+                "experiments.win32_probe.channel_router._get_window_class",
+                return_value="CASCADIA_HOSTING_WINDOW_CLASS",
+            ),
+            patch(
+                "experiments.win32_probe.channel_router._get_window_title",
+                return_value="Replacement Terminal",
+            ),
+            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=5252),
+            patch.object(router, "_inject_wm_char") as inject,
+        ):
+            with pytest.raises(ChannelRoutingError, match="pid changed at final boundary"):
+                router.route(8007, "hello", expected_binding=binding)
+        assert calls[0][1]["expect_title_sha256"] == "a" * 64
+        inject.assert_not_called()
+
     def test_route_denied_raises_channel_routing_error(self):
         router = ChannelRouter()
         with (

@@ -46,6 +46,17 @@
       "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_governed_runtime.py", "tests/test_enterprise/test_mcp_dispatch.py", "-q"]
     },
     {
+      "id": "WIN32-BINDING-001",
+      "title": "Governed mutation revalidates an immutable target binding",
+      "scope": "Governed MCP text injection and the canonical Win32 channel router",
+      "assertion": "Run dispatcher, governed-runtime, channel-router, and target-guard tests.",
+      "expected": "PID, executable name and path, class, and exact title hash remain bound from lease issuance through the last software verification before mutation and a post-action revalidation; target replacement and pre-action ledger failure prevent routing; enqueue without new readback or with a changed post-action target remains unconfirmed and unsafe to retry automatically.",
+      "evidence": "pytest output and the release conformance JSON report",
+      "blind_spots": "The last software check and Win32 mutation are not atomic: Windows does not provide an application-level lock over external HWND ownership, so replacement can still occur before PostMessage. Post-action revalidation records that uncertainty but cannot retract input already delivered. Custom noncanonical routers and direct SDK calls remain outside this control.",
+      "tier": "release",
+      "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_mcp_dispatch.py", "tests/test_enterprise/test_governed_runtime.py", "tests/test_enterprise/test_channel_router.py", "tests/test_enterprise/test_target_guard.py", "-q"]
+    },
+    {
       "id": "GOV-APPROVAL-001",
       "title": "Durable operator transitions require signed evidence before authority",
       "scope": "DurableOperatorQueue, GovernedRuntime approval composition, and MCP mutation through the governed dispatcher",

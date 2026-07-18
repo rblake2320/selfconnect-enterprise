@@ -37,7 +37,6 @@ _EXE_NAME_MAX   = 260    # Windows MAX_PATH for exe names
 _TEXT_MAX       = 65535  # WM_CHAR injection text ceiling (documented in description)
 _RAW_TEXT_MAX   = 131072 # 128 KB for terminal readback buffers
 _RECEIPT_MAX    = 8192   # JSON-serialised ActionReceipt (generous but bounded)
-_BIRTH_ID_MAX   = 128    # birth_id tokens
 _PIPE_NAME_MAX  = 256    # \\.\pipe\<name> — 256 chars covers all valid local pipe names
 
 # Win32 HWND is a 32-bit value on all architectures (WOW64/native); valid range 0x0001–0xFFFF_FFFE.
@@ -170,8 +169,8 @@ _TOOLS: list[dict[str, Any]] = [
     {
         "name": "sc_verify_target",
         "description": (
-            "Run all fail-closed target guard checks: HWND valid, PID matches, exe matches, "
-            "window class is a known terminal, title matches expected. Returns guard report."
+            "Inspect a live HWND with the target guard and optionally require an exact PID, "
+            "executable name, and window class. Returns the bounded guard report."
         ),
         "inputSchema": {
             "type": "object",
@@ -204,9 +203,8 @@ _TOOLS: list[dict[str, Any]] = [
     {
         "name": "sc_request_lease",
         "description": (
-            "Request a channel lease for a target HWND. The lease binds: agent SID, target HWND, "
-            "window class, birth_id, generation, and role. Lease is short-lived and must be renewed. "
-            "agent_id is required — leases without an explicit agent identity cannot be audited."
+            "Request a short-lived channel lease binding the supplied agent ID and role to the "
+            "target HWND's current PID, executable name and path, window class, and title hash."
         ),
         "inputSchema": {
             "type": "object",
@@ -393,8 +391,8 @@ _TOOLS: list[dict[str, Any]] = [
     {
         "name": "sc_target_guard_check",
         "description": (
-            "Run all target guard checks without injecting. Returns pass/fail for each check: "
-            "HWND valid, PID live, exe match, class match, title match, birth_id match, generation match."
+            "Inspect a live HWND with the target guard without injecting and return its bounded "
+            "live window and process report."
         ),
         "inputSchema": {
             "type": "object",
@@ -405,17 +403,6 @@ _TOOLS: list[dict[str, Any]] = [
                     "type": "integer",
                     "minimum": 1,
                     "maximum": _HWND_MAX,
-                },
-                "birth_id": {
-                    "type": "string",
-                    "description": "Expected birth_id (from sc_session_stamp)",
-                    "maxLength": _BIRTH_ID_MAX,
-                },
-                "generation": {
-                    "type": "integer",
-                    "description": "Expected session generation counter",
-                    "minimum": 0,
-                    "maximum": 4294967295,
                 },
             },
         },
@@ -477,9 +464,9 @@ _TOOLS: list[dict[str, Any]] = [
     {
         "name": "sc_session_stamp",
         "description": (
-            "Stamp a new session with a software-capable birth_id record over process PID, HWND, "
-            "window class, executable path hash, and timestamp. This supports generation tracking; "
-            "it does not inherently prove hardware-backed identity."
+            "Create a fresh session marker containing the supplied HWND, a software-generated "
+            "birth_id, timestamp, provider label, and marker hash. This is not process-identity "
+            "verification or inherent proof of hardware-backed identity."
         ),
         "inputSchema": {
             "type": "object",
