@@ -38,26 +38,27 @@ class LogicalTargetSpec:
     allowed_roles: frozenset[str]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.logical_id, str) or not _LOGICAL_ID_RE.fullmatch(
+        if type(self.logical_id) is not str or not _LOGICAL_ID_RE.fullmatch(
             self.logical_id
         ):
             raise ValueError("logical_id must match ^[a-z][a-z0-9._-]{0,127}$")
         if (
-            not isinstance(self.expected_exe_path, str)
+            type(self.expected_exe_path) is not str
             or not self.expected_exe_path
             or "\x00" in self.expected_exe_path
             or len(self.expected_exe_path) > 1024
             or not ntpath.isabs(self.expected_exe_path)
+            or not ntpath.splitdrive(self.expected_exe_path)[0]
         ):
             raise ValueError("expected_exe_path must be a bounded absolute Windows path")
         if (
-            not isinstance(self.expected_class, str)
+            type(self.expected_class) is not str
             or not self.expected_class
             or "\x00" in self.expected_class
             or len(self.expected_class) > 256
         ):
             raise ValueError("expected_class must be a bounded non-empty string")
-        if not isinstance(self.expected_title_sha256, str) or not _SHA256_RE.fullmatch(
+        if type(self.expected_title_sha256) is not str or not _SHA256_RE.fullmatch(
             self.expected_title_sha256
         ):
             raise ValueError("expected_title_sha256 must be 64 lowercase hex characters")
@@ -166,11 +167,15 @@ class LogicalTargetResolver:
             )
 
         try:
-            raw_candidates = tuple(self.__enumerate_windows())
+            raw_candidates: list[int] = []
+            for candidate in self.__enumerate_windows():
+                if len(raw_candidates) >= _CANDIDATE_LIMIT:
+                    raise LogicalTargetError("top-level window enumeration exceeded its bound")
+                raw_candidates.append(candidate)
         except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, LogicalTargetError):
+                raise
             raise LogicalTargetError("top-level window enumeration failed") from exc
-        if len(raw_candidates) > _CANDIDATE_LIMIT:
-            raise LogicalTargetError("top-level window enumeration exceeded its bound")
         if len(set(raw_candidates)) != len(raw_candidates):
             raise LogicalTargetError("top-level window enumeration returned duplicate HWNDs")
 
@@ -188,9 +193,9 @@ class LogicalTargetResolver:
                 )
             except Exception as exc:  # noqa: BLE001
                 raise LogicalTargetError("canonical target verification failed") from exc
-            if not isinstance(report, dict):
+            if type(report) is not dict:
                 raise LogicalTargetError("canonical target verifier returned an invalid report")
-            if not report.get("ok"):
+            if report.get("ok") is not True:
                 continue
             title = report.get("title")
             pid = report.get("pid")
@@ -200,11 +205,13 @@ class LogicalTargetResolver:
             if (
                 type(pid) is not int
                 or pid <= 0
-                or not isinstance(exe, str)
+                or type(exe) is not str
                 or not exe
-                or not isinstance(exe_path, str)
-                or not isinstance(window_class, str)
-                or not isinstance(title, str)
+                or type(exe_path) is not str
+                or type(window_class) is not str
+                or type(title) is not str
+                or report.get("hwnd") != value
+                or report.get("is_terminal") is not True
             ):
                 raise LogicalTargetError(
                     "canonical target verifier returned an incomplete identity binding"

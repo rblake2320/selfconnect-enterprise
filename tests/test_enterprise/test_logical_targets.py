@@ -41,6 +41,7 @@ def report(hwnd: int, *, ok: bool = True, **changes):
         "exe_path": PATH,
         "class": "CASCADIA_HOSTING_WINDOW_CLASS",
         "title": TITLE,
+        "is_terminal": True,
     }
     value.update(changes)
     return value
@@ -53,6 +54,7 @@ class TestLogicalTargetSpec:
             ("logical_id", "UPPER"),
             ("logical_id", ""),
             ("expected_exe_path", "relative.exe"),
+            ("expected_exe_path", r"\Windows\System32\cmd.exe"),
             ("expected_exe_path", "C:\\bad\x00path"),
             ("expected_class", ""),
             ("expected_title_sha256", "A" * 64),
@@ -129,6 +131,17 @@ class TestLogicalTargetResolver:
         with pytest.raises(LogicalTargetError):
             resolver.resolve("ops.terminal.primary", role="sender", target_verifier=report)
 
+    def test_candidate_enumeration_is_bounded_while_iterating(self):
+        resolver = LogicalTargetResolver(
+            [spec()], enumerate_windows=lambda: iter(range(1, 5000))
+        )
+        with pytest.raises(LogicalTargetError, match="exceeded"):
+            resolver.resolve(
+                "ops.terminal.primary",
+                role="sender",
+                target_verifier=lambda hwnd, **kwargs: report(hwnd, ok=False),
+            )
+
     def test_verifier_exception_or_incomplete_success_denies(self):
         resolver = LogicalTargetResolver([spec()], enumerate_windows=lambda: [11])
         with pytest.raises(LogicalTargetError, match="verification failed"):
@@ -142,6 +155,23 @@ class TestLogicalTargetResolver:
                 "ops.terminal.primary",
                 role="sender",
                 target_verifier=lambda hwnd, **kwargs: report(hwnd, exe=""),
+            )
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"hwnd": 99},
+            {"is_terminal": False},
+            {"ok": "yes"},
+        ],
+    )
+    def test_noncanonical_success_shape_cannot_match(self, change):
+        resolver = LogicalTargetResolver([spec()], enumerate_windows=lambda: [11])
+        with pytest.raises(LogicalTargetError):
+            resolver.resolve(
+                "ops.terminal.primary",
+                role="sender",
+                target_verifier=lambda hwnd, **kwargs: report(hwnd, **change),
             )
 
     @pytest.mark.parametrize(
