@@ -6,7 +6,7 @@ windows without weakening the existing target guard or lease authority.
 The host constructs immutable `LogicalTargetSpec` values at startup and injects
 the resolver into `MCPDispatcher`. Each specification requires an exact local
 drive-letter absolute executable path with no surrounding whitespace, a
-non-empty printable window class, title SHA-256, and closed set of lease roles.
+non-empty window class without ASCII control characters, title SHA-256, and closed set of lease roles.
 There are no built-in product, browser, file, or government targets.
 
 `sc_request_target_lease` performs this sequence:

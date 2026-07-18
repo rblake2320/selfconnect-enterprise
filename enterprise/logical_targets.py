@@ -65,7 +65,7 @@ class LogicalTargetSpec:
             or _has_control_characters(self.expected_class)
             or len(self.expected_class) > 256
         ):
-            raise ValueError("expected_class must be a bounded non-empty printable string")
+            raise ValueError("expected_class must be bounded, non-empty, and contain no ASCII control characters")
         if type(self.expected_title_sha256) is not str or not _SHA256_RE.fullmatch(
             self.expected_title_sha256
         ):
