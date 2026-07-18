@@ -80,13 +80,17 @@ participant/executor redesign was deferred because no current package surface
 or reviewed external interface requires it. Documentation-only closure was
 rejected because the current title and final-boundary binding gaps were real.
 
-**Consequences:** Governed mutation now has an additional canonical identity
-check at the last software boundary before the transport primitive and a
-post-action revalidation. The check and Win32 mutation are not atomic; a
-post-action mismatch records unknown delivery and forbids automatic retry but
-cannot retract input already delivered. Custom routers used by governed callers
-must accept the immutable `expected_binding` contract. The historical features
-remain available by Git object but carry no current release claim.
+**Consequences:** Governed mutation now has canonical identity checks at the last
+software boundary before the transport primitive, around each UIA output read,
+and after the action. Windows Terminal input is posted only to an InputSite child
+matching the bound process, executable path, class, and host ancestry. A partial
+PostMessage sequence or later identity mismatch records unknown or unconfirmed
+delivery, persists a no-retry disposition, and cannot be silently replayed.
+Governed MCP text is capped at 4,096 characters before one-time approval
+consumption. The checks and Win32 mutation remain non-atomic and cannot retract
+input already delivered. Custom routers used by governed callers must accept the
+immutable `expected_binding` contract. The historical features remain available
+by Git object but carry no current release claim.
 
 **Rollback conditions:** Replace the binding contract only with an equal or
 stronger canonical target check at the mutation boundary. If compatibility

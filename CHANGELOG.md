@@ -9,6 +9,13 @@
   for a final check immediately before mutation.
 - Added deterministic target-replacement, pre-action ledger-failure, and
   attempted-versus-confirmed delivery tests.
+- Bound every UIA snapshot read to the lease identity before and after the read,
+  and required the Windows Terminal InputSite child to match the bound process,
+  executable path, class, and host ancestry before posting input.
+- Classified partial Win32 message posting as unknown delivery with no automatic
+  retry, and persisted each attempted delivery disposition before returning.
+- Reduced governed MCP text input to 4,096 characters and validate it before a
+  one-time operator approval can be consumed.
 - Corrected MCP descriptions that claimed unimplemented SID, birth,
   generation, or title checks.
 - Preserved and explicitly parked the stale participant-mode, logical target,

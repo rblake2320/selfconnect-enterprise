@@ -453,6 +453,40 @@ class MCPDispatcher:
             title_sha256=lease.target_title_hash,
         )
 
+    def _persist_delivery_disposition(
+        self,
+        lease: RuntimeLease,
+        receipt: Any,
+        *,
+        disposition: str,
+        transport_attempted: bool,
+        transport_enqueued: bool,
+        delivery_confirmed: bool,
+        do_not_retry: bool,
+        reason: str = "",
+    ) -> None:
+        metadata = {
+            "lease_id": lease.lease_id,
+            "subject_agent_id": lease.agent_id,
+            "target_hwnd": lease.hwnd,
+            "target_pid": lease.target_pid,
+            "receipt_id": str(getattr(receipt, "receipt_id", "")),
+            "transport_attempted": transport_attempted,
+            "transport_enqueued": transport_enqueued,
+            "delivery_confirmed": delivery_confirmed,
+            "delivery_disposition": disposition,
+            "do_not_retry": do_not_retry,
+            "reason": _bound_error(reason),
+        }
+        try:
+            self._ledger.log("delivery_disposition", result=disposition, metadata=metadata)
+        except Exception as exc:  # noqa: BLE001
+            attempt_state = "after a transport attempt" if transport_attempted else "before transport"
+            raise MCPDispatchError(
+                f"delivery disposition evidence could not be persisted {attempt_state}; "
+                f"delivery state is unknown and must not be retried automatically: {exc}"
+            ) from exc
+
     def _require_execution_authorization(
         self,
         lease: RuntimeLease,
@@ -670,7 +704,7 @@ class MCPDispatcher:
             )
 
         probe = _delivery_probe(args["text"])
-        before = self._read_output_once(lease.hwnd)
+        before = self._read_output_once(lease.hwnd, expected=lease)
         before_count = _normalise_terminal_text(before).count(probe)
         self._verify_live_target(lease.hwnd, expected=lease)
         try:
@@ -683,10 +717,38 @@ class MCPDispatcher:
         except ChannelRoutingError as exc:
             raise MCPDispatchError(str(exc)) from exc
         if not bool(getattr(receipt, "success", False)):
+            attempted = bool(getattr(receipt, "transport_attempted", False))
+            disposition = str(getattr(receipt, "delivery_disposition", "not_attempted"))
+            transport_error = str(getattr(receipt, "transport_error", ""))
+            self._persist_delivery_disposition(
+                lease,
+                receipt,
+                disposition=disposition,
+                transport_attempted=attempted,
+                transport_enqueued=False,
+                delivery_confirmed=False,
+                do_not_retry=attempted,
+                reason=transport_error,
+            )
+            if attempted:
+                raise MCPDispatchError(
+                    "transport was partially attempted; delivery state is unknown and must not "
+                    f"be retried automatically: {transport_error or 'PostMessage failure'}"
+                )
             raise MCPDispatchError("transport refused or failed to enqueue the payload")
         try:
             self._verify_live_target(lease.hwnd, expected=lease)
         except MCPDispatchError as exc:
+            self._persist_delivery_disposition(
+                lease,
+                receipt,
+                disposition="unknown_delivery",
+                transport_attempted=True,
+                transport_enqueued=True,
+                delivery_confirmed=False,
+                do_not_retry=True,
+                reason=str(exc),
+            )
             raise MCPDispatchError(
                 "transport was enqueued but post-action target verification failed; "
                 f"delivery state is unknown and must not be retried automatically: {exc}"
@@ -695,17 +757,31 @@ class MCPDispatcher:
         timeout_ms = int(args.get("delivery_timeout_ms", _DEFAULT_DELIVERY_TIMEOUT_MS))
         deadline = time.monotonic() + (timeout_ms / 1000.0)
         confirmed_snapshot = ""
-        while True:
-            current = self._read_output_once(lease.hwnd)
-            if _normalise_terminal_text(current).count(probe) > before_count:
-                confirmed_snapshot = current
-                break
-            if time.monotonic() >= deadline:
-                raise MCPDispatchError(
-                    "delivery unconfirmed by UIA readback; the target may have received the "
-                    "payload, so do not retry automatically"
-                )
-            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        try:
+            while True:
+                current = self._read_output_once(lease.hwnd, expected=lease)
+                if _normalise_terminal_text(current).count(probe) > before_count:
+                    self._verify_live_target(lease.hwnd, expected=lease)
+                    confirmed_snapshot = current
+                    break
+                if time.monotonic() >= deadline:
+                    raise MCPDispatchError(
+                        "delivery unconfirmed by UIA readback; the target may have received the "
+                        "payload, so do not retry automatically"
+                    )
+                time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        except MCPDispatchError as exc:
+            self._persist_delivery_disposition(
+                lease,
+                receipt,
+                disposition="enqueued_unconfirmed",
+                transport_attempted=True,
+                transport_enqueued=True,
+                delivery_confirmed=False,
+                do_not_retry=True,
+                reason=str(exc),
+            )
+            raise
 
         data = _jsonable(receipt)
         data["success"] = True
@@ -718,6 +794,15 @@ class MCPDispatcher:
         data["lease_id"] = lease.lease_id
         data["agent_id"] = lease.agent_id
         data["governance"] = governance
+        self._persist_delivery_disposition(
+            lease,
+            receipt,
+            disposition="delivery_confirmed",
+            transport_attempted=True,
+            transport_enqueued=True,
+            delivery_confirmed=True,
+            do_not_retry=False,
+        )
         self._injected_text[lease.lease_id] = args["text"]
         self._read_snapshots[lease.lease_id] = confirmed_snapshot
         return data
@@ -737,10 +822,10 @@ class MCPDispatcher:
         timeout_seconds = int(args.get("timeout_ms", 5000)) / 1000.0
         deadline = time.monotonic() + timeout_seconds
         previous = self._read_snapshots.get(lease.lease_id)
-        current = self._read_output_once(lease.hwnd)
+        current = self._read_output_once(lease.hwnd, expected=lease)
         while previous is not None and current == previous and time.monotonic() < deadline:
             time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
-            current = self._read_output_once(lease.hwnd)
+            current = self._read_output_once(lease.hwnd, expected=lease)
 
         self._read_snapshots[lease.lease_id] = current
         raw_delta = current if previous is None else (
@@ -757,6 +842,7 @@ class MCPDispatcher:
         truncated = len(output) > _MAX_READ_CHARS
         if truncated:
             output = output[-_MAX_READ_CHARS:]
+        self._verify_live_target(lease.hwnd, expected=lease)
         return {
             "lease_id": lease.lease_id,
             "hwnd": lease.hwnd,
@@ -770,13 +856,15 @@ class MCPDispatcher:
             "governance": governance,
         }
 
-    def _read_output_once(self, hwnd: int) -> str:
+    def _read_output_once(self, hwnd: int, *, expected: RuntimeLease) -> str:
+        self._verify_live_target(hwnd, expected=expected)
         try:
             text = self._output_reader(hwnd) if self._output_reader is not None else None
         except Exception as exc:  # noqa: BLE001
             raise MCPDispatchError(f"UIA TextPattern output read failed: {exc}") from exc
         if not isinstance(text, str):
             raise MCPDispatchError("UIA TextPattern output reader returned no text value")
+        self._verify_live_target(hwnd, expected=expected)
         return text
 
     def _sc_verify_target(self, args: dict[str, Any]) -> dict[str, Any]:

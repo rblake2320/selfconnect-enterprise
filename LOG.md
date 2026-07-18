@@ -66,9 +66,12 @@ related records sufficient to reconstruct the action.
 
 **Changed:** Bound governed leases to the exact window-title hash; carried an
 immutable PID, executable name/path, class, and title binding to the canonical
-router; revalidated it immediately before mutation; added replacement,
-precommit-ledger, and delivery-state tests; and narrowed MCP descriptions to
-implemented properties.
+router; revalidated it immediately before mutation and around every UIA output
+read; bound the actual Windows Terminal InputSite child to the host process,
+image, class, and parent chain; made partial posting unknown and non-retryable;
+persisted attempted delivery disposition before return; capped governed MCP text
+at 4,096 characters before approval consumption; added deterministic adversarial
+tests; and narrowed MCP descriptions to implemented properties.
 
 **Reason:** Current master already had a narrower governed text path. The May
 participant-mode branch duplicated weaker target and execution boundaries and
@@ -79,12 +82,13 @@ failed several issue #27 adversarial requirements.
 `experiments/win32_probe/channel_router.py`, their named tests, control
 `WIN32-BINDING-001`, issue #27, and the linked WHY/PARK records.
 
-**Validation:** On this Windows checkout, repository-wide Ruff passed; the full
-suite passed 1,575 tests with 34 explicit environment/live skips and two
-existing immutable-sink warnings; the focused MCP, router, target-guard, and
-documentation set passed 145 tests; and quick release conformance returned
-`PASS_WITH_NAMED_BLIND_SPOTS`. A built wheel contained 69 entries, included the
-current dispatcher/router, and excluded `target_registry.py`,
+**Validation:** On this Windows checkout, repository-wide Ruff passed; 1,570
+deterministic tests passed with 34 explicit environment/live skips and two
+existing immutable-sink warnings, and the separately captured supply-chain gate
+passed all 11 tests including `pip-audit` (1,581 total). The focused amended MCP,
+router, and schema set passed 137 tests. Quick release conformance returned
+`PASS_WITH_NAMED_BLIND_SPOTS`. The amended wheel was rebuilt and inspected for
+the current dispatcher/router and absence of `target_registry.py`,
 `executor_win32.py`, and `bridge_connector.py`. Hosted CI remains pending.
 Historical counts from `125c24d` are not reused.
 
