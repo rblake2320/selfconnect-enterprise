@@ -181,13 +181,15 @@ class TestSecurityConstraints:
 
     # CRITICAL: MISSING VALIDATION — sc_inject_text.text must have maxLength
     def test_inject_text_text_has_max_length(self):
-        """text must enforce the documented 65535-char ceiling in the schema, not just description."""
+        """Text must be rejected by schema before approval if the router would reject it."""
         tool = get_tool("sc_inject_text")
         prop = tool["inputSchema"]["properties"]["text"]
         assert "maxLength" in prop, (
             "sc_inject_text.text missing maxLength — description says 65535 but schema does not enforce it"
         )
-        assert prop["maxLength"] == 65535
+        from experiments.win32_probe.channel_router import MAX_PAYLOAD_LENGTH
+
+        assert prop["maxLength"] == MAX_PAYLOAD_LENGTH == 4096
 
     # HIGH: IDENTITY BYPASS — sc_request_lease must require agent_id
     def test_request_lease_requires_agent_id(self):
@@ -198,6 +200,19 @@ class TestSecurityConstraints:
             "sc_request_lease must require agent_id — "
             "optional agent_id allows unauthenticated/unauditable lease requests"
         )
+
+    def test_target_metadata_does_not_claim_unverified_bindings(self):
+        lease = get_tool("sc_request_lease")
+        guard = get_tool("sc_target_guard_check")
+        verify = get_tool("sc_verify_target")
+        stamp = get_tool("sc_session_stamp")
+
+        assert "SID" not in lease["description"]
+        assert "birth" not in lease["description"].lower()
+        assert "generation" not in lease["description"].lower()
+        assert set(guard["inputSchema"]["properties"]) == {"hwnd"}
+        assert "title" not in verify["description"].lower()
+        assert "process-identity verification" in stamp["description"]
 
     # HIGH: MISSING VALIDATION — sc_audit_search.limit must have a maximum
     def test_audit_search_limit_has_maximum(self):

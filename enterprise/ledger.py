@@ -79,6 +79,7 @@ from typing import Optional
 
 from enterprise.identity import AgentIdentity, _default_data_dir
 from enterprise.labels import LabelEnvelope
+from enterprise.runtime_lifetime import RuntimeLifetime, governed_operation
 
 
 _RESERVED_ENTRY_FIELDS = frozenset({
@@ -622,8 +623,10 @@ class ThreadSafeAgentLedger(AgentLedger):
         redact_denied: bool = False,
         max_entries_per_segment: int = 0,
         max_bytes_per_segment: int = 0,
+        runtime_lifetime: RuntimeLifetime | None = None,
     ) -> None:
         self._lock = threading.RLock()
+        self._runtime_lifetime = runtime_lifetime
         super().__init__(
             identity,
             log_path,
@@ -632,6 +635,7 @@ class ThreadSafeAgentLedger(AgentLedger):
             max_bytes_per_segment=max_bytes_per_segment,
         )
 
+    @governed_operation
     def log(
         self,
         action: str,

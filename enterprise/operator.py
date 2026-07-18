@@ -45,6 +45,7 @@ from enterprise.approval_audit import (
     approval_event_digest,
     canonical_context_digest,
 )
+from enterprise.runtime_lifetime import RuntimeLifetime, governed_operation
 
 _APPROVAL_SCHEMA_VERSION = 3
 
@@ -268,6 +269,7 @@ class DurableOperatorQueue:
         ] | None = None,
         clock: Callable[[], float] = time.time,
         decision_nonce_retention_seconds: float = 86400.0,
+        runtime_lifetime: RuntimeLifetime | None = None,
     ) -> None:
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -278,6 +280,7 @@ class DurableOperatorQueue:
         self._decision_writer_verifier = decision_writer_verifier
         self._clock = clock
         self._nonce_retention = decision_nonce_retention_seconds
+        self._runtime_lifetime = runtime_lifetime
         self.__system_denial_capability = object()
         if (
             not isinstance(self._nonce_retention, (int, float))
@@ -1082,6 +1085,7 @@ class DurableOperatorQueue:
             now=self._now(),
         )
 
+    @governed_operation
     def _deny_for_system_safety(
         self, approval_id: str, operator_id: str, capability: object
     ) -> bool:
@@ -1321,6 +1325,7 @@ class DurableOperatorQueue:
                 raise ApprovalAuditError("approval outbox delivery lost its state race")
             conn.commit()
 
+    @governed_operation
     def reconcile(self) -> int:
         """Finish pending audit transitions after a process interruption."""
         with self._connect() as conn:
@@ -1412,6 +1417,7 @@ class DurableOperatorQueue:
         self._insert_outbox(conn, event)
         return event.event_id
 
+    @governed_operation
     def submit(self, agent_id: str, action: str, context: Optional[dict] = None) -> str:
         approval_id = str(uuid.uuid4())
         context_json = json.dumps(context or {}, sort_keys=True, separators=(",", ":"))
@@ -1513,6 +1519,7 @@ class DurableOperatorQueue:
         self._flush_event(event_id)
         return True
 
+    @governed_operation
     def approve(
         self,
         approval_id: str,
@@ -1522,6 +1529,7 @@ class DurableOperatorQueue:
     ) -> bool:
         return self._decide(approval_id, operator_id, "approved", operator_proof)
 
+    @governed_operation
     def deny(
         self,
         approval_id: str,
@@ -1531,6 +1539,7 @@ class DurableOperatorQueue:
     ) -> bool:
         return self._decide(approval_id, operator_id, "denied", operator_proof)
 
+    @governed_operation
     def consume_approved(
         self,
         approval_id: str,
@@ -1715,6 +1724,7 @@ class DurableOperatorQueue:
     def get_all(self) -> list[PendingApproval]:
         return self._items()
 
+    @governed_operation
     def purge_expired(self) -> int:
         current = self._now()
         cutoff = current - self._max_age

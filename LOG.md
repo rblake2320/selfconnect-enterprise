@@ -54,22 +54,22 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
-## LOG-20260718-001 - Close approval identity and local ownership gaps
+## LOG-20260718-002 - Close approval identity and local ownership gaps
 
 **Timestamp (UTC):** 2026-07-18T12:52:54Z
 **Actor:** Codex, requested by the repository owner
 **Category:** security fix, adversarial testing, documentation
 **Base commit:** `b58353dc9fdd2551014ccfd2253091e868b96854`
 **Change reference:** commit containing this entry; draft PR for issue #26
-**Why:** [WHY-20260718-001](WHY.md#why-20260718-001)
-**Parked records:** [PARK-20260718-001](PARKED.md#park-20260718-001)
+**Why:** [WHY-20260718-002](WHY.md#why-20260718-002)
+**Parked records:** [PARK-20260718-002](PARKED.md#park-20260718-002)
 
 **Changed:** Bound verified operator subjects to claimed operators, replaced the
-public system-prefix denial bypass with a private runtime capability, added an
+public system-prefix denial bypass with a private runtime capability, added
 exclusive single-host process locks for each governed approval database and
 ledger resource, made proof freshness sample the injected queue clock only
-after SQLite writer ownership, and made the live
-conformance verifier/proof explicitly test-only and mandatory for approval.
+after SQLite writer ownership, and made the live conformance verifier/proof
+explicitly test-only and mandatory for approval.
 
 **Reason:** PR #33 durably bound transitions to ledger evidence but did not prove
 the credential subject named the claimed operator, allowed callers to imitate an
@@ -83,8 +83,10 @@ records.
 
 **Validation:** Focused approval, governed-runtime, control-plane, MCP profile,
 clock-contention, independent-resource, hard-link-alias, and cross-process
-ownership tests. The full suite passed **1,582 tests** with 34 explicit
-environment/live skips and the two pre-existing immutable-sink warnings.
+ownership tests. After merging current master, the full suite passed **1,603 tests** with 37
+explicit environment/platform/live skips and the two pre-existing immutable-
+sink warnings. The focused lifetime/approval/runtime/control/MCP/ownership set
+passed 190 tests with three platform-specific skips on Windows.
 
 **Notes:** Single-host mechanism only. Persistence directories and path entries
 must remain owner-controlled after startup binding; privileged post-binding
@@ -92,13 +94,55 @@ rename/replacement is outside this advisory-lock control. External credential
 custody, trusted time, keyed context-digest custody, and distributed approval
 authority remain outside the repository claim.
 
+## LOG-20260718-001 - Reconcile issue 27 without reviving unsafe historical actuators
+
+**Timestamp (UTC):** 2026-07-18T12:46:07Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security fix, test, audit, documentation
+**Base commit:** `b58353dc9fdd2551014ccfd2253091e868b96854`
+**Change reference:** commit containing this entry; draft pull request for issue #27
+**Why:** [WHY-20260718-001](WHY.md#why-20260718-001)
+**Parked records:** [PARK-20260718-001](PARKED.md#park-20260718-001)
+
+**Changed:** Bound governed leases to the exact window-title hash; carried an
+immutable PID, executable name/path, class, and title binding to the canonical
+router; revalidated it immediately before mutation and around every UIA output
+read; bound the actual Windows Terminal InputSite child to the host process,
+image, class, and parent chain; made partial posting unknown and non-retryable;
+persisted attempted delivery disposition before return; capped governed MCP text
+at 4,096 characters before approval consumption; added deterministic adversarial
+tests; and narrowed MCP descriptions to implemented properties.
+
+**Reason:** Current master already had a narrower governed text path. The May
+participant-mode branch duplicated weaker target and execution boundaries and
+failed several issue #27 adversarial requirements.
+
+**Full actions and links:** `enterprise/mcp_dispatch.py`,
+`enterprise/mcp_tools.py`, `experiments/win32_probe/target_guard.py`,
+`experiments/win32_probe/channel_router.py`, their named tests, control
+`WIN32-BINDING-001`, issue #27, and the linked WHY/PARK records.
+
+**Validation:** On this Windows checkout, repository-wide Ruff passed; 1,570
+deterministic tests passed with 34 explicit environment/live skips and two
+existing immutable-sink warnings, and the separately captured supply-chain gate
+passed all 11 tests including `pip-audit` (1,581 total). The focused amended MCP,
+router, and schema set passed 137 tests. Quick release conformance returned
+`PASS_WITH_NAMED_BLIND_SPOTS`. The amended wheel was rebuilt and inspected for
+the current dispatcher/router and absence of `target_registry.py`,
+`executor_win32.py`, and `bridge_connector.py`. Hosted CI remains pending.
+Historical counts from `125c24d` are not reused.
+
+**Notes:** Issue #27 remains open until independent review and merge. This work
+does not add participant modes, a logical target registry, a generalized Win32
+executor, a GenAI.mil interface, or a government authorization claim.
+
 ## LOG-20260717-002 - Close second-review approval evidence gaps
 
 **Timestamp (UTC):** 2026-07-17T14:58:07Z
 **Actor:** Codex, requested by the repository owner
 **Category:** security fix, migration, adversarial testing, documentation
 **Base commit:** `5e8ffbe6ca0d6ee2eda68b6a88a028d43ecec3a3`
-**Change reference:** merged PR #33 (`b58353dc9fdd2551014ccfd2253091e868b96854`)
+**Change reference:** commit containing this entry; draft PR #33
 **Why:** [WHY-20260717-002](WHY.md#why-20260717-002)
 **Parked records:** [PARK-20260717-002](PARKED.md#park-20260717-002)
 
@@ -139,7 +183,7 @@ revision after push.
 
 **Notes:** The nonce tombstone default horizon is 24 hours and is configurable;
 this is not indefinite replay memory. The clock remains a deployment trust
-dependency. PR #33 merged and issue #26 remains open pending independent
+dependency. PR #33 remains draft and issue #26 remains open pending independent
 review and deployment-specific operator credential evidence.
 
 ---

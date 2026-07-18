@@ -1,6 +1,7 @@
 """Tests for enterprise.mcp_dispatch — runtime execution for MCP tools."""
 from __future__ import annotations
 
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -19,6 +20,7 @@ class FakeRouter:
         self.classified: list[int] = []
         self.rendered = "fake terminal output"
         self.route_success = True
+        self.bindings = []
 
     def classify(self, hwnd: int):
         self.classified.append(hwnd)
@@ -32,8 +34,16 @@ class FakeRouter:
             timestamp=1000.0,
         )
 
-    def route(self, hwnd: int, text: str, lease_id: str | None = None):
+    def route(
+        self,
+        hwnd: int,
+        text: str,
+        lease_id: str | None = None,
+        *,
+        expected_binding=None,
+    ):
         self.routes.append((hwnd, text, lease_id))
+        self.bindings.append(expected_binding)
         if self.route_success:
             self.rendered += text
         return SimpleNamespace(
@@ -96,7 +106,9 @@ def verified_target(hwnd: int, **kwargs) -> dict:
         "expect_exe": "exe",
         "expect_exe_path": "exe_path",
         "expect_class": "class",
+        "expect_title_sha256": "title_sha256",
     }
+    target["title_sha256"] = hashlib.sha256(target["title"].encode("utf-8")).hexdigest()
     for expected_key, target_key in comparisons.items():
         expected = kwargs.get(expected_key)
         if expected is not None and target[target_key] != expected:
@@ -282,10 +294,11 @@ class TestLeaseRuntime:
 
     def test_inject_calls_router_with_lease_id(self):
         router = FakeRouter()
+        ledger = RecordingLedger()
         dispatcher = MCPDispatcher(
             profile="normal",
             router=router,
-            ledger=RecordingLedger(),
+            ledger=ledger,
             policy_enforcer=AllowPolicyEnforcer(),
             operator_queue=OperatorQueue(),
             target_verifier=verified_target,
@@ -302,6 +315,14 @@ class TestLeaseRuntime:
         assert router.routes == [(1010, "hello", lease_id)]
         assert result["result"]["delivery_confirmation"] == "uia_echo_confirmed"
         assert result["result"]["readback_hash"]
+        disposition = next(
+            entry for entry in ledger.entries if entry["action"] == "delivery_disposition"
+        )
+        assert disposition["result"] == "delivery_confirmed"
+        assert disposition["metadata"]["transport_attempted"] is True
+        assert disposition["metadata"]["transport_enqueued"] is True
+        assert disposition["metadata"]["delivery_confirmed"] is True
+        assert disposition["metadata"]["do_not_retry"] is False
 
     def test_inject_fails_closed_without_signed_policy_enforcer(self):
         dispatcher = MCPDispatcher(
@@ -342,10 +363,11 @@ class TestLeaseRuntime:
 
     def test_inject_rejects_enqueue_without_new_readback(self):
         router = FakeRouter()
+        ledger = RecordingLedger()
         dispatcher = MCPDispatcher(
             profile="normal",
             router=router,
-            ledger=RecordingLedger(),
+            ledger=ledger,
             policy_enforcer=AllowPolicyEnforcer(),
             operator_queue=OperatorQueue(),
             target_verifier=verified_target,
@@ -365,6 +387,100 @@ class TestLeaseRuntime:
         assert result["ok"] is False
         assert "delivery unconfirmed" in result["error"]
         assert "do not retry automatically" in result["error"]
+        assert router.routes == [(1018, "hello", lease_id)]
+        disposition = next(
+            entry for entry in ledger.entries if entry["action"] == "delivery_disposition"
+        )
+        assert disposition["result"] == "enqueued_unconfirmed"
+        assert disposition["metadata"]["do_not_retry"] is True
+
+    def test_identity_change_during_confirmation_read_is_not_accepted(self):
+        state = {"replaced": False, "reads": 0}
+
+        def target(hwnd: int, **kwargs) -> dict:
+            report = verified_target(hwnd, **kwargs)
+            if state["replaced"]:
+                report["ok"] = False
+                report["reasons"] = ["target replaced during UIA read"]
+            return report
+
+        router = FakeRouter()
+        ledger = RecordingLedger()
+
+        def replacing_reader(_hwnd: int) -> str:
+            state["reads"] += 1
+            if state["reads"] == 2:
+                state["replaced"] = True
+            return router.rendered
+
+        dispatcher = MCPDispatcher(
+            profile="normal",
+            router=router,
+            ledger=ledger,
+            policy_enforcer=AllowPolicyEnforcer(),
+            operator_queue=OperatorQueue(),
+            target_verifier=target,
+            output_reader=replacing_reader,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1026)
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 1026, "text": "hello"},
+        )
+
+        assert result["ok"] is False
+        assert "target replaced during UIA read" in result["error"]
+        assert router.routes == [(1026, "hello", lease_id)]
+        dispositions = [
+            entry for entry in ledger.entries if entry["action"] == "delivery_disposition"
+        ]
+        assert [entry["result"] for entry in dispositions] == ["enqueued_unconfirmed"]
+        assert dispositions[0]["metadata"]["do_not_retry"] is True
+
+    def test_partial_transport_attempt_is_persisted_as_unknown_delivery(self):
+        class PartialRouter(FakeRouter):
+            def route(self, hwnd, text, lease_id=None, *, expected_binding=None):
+                self.routes.append((hwnd, text, lease_id))
+                self.bindings.append(expected_binding)
+                return SimpleNamespace(
+                    receipt_id="receipt-partial",
+                    success=False,
+                    transport_attempted=True,
+                    transport_enqueued=False,
+                    delivery_disposition="unknown_delivery",
+                    do_not_retry=True,
+                    transport_error="queue closed",
+                )
+
+        router = PartialRouter()
+        ledger = RecordingLedger()
+        dispatcher = MCPDispatcher(
+            profile="normal",
+            router=router,
+            ledger=ledger,
+            policy_enforcer=AllowPolicyEnforcer(),
+            operator_queue=OperatorQueue(),
+            target_verifier=verified_target,
+            output_reader=lambda _hwnd: router.rendered,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1027)
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 1027, "text": "hello"},
+        )
+
+        assert result["ok"] is False
+        assert "partially attempted" in result["error"]
+        assert "must not be retried automatically" in result["error"]
+        disposition = next(
+            entry for entry in ledger.entries if entry["action"] == "delivery_disposition"
+        )
+        assert disposition["result"] == "unknown_delivery"
+        assert disposition["metadata"]["transport_attempted"] is True
+        assert disposition["metadata"]["transport_enqueued"] is False
+        assert disposition["metadata"]["do_not_retry"] is True
 
     def test_inject_does_not_accept_stale_matching_text(self):
         router = FakeRouter()
@@ -471,6 +587,144 @@ class TestLeaseRuntime:
         assert result["ok"] is False
         assert "exe_path changed" in result["error"]
 
+    def test_inject_revalidates_title_hash_from_lease(self):
+        state = {"title": "Original Terminal"}
+
+        def changing_target(hwnd: int, **kwargs) -> dict:
+            report = verified_target(hwnd, **kwargs)
+            report["title"] = state["title"]
+            actual_hash = hashlib.sha256(state["title"].encode("utf-8")).hexdigest()
+            if kwargs.get("expect_title_sha256") not in (None, actual_hash):
+                report["ok"] = False
+                report["reasons"] = ["title hash changed"]
+            return report
+
+        router = FakeRouter()
+        dispatcher = MCPDispatcher(
+            profile="normal",
+            router=router,
+            ledger=RecordingLedger(),
+            policy_enforcer=AllowPolicyEnforcer(),
+            operator_queue=OperatorQueue(),
+            target_verifier=changing_target,
+            output_reader=lambda _hwnd: router.rendered,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1022)
+        state["title"] = "Replacement Terminal"
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 1022, "text": "hello"},
+        )
+        assert result["ok"] is False
+        assert "title hash changed" in result["error"]
+        assert router.routes == []
+
+    def test_inject_revalidates_after_preaction_work_before_route(self):
+        calls = 0
+
+        def replaced_at_final_boundary(hwnd: int, **kwargs) -> dict:
+            nonlocal calls
+            calls += 1
+            report = verified_target(hwnd, **kwargs)
+            if calls == 3:
+                report["ok"] = False
+                report["reasons"] = ["target replaced before mutation"]
+            return report
+
+        router = FakeRouter()
+        ledger = RecordingLedger()
+        dispatcher = MCPDispatcher(
+            profile="normal",
+            router=router,
+            ledger=ledger,
+            policy_enforcer=AllowPolicyEnforcer(),
+            operator_queue=OperatorQueue(),
+            target_verifier=replaced_at_final_boundary,
+            output_reader=lambda _hwnd: router.rendered,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1023)
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 1023, "text": "hello"},
+        )
+        assert result["ok"] is False
+        assert "target replaced before mutation" in result["error"]
+        assert any(entry["action"] == "policy_decision" for entry in ledger.entries)
+        assert router.routes == []
+
+    def test_policy_ledger_precommit_failure_prevents_route(self):
+        class FailingPrecommitLedger(RecordingLedger):
+            def log(self, action: str, result: str = "", metadata=None, **kwargs):
+                if action == "policy_decision":
+                    raise OSError("ledger unavailable")
+                return super().log(action, result, metadata, **kwargs)
+
+        router = FakeRouter()
+        dispatcher = MCPDispatcher(
+            profile="normal",
+            router=router,
+            ledger=FailingPrecommitLedger(),
+            policy_enforcer=AllowPolicyEnforcer(),
+            operator_queue=OperatorQueue(),
+            target_verifier=verified_target,
+            output_reader=lambda _hwnd: router.rendered,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1024)
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 1024, "text": "hello"},
+        )
+        assert result["ok"] is False
+        assert "ledger unavailable" in result["error"]
+        assert router.routes == []
+
+    def test_post_action_replacement_is_attempted_unknown_delivery(self):
+        state = {"replaced": False}
+
+        def target(hwnd: int, **kwargs) -> dict:
+            report = verified_target(hwnd, **kwargs)
+            if state["replaced"]:
+                report["ok"] = False
+                report["reasons"] = ["target changed after enqueue"]
+            return report
+
+        class ReplacingRouter(FakeRouter):
+            def route(self, *args, **kwargs):
+                receipt = super().route(*args, **kwargs)
+                state["replaced"] = True
+                return receipt
+
+        router = ReplacingRouter()
+        ledger = RecordingLedger()
+        dispatcher = MCPDispatcher(
+            profile="normal",
+            router=router,
+            ledger=ledger,
+            policy_enforcer=AllowPolicyEnforcer(),
+            operator_queue=OperatorQueue(),
+            target_verifier=target,
+            output_reader=lambda _hwnd: router.rendered,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1025)
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 1025, "text": "hello"},
+        )
+        assert result["ok"] is False
+        assert "transport was enqueued" in result["error"]
+        assert "delivery state is unknown" in result["error"]
+        assert "must not be retried automatically" in result["error"]
+        assert router.routes == [(1025, "hello", lease_id)]
+        assert ledger.entries[-1]["result"] == "denied"
+
+    def test_default_router_uses_dispatcher_target_verifier(self):
+        dispatcher = MCPDispatcher(profile="normal", target_verifier=verified_target)
+        assert dispatcher._router._target_verifier is dispatcher._target_verifier
+
     def test_required_approval_is_bound_to_agent_and_action(self):
         queue = OperatorQueue()
         router = FakeRouter()
@@ -525,6 +779,38 @@ class TestLeaseRuntime:
         )
         assert replay["ok"] is False
         assert "consumed" in replay["error"]
+
+    def test_oversized_payload_is_rejected_before_approval_consumption(self):
+        queue = OperatorQueue()
+        router = FakeRouter()
+        dispatcher = MCPDispatcher(
+            profile="normal",
+            router=router,
+            ledger=RecordingLedger(),
+            policy_enforcer=AllowPolicyEnforcer(requires_approval=True),
+            operator_queue=queue,
+            target_verifier=verified_target,
+            output_reader=lambda _hwnd: router.rendered,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1028)
+        approval_id = queue.submit("SC-AGENT", "sc_inject_text", {})
+        assert queue.approve(approval_id, "operator-1")
+
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {
+                "lease_id": lease_id,
+                "hwnd": 1028,
+                "text": "x" * 4097,
+                "approval_id": approval_id,
+            },
+        )
+
+        assert result["ok"] is False
+        assert "maxLength 4096" in result["error"]
+        assert queue.get_status(approval_id) == "approved"
+        assert router.routes == []
 
     def test_mutation_stops_when_consumed_approval_receipt_binding_fails(self):
         class ReceiptRejectingQueue(OperatorQueue):

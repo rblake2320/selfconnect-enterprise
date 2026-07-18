@@ -24,6 +24,7 @@ from enterprise.mcp_dispatch import MCPDispatcher
 from enterprise.operator import DurableOperatorQueue, _bind_system_denier
 from enterprise.policy import PolicyBundle, PolicyEnforcer
 from enterprise.runtime_ownership import RuntimeOwnershipLock
+from enterprise.runtime_lifetime import RuntimeLifetime
 
 
 class RuntimeConfigurationError(RuntimeError):
@@ -42,6 +43,7 @@ class GovernedRuntime:
     composition_monitor: CompositionMonitor
     dispatcher: MCPDispatcher
     ownership_lock: RuntimeOwnershipLock
+    runtime_lifetime: RuntimeLifetime
 
     @classmethod
     def from_signed_policy(
@@ -103,6 +105,7 @@ class GovernedRuntime:
         )
         # Acquire stable path locks and reject identical/cross-linked resources
         # before either persistence constructor can open them.
+        runtime_lifetime = RuntimeLifetime()
         ownership_lock = RuntimeOwnershipLock(resolved_ledger_path, resolved_approval_path)
         try:
             ledger = ThreadSafeAgentLedger(
@@ -111,6 +114,7 @@ class GovernedRuntime:
                 redact_denied=True,
                 max_entries_per_segment=ledger_max_entries_per_segment,
                 max_bytes_per_segment=ledger_max_bytes_per_segment,
+                runtime_lifetime=runtime_lifetime,
             )
             # Bind any existing resource file identities before queue startup
             # reconciliation can append approval evidence to the ledger.
@@ -120,6 +124,7 @@ class GovernedRuntime:
                 audit_sink=LedgerApprovalDecisionSink(ledger),
                 audit_required=True,
                 decision_writer_verifier=decision_writer_verifier,
+                runtime_lifetime=runtime_lifetime,
             )
             # A fresh approval database now has an OS file identity; bind and
             # revalidate both paths again before exposing the runtime.
@@ -128,6 +133,7 @@ class GovernedRuntime:
                 ledger=ledger,
                 operator_queue=operator_queue,
                 _system_denier=_bind_system_denier(operator_queue),
+                runtime_lifetime=runtime_lifetime,
             )
             composition_monitor = CompositionMonitor(
                 effect_map={"sc_inject_text": "egress"},
@@ -153,6 +159,7 @@ class GovernedRuntime:
                 target_verifier=target_verifier,
                 output_reader=output_reader,
                 identity_type="dpapi",
+                runtime_lifetime=runtime_lifetime,
             )
             return cls(
                 identity=identity,
@@ -163,12 +170,15 @@ class GovernedRuntime:
                 composition_monitor=composition_monitor,
                 dispatcher=dispatcher,
                 ownership_lock=ownership_lock,
+                runtime_lifetime=runtime_lifetime,
             )
         except Exception:
+            runtime_lifetime.close_and_drain()
             ownership_lock.close()
             raise
 
     def close(self) -> None:
+        self.runtime_lifetime.close_and_drain()
         self.ownership_lock.close()
 
     def verify_audit(self) -> tuple[bool, int, str]:

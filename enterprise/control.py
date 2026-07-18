@@ -41,6 +41,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from enterprise.runtime_lifetime import RuntimeLifetime, governed_operation
+
 # ── AgentControlRecord ─────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -102,6 +104,7 @@ class ControlPlane:
         operator_queue: Any = None,
         *,
         _system_denier: Any = None,
+        runtime_lifetime: RuntimeLifetime | None = None,
     ) -> None:
         self._lock           = threading.Lock()
         self._states:  dict[str, str] = {}        # agent_id → state
@@ -109,6 +112,7 @@ class ControlPlane:
         self._ledger: Any    = ledger
         self._queue: Any     = operator_queue
         self._system_deny = _system_denier
+        self._runtime_lifetime = runtime_lifetime
         if self._system_deny is None and operator_queue is not None:
             # Compatibility-only in-memory queues have no privileged proof path.
             from enterprise.operator import OperatorQueue
@@ -118,6 +122,7 @@ class ControlPlane:
 
     # ── Registration ─────────────────────────────────────────────────────────
 
+    @governed_operation
     def register(self, agent_id: str) -> None:
         """Pre-register an agent as active.  No-op if already registered."""
         with self._lock:
@@ -126,6 +131,7 @@ class ControlPlane:
 
     # ── Per-agent commands ────────────────────────────────────────────────────
 
+    @governed_operation
     def pause(
         self,
         agent_id: str,
@@ -139,6 +145,7 @@ class ControlPlane:
         """
         return self._transition(agent_id, "pause", operator_id, reason)
 
+    @governed_operation
     def resume(
         self,
         agent_id: str,
@@ -152,6 +159,7 @@ class ControlPlane:
         """
         return self._transition(agent_id, "resume", operator_id, reason)
 
+    @governed_operation
     def quarantine(
         self,
         agent_id: str,
@@ -170,6 +178,7 @@ class ControlPlane:
         self._drain_queue(agent_id, operator_id)
         return record
 
+    @governed_operation
     def revoke(
         self,
         agent_id: str,
@@ -185,6 +194,7 @@ class ControlPlane:
 
     # ── Mesh-level ────────────────────────────────────────────────────────────
 
+    @governed_operation
     def kill_all(
         self,
         operator_id: str,

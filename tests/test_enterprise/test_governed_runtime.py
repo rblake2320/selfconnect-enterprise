@@ -6,6 +6,7 @@ live HWND/Win32 execution is intentionally a separate conformance run.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -19,13 +20,21 @@ from enterprise.identity import AgentIdentity
 from enterprise.policy import make_bundle
 from enterprise.policy_sign import sign_policy
 from enterprise.runtime_ownership import RuntimeOwnershipError
+from enterprise.runtime_lifetime import RuntimeClosedError
 
 
 class _DeterministicRouter:
     def __init__(self) -> None:
         self.rendered = "runtime prompt> "
 
-    def route(self, hwnd: int, text: str, lease_id: str | None = None):
+    def route(
+        self,
+        hwnd: int,
+        text: str,
+        lease_id: str | None = None,
+        *,
+        expected_binding=None,
+    ):
         self.rendered += text
         return SimpleNamespace(
             receipt_id="receipt-runtime-test",
@@ -63,6 +72,12 @@ def _target(hwnd: int, **kwargs) -> dict:
         if expected is not None and expected != values[key]:
             values["ok"] = False
             values["reasons"].append(f"{key} mismatch")
+    expected_title = kwargs.get("expect_title_sha256")
+    if expected_title is not None:
+        actual_title = hashlib.sha256(values["title"].encode("utf-8")).hexdigest()
+        if expected_title != actual_title:
+            values["ok"] = False
+            values["reasons"].append("title mismatch")
     return values
 
 
@@ -247,6 +262,36 @@ def test_governed_runtime_rejects_cross_resource_hardlink_before_open(tmp_path):
             decision_writer_verifier=_test_decision_verifier,
         )
     assert ledger.read_bytes() == b""
+
+
+def test_closed_runtime_object_graph_cannot_mutate_after_replacement_starts(tmp_path):
+    identity_dir, policy_path, trust_root, _actor_id = _signed_policy(tmp_path)
+    values = dict(
+        policy_path=policy_path,
+        trust_root_pub=trust_root,
+        agent_name="runtime-actor",
+        identity_data_dir=identity_dir,
+        ledger_path=tmp_path / "runtime-ledger.jsonl",
+        approval_db_path=tmp_path / "approvals.sqlite3",
+        decision_writer_verifier=_test_decision_verifier,
+    )
+    first = GovernedRuntime.from_signed_policy(**values)
+    first.close()
+    second = GovernedRuntime.from_signed_policy(**values)
+    try:
+        with pytest.raises(RuntimeClosedError, match="runtime is closed"):
+            first.operator_queue.submit("agent-a", "export", {})
+        with pytest.raises(RuntimeClosedError, match="runtime is closed"):
+            first.dispatcher.call_tool(
+                "sc_echo_filter", {"raw_text": "stale", "injected_text": ""}
+            )
+        with pytest.raises(RuntimeClosedError, match="runtime is closed"):
+            first.control_plane.register("stale-agent")
+        with pytest.raises(RuntimeClosedError, match="runtime is closed"):
+            first.ledger.log("stale-runtime-write")
+        assert second.verify_audit()[0] is True
+    finally:
+        second.close()
 
 
 def test_governed_approval_is_signed_and_bound_before_actuation(tmp_path):

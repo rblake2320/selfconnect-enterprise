@@ -91,15 +91,15 @@ sources, limitations, and all related records.
 
 ## Register
 
-## PARK-20260718-001 - Caller-selected system denial and unbound operator subject
+## PARK-20260718-002 - Caller-selected system denial and unbound operator subject
 
 **Status:** Parked security behavior; do not restore.
 **Category:** operator attribution and persistence ownership
 **Former location:** `enterprise/operator.py` and `enterprise/governed_runtime.py`
 **Source commit:** `b58353dc9fdd2551014ccfd2253091e868b96854`
 **Affected paths:** Governed approve/deny and runtime persistence composition
-**Action log:** [LOG-20260718-001](LOG.md#log-20260718-001)
-**Why changed:** [WHY-20260718-001](WHY.md#why-20260718-001)
+**Action log:** [LOG-20260718-002](LOG.md#log-20260718-002)
+**Why changed:** [WHY-20260718-002](WHY.md#why-20260718-002)
 **Parked by:** commit containing this record
 
 **Former wording:**
@@ -125,6 +125,9 @@ independently rejects a second local writer for either persistence resource and
 rejects same-resource and hard-link aliases present during acquisition or
 startup revalidation. Owner-controlled immutable path entries are a deployment
 precondition because advisory locks cannot prevent privileged later replacement.
+Closing the composed runtime revokes and drains its shared mutation lifetime
+before releasing ownership; restoring unlock-only close would recreate a stale
+object-graph writer.
 
 **Restore when:** Never restore the public prefix bypass or unbound subject.
 A future replacement for the local ownership lock must provide stronger tested
@@ -142,8 +145,62 @@ object in a disposable test workspace; never use it with real authority.
 **Restoration risks:** Operator impersonation, unaudited internal-denial
 spoofing, and ambiguous approval/ledger lineage from concurrent writers.
 
-**Evidence and links:** [WHY-20260718-001](WHY.md#why-20260718-001), issue #26,
+**Evidence and links:** [WHY-20260718-002](WHY.md#why-20260718-002), issue #26,
 and `tests/test_enterprise/test_runtime_ownership.py`.
+
+## PARK-20260718-001 - Historical participant, target, executor, and bridge branch
+
+**Status:** Parked
+**Category:** security property, release, other
+**Former location:** branch `feat/participant-mode`; `enterprise/policy.py`,
+`enterprise/registry.py`, `enterprise/target_registry.py`,
+`enterprise/executor_win32.py`, and `enterprise/bridge_connector.py`
+**Source commit:** `125c24d70526ba29f42ba7c3d408b89ccddba0a8`
+**Affected paths:** Historical modules and tests named in issue #27
+**Action log:** [LOG-20260718-001](LOG.md#log-20260718-001)
+**Why changed:** [WHY-20260718-001](WHY.md#why-20260718-001)
+**Parked by:** commit containing this record
+
+**Former wording:** The source branch described participant modes, a logical
+target registry, a deterministic Win32/UIA executor, and a GenAI.mil browser
+connector as enterprise capabilities with 717 passing tests.
+
+**Recovery source:** Git objects `4698b5d` (participant mode), `cfb76ff`
+(target registry), `6ee675d` (Win32 executor), `d6bdaf1` (bridge connector), and
+`125c24d` (historical tests). The branch and commits remain intact.
+
+**Reason parked:** Unknown participant modes could bypass the mode gate and
+invalid stored modes downgraded to `agent`. Logical resolution ignored its
+title pattern and used class-only `FindWindowW`. The executor did not use the
+current canonical target guard or consume required approvals. The bridge wrote
+browser text directly without the current policy, approval, and precommit
+composition. Historical mocked coverage does not repair those boundaries.
+
+**Replacement:** The narrower `GovernedRuntime` MCP text path, strengthened by
+the immutable final-boundary binding in LOG-20260718-001. There is no replacement
+participant-mode, generalized executor, logical target registry, or external
+LLM bridge claim.
+
+**Restore when:** Only when a current product requirement and reviewed interface
+exist and the rebuilt capability passes every adversarial acceptance item in
+issue #27 on the then-current core transport pin.
+
+**Restore procedure:** Create a new branch from current master; use the named
+Git objects only as design evidence; rebuild one capability at a time through
+the canonical governed runtime and target guard; do not cherry-pick the commits.
+
+**Validation after restore:** Run full Python and package suites, Ruff, release
+and claim gates, deterministic replacement/policy races, live Windows adapter
+tests, and hosted CI for the exact restored commit.
+
+**Recovery rehearsal:** Not rehearsed.
+
+**Restoration risks:** Reintroduces participant confusion, wrong-window input,
+approval bypass, proposal-to-actuation coupling, path/hash validation defects,
+and unsupported product or government-interface claims.
+
+**Evidence and links:** Issue #27, [WHY-20260718-001](WHY.md#why-20260718-001),
+and the source commits listed above.
 
 ## PARK-20260717-002 - Caller-selected consume time and row-local replay history
 

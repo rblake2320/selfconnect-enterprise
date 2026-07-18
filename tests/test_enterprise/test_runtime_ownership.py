@@ -109,3 +109,83 @@ def test_path_substitution_during_startup_binding_fails_closed(tmp_path, monkeyp
             lock.bind_opened_resources()
     finally:
         lock.close()
+
+
+def _isolated_lock_root(tmp_path, monkeypatch) -> None:
+    if os.name == "nt":
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
+    else:
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+
+
+def test_precreated_symlink_lock_directory_is_rejected(tmp_path, monkeypatch):
+    _isolated_lock_root(tmp_path, monkeypatch)
+    if os.name == "nt":
+        lock_dir = tmp_path / "local-app-data" / "SelfConnect" / "runtime-locks"
+    else:
+        lock_dir = tmp_path / "runtime" / "selfconnect" / "runtime-locks"
+    target = tmp_path / "attacker-locks"
+    target.mkdir(parents=True)
+    lock_dir.parent.mkdir(parents=True)
+    try:
+        lock_dir.symlink_to(target, target_is_directory=True)
+    except OSError as exc:  # pragma: no cover - Windows privilege boundary
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    with pytest.raises(RuntimeOwnershipError, match="not a real directory"):
+        RuntimeOwnershipLock(tmp_path / "ledger", tmp_path / "approvals")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ownership/mode semantics")
+def test_permissive_lock_directory_is_rejected(tmp_path, monkeypatch):
+    _isolated_lock_root(tmp_path, monkeypatch)
+    lock_dir = tmp_path / "runtime" / "selfconnect" / "runtime-locks"
+    lock_dir.mkdir(mode=0o777, parents=True)
+    lock_dir.chmod(0o777)
+    with pytest.raises(RuntimeOwnershipError, match="permissions are too broad"):
+        RuntimeOwnershipLock(tmp_path / "ledger", tmp_path / "approvals")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+def test_wrong_owner_lock_directory_is_rejected(tmp_path, monkeypatch):
+    _isolated_lock_root(tmp_path, monkeypatch)
+    lock_dir = tmp_path / "runtime" / "selfconnect" / "runtime-locks"
+    lock_dir.mkdir(mode=0o700, parents=True)
+    actual_uid = lock_dir.stat().st_uid
+    monkeypatch.setattr(os, "geteuid", lambda: actual_uid + 1)
+    with pytest.raises(RuntimeOwnershipError, match="wrong owner"):
+        RuntimeOwnershipLock(tmp_path / "ledger", tmp_path / "approvals")
+
+
+def test_precreated_symlink_lock_file_is_rejected(tmp_path, monkeypatch):
+    _isolated_lock_root(tmp_path, monkeypatch)
+    ledger = tmp_path / "ledger"
+    approvals = tmp_path / "approvals"
+    first = RuntimeOwnershipLock(ledger, approvals)
+    lock_path = first.paths[0]
+    first.close()
+    lock_path.unlink()
+    target = tmp_path / "attacker-file"
+    target.write_bytes(b"x")
+    try:
+        lock_path.symlink_to(target)
+    except OSError as exc:  # pragma: no cover - Windows privilege boundary
+        pytest.skip(f"file symlinks unavailable: {exc}")
+    with pytest.raises(RuntimeOwnershipError, match="securely open|unsafe"):
+        RuntimeOwnershipLock(ledger, approvals)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows denies unlink of locked file")
+def test_replaced_lock_file_during_binding_is_rejected(tmp_path, monkeypatch):
+    _isolated_lock_root(tmp_path, monkeypatch)
+    ledger = tmp_path / "ledger"
+    approvals = tmp_path / "approvals"
+    lock = RuntimeOwnershipLock(ledger, approvals)
+    lock_path = lock.paths[0]
+    lock_path.unlink()
+    lock_path.write_bytes(b"replacement")
+    lock_path.chmod(0o600)
+    try:
+        with pytest.raises(RuntimeOwnershipError, match="unsafe or was replaced"):
+            lock.bind_opened_resources()
+    finally:
+        lock.close()

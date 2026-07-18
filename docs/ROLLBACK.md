@@ -31,6 +31,11 @@ approvals with the configured verifier. Do not relabel an old envelope.
 The resource directories and path entries must remain owner-controlled for the
 runtime lifetime. A privileged post-binding rename or replacement is outside
 the advisory-lock guarantee; stop the runtime and investigate any such change.
+Lock files are stored below the validated per-user LocalAppData boundary on
+Windows or XDG runtime/user-state boundary on POSIX; do not move them to a
+shared temporary directory. Runtime close revokes and drains authoritative
+operations before unlocking. Do not retain or reuse component references from
+a closed runtime.
 
 This recovery procedure is single-host. Multi-host approval authority and
 external credential/key custody remain deployment work.

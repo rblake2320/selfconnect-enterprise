@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Governed target binding reconciliation
+
+- Enforced the lease's exact title hash alongside PID, executable path, and
+  window class, and carried that immutable binding into the canonical router
+  for a final check immediately before mutation.
+- Added deterministic target-replacement, pre-action ledger-failure, and
+  attempted-versus-confirmed delivery tests.
+- Bound every UIA snapshot read to the lease identity before and after the read,
+  and required the Windows Terminal InputSite child to match the bound process,
+  executable path, class, and host ancestry before posting input.
+- Classified partial Win32 message posting as unknown delivery with no automatic
+  retry, and persisted each attempted delivery disposition before returning.
+- Reduced governed MCP text input to 4,096 characters and validate it before a
+  one-time operator approval can be consumed.
+- Corrected MCP descriptions that claimed unimplemented SID, birth,
+  generation, or title checks.
+- Preserved and explicitly parked the stale participant-mode, logical target,
+  generalized executor, and product-specific bridge branch without merging or
+  packaging it. Evidence: [LOG-20260718-001](LOG.md#log-20260718-001), rationale:
+  [WHY-20260718-001](WHY.md#why-20260718-001), recovery:
+  [PARK-20260718-001](PARKED.md#park-20260718-001).
+
 ### Audit-bound operator approvals
 
 - Human decisions now require the verifier's authenticated operator subject to
@@ -14,6 +36,12 @@
   using the same resource for both roles, or presenting a hard-link alias during
   acquisition/startup binding fails closed. Resource path entries must remain
   owner-controlled after binding.
+- Runtime locks live under a validated per-user LocalAppData/XDG state boundary;
+  symlink/reparse, non-owner, permissive, non-regular, and replaced lock objects
+  fail closed where the platform exposes those properties.
+- Closing a governed runtime first revokes its shared lifetime and drains
+  in-flight operations before unlocking. Retained queue, dispatcher, control,
+  and ledger references cannot mutate after a replacement runtime starts.
 - The default unkeyed context digest remains explicitly non-confidential;
   rotation-stable keyed digest storage remains parked until its key custody and
   persisted-version migration are designed together.
@@ -47,10 +75,10 @@
 - Evidence: [LOG-20260717-001](LOG.md#log-20260717-001). Rationale:
   [WHY-20260717-001](WHY.md#why-20260717-001) and
   [WHY-20260717-002](WHY.md#why-20260717-002), plus
-  [WHY-20260718-001](WHY.md#why-20260718-001). Recovery:
+  [WHY-20260718-002](WHY.md#why-20260718-002). Recovery:
   [PARK-20260717-001](PARKED.md#park-20260717-001) and
   [PARK-20260717-002](PARKED.md#park-20260717-002), plus
-  [PARK-20260718-001](PARKED.md#park-20260718-001).
+  [PARK-20260718-002](PARKED.md#park-20260718-002).
 
 ### Least-privilege Ultra monitoring
 

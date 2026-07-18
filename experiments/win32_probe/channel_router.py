@@ -15,11 +15,13 @@ All routing decisions are logged to the audit ledger.
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Callable
 
 try:
     import win32api
@@ -39,6 +41,14 @@ class ChannelType(str, Enum):
 
 class ChannelRoutingError(RuntimeError):
     """Raised when routing is denied or no channel can be determined."""
+
+
+class PartialTransportError(RuntimeError):
+    """Transport failed after zero or more Win32 messages were posted."""
+
+    def __init__(self, message: str, *, messages_posted: int) -> None:
+        super().__init__(message)
+        self.messages_posted = messages_posted
 
 
 @dataclass
@@ -63,6 +73,21 @@ class ActionReceipt:
     success: bool
     transport_enqueued: bool = False
     delivery_confirmed: bool = False
+    transport_attempted: bool = False
+    delivery_disposition: str = "not_attempted"
+    do_not_retry: bool = False
+    transport_error: str = ""
+
+
+@dataclass(frozen=True)
+class TargetBinding:
+    """Immutable target identity captured when a governed lease is issued."""
+
+    pid: int
+    exe: str
+    exe_path: str
+    window_class: str
+    title_sha256: str
 
 
 TERMINAL_CLASSES = frozenset({
@@ -134,9 +159,14 @@ def _get_window_pid(hwnd: int) -> int:
 class ChannelRouter:
     """Classify an HWND and route actions through the appropriate channel."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        target_verifier: Callable[..., dict[str, Any]] | None = None,
+    ) -> None:
         self._decisions: list[RoutingDecision] = []
         self._lock = threading.Lock()
+        self._target_verifier = target_verifier
 
     def classify(self, hwnd: int) -> RoutingDecision:
         """Classify hwnd → ChannelType. Fail-closed: unknown → DENY.
@@ -193,7 +223,14 @@ class ChannelRouter:
             self._decisions.append(decision)
         return decision
 
-    def route(self, hwnd: int, text: str, lease_id: str | None = None) -> ActionReceipt:
+    def route(
+        self,
+        hwnd: int,
+        text: str,
+        lease_id: str | None = None,
+        *,
+        expected_binding: TargetBinding | None = None,
+    ) -> ActionReceipt:
         """Route text injection through the appropriate channel. Raises on DENY.
 
         Security invariants:
@@ -228,18 +265,35 @@ class ChannelRouter:
             raise ChannelRoutingError(
                 f"Routing denied for HWND {hwnd}: {decision.reason}"
             )
+        if expected_binding is not None:
+            self._verify_final_target(hwnd, expected_binding, decision.channel)
         payload_hash = hashlib.sha256(text.encode()).hexdigest()
         readback_hash = ""
         success = False
+        transport_attempted = False
+        delivery_disposition = "not_attempted"
+        do_not_retry = False
+        transport_error = ""
         try:
             if decision.channel == ChannelType.WM_CHAR:
-                success = self._inject_wm_char(hwnd, text)
+                success = self._inject_wm_char(hwnd, text, expected_binding=expected_binding)
             elif decision.channel == ChannelType.UIA:
                 success = self._inject_uia(hwnd, text)
             elif decision.channel == ChannelType.PIPE:
                 success = self._inject_pipe(hwnd, text)
+        except PartialTransportError as exc:
+            transport_error = str(exc)
+            transport_attempted = exc.messages_posted > 0
+            if transport_attempted:
+                delivery_disposition = "unknown_delivery"
+                do_not_retry = True
+        except ChannelRoutingError:
+            raise
         except Exception:  # noqa: BLE001
             success = False
+        if success:
+            transport_attempted = True
+            delivery_disposition = "enqueued_unconfirmed"
         return ActionReceipt(
             receipt_id=str(uuid.uuid4()),
             hwnd=hwnd,
@@ -250,11 +304,58 @@ class ChannelRouter:
             success=success,
             transport_enqueued=success,
             delivery_confirmed=False,
+            transport_attempted=transport_attempted,
+            delivery_disposition=delivery_disposition,
+            do_not_retry=do_not_retry,
+            transport_error=transport_error,
         )
 
-    def _inject_wm_char(self, hwnd: int, text: str) -> bool:
+    def _verify_final_target(
+        self,
+        hwnd: int,
+        expected: TargetBinding,
+        channel: ChannelType,
+    ) -> None:
+        verifier = self._target_verifier
+        if verifier is None:
+            try:
+                from experiments.win32_probe.target_guard import verify_target
+            except Exception as exc:  # noqa: BLE001
+                raise ChannelRoutingError(
+                    f"Final target verification unavailable for HWND {hwnd}: {exc}"
+                ) from exc
+            verifier = verify_target
+        report = verifier(
+            hwnd,
+            expect_pid=expected.pid,
+            expect_exe=expected.exe,
+            expect_exe_path=expected.exe_path,
+            expect_class=expected.window_class,
+            expect_title_sha256=expected.title_sha256,
+            require_terminal=channel == ChannelType.WM_CHAR,
+        )
+        if not report.get("ok"):
+            reasons = report.get("reasons") or ["target identity changed"]
+            raise ChannelRoutingError(
+                f"Final target verification denied HWND {hwnd}: "
+                + "; ".join(str(reason) for reason in reasons)
+            )
+        title_sha256 = hashlib.sha256(str(report.get("title", "")).encode("utf-8")).hexdigest()
+        if title_sha256 != expected.title_sha256:
+            raise ChannelRoutingError(
+                f"Final target verification denied HWND {hwnd}: title hash changed"
+            )
+
+    def _inject_wm_char(
+        self,
+        hwnd: int,
+        text: str,
+        *,
+        expected_binding: TargetBinding | None = None,
+    ) -> bool:
         if not _WIN32_AVAILABLE:
             return False
+        messages_posted = 0
         try:
             delivery_hwnd = hwnd
             if _get_window_class(hwnd) == WINDOWS_TERMINAL_HOST_CLASS:
@@ -269,15 +370,72 @@ class ChannelRouter:
                 if not input_sites:
                     return False
                 delivery_hwnd = input_sites[0]
+                if expected_binding is not None:
+                    self._verify_input_site(hwnd, delivery_hwnd, expected_binding)
+
+            def post_message(message: int, wparam: int) -> None:
+                nonlocal messages_posted
+                result = win32api.PostMessage(delivery_hwnd, message, wparam, 0)
+                if result is False:
+                    raise OSError("PostMessage returned failure")
+                messages_posted += 1
+
             for ch in text:
                 if ch in ("\r", "\n"):
-                    win32api.PostMessage(delivery_hwnd, win32con.WM_KEYDOWN, win32con.VK_RETURN, 0)
-                    win32api.PostMessage(delivery_hwnd, win32con.WM_KEYUP, win32con.VK_RETURN, 0)
+                    post_message(win32con.WM_KEYDOWN, win32con.VK_RETURN)
+                    post_message(win32con.WM_KEYUP, win32con.VK_RETURN)
                 else:
-                    win32api.PostMessage(delivery_hwnd, win32con.WM_CHAR, ord(ch), 0)
+                    post_message(win32con.WM_CHAR, ord(ch))
             return True
-        except Exception:  # noqa: BLE001
-            return False
+        except PartialTransportError:
+            raise
+        except ChannelRoutingError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise PartialTransportError(str(exc), messages_posted=messages_posted) from exc
+
+    def _verify_input_site(
+        self,
+        host_hwnd: int,
+        child_hwnd: int,
+        expected: TargetBinding,
+    ) -> None:
+        verifier = self._target_verifier
+        if verifier is None:
+            try:
+                from experiments.win32_probe.target_guard import verify_target
+            except Exception as exc:  # noqa: BLE001
+                raise ChannelRoutingError(f"InputSite verifier unavailable: {exc}") from exc
+            verifier = verify_target
+        report = verifier(
+            child_hwnd,
+            expect_pid=expected.pid,
+            expect_exe=expected.exe,
+            expect_exe_path=expected.exe_path,
+            expect_class=WINDOWS_TERMINAL_INPUT_CLASS,
+            require_terminal=False,
+        )
+        actual_path = os.path.normcase(os.path.abspath(str(report.get("exe_path", ""))))
+        expected_path = os.path.normcase(os.path.abspath(expected.exe_path))
+        exact_match = (
+            report.get("ok")
+            and int(report.get("pid", 0)) == expected.pid
+            and str(report.get("exe", "")).lower() == expected.exe.lower()
+            and actual_path == expected_path
+            and report.get("class") == WINDOWS_TERMINAL_INPUT_CLASS
+        )
+        if not exact_match:
+            reasons = report.get("reasons") or ["InputSite identity differs from host binding"]
+            raise ChannelRoutingError("InputSite denied: " + "; ".join(map(str, reasons)))
+
+        current = child_hwnd
+        for _ in range(32):
+            current = int(win32gui.GetParent(current) or 0)
+            if current == host_hwnd:
+                return
+            if current == 0:
+                break
+        raise ChannelRoutingError("InputSite denied: child is not descended from the bound host HWND")
 
     def _inject_uia(self, hwnd: int, text: str) -> bool:
         return False  # UIA injection requires comtypes CoCreateInstance — stub

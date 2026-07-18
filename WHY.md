@@ -51,6 +51,59 @@ related records.
 
 ## Register
 
+## WHY-20260718-001 - Harden the current actuator and park the stale feature branch
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-18T12:46:07Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260718-001](LOG.md#log-20260718-001)
+**Parked records:** [PARK-20260718-001](PARKED.md#park-20260718-001)
+**Source state:** `selfconnect-enterprise`, `origin/master`,
+`b58353dc9fdd2551014ccfd2253091e868b96854`
+
+**Decision:** Reconcile issue #27 by strengthening the current governed MCP
+text actuator and preserving the old participant-mode branch as parked source
+evidence. Do not cherry-pick or package its four capability modules.
+
+**Why:** The current runtime already composes signed policy, active operator
+control, audited one-time approval, persistent pre-action ledger evidence,
+protected-image target validation, and delivery confirmation. Its lease stored
+a title hash but did not enforce it, and its router did not receive the full
+binding for a last-boundary check. The old branch instead treated unknown modes
+as unrestricted or downgraded them to `agent`, resolved the first window of a
+class while ignoring title, bypassed approval consumption, and directly wrote
+browser prompt text without the current governed composition.
+
+**Alternatives considered:** Cherry-picking `4698b5d`, `cfb76ff`, `6ee675d`, or
+`d6bdaf1` was rejected because each imports stale security assumptions. A full
+participant/executor redesign was deferred because no current package surface
+or reviewed external interface requires it. Documentation-only closure was
+rejected because the current title and final-boundary binding gaps were real.
+
+**Consequences:** Governed mutation now has canonical identity checks at the last
+software boundary before the transport primitive, around each UIA output read,
+and after the action. Windows Terminal input is posted only to an InputSite child
+matching the bound process, executable path, class, and host ancestry. A partial
+PostMessage sequence or later identity mismatch records unknown or unconfirmed
+delivery, persists a no-retry disposition, and cannot be silently replayed.
+Governed MCP text is capped at 4,096 characters before one-time approval
+consumption. The checks and Win32 mutation remain non-atomic and cannot retract
+input already delivered. Custom routers used by governed callers must accept the
+immutable `expected_binding` contract. The historical features remain available
+by Git object but carry no current release claim.
+
+**Rollback conditions:** Replace the binding contract only with an equal or
+stronger canonical target check at the mutation boundary. If compatibility
+requires a custom router, adapt it; do not silently omit the binding. Restore a
+parked capability only as a separately reviewed feature satisfying every issue
+#27 adversarial criterion and current release control.
+
+**Evidence and links:** `tests/test_enterprise/test_mcp_dispatch.py`,
+`tests/test_enterprise/test_channel_router.py`,
+`tests/test_enterprise/test_governed_runtime.py`, issue #27,
+[LOG-20260718-001](LOG.md#log-20260718-001), and
+[PARK-20260718-001](PARKED.md#park-20260718-001).
+
 ## WHY-20260717-002 - Keep authorization evidence independent of mutable caches and row lifetime
 
 **Status:** Accepted
@@ -107,13 +160,13 @@ authorization/compliance determination.
 
 ---
 
-## WHY-20260718-001 - Bind operator identity and local persistence ownership
+## WHY-20260718-002 - Bind operator identity and local persistence ownership
 
 **Status:** Accepted
 **Decision date (UTC):** 2026-07-18T12:52:54Z
 **Decision owner:** Repository owner
-**Action log:** [LOG-20260718-001](LOG.md#log-20260718-001)
-**Parked records:** [PARK-20260718-001](PARKED.md#park-20260718-001)
+**Action log:** [LOG-20260718-002](LOG.md#log-20260718-002)
+**Parked records:** [PARK-20260718-002](PARKED.md#park-20260718-002)
 **Source state:** `selfconnect-enterprise`, `origin/master`,
 `b58353dc9fdd2551014ccfd2253091e868b96854`
 
@@ -139,7 +192,11 @@ lease was not added because this repository has no selected multi-host approval
 authority or custody boundary.
 
 **Consequences:** The locks are single-host advisory process ownership, not consensus.
-Their owner-controlled lock directory must remain stable and must not be reaped.
+Their validated per-user LocalAppData/XDG lock directory must remain stable and
+must not be reaped. Lock objects reject symlink/reparse, replacement, unsafe
+type, and (on POSIX) owner/mode violations. Runtime close revokes a shared
+lifetime barrier and drains in-flight governed mutations before releasing locks,
+so stale component references cannot outlive persistence ownership.
 Persistence directories and path entries must not be writable by untrusted
 principals; a privileged rename or replacement after startup binding is outside
 this advisory-lock guarantee.
@@ -153,8 +210,8 @@ rotation cannot rewrite an existing lineage.
 proof whose authenticated subject differs from the claimed operator. Replace
 the local ownership lock only with a stronger tested fencing mechanism.
 
-**Evidence and links:** [LOG-20260718-001](LOG.md#log-20260718-001),
-[PARK-20260718-001](PARKED.md#park-20260718-001),
+**Evidence and links:** [LOG-20260718-002](LOG.md#log-20260718-002),
+[PARK-20260718-002](PARKED.md#park-20260718-002),
 `tests/test_enterprise/test_approval_audit.py`,
 `tests/test_enterprise/test_runtime_ownership.py`, governed runtime tests, and
 control `GOV-APPROVAL-001`.
