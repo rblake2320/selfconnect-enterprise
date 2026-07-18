@@ -31,10 +31,15 @@ approvals with the configured verifier. Do not relabel an old envelope.
 The resource directories and path entries must remain owner-controlled for the
 runtime lifetime. A privileged post-binding rename or replacement is outside
 the advisory-lock guarantee; stop the runtime and investigate any such change.
-Lock files are stored below the validated per-user LocalAppData boundary on
+Lock files are stored below the native known-folder LocalAppData boundary on
 Windows or XDG runtime/user-state boundary on POSIX; do not move them to a
-shared temporary directory. Runtime close revokes and drains authoritative
-operations before unlocking. Do not retain or reuse component references from
+shared temporary directory or restore an environment-derived Windows path. The
+Windows governed suffix has a protected owner/SYSTEM/Administrators DACL and
+the path chain is pinned with non-delete-sharing handles. Do not replace those
+native checks with PATH-resolved shell tools or a pre-open-only reparse check.
+Runtime close drains admitted outer operations, including their synchronous
+nested component work, before unlocking; close from inside such work fails with
+`RuntimeCloseReentrantError`. Do not retain or reuse component references from
 a closed runtime.
 
 This recovery procedure is single-host. Multi-host approval authority and

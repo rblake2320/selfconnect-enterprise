@@ -126,8 +126,14 @@ rejects same-resource and hard-link aliases present during acquisition or
 startup revalidation. Owner-controlled immutable path entries are a deployment
 precondition because advisory locks cannot prevent privileged later replacement.
 Closing the composed runtime revokes and drains its shared mutation lifetime
-before releasing ownership; restoring unlock-only close would recreate a stale
-object-graph writer.
+before releasing ownership. An admitted outer synchronous operation may finish
+its nested queue/control/ledger work as one unit, while close from inside that
+unit fails explicitly instead of waiting on itself. On Windows the governed
+suffix is protected by a native owner/SYSTEM/Administrators DACL and its
+known-folder/suffix path is held by non-delete-sharing handles with pre/post-open
+retarget checks. Restoring environment-derived paths, shell-based SID/ACL
+discovery, lstat-only junction checks, or unlock-only close would recreate the
+retarget, PATH-poisoning, deadlock, or stale-object-graph risks.
 
 **Restore when:** Never restore the public prefix bypass or unbound subject.
 A future replacement for the local ownership lock must provide stronger tested
@@ -136,8 +142,9 @@ multi-host fencing and must preserve fail-closed startup.
 **Restore procedure:** Work only on an isolated branch and replace the local
 ownership mechanism with stronger fencing while retaining all adversarial tests.
 
-**Validation after restore:** Wrong-subject, spoofed-prefix, concurrent
-writer, restart, audit reconciliation, and complete governed-runtime suites.
+**Validation after restore:** Wrong-subject, spoofed-prefix, concurrent writer,
+restart, audit reconciliation, nested close/drain, Windows DACL/known-folder,
+deterministic junction/retarget, and complete governed-runtime suites.
 
 **Recovery rehearsal:** Reconstruct the former behavior only from the named Git
 object in a disposable test workspace; never use it with real authority.

@@ -193,13 +193,17 @@ authority or custody boundary.
 
 **Consequences:** The locks are single-host advisory process ownership, not consensus.
 Their validated per-user LocalAppData/XDG lock directory must remain stable and
-must not be reaped. Lock objects reject symlink/reparse, replacement, unsafe
-type, and (on POSIX) owner/mode violations. Runtime close revokes a shared
-lifetime barrier and drains in-flight governed mutations before releasing locks,
-so stale component references cannot outlive persistence ownership.
-Persistence directories and path entries must not be writable by untrusted
-principals; a privileged rename or replacement after startup binding is outside
-this advisory-lock guarantee.
+must not be reaped. On Windows, LocalAppData comes from the native known-folder
+API rather than process environment; native token/security APIs establish and
+verify a protected owner/SYSTEM/Administrators DACL on the governed suffix.
+Non-delete-sharing handles pin the known-folder and controlled suffix chain, and
+pre/post-open identity checks reject reparse and namespace-retarget races. The
+pre-existing LocalAppData and SelfConnect ancestors retain their OS/profile ACL
+boundary and are not described as DACL-owned by this mechanism. POSIX continues
+to enforce owner/mode and no-follow behavior. Runtime close drains each admitted
+outer synchronous flow as one unit, allows its nested component mutations to
+finish, and typed-fails a close attempted from inside that flow rather than
+deadlocking. Stale component references cannot outlive persistence ownership.
 Credential format, key custody, trusted time, and multi-host authority remain
 deployment responsibilities. The default SHA-256 context digest is correlation
 and integrity evidence, not confidentiality. A versioned keyed provider remains
@@ -213,7 +217,8 @@ the local ownership lock only with a stronger tested fencing mechanism.
 **Evidence and links:** [LOG-20260718-002](LOG.md#log-20260718-002),
 [PARK-20260718-002](PARKED.md#park-20260718-002),
 `tests/test_enterprise/test_approval_audit.py`,
-`tests/test_enterprise/test_runtime_ownership.py`, governed runtime tests, and
+`tests/test_enterprise/test_runtime_ownership.py`, runtime-lifetime and governed
+runtime tests, and
 control `GOV-APPROVAL-001`.
 
 ## WHY-20260717-001 - Finalize approval state only after signed evidence

@@ -5,7 +5,7 @@ import hashlib
 import os
 import stat
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 
 class RuntimeOwnershipError(RuntimeError):
@@ -50,27 +50,27 @@ def _validate_secure_directory(path: Path) -> None:
             raise RuntimeOwnershipError("runtime lock directory permissions are too broad")
 
 
-def _secure_lock_dir() -> Path:
+def _secure_lock_dir() -> tuple[Path, Any | None]:
     if os.name == "nt":
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        if not local_app_data:
-            raise RuntimeOwnershipError("LOCALAPPDATA is required for runtime locks")
-        base = Path(local_app_data)
-        lock_dir = base / "SelfConnect" / "runtime-locks"
-    else:
-        runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
-        base = Path(runtime_dir) if runtime_dir else Path.home() / ".local" / "state"
-        lock_dir = base / "selfconnect" / "runtime-locks"
+        from enterprise.windows_lock_boundary import (
+            WindowsLockBoundary,
+            WindowsLockBoundaryError,
+        )
+
+        try:
+            boundary = WindowsLockBoundary()
+        except WindowsLockBoundaryError as exc:
+            raise RuntimeOwnershipError(str(exc)) from exc
+        return boundary.path, boundary
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    base = Path(runtime_dir) if runtime_dir else Path.home() / ".local" / "state"
+    lock_dir = base / "selfconnect" / "runtime-locks"
     try:
         lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     except OSError as exc:
         raise RuntimeOwnershipError("cannot create runtime lock directory") from exc
     _validate_secure_directory(lock_dir)
-    if os.name == "nt":
-        # LocalAppData is the Windows per-user ACL boundary. Refuse junctions or
-        # symlinks in the SelfConnect-owned suffix rather than using shared temp.
-        _validate_secure_directory(lock_dir.parent)
-    return lock_dir
+    return lock_dir, None
 
 
 class _ResourceLock:
@@ -173,13 +173,14 @@ class RuntimeOwnershipLock:
     """
 
     def __init__(self, ledger_path: Path, approval_path: Path) -> None:
-        lock_dir = _secure_lock_dir()
-        self._lock_dir = lock_dir
         self._resource_paths = (Path(ledger_path), Path(approval_path))
         initial_sets = tuple(
             set(_resource_identities(path)) for path in self._resource_paths
         )
         _assert_distinct_resources(initial_sets)
+        lock_dir, boundary = _secure_lock_dir()
+        self._lock_dir = lock_dir
+        self._lock_boundary = boundary
         self.paths: list[Path] = []
         self._locks: list[_ResourceLock] = []
         self._held_identities: set[str] = set()
@@ -222,6 +223,9 @@ class RuntimeOwnershipLock:
         self._held_identities.clear()
         for lock in reversed(locks):
             lock.close()
+        boundary, self._lock_boundary = self._lock_boundary, None
+        if boundary is not None:
+            boundary.close()
 
     def __enter__(self) -> "RuntimeOwnershipLock":
         return self

@@ -121,7 +121,15 @@ def _isolated_lock_root(tmp_path, monkeypatch) -> None:
 def test_precreated_symlink_lock_directory_is_rejected(tmp_path, monkeypatch):
     _isolated_lock_root(tmp_path, monkeypatch)
     if os.name == "nt":
-        lock_dir = tmp_path / "local-app-data" / "SelfConnect" / "runtime-locks"
+        # The environment-provided path is untrusted and must be ignored.
+        attacker_root = tmp_path / "local-app-data"
+        attacker_root.mkdir()
+        lock = RuntimeOwnershipLock(tmp_path / "ledger", tmp_path / "approvals")
+        try:
+            assert all(attacker_root not in path.parents for path in lock.paths)
+        finally:
+            lock.close()
+        return
     else:
         lock_dir = tmp_path / "runtime" / "selfconnect" / "runtime-locks"
     target = tmp_path / "attacker-locks"
@@ -156,6 +164,7 @@ def test_wrong_owner_lock_directory_is_rejected(tmp_path, monkeypatch):
         RuntimeOwnershipLock(tmp_path / "ledger", tmp_path / "approvals")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX no-follow file-symlink semantics")
 def test_precreated_symlink_lock_file_is_rejected(tmp_path, monkeypatch):
     _isolated_lock_root(tmp_path, monkeypatch)
     ledger = tmp_path / "ledger"
@@ -189,3 +198,127 @@ def test_replaced_lock_file_during_binding_is_rejected(tmp_path, monkeypatch):
             lock.bind_opened_resources()
     finally:
         lock.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction semantics")
+def test_windows_junction_ancestor_is_rejected(tmp_path):
+    from enterprise.windows_lock_boundary import (
+        WindowsLockBoundaryError,
+        _open_directory,
+    )
+
+    target = tmp_path / "target"
+    target.mkdir()
+    junction = tmp_path / "junction"
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if created.returncode != 0:  # pragma: no cover - host policy boundary
+        pytest.skip(f"junction creation unavailable: {created.stderr}")
+    try:
+        with pytest.raises(WindowsLockBoundaryError, match="reparse point"):
+            _open_directory(junction)
+    finally:
+        os.rmdir(junction)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-retarget semantics")
+def test_windows_directory_swap_to_junction_during_open_is_rejected(tmp_path):
+    from enterprise.windows_lock_boundary import (
+        WindowsLockBoundaryError,
+        _open_directory,
+    )
+
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+
+    def swap() -> None:
+        os.rmdir(candidate)
+        created = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(candidate), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert created.returncode == 0, created.stderr
+
+    try:
+        with pytest.raises(WindowsLockBoundaryError, match="reparse point|changed"):
+            _open_directory(candidate, _before_open=swap)
+    finally:
+        if candidate.exists():
+            os.rmdir(candidate)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-retarget semantics")
+def test_windows_directory_swap_to_second_namespace_is_rejected(tmp_path):
+    from enterprise.windows_lock_boundary import (
+        WindowsLockBoundaryError,
+        _open_directory,
+    )
+
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+
+    def swap() -> None:
+        os.rmdir(candidate)
+        replacement.rename(candidate)
+
+    with pytest.raises(WindowsLockBoundaryError, match="changed during open"):
+        _open_directory(candidate, _before_open=swap)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native-API boundary")
+def test_windows_lock_boundary_does_not_execute_from_process_path(
+    tmp_path, monkeypatch
+):
+    import enterprise.windows_lock_boundary as windows_boundary
+
+    local_app_data = tmp_path / "known-local-app-data"
+    local_app_data.mkdir()
+    monkeypatch.setattr(
+        windows_boundary, "_known_local_app_data", lambda: local_app_data
+    )
+    monkeypatch.setenv("PATH", str(tmp_path / "attacker-bin"))
+    boundary = windows_boundary.WindowsLockBoundary()
+    try:
+        windows_boundary._validate_acl(
+            boundary.path, windows_boundary._current_sid()
+        )
+    finally:
+        boundary.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows governed-root semantics")
+def test_windows_governed_suffix_junction_is_rejected(tmp_path, monkeypatch):
+    import enterprise.windows_lock_boundary as windows_boundary
+
+    local_app_data = tmp_path / "known-local-app-data"
+    local_app_data.mkdir()
+    target = tmp_path / "attacker-root"
+    target.mkdir()
+    junction = local_app_data / "SelfConnect"
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr
+    monkeypatch.setattr(
+        windows_boundary, "_known_local_app_data", lambda: local_app_data
+    )
+    try:
+        with pytest.raises(
+            windows_boundary.WindowsLockBoundaryError, match="reparse point"
+        ):
+            windows_boundary.WindowsLockBoundary()
+    finally:
+        os.rmdir(junction)

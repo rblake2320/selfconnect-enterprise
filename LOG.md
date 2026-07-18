@@ -69,7 +69,11 @@ public system-prefix denial bypass with a private runtime capability, added
 exclusive single-host process locks for each governed approval database and
 ledger resource, made proof freshness sample the injected queue clock only
 after SQLite writer ownership, and made the live conformance verifier/proof
-explicitly test-only and mandatory for approval.
+explicitly test-only and mandatory for approval. The shared lifetime now treats
+synchronous nested component mutations as one admitted unit and rejects
+reentrant close with a typed error. The Windows lock boundary uses native
+known-folder, token, and security-descriptor APIs; pins non-delete-sharing
+handles; and rejects deterministic junction and namespace-retarget races.
 
 **Reason:** PR #33 durably bound transitions to ledger evidence but did not prove
 the credential subject named the claimed operator, allowed callers to imitate an
@@ -83,14 +87,17 @@ records.
 
 **Validation:** Focused approval, governed-runtime, control-plane, MCP profile,
 clock-contention, independent-resource, hard-link-alias, and cross-process
-ownership tests. After merging current master, the full suite passed **1,603 tests** with 37
-explicit environment/platform/live skips and the two pre-existing immutable-
-sink warnings. The focused lifetime/approval/runtime/control/MCP/ownership set
-passed 190 tests with three platform-specific skips on Windows.
+ownership tests, including native Windows DACL/known-folder behavior,
+path-poisoning resistance, deterministic junction/retarget races, nested drain,
+and reentrant-close attempts. The expanded focused set passed **234 tests** with
+four named platform skips. The full local suite passed **1,612 tests** with 38
+named environment/platform/live skips and the two pre-existing immutable-sink
+warnings.
 
-**Notes:** Single-host mechanism only. Persistence directories and path entries
-must remain owner-controlled after startup binding; privileged post-binding
-rename/replacement is outside this advisory-lock control. External credential
+**Notes:** Single-host mechanism only. The Windows governed suffix has a tested
+restrictive DACL and pinned ancestor handles; the pre-existing LocalAppData and
+SelfConnect ancestors retain their operating-system/user-profile ACL boundary.
+External credential
 custody, trusted time, keyed context-digest custody, and distributed approval
 authority remain outside the repository claim.
 

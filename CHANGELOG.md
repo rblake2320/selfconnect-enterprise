@@ -36,12 +36,16 @@
   using the same resource for both roles, or presenting a hard-link alias during
   acquisition/startup binding fails closed. Resource path entries must remain
   owner-controlled after binding.
-- Runtime locks live under a validated per-user LocalAppData/XDG state boundary;
-  symlink/reparse, non-owner, permissive, non-regular, and replaced lock objects
-  fail closed where the platform exposes those properties.
+- Runtime locks live under a validated per-user LocalAppData/XDG state boundary.
+  Windows resolves LocalAppData through the native known-folder API, applies a
+  protected owner/SYSTEM/Administrators DACL to the governed suffix, and pins
+  non-delete-sharing directory handles. Reparse, retarget, non-owner,
+  permissive, non-regular, and replaced objects fail closed where applicable.
 - Closing a governed runtime first revokes its shared lifetime and drains
-  in-flight operations before unlocking. Retained queue, dispatcher, control,
-  and ledger references cannot mutate after a replacement runtime starts.
+  admitted outer operations before unlocking. Their synchronous nested work may
+  finish as one in-flight unit; reentrant close fails explicitly instead of
+  deadlocking. Retained queue, dispatcher, control, and ledger references cannot
+  mutate after a replacement runtime starts.
 - The default unkeyed context digest remains explicitly non-confidential;
   rotation-stable keyed digest storage remains parked until its key custody and
   persisted-version migration are designed together.

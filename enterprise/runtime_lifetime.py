@@ -11,6 +11,10 @@ class RuntimeClosedError(RuntimeError):
     """The governed runtime has closed and cannot authorize more mutation."""
 
 
+class RuntimeCloseReentrantError(RuntimeError):
+    """Shutdown was requested from inside an admitted runtime operation."""
+
+
 class RuntimeLifetime:
     """Reject new operations and drain in-flight operations before unlock."""
 
@@ -19,22 +23,37 @@ class RuntimeLifetime:
         self._accepting = True
         self._in_flight = 0
         self._revoked = threading.Event()
+        self._local = threading.local()
 
     @contextmanager
     def operation(self) -> Iterator[None]:
+        depth = getattr(self._local, "depth", 0)
+        if depth:
+            self._local.depth = depth + 1
+            try:
+                yield
+            finally:
+                self._local.depth -= 1
+            return
         with self._condition:
             if not self._accepting:
                 raise RuntimeClosedError("governed runtime is closed")
             self._in_flight += 1
+            self._local.depth = 1
         try:
             yield
         finally:
+            self._local.depth = 0
             with self._condition:
                 self._in_flight -= 1
                 if self._in_flight == 0:
                     self._condition.notify_all()
 
     def close_and_drain(self) -> None:
+        if getattr(self._local, "depth", 0):
+            raise RuntimeCloseReentrantError(
+                "cannot close governed runtime from an in-flight operation"
+            )
         with self._condition:
             self._accepting = False
             self._revoked.set()
@@ -59,4 +78,8 @@ def governed_operation(method: _F) -> _F:
     return wrapped  # type: ignore[return-value]
 
 
-__all__ = ["RuntimeClosedError", "RuntimeLifetime"]
+__all__ = [
+    "RuntimeClosedError",
+    "RuntimeCloseReentrantError",
+    "RuntimeLifetime",
+]
