@@ -91,9 +91,11 @@ class ResolvedLogicalTarget:
             "class": self.window_class,
             "title": self.title,
             "title_sha256": self.title_sha256,
+            "valid": True,
             "ok": True,
             "reasons": [],
             "is_terminal": True,
+            "is_self": False,
         }
 
 
@@ -211,7 +213,11 @@ class LogicalTargetResolver:
                 or type(window_class) is not str
                 or type(title) is not str
                 or report.get("hwnd") != value
+                or report.get("valid") is not True
                 or report.get("is_terminal") is not True
+                or report.get("is_self") is not False
+                or type(report.get("reasons")) is not list
+                or report.get("reasons") != []
             ):
                 raise LogicalTargetError(
                     "canonical target verifier returned an incomplete identity binding"
@@ -220,6 +226,7 @@ class LogicalTargetResolver:
             if (
                 ntpath.normcase(ntpath.abspath(exe_path))
                 != ntpath.normcase(ntpath.abspath(spec.expected_exe_path))
+                or ntpath.normcase(exe) != ntpath.normcase(ntpath.basename(exe_path))
                 or window_class != spec.expected_class
                 or title_sha256 != spec.expected_title_sha256
             ):

@@ -34,6 +34,7 @@ def spec(**changes) -> LogicalTargetSpec:
 def report(hwnd: int, *, ok: bool = True, **changes):
     value = {
         "hwnd": hwnd,
+        "valid": True,
         "ok": ok,
         "reasons": [] if ok else ["not the configured target"],
         "pid": 4242,
@@ -42,6 +43,7 @@ def report(hwnd: int, *, ok: bool = True, **changes):
         "class": "CASCADIA_HOSTING_WINDOW_CLASS",
         "title": TITLE,
         "is_terminal": True,
+        "is_self": False,
     }
     value.update(changes)
     return value
@@ -161,7 +163,11 @@ class TestLogicalTargetResolver:
         "change",
         [
             {"hwnd": 99},
+            {"valid": "yes"},
             {"is_terminal": False},
+            {"is_self": True},
+            {"reasons": ()},
+            {"reasons": ["contradictory"]},
             {"ok": "yes"},
         ],
     )
@@ -178,6 +184,7 @@ class TestLogicalTargetResolver:
         "change",
         [
             {"exe_path": r"C:\\Users\\Public\\WindowsTerminal.exe"},
+            {"exe": "not-the-path-basename.exe"},
             {"class": "FakeClass"},
             {"title": "Changed"},
         ],

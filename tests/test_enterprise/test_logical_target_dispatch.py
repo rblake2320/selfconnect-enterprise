@@ -80,6 +80,7 @@ def make_dispatcher(*, state=None, allowed_roles=frozenset({"sender"})):
             "ok": True,
             "reasons": [],
             "is_terminal": True,
+            "is_self": False,
             **current,
         }
         checks = {
@@ -230,4 +231,3 @@ class TestLogicalTargetLeaseDispatch:
             },
         )
         assert denied["ok"] is False
-
