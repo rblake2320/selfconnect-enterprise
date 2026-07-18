@@ -91,6 +91,46 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260718-005 - External CI supply-chain custody
+
+**Status:** Parked
+**Category:** supply-chain evidence
+**Former location:** Not implemented; separate control boundary
+**Source commit:** `8a4cdad4f1a723f4bb03e5d07ba73a12d974b87b`
+**Affected paths:** Release workflow, dependency artifacts, runner bootstrap
+**Action log:** [LOG-20260718-005](LOG.md#log-20260718-005)
+**Why changed:** [WHY-20260718-005](WHY.md#why-20260718-005)
+**Parked by:** commit containing this record
+
+**Former wording:** Candidate-local RECORD and workflow checks risked being
+described as supply-chain trust evidence.
+
+**Recovery source:** This record; no removed implementation exists.
+
+**Reason parked:** Candidate code controls its expected hashes and runner, so
+it cannot establish independent custody.
+
+**Replacement:** Candidate-local deterministic drift detection with bounded
+claims.
+
+**Restore when:** A protected reusable workflow or equivalent external gate
+owns exact wheel hashes and runs from a clean bootstrap outside candidate
+control.
+
+**Restore procedure:** Provision protected workflow custody, pin externally
+reviewed wheel hashes, execute from a clean bootstrap runner, and bind evidence
+to the reviewed commit.
+
+**Validation after restore:** Change candidate runner/hash files and prove the
+external gate still rejects them.
+
+**Recovery rehearsal:** Not rehearsed.
+
+**Restoration risks:** A nominally external workflow that candidates can edit
+would reproduce the same self-attestation gap.
+
+**Evidence and links:** [WHY-20260718-005](WHY.md#why-20260718-005).
+
 ## PARK-20260718-004 - Duplicate hidden CI test execution
 
 **Status:** Parked
@@ -113,8 +153,8 @@ captured output.
 **Reason parked:** The workflow ran the full suite twice and suppressed the
 captured second run's failure identity. The two executions could produce
 different results while the gate reported only a count.
-**Replacement:** One import-isolated dedicated pytest runner prints complete
-output, verifies pytest's installed distribution and repository test inputs,
+**Replacement:** One candidate-local dedicated pytest runner prints complete
+output, checks pytest's installed distribution and repository test inputs,
 and applies the result, collection, and exact skip policy to structured pytest
 report objects.
 

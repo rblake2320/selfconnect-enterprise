@@ -51,6 +51,34 @@ related records.
 
 ## Register
 
+## WHY-20260718-005 - Treat candidate CI as regression evidence, not custody
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-18T16:54:14Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260718-005](LOG.md#log-20260718-005)
+**Parked records:** [PARK-20260718-005](PARKED.md#park-20260718-005)
+**Source state:** `selfconnect-enterprise` draft PR #37 at `8a4cdad`
+
+**Decision:** Retain the observable run and exact drift checks, but call them
+candidate-local deterministic regression evidence only.
+
+**Why:** Candidate code controls the workflow, runner, expected hashes, and
+collection. It cannot independently attest its own supply chain.
+
+**Alternatives considered:** Expand candidate-local attestation; rejected
+because it does not cross the custody boundary. Remove drift checks; rejected
+because they still catch accidental candidate changes.
+
+**Consequences:** A separate externally controlled release gate is needed for
+supply-chain assurance.
+
+**Rollback conditions:** Supersede when protected external infrastructure owns
+the hashes, workflow, and clean-bootstrap evidence.
+
+**Evidence and links:** `.github/workflows/ci.yml`, `tools/ci_test_gate.py`, and
+[PARK-20260718-005](PARKED.md#park-20260718-005).
+
 ## WHY-20260718-004 - Validate one observable test execution
 
 **Status:** Accepted
@@ -61,12 +89,12 @@ related records.
 **Source state:** `selfconnect-enterprise` draft PR #37 at
 `f0e2d820f4488f4ff0622f213220cc5da45d8439`
 
-**Decision:** Run the complete pytest suite once through one dedicated Windows
+**Decision:** Run the complete pytest suite once through one candidate-local Windows
 CI runner. Derive pass, failure, and skip policy from pytest report objects,
 while retaining pytest's complete human-readable output. Start Python without
 repository/environment import-path injection, disable plugin autoload, verify
-the complete imported pytest Python closure against installed RECORD hashes,
-and pin the trusted conftest, complete collection identity, and exact skip
+the candidate-local pytest Python closure against installed RECORD hashes,
+and pin the reviewed conftest, complete collection identity, and exact skip
 identities and reasons.
 
 **Why:** Re-executing the suite does not strengthen evidence: it evaluates a

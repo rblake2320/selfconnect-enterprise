@@ -4,15 +4,19 @@
 
 ### Observable CI test gate
 
-- Replaced two independent full-suite executions with one authoritative pytest
+- Replaced two independent full-suite executions with one candidate-local pytest
   run whose complete output is printed before result and skip-policy checks.
 - Added a regression test that prevents a second full-suite invocation or a
   return to hidden failure output. The runner disables plugin autoload, verifies
-  pytest's complete Python RECORD closure, and pins the reviewed conftest,
-  collected-test digest, and all 38 allowed skip node/reason pairs.
+  pytest's candidate-local Python RECORD closure, and pins the reviewed
+  conftest, collected-test digest, and exact 38-pair skip set. These checks
+  detect candidate drift; they are not an external supply-chain trust anchor.
   Evidence: [LOG-20260718-004](LOG.md#log-20260718-004),
   rationale: [WHY-20260718-004](WHY.md#why-20260718-004), recovery:
   [PARK-20260718-004](PARKED.md#park-20260718-004).
+- Parked external wheel-hash custody, a protected reusable workflow, and clean
+  bootstrap execution as a separate supply-chain control:
+  [PARK-20260718-005](PARKED.md#park-20260718-005).
 
 ### Lease role authority
 

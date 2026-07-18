@@ -1,4 +1,4 @@
-"""Run the authoritative CI suite once and enforce structured result policy."""
+"""Run one candidate-local CI suite and enforce deterministic result policy."""
 
 from __future__ import annotations
 
@@ -68,8 +68,8 @@ ALLOWED_SKIPS = {
 }
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 TRUSTED_CONFTEST_SHA256 = "4455e076e35ccf23bc9658ef7d10b3700d421f7de98b86d59306ee4fa1e34f5a"
-EXPECTED_COLLECTION_COUNT = 1_697
-EXPECTED_COLLECTION_SHA256 = "f2a6b8e7f63c4587f0404678d5c7a674fde75455560e8e7b16c64ad078f762c3"
+EXPECTED_COLLECTION_COUNT = 1_699
+EXPECTED_COLLECTION_SHA256 = "e660985c9ca435de7714a276ed42f95145b7d7f0ee36771ae6a4e725b8ec60ae"
 
 
 def _verify_record_file(dist: Any, package_file: Any) -> Path:
@@ -223,6 +223,13 @@ def main() -> int:
         print("FAIL: unexpected skipped test or reason")
         for nodeid, reason in unexpected:
             print(f"{nodeid}: {reason}")
+        return 1
+    observed_skips = dict(results.skipped)
+    if observed_skips != ALLOWED_SKIPS or len(results.skipped) != len(ALLOWED_SKIPS):
+        print("FAIL: exact reviewed skip set was not observed")
+        missing = sorted(set(ALLOWED_SKIPS.items()) - set(results.skipped))
+        if missing:
+            print("Missing: " + json.dumps(missing))
         return 1
     if results.passed < 880:
         print(f"FAIL: only {results.passed} tests passed (expected >= 880)")

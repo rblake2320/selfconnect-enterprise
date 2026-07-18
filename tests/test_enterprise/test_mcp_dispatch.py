@@ -287,6 +287,38 @@ class TestLeaseRuntime:
         assert result["ok"] is False
         assert "expired or revoked" in result["error"]
 
+    def test_revoke_cannot_follow_substituted_embedded_sender_id(self):
+        dispatcher = make_dispatcher()
+        observer_id = issue_lease(dispatcher, hwnd=903, role="observer")
+        sender_id = issue_lease(dispatcher, hwnd=904, role="sender")
+        sender = dispatcher._leases[sender_id]
+        dispatcher._leases[observer_id] = sender
+
+        result = dispatcher.call_tool("sc_revoke_lease", {"lease_id": observer_id})
+
+        assert result["ok"] is False
+        assert "storage key does not match" in result["error"]
+        assert dispatcher._leases[sender_id].revoked is False
+        assert authority_records(dispatcher)[sender_id].lease.revoked is False
+
+    def test_inventory_filters_invalid_substituted_lease_records(self):
+        dispatcher = make_dispatcher()
+        observer_id = issue_lease(dispatcher, hwnd=905, role="observer")
+        sender_id = issue_lease(dispatcher, hwnd=906, role="sender")
+        dispatcher._leases[observer_id] = dispatcher._leases[sender_id]
+
+        listed = dispatcher.call_tool(
+            "sc_list_leases",
+            {"include_expired": True},
+        )
+        info = dispatcher.call_tool("sc_get_lease_info", {"lease_id": observer_id})
+
+        assert listed["ok"] is True
+        assert [item["lease_id"] for item in listed["result"]["leases"]] == [sender_id]
+        assert [lease.lease_id for lease in dispatcher.active_leases()] == [sender_id]
+        assert info["ok"] is False
+        assert "storage key does not match" in info["error"]
+
     def test_inject_requires_existing_lease(self):
         dispatcher = make_dispatcher()
         result = dispatcher.call_tool(
@@ -486,7 +518,7 @@ class TestLeaseRuntime:
         )
 
         assert result["ok"] is False
-        assert "authority is revoked" in result["error"]
+        assert "signed issuance authority" in result["error"]
         assert dispatcher._router.routes == []
 
     def test_dispatcher_does_not_expose_raw_authority_signer_or_verifier(self):

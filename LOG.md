@@ -54,6 +54,32 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260718-005 - Bound the candidate-local CI gate
+
+**Timestamp (UTC):** 2026-07-18T16:54:14Z
+**Actor:** Codex, requested by the repository owner
+**Category:** evidence boundary, documentation
+**Base commit:** `8a4cdad4f1a723f4bb03e5d07ba73a12d974b87b`
+**Change reference:** commit containing this entry; draft pull request #37
+**Why:** [WHY-20260718-005](WHY.md#why-20260718-005)
+**Parked records:** [PARK-20260718-005](PARKED.md#park-20260718-005)
+
+**Changed:** Classified collection, skip, conftest, and installed-pytest
+consistency checks as a candidate-local regression gate, not an external
+supply-chain authority. Pinned pytest 9.1.1 and the exact reviewed skip set.
+
+**Reason:** Candidate code controls its workflow, runner, and expected hashes.
+Those checks detect drift but do not establish independent custody.
+
+**Full actions and links:** `.github/workflows/ci.yml`, `tools/ci_test_gate.py`,
+draft PR #37, and the linked WHY/PARK records.
+
+**Validation:** Focused tests, one full candidate-local run, Ruff, actionlint,
+and hosted CI on the final commit.
+
+**Notes:** External wheel hashes, protected reusable workflow custody, and a
+clean bootstrap runner remain parked as a separate control.
+
 ## LOG-20260718-004 - Make one test execution authoritative and observable
 
 **Timestamp (UTC):** 2026-07-18T15:57:48Z
@@ -69,8 +95,8 @@ dedicated runner. A pytest plugin records structured report objects directly,
 while pytest prints its normal diagnostics. Workflow and AST regressions enforce
 the unit lane's sole entrypoint and one `pytest.main` call without
 shell/subprocess aliases. Safe-path/environment flags prevent repository-path
-shadowing, plugin autoload is disabled, pytest's distribution origin and RECORD
-hashes are verified before import, and the conftest hash, complete collection
+shadowing, plugin autoload is disabled, pytest's candidate-local RECORD hashes
+are checked before import, and the conftest hash, complete collection
 digest, and 38 exact skip node/reason pairs are pinned.
 
 **Reason:** Hosted run 29650683874 passed its first full suite (1,639 passed)
