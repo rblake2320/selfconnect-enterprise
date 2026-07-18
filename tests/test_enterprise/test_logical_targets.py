@@ -57,8 +57,12 @@ class TestLogicalTargetSpec:
             ("logical_id", ""),
             ("expected_exe_path", "relative.exe"),
             ("expected_exe_path", r"\Windows\System32\cmd.exe"),
+            ("expected_exe_path", r"\\server\share\terminal.exe"),
+            ("expected_exe_path", PATH + " "),
             ("expected_exe_path", "C:\\bad\x00path"),
             ("expected_class", ""),
+            ("expected_class", "   "),
+            ("expected_class", "Class\nName"),
             ("expected_title_sha256", "A" * 64),
             ("expected_title_sha256", "0" * 63),
             ("allowed_roles", frozenset()),
@@ -76,6 +80,13 @@ class TestLogicalTargetSpec:
         assert item.allowed_roles == frozenset({"sender"})
         with pytest.raises(Exception):
             item.logical_id = "changed"  # type: ignore[misc]
+
+    def test_role_string_subclasses_are_rejected(self):
+        class Role(str):
+            pass
+
+        with pytest.raises(ValueError):
+            spec(allowed_roles=frozenset({Role("sender")}))
 
 
 class TestLogicalTargetResolver:
@@ -127,7 +138,9 @@ class TestLogicalTargetResolver:
                 target_verifier=lambda hwnd, **kwargs: report(hwnd, ok=False),
             )
 
-    @pytest.mark.parametrize("candidates", [[1, 1], [0], [0xFFFFFFFF], [True]])
+    @pytest.mark.parametrize(
+        "candidates", [[1, 1], [0], [0xFFFFFFFF], [True], [[1]]]
+    )
     def test_malformed_enumeration_denied(self, candidates):
         resolver = LogicalTargetResolver([spec()], enumerate_windows=lambda: candidates)
         with pytest.raises(LogicalTargetError):
@@ -163,6 +176,7 @@ class TestLogicalTargetResolver:
         "change",
         [
             {"hwnd": 99},
+            {"hwnd": True},
             {"valid": "yes"},
             {"is_terminal": False},
             {"is_self": True},

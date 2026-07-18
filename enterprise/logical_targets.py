@@ -23,6 +23,10 @@ _HWND_MAX = 0xFFFFFFFE
 _CANDIDATE_LIMIT = 4096
 
 
+def _has_control_characters(value: str) -> bool:
+    return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+
+
 class LogicalTargetError(RuntimeError):
     """A logical target cannot be resolved without ambiguity."""
 
@@ -45,19 +49,23 @@ class LogicalTargetSpec:
         if (
             type(self.expected_exe_path) is not str
             or not self.expected_exe_path
-            or "\x00" in self.expected_exe_path
+            or self.expected_exe_path != self.expected_exe_path.strip()
+            or _has_control_characters(self.expected_exe_path)
             or len(self.expected_exe_path) > 1024
             or not ntpath.isabs(self.expected_exe_path)
-            or not ntpath.splitdrive(self.expected_exe_path)[0]
+            or not re.match(r"^[A-Za-z]:\\", self.expected_exe_path)
         ):
-            raise ValueError("expected_exe_path must be a bounded absolute Windows path")
+            raise ValueError(
+                "expected_exe_path must be a bounded local drive-letter absolute Windows path"
+            )
         if (
             type(self.expected_class) is not str
             or not self.expected_class
-            or "\x00" in self.expected_class
+            or self.expected_class != self.expected_class.strip()
+            or _has_control_characters(self.expected_class)
             or len(self.expected_class) > 256
         ):
-            raise ValueError("expected_class must be a bounded non-empty string")
+            raise ValueError("expected_class must be a bounded non-empty printable string")
         if type(self.expected_title_sha256) is not str or not _SHA256_RE.fullmatch(
             self.expected_title_sha256
         ):
@@ -66,7 +74,11 @@ class LogicalTargetSpec:
             roles = frozenset(self.allowed_roles)
         except TypeError as exc:
             raise ValueError("allowed_roles must be an iterable of closed lease roles") from exc
-        if not roles or not roles <= _VALID_ROLES:
+        if (
+            not roles
+            or any(type(role) is not str for role in roles)
+            or not roles <= _VALID_ROLES
+        ):
             raise ValueError("allowed_roles must be a non-empty subset of lease roles")
         object.__setattr__(self, "allowed_roles", roles)
 
@@ -170,21 +182,26 @@ class LogicalTargetResolver:
 
         try:
             raw_candidates: list[int] = []
+            seen_candidates: set[int] = set()
             for candidate in self.__enumerate_windows():
                 if len(raw_candidates) >= _CANDIDATE_LIMIT:
                     raise LogicalTargetError("top-level window enumeration exceeded its bound")
+                if type(candidate) is not int or not 1 <= candidate <= _HWND_MAX:
+                    raise LogicalTargetError(
+                        "top-level window enumeration returned an invalid HWND"
+                    )
+                if candidate in seen_candidates:
+                    raise LogicalTargetError(
+                        "top-level window enumeration returned duplicate HWNDs"
+                    )
+                seen_candidates.add(candidate)
                 raw_candidates.append(candidate)
         except Exception as exc:  # noqa: BLE001
             if isinstance(exc, LogicalTargetError):
                 raise
             raise LogicalTargetError("top-level window enumeration failed") from exc
-        if len(set(raw_candidates)) != len(raw_candidates):
-            raise LogicalTargetError("top-level window enumeration returned duplicate HWNDs")
-
         matches: list[ResolvedLogicalTarget] = []
         for value in raw_candidates:
-            if type(value) is not int or not 1 <= value <= _HWND_MAX:
-                raise LogicalTargetError("top-level window enumeration returned an invalid HWND")
             try:
                 report = target_verifier(
                     value,
@@ -212,6 +229,7 @@ class LogicalTargetResolver:
                 or type(exe_path) is not str
                 or type(window_class) is not str
                 or type(title) is not str
+                or type(report.get("hwnd")) is not int
                 or report.get("hwnd") != value
                 or report.get("valid") is not True
                 or report.get("is_terminal") is not True

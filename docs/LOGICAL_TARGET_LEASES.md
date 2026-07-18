@@ -4,8 +4,9 @@
 windows without weakening the existing target guard or lease authority.
 
 The host constructs immutable `LogicalTargetSpec` values at startup and injects
-the resolver into `MCPDispatcher`. Each specification requires an exact
-executable path, window class, title SHA-256, and closed set of lease roles.
+the resolver into `MCPDispatcher`. Each specification requires an exact local
+drive-letter absolute executable path with no surrounding whitespace, a
+non-empty printable window class, title SHA-256, and closed set of lease roles.
 There are no built-in product, browser, file, or government targets.
 
 `sc_request_target_lease` performs this sequence:
@@ -31,4 +32,3 @@ registration, route by classification, support browser/file targets, add new
 executor actions, or make Win32 discovery and later actuation atomic. Unit tests
 use injected enumerators and verifier reports as contract evidence; they are not
 live-desktop proof.
-
