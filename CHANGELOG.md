@@ -46,6 +46,10 @@
   finish as one in-flight unit; reentrant close fails explicitly instead of
   deadlocking. Retained queue, dispatcher, control, and ledger references cannot
   mutate after a replacement runtime starts.
+- Advanced the TSK portfolio pin to merged master
+  `9cff3e25e2432797c454ad09b9dacbf7244e51af`, which includes deterministic
+  authorization-snapshot freshness testing and removes the prior elapsed-time
+  boundary flake from the strict Ultra composition gate.
 - The default unkeyed context digest remains explicitly non-confidential;
   rotation-stable keyed digest storage remains parked until its key custody and
   persisted-version migration are designed together.

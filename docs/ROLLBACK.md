@@ -35,7 +35,9 @@ Lock files are stored below the native known-folder LocalAppData boundary on
 Windows or XDG runtime/user-state boundary on POSIX; do not move them to a
 shared temporary directory or restore an environment-derived Windows path. The
 Windows governed suffix has a protected owner/SYSTEM/Administrators DACL and
-the path chain is pinned with non-delete-sharing handles. Do not replace those
+the path chain is pinned with non-delete-sharing handles. Each child lock file
+must also have a trusted owner and protected current-user/SYSTEM/Administrators
+DACL; an untrusted owner is not automatically repaired. Do not replace those
 native checks with PATH-resolved shell tools or a pre-open-only reparse check.
 Runtime close drains admitted outer operations, including their synchronous
 nested component work, before unlocking; close from inside such work fails with

@@ -19,6 +19,8 @@ _OPEN_EXISTING = 3
 _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+_READ_CONTROL = 0x00020000
+_WRITE_DAC = 0x00040000
 _INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
 _SE_DACL_PROTECTED = 0x1000
 
@@ -142,6 +144,83 @@ def _validate_acl(path: Path, sid: str) -> None:
                 )
 
 
+def _trusted_sid_strings(sid: str) -> set[str]:
+    return {sid, "S-1-5-18", "S-1-5-32-544"}
+
+
+def _validate_file_descriptor(descriptor, sid: str) -> None:
+    import ntsecuritycon
+    import win32security
+
+    owner = descriptor.GetSecurityDescriptorOwner()
+    owner_value = win32security.ConvertSidToStringSid(owner)
+    if owner_value not in _trusted_sid_strings(sid):
+        raise WindowsLockBoundaryError("runtime lock file has an untrusted owner")
+    control, _revision = descriptor.GetSecurityDescriptorControl()
+    if not control & _SE_DACL_PROTECTED:
+        raise WindowsLockBoundaryError("runtime lock file DACL inherits authority")
+    dacl = descriptor.GetSecurityDescriptorDacl()
+    if dacl is None or dacl.GetAceCount() == 0:
+        raise WindowsLockBoundaryError("runtime lock file DACL is absent")
+    seen: set[str] = set()
+    for index in range(dacl.GetAceCount()):
+        header, mask, ace_sid = dacl.GetAce(index)
+        if header[0] != win32security.ACCESS_ALLOWED_ACE_TYPE:
+            raise WindowsLockBoundaryError("runtime lock file DACL has an unexpected ACE")
+        principal = win32security.ConvertSidToStringSid(ace_sid)
+        if principal not in _trusted_sid_strings(sid) or (
+            mask & ntsecuritycon.FILE_ALL_ACCESS
+        ) != ntsecuritycon.FILE_ALL_ACCESS:
+            raise WindowsLockBoundaryError(
+                "runtime lock file DACL grants an untrusted or incomplete ACE"
+            )
+        if principal in seen:
+            raise WindowsLockBoundaryError("runtime lock file DACL is ambiguous")
+        seen.add(principal)
+    if seen != _trusted_sid_strings(sid):
+        raise WindowsLockBoundaryError("runtime lock file DACL is incomplete")
+
+
+def _set_file_dacl(handle: int, sid: str) -> None:
+    import ntsecuritycon
+    import win32security
+
+    principals = (
+        win32security.ConvertStringSidToSid(sid),
+        win32security.CreateWellKnownSid(win32security.WinLocalSystemSid),
+        win32security.CreateWellKnownSid(win32security.WinBuiltinAdministratorsSid),
+    )
+    dacl = win32security.ACL()
+    for principal in principals:
+        dacl.AddAccessAllowedAceEx(
+            win32security.ACL_REVISION,
+            0,
+            ntsecuritycon.FILE_ALL_ACCESS,
+            principal,
+        )
+    win32security.SetSecurityInfo(
+        handle,
+        win32security.SE_FILE_OBJECT,
+        win32security.DACL_SECURITY_INFORMATION
+        | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        dacl,
+        None,
+    )
+
+
+def _get_file_descriptor(handle: int):
+    import win32security
+
+    return win32security.GetSecurityInfo(
+        handle,
+        win32security.SE_FILE_OBJECT,
+        win32security.OWNER_SECURITY_INFORMATION
+        | win32security.DACL_SECURITY_INFORMATION,
+    )
+
+
 class _BY_HANDLE_FILE_INFORMATION(ctypes.Structure):
     _fields_ = [
         ("dwFileAttributes", wintypes.DWORD),
@@ -255,6 +334,48 @@ def _open_directory(path: Path, *, _before_open=None) -> int:
         raise
 
 
+def _open_file_security_handle(path: Path) -> int:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFinalPathNameByHandleW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+    handle = kernel32.CreateFileW(
+        str(path),
+        _READ_CONTROL | _WRITE_DAC,
+        _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+        None,
+        _OPEN_EXISTING,
+        _FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    if handle == _INVALID_HANDLE_VALUE:
+        raise WindowsLockBoundaryError("cannot open runtime lock file security")
+    handle_value = int(handle)
+    try:
+        final_path = _normalized_final_path(_handle_path(kernel32, handle_value))
+        expected = _normalized_final_path(str(path.resolve(strict=True)))
+        if final_path != expected:
+            raise WindowsLockBoundaryError("runtime lock file handle was retargeted")
+        return handle_value
+    except Exception:
+        _close_handle(handle_value)
+        raise
+
+
 class WindowsLockBoundary:
     """Hold non-delete-sharing handles across the canonical per-user chain."""
 
@@ -288,15 +409,46 @@ class WindowsLockBoundary:
             self.close()
             raise
 
+    def secure_lock_file(self, path: Path, *, created: bool) -> None:
+        """Validate or precisely remediate one file inside the pinned suffix."""
+        if path.parent.resolve(strict=True) != self.path:
+            raise WindowsLockBoundaryError("runtime lock file escaped governed suffix")
+        sid = _current_sid()
+        security_handle = _open_file_security_handle(path)
+        try:
+            descriptor = _get_file_descriptor(security_handle)
+            owner = descriptor.GetSecurityDescriptorOwner()
+            import win32security
+
+            owner_value = win32security.ConvertSidToStringSid(owner)
+            if owner_value not in _trusted_sid_strings(sid):
+                raise WindowsLockBoundaryError(
+                    "runtime lock file has an untrusted owner"
+                )
+            if created:
+                _set_file_dacl(security_handle, sid)
+            else:
+                try:
+                    _validate_file_descriptor(descriptor, sid)
+                except WindowsLockBoundaryError:
+                    # Remediation is confined to an identity-checked child of
+                    # the pinned/protected suffix and never changes ownership.
+                    _set_file_dacl(security_handle, sid)
+            _validate_file_descriptor(_get_file_descriptor(security_handle), sid)
+        finally:
+            _close_handle(security_handle)
+
     def close(self) -> None:
-        handles, self._handles = self._handles, []
         first_error: WindowsLockBoundaryError | None = None
-        for handle in reversed(handles):
+        failed: list[int] = []
+        for handle in reversed(self._handles):
             try:
                 _close_handle(handle)
             except WindowsLockBoundaryError as exc:
+                failed.append(handle)
                 if first_error is None:
                     first_error = exc
+        self._handles = list(reversed(failed))
         if first_error is not None:
             raise first_error
 

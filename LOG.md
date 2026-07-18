@@ -73,7 +73,11 @@ explicitly test-only and mandatory for approval. The shared lifetime now treats
 synchronous nested component mutations as one admitted unit and rejects
 reentrant close with a typed error. The Windows lock boundary uses native
 known-folder, token, and security-descriptor APIs; pins non-delete-sharing
-handles; and rejects deterministic junction and namespace-retarget races.
+handles; validates or precisely remediates trusted-owner child lock-file DACLs;
+and rejects deterministic junction and namespace-retarget races. The exact TSK
+portfolio pin advanced to merged master
+`9cff3e25e2432797c454ad09b9dacbf7244e51af` so the strict Ultra composition job
+uses deterministic authorization-snapshot freshness boundaries.
 
 **Reason:** PR #33 durably bound transitions to ledger evidence but did not prove
 the credential subject named the claimed operator, allowed callers to imitate an
@@ -82,6 +86,7 @@ internal prefix, and did not enforce the documented single-writer composition.
 **Full actions and links:** `enterprise/approval_audit.py`,
 `enterprise/operator.py`, `enterprise/control.py`,
 `enterprise/governed_runtime.py`, `enterprise/runtime_ownership.py`,
+`enterprise/windows_lock_boundary.py`, `portfolio-lock.json`,
 `tools/irs_runtime_conformance.py`, issue #26, and the linked WHY/PARK/control
 records.
 
@@ -89,8 +94,8 @@ records.
 clock-contention, independent-resource, hard-link-alias, and cross-process
 ownership tests, including native Windows DACL/known-folder behavior,
 path-poisoning resistance, deterministic junction/retarget races, nested drain,
-and reentrant-close attempts. The expanded focused set passed **234 tests** with
-four named platform skips. The full local suite passed **1,612 tests** with 38
+and reentrant-close attempts. The expanded focused set passed **248 tests** with
+four named platform skips. The full local suite passed **1,616 tests** with 38
 named environment/platform/live skips and the two pre-existing immutable-sink
 warnings.
 

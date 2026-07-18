@@ -197,7 +197,10 @@ must not be reaped. On Windows, LocalAppData comes from the native known-folder
 API rather than process environment; native token/security APIs establish and
 verify a protected owner/SYSTEM/Administrators DACL on the governed suffix.
 Non-delete-sharing handles pin the known-folder and controlled suffix chain, and
-pre/post-open identity checks reject reparse and namespace-retarget races. The
+pre/post-open identity checks reject reparse and namespace-retarget races.
+Fresh child lock files receive a protected DACL limited to the current user,
+SYSTEM, and Administrators; an existing trusted-owner child is remediated only
+inside that pinned governed suffix, while an untrusted owner fails closed. The
 pre-existing LocalAppData and SelfConnect ancestors retain their OS/profile ACL
 boundary and are not described as DACL-owned by this mechanism. POSIX continues
 to enforce owner/mode and no-follow behavior. Runtime close drains each admitted
@@ -209,6 +212,9 @@ deployment responsibilities. The default SHA-256 context digest is correlation
 and integrity evidence, not confidentiality. A versioned keyed provider remains
 parked until the chosen digest and key id can be persisted once per approval so
 rotation cannot rewrite an existing lineage.
+The TSK source identity is advanced only to reviewed merged master
+`9cff3e25e2432797c454ad09b9dacbf7244e51af`; this resolves a deterministic
+freshness-test boundary in composition and is not a broader readiness claim.
 
 **Rollback conditions:** Do not restore the caller-spoofable prefix or accept a
 proof whose authenticated subject differs from the claimed operator. Replace

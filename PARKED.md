@@ -131,7 +131,9 @@ its nested queue/control/ledger work as one unit, while close from inside that
 unit fails explicitly instead of waiting on itself. On Windows the governed
 suffix is protected by a native owner/SYSTEM/Administrators DACL and its
 known-folder/suffix path is held by non-delete-sharing handles with pre/post-open
-retarget checks. Restoring environment-derived paths, shell-based SID/ACL
+retarget checks. Child lock files also require a trusted owner and a protected
+current-user/SYSTEM/Administrators-only DACL; remediation is confined to an
+identity-checked child of that pinned suffix. Restoring environment-derived paths, shell-based SID/ACL
 discovery, lstat-only junction checks, or unlock-only close would recreate the
 retarget, PATH-poisoning, deadlock, or stale-object-graph risks.
 

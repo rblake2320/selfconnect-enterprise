@@ -74,7 +74,7 @@ def _secure_lock_dir() -> tuple[Path, Any | None]:
 
 
 class _ResourceLock:
-    def __init__(self, identity: str, lock_dir: Path) -> None:
+    def __init__(self, identity: str, lock_dir: Path, lock_boundary: Any | None) -> None:
         suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()
         self.path = lock_dir / f"resource-{suffix}.lock"
         flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
@@ -82,9 +82,24 @@ class _ResourceLock:
         flags |= getattr(os, "O_NOFOLLOW", 0)
         self._handle: BinaryIO | None = None
         try:
-            fd = os.open(self.path, flags, 0o600)
+            created = False
+            try:
+                fd = os.open(self.path, flags | os.O_EXCL, 0o600)
+                created = True
+            except FileExistsError:
+                fd = os.open(self.path, flags, 0o600)
             self._handle = os.fdopen(fd, "r+b", buffering=0)
             self._validate_file()
+            if os.name == "nt":
+                try:
+                    lock_boundary.secure_lock_file(self.path, created=created)
+                except Exception as exc:
+                    from enterprise.windows_lock_boundary import WindowsLockBoundaryError
+
+                    if isinstance(exc, WindowsLockBoundaryError):
+                        raise RuntimeOwnershipError(str(exc)) from exc
+                    raise
+                self._validate_file()
             self._acquire()
         except Exception as exc:
             if self._handle is not None:
@@ -192,7 +207,7 @@ class RuntimeOwnershipLock:
 
     def _acquire_identities(self, identities: set[str], lock_dir: Path) -> None:
         for identity in sorted(identities - self._held_identities):
-            lock = _ResourceLock(identity, lock_dir)
+            lock = _ResourceLock(identity, lock_dir, self._lock_boundary)
             self._locks.append(lock)
             self.paths.append(lock.path)
             self._held_identities.add(identity)
@@ -223,9 +238,10 @@ class RuntimeOwnershipLock:
         self._held_identities.clear()
         for lock in reversed(locks):
             lock.close()
-        boundary, self._lock_boundary = self._lock_boundary, None
+        boundary = self._lock_boundary
         if boundary is not None:
             boundary.close()
+            self._lock_boundary = None
 
     def __enter__(self) -> "RuntimeOwnershipLock":
         return self
