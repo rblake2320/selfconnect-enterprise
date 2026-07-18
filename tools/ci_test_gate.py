@@ -16,6 +16,7 @@ from typing import Any
 # Do not execute repository- or environment-selected third-party plugins.
 os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
 os.environ["PYTEST_PLUGINS"] = ""
+os.environ.pop("PYTEST_ADDOPTS", None)
 
 
 _ULTRA_REASON = "Skipped: Ultra Server not available on localhost:7777"
@@ -65,6 +66,21 @@ ALLOWED_SKIPS = {
     "tests/test_enterprise/test_runtime_ownership.py::test_precreated_symlink_lock_file_is_rejected": "Skipped: POSIX no-follow file-symlink semantics",
     "tests/test_enterprise/test_runtime_ownership.py::test_replaced_lock_file_during_binding_is_rejected": "Skipped: Windows denies unlink of locked file",
 }
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+TRUSTED_CONFTEST_SHA256 = "4455e076e35ccf23bc9658ef7d10b3700d421f7de98b86d59306ee4fa1e34f5a"
+EXPECTED_COLLECTION_COUNT = 1_697
+EXPECTED_COLLECTION_SHA256 = "f2a6b8e7f63c4587f0404678d5c7a674fde75455560e8e7b16c64ad078f762c3"
+
+
+def _verify_record_file(dist: Any, package_file: Any) -> Path:
+    if package_file.hash is None:
+        raise RuntimeError(f"pytest RECORD entry lacks a hash: {package_file}")
+    path = Path(dist.locate_file(package_file)).resolve()
+    digest = hashlib.new(package_file.hash.mode, path.read_bytes()).digest()
+    actual_digest = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    if actual_digest != package_file.hash.value:
+        raise RuntimeError(f"pytest package hash does not match RECORD: {package_file}")
+    return path
 
 
 def _load_trusted_pytest() -> Any:
@@ -75,13 +91,21 @@ def _load_trusted_pytest() -> Any:
         (item for item in files if item.as_posix() == "pytest/__init__.py"),
         None,
     )
-    if package_file is None or package_file.hash is None:
+    if package_file is None:
         raise RuntimeError("installed pytest distribution lacks a RECORD-bound package")
-    expected_path = Path(dist.locate_file(package_file)).resolve()
-    digest = hashlib.new(package_file.hash.mode, expected_path.read_bytes()).digest()
-    actual_digest = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
-    if actual_digest != package_file.hash.value:
-        raise RuntimeError("installed pytest package hash does not match RECORD")
+    python_files = [
+        item
+        for item in files
+        if item.suffix == ".py"
+        and item.parts
+        and item.parts[0] in {"pytest", "_pytest"}
+    ]
+    if not python_files:
+        raise RuntimeError("installed pytest distribution has no RECORD-bound Python files")
+    verified = {item.as_posix(): _verify_record_file(dist, item) for item in python_files}
+    expected_path = verified.get("pytest/__init__.py")
+    if expected_path is None:
+        raise RuntimeError("pytest/__init__.py was not included in the verified closure")
     spec = importlib.util.spec_from_file_location(
         "pytest",
         expected_path,
@@ -99,11 +123,31 @@ def _load_trusted_pytest() -> Any:
 
 pytest = _load_trusted_pytest()
 
+
+def _verify_repository_pytest_inputs() -> None:
+    conftests = sorted(
+        path.resolve()
+        for path in REPOSITORY_ROOT.rglob("conftest.py")
+        if ".git" not in path.parts
+    )
+    expected = (REPOSITORY_ROOT / "conftest.py").resolve()
+    if conftests != [expected]:
+        raise RuntimeError(f"unexpected pytest conftest set: {conftests}")
+    actual = hashlib.sha256(expected.read_bytes()).hexdigest()
+    if actual != TRUSTED_CONFTEST_SHA256:
+        raise RuntimeError("repository conftest.py does not match its trusted digest")
+
 @dataclass
 class StructuredResults:
     passed: int = 0
     failed: list[str] = field(default_factory=list)
     skipped: list[tuple[str, str]] = field(default_factory=list)
+    collected: list[str] = field(default_factory=list)
+
+    def pytest_collection_finish(self, session: Any) -> None:
+        self.collected = sorted(
+            str(item.nodeid).replace("\\", "/") for item in session.items
+        )
 
     def pytest_runtest_logreport(self, report: Any) -> None:
         if report.skipped:
@@ -124,12 +168,32 @@ def _allowed_skip(nodeid: str, reason: str) -> bool:
 
 
 def main() -> int:
+    _verify_repository_pytest_inputs()
     results = StructuredResults()
-    exit_code = pytest.main(["-q", "--tb=short", "-rs"], plugins=[results])
+    exit_code = pytest.main(
+        [
+            "-q",
+            "--tb=short",
+            "-rs",
+            "-c",
+            os.devnull,
+            "--rootdir",
+            str(REPOSITORY_ROOT),
+            "--confcutdir",
+            str(REPOSITORY_ROOT),
+            str(REPOSITORY_ROOT / "tests"),
+        ],
+        plugins=[results],
+    )
+    collection_digest = hashlib.sha256(
+        "\n".join(results.collected).encode("utf-8")
+    ).hexdigest()
     payload = {
         "failed": results.failed,
         "passed": results.passed,
         "schema": "selfconnect.ci-pytest-result.v1",
+        "collection_count": len(results.collected),
+        "collection_sha256": collection_digest,
         "skipped": [
             {"nodeid": nodeid, "reason": reason}
             for nodeid, reason in results.skipped
@@ -139,6 +203,15 @@ def main() -> int:
 
     if exit_code != pytest.ExitCode.OK or results.failed:
         print(f"FAIL: pytest exited with status {int(exit_code)}")
+        return 1
+    if (
+        len(results.collected) != EXPECTED_COLLECTION_COUNT
+        or collection_digest != EXPECTED_COLLECTION_SHA256
+    ):
+        print(
+            "FAIL: collected test identity differs from the reviewed set: "
+            f"count={len(results.collected)} sha256={collection_digest}"
+        )
         return 1
 
     unexpected = [

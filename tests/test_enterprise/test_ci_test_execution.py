@@ -5,7 +5,14 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from tools.ci_test_gate import ALLOWED_SKIPS, StructuredResults, _allowed_skip
+from tools.ci_test_gate import (
+    ALLOWED_SKIPS,
+    EXPECTED_COLLECTION_COUNT,
+    EXPECTED_COLLECTION_SHA256,
+    StructuredResults,
+    TRUSTED_CONFTEST_SHA256,
+    _allowed_skip,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,7 +23,10 @@ CI_RUNNER = ROOT / "tools" / "ci_test_gate.py"
 def test_workflow_has_one_dedicated_test_entrypoint() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     test_job = workflow.split("  test:\n", 1)[1].split("  ultra-contract-windows:\n", 1)[0]
-    isolated_entrypoint = "run: python -E -P tools/ci_test_gate.py"
+    isolated_entrypoint = (
+        "run: python -I -c \"import runpy; "
+        "runpy.run_path('tools/ci_test_gate.py', run_name='__main__')\""
+    )
 
     assert test_job.count(isolated_entrypoint) == 1
     for bypass in (
@@ -61,7 +71,14 @@ def test_runner_invokes_pytest_once_without_shell_or_summary_parsing() -> None:
         "pytest = _load_trusted_pytest()"
     )
     assert "spec_from_file_location" in source
-    assert "installed pytest package hash does not match RECORD" in source
+    assert "pytest package hash does not match RECORD" in source
+    assert "item.parts[0] in {\"pytest\", \"_pytest\"}" in source
+
+
+def test_collection_and_conftest_inputs_are_pinned() -> None:
+    assert EXPECTED_COLLECTION_COUNT == 1_697
+    assert len(EXPECTED_COLLECTION_SHA256) == 64
+    assert len(TRUSTED_CONFTEST_SHA256) == 64
 
 
 def test_structured_results_count_reports_not_terminal_text() -> None:

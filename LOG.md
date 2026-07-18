@@ -70,7 +70,8 @@ while pytest prints its normal diagnostics. Workflow and AST regressions enforce
 the unit lane's sole entrypoint and one `pytest.main` call without
 shell/subprocess aliases. Safe-path/environment flags prevent repository-path
 shadowing, plugin autoload is disabled, pytest's distribution origin and RECORD
-hash are verified, and the 38 allowed skips are exact node/reason pairs.
+hashes are verified before import, and the conftest hash, complete collection
+digest, and 38 exact skip node/reason pairs are pinned.
 
 **Reason:** Hosted run 29650683874 passed its first full suite (1,639 passed)
 then failed a redundant second run. The second step captured and suppressed the

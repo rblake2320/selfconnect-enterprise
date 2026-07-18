@@ -44,7 +44,7 @@ jobs:
         run: python -m ruff check .
 
       - name: Unit tests and result policy
-        run: python -E -P tools/ci_test_gate.py
+        run: python -I -c "import runpy; runpy.run_path('tools/ci_test_gate.py', run_name='__main__')"
 
   ultra-contract-windows:
     name: Ultra live contract (Windows)

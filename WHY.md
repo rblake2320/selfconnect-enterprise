@@ -65,8 +65,9 @@ related records.
 CI runner. Derive pass, failure, and skip policy from pytest report objects,
 while retaining pytest's complete human-readable output. Start Python without
 repository/environment import-path injection, disable plugin autoload, verify
-pytest against its installed RECORD hash, and allow only exact skip identities
-and reasons.
+the complete imported pytest Python closure against installed RECORD hashes,
+and pin the trusted conftest, complete collection identity, and exact skip
+identities and reasons.
 
 **Why:** Re-executing the suite does not strengthen evidence: it evaluates a
 different run. Capturing that second run without printing its failure details

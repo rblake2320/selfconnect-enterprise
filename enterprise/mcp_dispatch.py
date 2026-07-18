@@ -161,8 +161,13 @@ class _LeaseAuthorityStore:
         )
         self.__revoked.add(lease.lease_id)
 
-    def verify(self, lease: RuntimeLease) -> RuntimeLease:
-        authority = self.__records.get(lease.lease_id)
+    def verify(self, requested_lease_id: str, lease: RuntimeLease) -> RuntimeLease:
+        if lease.lease_id != requested_lease_id:
+            raise _LeaseAuthorityError(
+                "lease storage key does not match the embedded signed lease id",
+                issued_role=lease.role,
+            )
+        authority = self.__records.get(requested_lease_id)
         if authority is None:
             raise _LeaseAuthorityError("lease issuance authority is missing")
         issued_role = authority.lease.role
@@ -566,7 +571,7 @@ class MCPDispatcher:
             raise MCPDispatchError("lease is not bound to requested HWND")
 
         try:
-            authority = self.__lease_authority_store.verify(lease)
+            authority = self.__lease_authority_store.verify(lease_id, lease)
         except _LeaseAuthorityError as exc:
             self._deny_lease_role(
                 lease_id=lease_id,

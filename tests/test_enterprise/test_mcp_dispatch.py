@@ -390,6 +390,21 @@ class TestLeaseRuntime:
         assert "authority signature is invalid" in result["error"]
         assert dispatcher._router.routes == []
 
+    def test_map_key_cannot_be_substituted_with_another_valid_signed_lease(self):
+        dispatcher = make_dispatcher()
+        observer_id = issue_lease(dispatcher, hwnd=901, role="observer")
+        sender_id = issue_lease(dispatcher, hwnd=902, role="sender")
+        dispatcher._leases[observer_id] = dispatcher._leases[sender_id]
+
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": observer_id, "hwnd": 902, "text": "must not route"},
+        )
+
+        assert result["ok"] is False
+        assert "storage key does not match" in result["error"]
+        assert dispatcher._router.routes == []
+
     def test_deserialized_double_replacement_cannot_reuse_observer_signature(self):
         dispatcher = make_dispatcher()
         lease_id = issue_lease(dispatcher, hwnd=897, role="observer")

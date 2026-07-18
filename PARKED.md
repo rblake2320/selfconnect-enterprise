@@ -114,8 +114,9 @@ captured output.
 captured second run's failure identity. The two executions could produce
 different results while the gate reported only a count.
 **Replacement:** One import-isolated dedicated pytest runner prints complete
-output, verifies pytest's installed distribution, and applies the result and
-exact skip policy to structured pytest report objects.
+output, verifies pytest's installed distribution and repository test inputs,
+and applies the result, collection, and exact skip policy to structured pytest
+report objects.
 
 **Restore when:** A demonstrated requirement for two independent suite
 executions that cannot be met by repeatability or stress jobs with retained
