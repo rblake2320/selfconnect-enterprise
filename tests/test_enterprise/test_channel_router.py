@@ -1,6 +1,7 @@
 """Tests for experiments/win32_probe/channel_router.py."""
 from __future__ import annotations
 
+import hashlib
 import threading
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ from experiments.win32_probe.channel_router import (
     ChannelRoutingError,
     ChannelType,
     ActionReceipt,
+    TargetBinding,
 )
 
 
@@ -131,6 +133,65 @@ class TestClassify:
 
 
 class TestRoute:
+    def test_matching_expected_binding_reaches_mutation(self):
+        title = "Bound Terminal"
+        binding = TargetBinding(
+            pid=4242,
+            exe="WindowsTerminal.exe",
+            exe_path=r"C:\Program Files\WindowsApps\Terminal\WindowsTerminal.exe",
+            window_class="CASCADIA_HOSTING_WINDOW_CLASS",
+            title_sha256=hashlib.sha256(title.encode("utf-8")).hexdigest(),
+        )
+
+        def accept_binding(hwnd, **_kwargs):
+            return {"ok": True, "reasons": [], "hwnd": hwnd, "title": title}
+
+        router = ChannelRouter(target_verifier=accept_binding)
+        with (
+            patch(
+                "experiments.win32_probe.channel_router._get_window_class",
+                return_value="CASCADIA_HOSTING_WINDOW_CLASS",
+            ),
+            patch("experiments.win32_probe.channel_router._get_window_title", return_value=title),
+            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=4242),
+            patch.object(router, "_inject_wm_char", return_value=True) as inject,
+        ):
+            receipt = router.route(8006, "hello", expected_binding=binding)
+        assert receipt.success is True
+        inject.assert_called_once_with(8006, "hello", expected_binding=binding)
+
+    def test_expected_binding_is_revalidated_before_mutation(self):
+        calls = []
+
+        def reject_replacement(hwnd, **kwargs):
+            calls.append((hwnd, kwargs))
+            return {"ok": False, "reasons": ["pid changed at final boundary"]}
+
+        router = ChannelRouter(target_verifier=reject_replacement)
+        binding = TargetBinding(
+            pid=4242,
+            exe="WindowsTerminal.exe",
+            exe_path=r"C:\Program Files\WindowsApps\Terminal\WindowsTerminal.exe",
+            window_class="CASCADIA_HOSTING_WINDOW_CLASS",
+            title_sha256="a" * 64,
+        )
+        with (
+            patch(
+                "experiments.win32_probe.channel_router._get_window_class",
+                return_value="CASCADIA_HOSTING_WINDOW_CLASS",
+            ),
+            patch(
+                "experiments.win32_probe.channel_router._get_window_title",
+                return_value="Replacement Terminal",
+            ),
+            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=5252),
+            patch.object(router, "_inject_wm_char") as inject,
+        ):
+            with pytest.raises(ChannelRoutingError, match="pid changed at final boundary"):
+                router.route(8007, "hello", expected_binding=binding)
+        assert calls[0][1]["expect_title_sha256"] == "a" * 64
+        inject.assert_not_called()
+
     def test_route_denied_raises_channel_routing_error(self):
         router = ChannelRouter()
         with (
@@ -204,7 +265,27 @@ class TestRoute:
         assert receipt.success is False
 
     def test_windows_terminal_delivery_targets_input_site_child(self):
-        router = ChannelRouter()
+        title = "Bound Terminal"
+        binding = TargetBinding(
+            pid=4242,
+            exe="WindowsTerminal.exe",
+            exe_path=r"C:\Program Files\WindowsApps\Terminal\WindowsTerminal.exe",
+            window_class="CASCADIA_HOSTING_WINDOW_CLASS",
+            title_sha256=hashlib.sha256(title.encode("utf-8")).hexdigest(),
+        )
+
+        def verify_child(hwnd, **_kwargs):
+            return {
+                "ok": True,
+                "reasons": [],
+                "hwnd": hwnd,
+                "pid": 4242,
+                "exe": "WindowsTerminal.exe",
+                "exe_path": binding.exe_path,
+                "class": "Windows.UI.Input.InputSite.WindowClass",
+            }
+
+        router = ChannelRouter(target_verifier=verify_child)
         posted: list[tuple[int, int, int, int]] = []
 
         def enumerate_child(_parent, callback, context):
@@ -228,13 +309,141 @@ class TestRoute:
                 "experiments.win32_probe.channel_router.win32api.PostMessage",
                 side_effect=lambda *args: posted.append(args),
             ),
+            patch(
+                "experiments.win32_probe.channel_router.win32gui.GetParent",
+                side_effect=lambda hwnd: 111 if hwnd == 222 else 0,
+            ),
         ):
-            assert router._inject_wm_char(111, "A\r") is True
+            assert router._inject_wm_char(111, "A\r", expected_binding=binding) is True
 
         assert posted[0][0] == 222
         assert posted[0][2] == ord("A")
         assert all(message[0] == 222 for message in posted)
         assert len(posted) == 3
+
+    def test_windows_terminal_input_site_pid_mismatch_is_denied_before_post(self):
+        binding = TargetBinding(
+            pid=4242,
+            exe="WindowsTerminal.exe",
+            exe_path=r"C:\Program Files\WindowsApps\Terminal\WindowsTerminal.exe",
+            window_class="CASCADIA_HOSTING_WINDOW_CLASS",
+            title_sha256="a" * 64,
+        )
+
+        def mismatched_child(hwnd, **_kwargs):
+            return {
+                "ok": False,
+                "reasons": ["pid changed"],
+                "hwnd": hwnd,
+                "pid": 5252,
+                "exe": "WindowsTerminal.exe",
+                "exe_path": binding.exe_path,
+                "class": "Windows.UI.Input.InputSite.WindowClass",
+            }
+
+        router = ChannelRouter(target_verifier=mismatched_child)
+
+        def enumerate_child(_parent, callback, context):
+            callback(222, context)
+
+        with (
+            patch("experiments.win32_probe.channel_router._WIN32_AVAILABLE", True),
+            patch(
+                "experiments.win32_probe.channel_router._get_window_class",
+                side_effect=lambda hwnd: (
+                    "CASCADIA_HOSTING_WINDOW_CLASS"
+                    if hwnd == 111
+                    else "Windows.UI.Input.InputSite.WindowClass"
+                ),
+            ),
+            patch(
+                "experiments.win32_probe.channel_router.win32gui.EnumChildWindows",
+                side_effect=enumerate_child,
+            ),
+            patch("experiments.win32_probe.channel_router.win32api.PostMessage") as post,
+        ):
+            with pytest.raises(ChannelRoutingError, match="pid changed"):
+                router._inject_wm_char(111, "A", expected_binding=binding)
+        post.assert_not_called()
+
+    def test_windows_terminal_input_site_must_descend_from_bound_host(self):
+        binding = TargetBinding(
+            pid=4242,
+            exe="WindowsTerminal.exe",
+            exe_path=r"C:\Program Files\WindowsApps\Terminal\WindowsTerminal.exe",
+            window_class="CASCADIA_HOSTING_WINDOW_CLASS",
+            title_sha256="a" * 64,
+        )
+
+        def verify_child(hwnd, **_kwargs):
+            return {
+                "ok": True,
+                "reasons": [],
+                "hwnd": hwnd,
+                "pid": 4242,
+                "exe": "WindowsTerminal.exe",
+                "exe_path": binding.exe_path,
+                "class": "Windows.UI.Input.InputSite.WindowClass",
+            }
+
+        router = ChannelRouter(target_verifier=verify_child)
+
+        def enumerate_child(_parent, callback, context):
+            callback(222, context)
+
+        with (
+            patch("experiments.win32_probe.channel_router._WIN32_AVAILABLE", True),
+            patch(
+                "experiments.win32_probe.channel_router._get_window_class",
+                side_effect=lambda hwnd: (
+                    "CASCADIA_HOSTING_WINDOW_CLASS"
+                    if hwnd == 111
+                    else "Windows.UI.Input.InputSite.WindowClass"
+                ),
+            ),
+            patch(
+                "experiments.win32_probe.channel_router.win32gui.EnumChildWindows",
+                side_effect=enumerate_child,
+            ),
+            patch("experiments.win32_probe.channel_router.win32gui.GetParent", return_value=0),
+            patch("experiments.win32_probe.channel_router.win32api.PostMessage") as post,
+        ):
+            with pytest.raises(ChannelRoutingError, match="not descended"):
+                router._inject_wm_char(111, "A", expected_binding=binding)
+        post.assert_not_called()
+
+    def test_partial_post_message_failure_is_unknown_and_not_retryable(self):
+        router = ChannelRouter()
+        posts = 0
+
+        def fail_after_first_post(*_args):
+            nonlocal posts
+            posts += 1
+            if posts == 2:
+                raise OSError("queue closed")
+            return None
+
+        with (
+            patch("experiments.win32_probe.channel_router._WIN32_AVAILABLE", True),
+            patch(
+                "experiments.win32_probe.channel_router._get_window_class",
+                return_value="ConsoleWindowClass",
+            ),
+            patch("experiments.win32_probe.channel_router._get_window_title", return_value="cmd"),
+            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=4242),
+            patch(
+                "experiments.win32_probe.channel_router.win32api.PostMessage",
+                side_effect=fail_after_first_post,
+            ),
+        ):
+            receipt = router.route(111, "AB")
+
+        assert receipt.success is False
+        assert receipt.transport_attempted is True
+        assert receipt.transport_enqueued is False
+        assert receipt.delivery_disposition == "unknown_delivery"
+        assert receipt.do_not_retry is True
+        assert "queue closed" in receipt.transport_error
 
     def test_windows_terminal_without_input_site_fails_closed(self):
         router = ChannelRouter()

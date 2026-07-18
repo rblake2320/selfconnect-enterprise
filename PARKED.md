@@ -91,6 +91,60 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260718-001 - Historical participant, target, executor, and bridge branch
+
+**Status:** Parked
+**Category:** security property, release, other
+**Former location:** branch `feat/participant-mode`; `enterprise/policy.py`,
+`enterprise/registry.py`, `enterprise/target_registry.py`,
+`enterprise/executor_win32.py`, and `enterprise/bridge_connector.py`
+**Source commit:** `125c24d70526ba29f42ba7c3d408b89ccddba0a8`
+**Affected paths:** Historical modules and tests named in issue #27
+**Action log:** [LOG-20260718-001](LOG.md#log-20260718-001)
+**Why changed:** [WHY-20260718-001](WHY.md#why-20260718-001)
+**Parked by:** commit containing this record
+
+**Former wording:** The source branch described participant modes, a logical
+target registry, a deterministic Win32/UIA executor, and a GenAI.mil browser
+connector as enterprise capabilities with 717 passing tests.
+
+**Recovery source:** Git objects `4698b5d` (participant mode), `cfb76ff`
+(target registry), `6ee675d` (Win32 executor), `d6bdaf1` (bridge connector), and
+`125c24d` (historical tests). The branch and commits remain intact.
+
+**Reason parked:** Unknown participant modes could bypass the mode gate and
+invalid stored modes downgraded to `agent`. Logical resolution ignored its
+title pattern and used class-only `FindWindowW`. The executor did not use the
+current canonical target guard or consume required approvals. The bridge wrote
+browser text directly without the current policy, approval, and precommit
+composition. Historical mocked coverage does not repair those boundaries.
+
+**Replacement:** The narrower `GovernedRuntime` MCP text path, strengthened by
+the immutable final-boundary binding in LOG-20260718-001. There is no replacement
+participant-mode, generalized executor, logical target registry, or external
+LLM bridge claim.
+
+**Restore when:** Only when a current product requirement and reviewed interface
+exist and the rebuilt capability passes every adversarial acceptance item in
+issue #27 on the then-current core transport pin.
+
+**Restore procedure:** Create a new branch from current master; use the named
+Git objects only as design evidence; rebuild one capability at a time through
+the canonical governed runtime and target guard; do not cherry-pick the commits.
+
+**Validation after restore:** Run full Python and package suites, Ruff, release
+and claim gates, deterministic replacement/policy races, live Windows adapter
+tests, and hosted CI for the exact restored commit.
+
+**Recovery rehearsal:** Not rehearsed.
+
+**Restoration risks:** Reintroduces participant confusion, wrong-window input,
+approval bypass, proposal-to-actuation coupling, path/hash validation defects,
+and unsupported product or government-interface claims.
+
+**Evidence and links:** Issue #27, [WHY-20260718-001](WHY.md#why-20260718-001),
+and the source commits listed above.
+
 ## PARK-20260717-002 - Caller-selected consume time and row-local replay history
 
 **Status:** Parked

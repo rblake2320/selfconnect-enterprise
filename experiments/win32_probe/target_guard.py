@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import hashlib
 import os
 
 user32 = ctypes.windll.user32
@@ -133,6 +134,7 @@ def verify_target(
     expect_exe_path: str | None = None,
     expect_class: str | None = None,
     expect_title_substr: str | None = None,
+    expect_title_sha256: str | None = None,
     allow_classes: set[str] = TERMINAL_CLASSES,
     require_terminal: bool = True,
     own_pid: int | None = None,
@@ -199,6 +201,10 @@ def verify_target(
         r.append(f"class {cls!r} != expected {expect_class!r}")
     if expect_title_substr is not None and expect_title_substr.lower() not in title.lower():
         r.append(f"title {title!r} missing expected substring {expect_title_substr!r}")
+    if expect_title_sha256 is not None:
+        title_sha256 = hashlib.sha256(title.encode("utf-8")).hexdigest()
+        if title_sha256 != expect_title_sha256:
+            r.append("title hash does not match the expected target binding")
 
     rpt["ok"] = not r
     return rpt

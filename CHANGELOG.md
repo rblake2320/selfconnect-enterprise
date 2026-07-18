@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Governed target binding reconciliation
+
+- Enforced the lease's exact title hash alongside PID, executable path, and
+  window class, and carried that immutable binding into the canonical router
+  for a final check immediately before mutation.
+- Added deterministic target-replacement, pre-action ledger-failure, and
+  attempted-versus-confirmed delivery tests.
+- Bound every UIA snapshot read to the lease identity before and after the read,
+  and required the Windows Terminal InputSite child to match the bound process,
+  executable path, class, and host ancestry before posting input.
+- Classified partial Win32 message posting as unknown delivery with no automatic
+  retry, and persisted each attempted delivery disposition before returning.
+- Reduced governed MCP text input to 4,096 characters and validate it before a
+  one-time operator approval can be consumed.
+- Corrected MCP descriptions that claimed unimplemented SID, birth,
+  generation, or title checks.
+- Preserved and explicitly parked the stale participant-mode, logical target,
+  generalized executor, and product-specific bridge branch without merging or
+  packaging it. Evidence: [LOG-20260718-001](LOG.md#log-20260718-001), rationale:
+  [WHY-20260718-001](WHY.md#why-20260718-001), recovery:
+  [PARK-20260718-001](PARKED.md#park-20260718-001).
+
 ### Audit-bound operator approvals
 
 - Added a same-transaction SQLite transition outbox for durable approval
