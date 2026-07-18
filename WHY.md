@@ -160,6 +160,73 @@ authorization/compliance determination.
 
 ---
 
+## WHY-20260718-002 - Bind operator identity and local persistence ownership
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-18T12:52:54Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260718-002](LOG.md#log-20260718-002)
+**Parked records:** [PARK-20260718-002](PARKED.md#park-20260718-002)
+**Source state:** `selfconnect-enterprise`, `origin/master`,
+`b58353dc9fdd2551014ccfd2253091e868b96854`
+
+**Decision:** A governed human decision is accepted only when an injected proof
+verifier returns an authenticated operator subject equal to the claimed
+`operator_id`. Internal quarantine and kill-all denial use a runtime-private
+capability instead of a public identifier prefix. One governed runtime holds
+independent OS process locks for the approval database and ledger identities.
+Existing file identities are bound before construction and revalidated after
+both resources open, rejecting same-resource, hard-link, and startup-substitution
+composition errors observed during that interval.
+
+**Why:** Authentication of a credential is insufficient when its subject is
+not compared with the operator named by the decision. A public `system/` string
+prefix is caller-spoofable. SQLite serialization protects one database but does
+not serialize the separate signed ledger, so two local runtime processes could
+produce ambiguous cross-store lineage.
+
+**Alternatives considered:** Trusting the caller's operator string, reserving a
+name prefix, and relying on SQLite WAL alone were rejected because none proves
+operator attribution or independent ownership of both persistence resources. A distributed
+lease was not added because this repository has no selected multi-host approval
+authority or custody boundary.
+
+**Consequences:** The locks are single-host advisory process ownership, not consensus.
+Their validated per-user LocalAppData/XDG lock directory must remain stable and
+must not be reaped. On Windows, LocalAppData comes from the native known-folder
+API rather than process environment; native token/security APIs establish and
+verify a protected owner/SYSTEM/Administrators DACL on the governed suffix.
+Non-delete-sharing handles pin the known-folder and controlled suffix chain, and
+pre/post-open identity checks reject reparse and namespace-retarget races.
+Fresh child lock files receive a protected DACL limited to the current user,
+SYSTEM, and Administrators; an existing trusted-owner child is remediated only
+inside that pinned governed suffix, while an untrusted owner fails closed. The
+pre-existing LocalAppData and SelfConnect ancestors retain their OS/profile ACL
+boundary and are not described as DACL-owned by this mechanism. POSIX continues
+to enforce owner/mode and no-follow behavior. Runtime close drains each admitted
+outer synchronous flow as one unit, allows its nested component mutations to
+finish, and typed-fails a close attempted from inside that flow rather than
+deadlocking. Stale component references cannot outlive persistence ownership.
+Credential format, key custody, trusted time, and multi-host authority remain
+deployment responsibilities. The default SHA-256 context digest is correlation
+and integrity evidence, not confidentiality. A versioned keyed provider remains
+parked until the chosen digest and key id can be persisted once per approval so
+rotation cannot rewrite an existing lineage.
+The TSK source identity is advanced only to reviewed merged master
+`9cff3e25e2432797c454ad09b9dacbf7244e51af`; this resolves a deterministic
+freshness-test boundary in composition and is not a broader readiness claim.
+
+**Rollback conditions:** Do not restore the caller-spoofable prefix or accept a
+proof whose authenticated subject differs from the claimed operator. Replace
+the local ownership lock only with a stronger tested fencing mechanism.
+
+**Evidence and links:** [LOG-20260718-002](LOG.md#log-20260718-002),
+[PARK-20260718-002](PARKED.md#park-20260718-002),
+`tests/test_enterprise/test_approval_audit.py`,
+`tests/test_enterprise/test_runtime_ownership.py`, runtime-lifetime and governed
+runtime tests, and
+control `GOV-APPROVAL-001`.
+
 ## WHY-20260717-001 - Finalize approval state only after signed evidence
 
 **Status:** Accepted

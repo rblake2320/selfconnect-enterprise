@@ -45,6 +45,7 @@ from enterprise.approval_audit import (
     approval_event_digest,
     canonical_context_digest,
 )
+from enterprise.runtime_lifetime import RuntimeLifetime, governed_operation
 
 _APPROVAL_SCHEMA_VERSION = 3
 
@@ -243,7 +244,6 @@ class OperatorQueue:
         with self._lock:
             return len(self._queue)
 
-
 def _context_matches(actual: dict, required: dict) -> bool:
     return all(key in actual and actual[key] == value for key, value in required.items())
 
@@ -269,6 +269,7 @@ class DurableOperatorQueue:
         ] | None = None,
         clock: Callable[[], float] = time.time,
         decision_nonce_retention_seconds: float = 86400.0,
+        runtime_lifetime: RuntimeLifetime | None = None,
     ) -> None:
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -279,6 +280,8 @@ class DurableOperatorQueue:
         self._decision_writer_verifier = decision_writer_verifier
         self._clock = clock
         self._nonce_retention = decision_nonce_retention_seconds
+        self._runtime_lifetime = runtime_lifetime
+        self.__system_denial_capability = object()
         if (
             not isinstance(self._nonce_retention, (int, float))
             or not math.isfinite(float(self._nonce_retention))
@@ -288,6 +291,10 @@ class DurableOperatorQueue:
         self._now()
         if audit_required and audit_sink is None:
             raise ApprovalAuditError("required approval audit sink is not configured")
+        if audit_required and not callable(decision_writer_verifier):
+            raise ApprovalAuditError(
+                "required operator decision proof verifier is not configured"
+            )
         self._init_db()
         if self._audit_sink is not None:
             self.reconcile()
@@ -661,6 +668,14 @@ class DurableOperatorQueue:
                 OR ((status = 'audit_pending') != (pending_event_id IS NOT NULL))
                 OR (pending_status IS NOT NULL AND pending_status NOT IN
                     ('pending','approved','denied','consumed','expired'))
+                OR (
+                    decision_proof_json IS NOT NULL AND
+                    CASE
+                      WHEN json_valid(decision_proof_json) = 0 THEN 1
+                      ELSE json_extract(decision_proof_json, '$.operator_subject')
+                           IS NOT operator_id
+                    END
+                )
              LIMIT 1
             """
         ).fetchone()
@@ -1037,32 +1052,27 @@ class DurableOperatorQueue:
         self._validate_operator_id(operator_id)
         if not self._audit_required:
             return None
-        if status == "denied" and operator_id.startswith("system/"):
-            verification = DecisionProofVerification(
-                verifier_id="selfconnect.system-safety-denial",
-                key_id="runtime-ledger-identity",
-                nonce=str(uuid.uuid4()),
-                verified_at=self._now(),
-            )
-            proof = b"internal-safety-denial;not-human-attribution"
-        else:
-            if proof is None or len(proof) == 0 or len(proof) > 16384:
-                raise ApprovalAuditError("decision writer proof is absent or unbounded")
-            decision_payload = {
-                "approval_id": item.approval_id,
-                "agent_id": item.agent_id,
-                "action": item.action,
-                "context_digest": canonical_context_digest(item.context),
-                "decision": status,
-                "operator_id": operator_id,
-            }
-            verification = (
-                self._decision_writer_verifier(decision_payload, proof)
-                if self._decision_writer_verifier is not None
-                else None
-            )
+        if proof is None or len(proof) == 0 or len(proof) > 16384:
+            raise ApprovalAuditError("decision writer proof is absent or unbounded")
+        decision_payload = {
+            "approval_id": item.approval_id,
+            "agent_id": item.agent_id,
+            "action": item.action,
+            "context_digest": canonical_context_digest(item.context),
+            "decision": status,
+            "operator_id": operator_id,
+        }
+        verification = (
+            self._decision_writer_verifier(decision_payload, proof)
+            if self._decision_writer_verifier is not None
+            else None
+        )
         if not isinstance(verification, DecisionProofVerification):
             raise ApprovalAuditError("decision writer is unidentified or its proof is invalid")
+        if verification.operator_subject != operator_id:
+            raise ApprovalAuditError(
+                "authenticated decision subject does not match the claimed operator"
+            )
         return DecisionProofEnvelope.create(
             verification,
             proof=proof or b"",
@@ -1072,7 +1082,56 @@ class DurableOperatorQueue:
             context_digest=canonical_context_digest(item.context),
             decision=status,
             operator_id=operator_id,
+            now=self._now(),
         )
+
+    @governed_operation
+    def _deny_for_system_safety(
+        self, approval_id: str, operator_id: str, capability: object
+    ) -> bool:
+        if capability is not self.__system_denial_capability:
+            raise ApprovalAuditError("internal safety-denial capability is invalid")
+        self._validate_operator_id(operator_id)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            item = self._from_row(
+                conn.execute(
+                    "SELECT * FROM approvals WHERE approval_id = ?", (approval_id,)
+                ).fetchone()
+            )
+            if item is None or item.status != "pending":
+                conn.rollback()
+                return False
+            now = self._now()
+            verification = DecisionProofVerification(
+                verifier_id="selfconnect.system-safety-denial",
+                key_id="runtime-ledger-identity",
+                nonce=str(uuid.uuid4()),
+                verified_at=now,
+                operator_subject=operator_id,
+            )
+            proof = DecisionProofEnvelope.create(
+                verification,
+                proof=b"internal-safety-denial;not-human-attribution",
+                approval_id=item.approval_id,
+                agent_id=item.agent_id,
+                action=item.action,
+                context_digest=canonical_context_digest(item.context),
+                decision="denied",
+                operator_id=operator_id,
+                now=now,
+            )
+            event_id = self._stage_existing(
+                conn,
+                item,
+                transition="denied",
+                operator_id=operator_id,
+                transition_ts=now,
+                decision_proof=proof,
+            )
+            conn.commit()
+        self._flush_event(event_id)
+        return True
 
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> ApprovalAuditEvent:
@@ -1266,6 +1325,7 @@ class DurableOperatorQueue:
                 raise ApprovalAuditError("approval outbox delivery lost its state race")
             conn.commit()
 
+    @governed_operation
     def reconcile(self) -> int:
         """Finish pending audit transitions after a process interruption."""
         with self._connect() as conn:
@@ -1357,6 +1417,7 @@ class DurableOperatorQueue:
         self._insert_outbox(conn, event)
         return event.event_id
 
+    @governed_operation
     def submit(self, agent_id: str, action: str, context: Optional[dict] = None) -> str:
         approval_id = str(uuid.uuid4())
         context_json = json.dumps(context or {}, sort_keys=True, separators=(",", ":"))
@@ -1458,6 +1519,7 @@ class DurableOperatorQueue:
         self._flush_event(event_id)
         return True
 
+    @governed_operation
     def approve(
         self,
         approval_id: str,
@@ -1467,6 +1529,7 @@ class DurableOperatorQueue:
     ) -> bool:
         return self._decide(approval_id, operator_id, "approved", operator_proof)
 
+    @governed_operation
     def deny(
         self,
         approval_id: str,
@@ -1476,6 +1539,7 @@ class DurableOperatorQueue:
     ) -> bool:
         return self._decide(approval_id, operator_id, "denied", operator_proof)
 
+    @governed_operation
     def consume_approved(
         self,
         approval_id: str,
@@ -1484,7 +1548,6 @@ class DurableOperatorQueue:
         action: str,
         required_context: Optional[dict] = None,
     ) -> Optional[PendingApproval]:
-        current = self._now()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -1495,6 +1558,15 @@ class DurableOperatorQueue:
             if item is None or item.status != "approved" or item.decided_at is None:
                 conn.rollback()
                 return None
+            if item.agent_id != agent_id or item.action != action:
+                conn.rollback()
+                return None
+            if not _context_matches(item.context, required_context or {}):
+                conn.rollback()
+                return None
+            # Sample trusted time only after BEGIN IMMEDIATE owns the writer
+            # lock, immediately before the consume-or-expire transition.
+            current = self._now()
             if current < item.decided_at:
                 conn.rollback()
                 raise ApprovalAuditError("approval clock moved backward before decision time")
@@ -1521,12 +1593,6 @@ class DurableOperatorQueue:
                 )
                 conn.commit()
                 self._flush_event(event_id)
-                return None
-            if item.agent_id != agent_id or item.action != action:
-                conn.rollback()
-                return None
-            if not _context_matches(item.context, required_context or {}):
-                conn.rollback()
                 return None
             if self._audit_sink is None:
                 cursor = conn.execute(
@@ -1658,6 +1724,7 @@ class DurableOperatorQueue:
     def get_all(self) -> list[PendingApproval]:
         return self._items()
 
+    @governed_operation
     def purge_expired(self) -> int:
         current = self._now()
         cutoff = current - self._max_age
@@ -1707,3 +1774,15 @@ __all__ = [
     "PendingApproval",
     "OperatorQueue",
 ]
+
+
+def _bind_system_denier(queue: DurableOperatorQueue):
+    """Bind ControlPlane inside the trusted-process composition boundary."""
+    if type(queue) is not DurableOperatorQueue:
+        raise TypeError("system denier requires the durable operator queue")
+    capability = queue._DurableOperatorQueue__system_denial_capability
+
+    def deny(approval_id: str, operator_id: str) -> bool:
+        return queue._deny_for_system_safety(approval_id, operator_id, capability)
+
+    return deny

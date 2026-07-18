@@ -27,7 +27,8 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from enterprise.control import ControlPlane
 from enterprise.mcp_tools import get_tool, get_tool_registry
-from enterprise.operator import OperatorQueue
+from enterprise.operator import DurableOperatorQueue, OperatorQueue
+from enterprise.runtime_lifetime import RuntimeLifetime, governed_operation
 
 try:
     from experiments.win32_probe.channel_router import (
@@ -255,16 +256,32 @@ class MCPDispatcher:
         output_reader: Callable[[int], str] | None = None,
         identity_type: str = "software",
         now: Callable[[], float] = _now,
+        runtime_lifetime: RuntimeLifetime | None = None,
     ) -> None:
         if profile not in _VALID_PROFILES:
             raise ValueError(f"profile must be one of {sorted(_VALID_PROFILES)}, got {profile!r}")
+        if profile == "enterprise" and type(operator_queue) is not DurableOperatorQueue:
+            raise ValueError(
+                "enterprise profile requires the exact durable operator queue"
+            )
+        binding_verifier = (
+            getattr(operator_queue, "verify_consumed_binding", None)
+            if operator_queue is not None
+            else None
+        )
+        if profile == "enterprise" and not callable(binding_verifier):
+            raise ValueError(
+                "enterprise profile requires a durable approval binding verifier"
+            )
         self.profile = profile
+        self._runtime_lifetime = runtime_lifetime
         self._validator = SchemaValidator()
         self._target_verifier = target_verifier or self._load_target_verifier()
         self._router = router if router is not None else (
             ChannelRouter(target_verifier=self._target_verifier) if ChannelRouter else None
         )
         self._operator_queue = operator_queue
+        self._approval_binding_verifier = binding_verifier
         self._control = control_plane or ControlPlane(
             ledger=ledger,
             operator_queue=operator_queue,
@@ -309,6 +326,7 @@ class MCPDispatcher:
         if missing:
             raise RuntimeError(f"MCP dispatcher missing handler(s): {sorted(missing)}")
 
+    @governed_operation
     def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         """Validate and execute a registered MCP tool.
 
@@ -556,12 +574,7 @@ class MCPDispatcher:
                     "operator approval is missing, expired, consumed, or not bound "
                     "to the exact action context"
                 )
-            binding_verifier = getattr(
-                self._operator_queue,
-                "verify_consumed_binding",
-                None,
-            )
-            if binding_verifier is not None and not binding_verifier(
+            if self._approval_binding_verifier is not None and not self._approval_binding_verifier(
                 approval,
                 agent_id=lease.agent_id,
                 action=action,

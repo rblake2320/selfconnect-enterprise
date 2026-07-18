@@ -90,6 +90,15 @@ jobs:
                       or "ULTRA_ADMIN_TOKEN is not configured" in line
                   )
               )
+              or (
+                  "tests/test_enterprise/test_runtime_ownership.py" in line
+                  and any(reason in line for reason in (
+                      "POSIX ownership/mode semantics",
+                      "POSIX ownership semantics",
+                      "Windows denies unlink of locked file",
+                      "POSIX no-follow file-symlink semantics",
+                  ))
+              )
               for line in normalized_skip_lines
           )
           if not all(allowed):

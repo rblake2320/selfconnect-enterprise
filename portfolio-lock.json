@@ -17,7 +17,7 @@
     },
     "tsk-protocol": {
       "repository": "https://github.com/rblake2320/tsk-protocol.git",
-      "commit": "bc31c234100a6e6432d2ac5de82783fc136bc2ea",
+      "commit": "9cff3e25e2432797c454ad09b9dacbf7244e51af",
       "package_name": "tsk-protocol",
       "package_version": "0.1.0",
       "manifest": "package.json"

@@ -54,6 +54,58 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260718-002 - Close approval identity and local ownership gaps
+
+**Timestamp (UTC):** 2026-07-18T12:52:54Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security fix, adversarial testing, documentation
+**Base commit:** `b58353dc9fdd2551014ccfd2253091e868b96854`
+**Change reference:** commit containing this entry; draft PR for issue #26
+**Why:** [WHY-20260718-002](WHY.md#why-20260718-002)
+**Parked records:** [PARK-20260718-002](PARKED.md#park-20260718-002)
+
+**Changed:** Bound verified operator subjects to claimed operators, replaced the
+public system-prefix denial bypass with a private runtime capability, added
+exclusive single-host process locks for each governed approval database and
+ledger resource, made proof freshness sample the injected queue clock only
+after SQLite writer ownership, and made the live conformance verifier/proof
+explicitly test-only and mandatory for approval. The shared lifetime now treats
+synchronous nested component mutations as one admitted unit and rejects
+reentrant close with a typed error. The Windows lock boundary uses native
+known-folder, token, and security-descriptor APIs; pins non-delete-sharing
+handles; validates or precisely remediates trusted-owner child lock-file DACLs;
+and rejects deterministic junction and namespace-retarget races. The exact TSK
+portfolio pin advanced to merged master
+`9cff3e25e2432797c454ad09b9dacbf7244e51af` so the strict Ultra composition job
+uses deterministic authorization-snapshot freshness boundaries.
+
+**Reason:** PR #33 durably bound transitions to ledger evidence but did not prove
+the credential subject named the claimed operator, allowed callers to imitate an
+internal prefix, and did not enforce the documented single-writer composition.
+
+**Full actions and links:** `enterprise/approval_audit.py`,
+`enterprise/operator.py`, `enterprise/control.py`,
+`enterprise/governed_runtime.py`, `enterprise/runtime_ownership.py`,
+`enterprise/windows_lock_boundary.py`, `portfolio-lock.json`,
+`tools/irs_runtime_conformance.py`, issue #26, and the linked WHY/PARK/control
+records.
+
+**Validation:** Focused approval, governed-runtime, control-plane, MCP profile,
+clock-contention, independent-resource, hard-link-alias, and cross-process
+ownership tests, including native Windows DACL/known-folder behavior,
+path-poisoning resistance, deterministic junction/retarget races, nested drain,
+and reentrant-close attempts. The expanded focused set passed **248 tests** with
+four named platform skips. The full local suite passed **1,616 tests** with 38
+named environment/platform/live skips and the two pre-existing immutable-sink
+warnings.
+
+**Notes:** Single-host mechanism only. The Windows governed suffix has a tested
+restrictive DACL and pinned ancestor handles; the pre-existing LocalAppData and
+SelfConnect ancestors retain their operating-system/user-profile ACL boundary.
+External credential
+custody, trusted time, keyed context-digest custody, and distributed approval
+authority remain outside the repository claim.
+
 ## LOG-20260718-001 - Reconcile issue 27 without reviving unsafe historical actuators
 
 **Timestamp (UTC):** 2026-07-18T12:46:07Z

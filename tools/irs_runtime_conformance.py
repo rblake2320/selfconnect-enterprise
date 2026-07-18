@@ -10,9 +10,11 @@ import argparse
 import json
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from enterprise.governed_runtime import GovernedRuntime
+from enterprise.approval_audit import DecisionProofVerification
 from enterprise.uia_output import read_terminal_text
 
 
@@ -58,6 +60,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--effect-timeout-ms", type=int, default=5000)
     parser.add_argument("--operator-id")
     parser.add_argument("--approve-interactively", action="store_true")
+    parser.add_argument(
+        "--test-only-operator-proof",
+        help=(
+            "Explicit test-only proof shared with this local conformance verifier. "
+            "Not a production operator-identity mechanism."
+        ),
+    )
     return parser
 
 
@@ -69,12 +78,28 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("--expect-output must not occur verbatim in --text")
         if not 100 <= args.effect_timeout_ms <= 30000:
             raise ValueError("--effect-timeout-ms must be between 100 and 30000")
+        if not args.test_only_operator_proof:
+            raise ValueError(
+                "the governed runtime requires an explicit --test-only-operator-proof"
+            )
+        def test_only_verifier(payload, proof):
+            if not args.test_only_operator_proof or proof != args.test_only_operator_proof:
+                return None
+            return DecisionProofVerification(
+                verifier_id="irs-conformance.explicit-test-only-verifier.v1",
+                key_id="ephemeral-local-proof",
+                nonce=str(uuid.uuid4()),
+                verified_at=time.time(),
+                operator_subject=payload["operator_id"],
+            )
+
         runtime = GovernedRuntime.from_signed_policy(
             policy_path=args.policy,
             trust_root_pub=_load_public_key(args.trust_root_file),
             agent_name=args.agent_name,
             identity_data_dir=args.identity_dir,
             ledger_path=args.ledger,
+            decision_writer_verifier=test_only_verifier,
         )
         checks.append(_status("externally_pinned_signed_policy", "PASS", "policy loaded"))
         checks.append(_status("persistent_cryptographic_identity", "PASS", runtime.identity.agent_id))
@@ -119,9 +144,14 @@ def main(argv: list[str] | None = None) -> int:
         if policy["result"].get("requires_approval"):
             if not args.execute:
                 checks.append(_status("human_approval", "NOT_RUN", "execution not requested"))
-            elif not args.approve_interactively or not args.operator_id:
+            elif (
+                not args.approve_interactively
+                or not args.operator_id
+                or not args.test_only_operator_proof
+            ):
                 raise RuntimeError(
-                    "policy requires approval; use --approve-interactively and --operator-id"
+                    "policy requires approval; use --approve-interactively, --operator-id, "
+                    "and an explicit --test-only-operator-proof"
                 )
             else:
                 approval_id = runtime.operator_queue.submit(
@@ -140,9 +170,17 @@ def main(argv: list[str] | None = None) -> int:
                 phrase = f"APPROVE {approval_id[:8]}"
                 entered = input(f"Type {phrase!r} to authorize the bounded probe: ").strip()
                 if entered != phrase:
-                    runtime.operator_queue.deny(approval_id, args.operator_id)
+                    runtime.operator_queue.deny(
+                        approval_id,
+                        args.operator_id,
+                        operator_proof=args.test_only_operator_proof,
+                    )
                     raise RuntimeError("operator did not approve the probe")
-                runtime.operator_queue.approve(approval_id, args.operator_id)
+                runtime.operator_queue.approve(
+                    approval_id,
+                    args.operator_id,
+                    operator_proof=args.test_only_operator_proof,
+                )
                 checks.append(_status("human_approval", "PASS", args.operator_id))
         else:
             checks.append(_status("human_approval", "NOT_REQUIRED", "policy did not require it"))

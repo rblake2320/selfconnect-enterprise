@@ -5,7 +5,6 @@ import hashlib
 import json
 import math
 import threading
-import time
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
@@ -62,6 +61,7 @@ class DecisionProofVerification:
     key_id: str
     nonce: str
     verified_at: float
+    operator_subject: str
 
 
 @dataclass(frozen=True)
@@ -72,11 +72,12 @@ class DecisionProofEnvelope:
     key_id: str
     nonce: str
     verified_at: float
+    operator_subject: str
     proof_digest: str
     binding_digest: str
 
     def __post_init__(self) -> None:
-        for name in ("verifier_id", "key_id", "nonce"):
+        for name in ("verifier_id", "key_id", "nonce", "operator_subject"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value or len(value) > 256:
                 raise ValueError(f"decision proof {name} is invalid")
@@ -105,6 +106,7 @@ class DecisionProofEnvelope:
         context_digest: str,
         decision: str,
         operator_id: str,
+        now: float,
     ) -> "DecisionProofEnvelope":
         proof_bytes = proof.encode("utf-8") if isinstance(proof, str) else bytes(proof)
         proof_digest = hashlib.sha256(proof_bytes).hexdigest()
@@ -113,7 +115,7 @@ class DecisionProofEnvelope:
             if key == "verified_at":
                 if (
                     not isinstance(value, (int, float))
-                    or abs(time.time() - float(value)) > 300
+                    or abs(now - float(value)) > 300
                 ):
                     raise ApprovalAuditError("decision proof verification time is invalid")
             elif not isinstance(value, str) or not value or len(value) > 256:
@@ -155,6 +157,7 @@ class DecisionProofEnvelope:
             "key_id": self.key_id,
             "nonce": self.nonce,
             "verified_at": self.verified_at,
+            "operator_subject": self.operator_subject,
             "proof_digest": self.proof_digest,
         }
         return _canonical_digest(binding) == self.binding_digest

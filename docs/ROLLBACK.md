@@ -3,6 +3,50 @@
 Every flag introduced in Tier 2 has a documented rollback path. This document is the
 authoritative reference. It lands with Tier 1 so it exists before any flag-gated code ships.
 
+## Approval authority ownership and identity binding
+
+The governed runtime now owns its approval database and ledger through
+independent OS process locks and accepts a human decision only when the
+verifier's authenticated subject equals the claimed operator. Existing files
+are also locked by OS file identity and revalidated after startup opens both
+resources, rejecting same-resource, hard-link, and startup-substitution errors
+observed before exposure. There is no insecure rollback flag.
+
+If startup reports that a resource already has a writer, stop and identify the
+existing runtime. Shut it down cleanly and verify its approval outbox and ledger
+before restarting. Do not delete or reap files in the owner-controlled runtime
+lock directory while a process may hold them; the files are intentionally
+stable and the OS locks, not file existence, are the authority. If operator
+verification fails, rotate or repair the external
+credential verifier and rerun conformance with fresh proof. Do not restore the
+former `system/` prefix bypass or accept an operator identifier supplied only by
+the requesting process.
+
+Approval databases containing pre-binding decision envelopes fail current
+schema attestation because those envelopes cannot prove an authenticated
+operator subject. Preserve the database as evidence, reconcile or deny pending
+work under the prior isolated runtime if authorized to do so, then create fresh
+approvals with the configured verifier. Do not relabel an old envelope.
+
+The resource directories and path entries must remain owner-controlled for the
+runtime lifetime. A privileged post-binding rename or replacement is outside
+the advisory-lock guarantee; stop the runtime and investigate any such change.
+Lock files are stored below the native known-folder LocalAppData boundary on
+Windows or XDG runtime/user-state boundary on POSIX; do not move them to a
+shared temporary directory or restore an environment-derived Windows path. The
+Windows governed suffix has a protected owner/SYSTEM/Administrators DACL and
+the path chain is pinned with non-delete-sharing handles. Each child lock file
+must also have a trusted owner and protected current-user/SYSTEM/Administrators
+DACL; an untrusted owner is not automatically repaired. Do not replace those
+native checks with PATH-resolved shell tools or a pre-open-only reparse check.
+Runtime close drains admitted outer operations, including their synchronous
+nested component work, before unlocking; close from inside such work fails with
+`RuntimeCloseReentrantError`. Do not retain or reuse component references from
+a closed runtime.
+
+This recovery procedure is single-host. Multi-host approval authority and
+external credential/key custody remain deployment work.
+
 **Every rollback activation must:**
 1. Set the override env var (documented below per flag)
 2. Restart the affected agent process

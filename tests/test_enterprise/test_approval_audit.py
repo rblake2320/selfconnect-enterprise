@@ -5,6 +5,7 @@ import json
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 
 import pytest
 
@@ -19,7 +20,8 @@ from enterprise.approval_audit import (
 )
 from enterprise.identity import AgentIdentity
 from enterprise.ledger import ThreadSafeAgentLedger
-from enterprise.operator import DurableOperatorQueue, OperatorQueue
+from enterprise.control import ControlPlane
+from enterprise.operator import DurableOperatorQueue, OperatorQueue, _bind_system_denier
 
 
 class RecordingSink:
@@ -60,6 +62,7 @@ def _writer(payload: dict[str, str], proof):
         key_id="test-key-1",
         nonce=f"nonce-{payload['approval_id']}-{payload['decision']}",
         verified_at=time.time(),
+        operator_subject=payload["operator_id"],
     )
 
 
@@ -76,6 +79,15 @@ def _queue(tmp_path, sink=None, **kwargs) -> DurableOperatorQueue:
 def test_required_sink_cannot_be_omitted(tmp_path):
     with pytest.raises(ApprovalAuditError, match="required approval audit sink"):
         DurableOperatorQueue(tmp_path / "approvals.sqlite3", audit_required=True)
+
+
+def test_required_verifier_cannot_be_omitted(tmp_path):
+    with pytest.raises(ApprovalAuditError, match="proof verifier"):
+        DurableOperatorQueue(
+            tmp_path / "approvals.sqlite3",
+            audit_sink=RecordingSink(),
+            audit_required=True,
+        )
 
 
 def test_unverified_decision_writer_cannot_approve(tmp_path):
@@ -452,6 +464,7 @@ def test_direct_sqlite_approved_forgery_cannot_create_valid_lineage(tmp_path):
         "signed-proof",
     )
     assert verification is not None
+    now = time.time()
     proof = DecisionProofEnvelope.create(
         verification,
         proof="signed-proof",
@@ -461,8 +474,8 @@ def test_direct_sqlite_approved_forgery_cannot_create_valid_lineage(tmp_path):
         context_digest=queue.get(approval_id).audit_receipt["context_digest"],
         decision="approved",
         operator_id="operator-a",
+        now=now,
     )
-    now = time.time()
     with sqlite3.connect(tmp_path / "approvals.sqlite3") as conn:
         conn.execute(
             """
@@ -526,6 +539,7 @@ def test_decision_verifier_receives_the_complete_canonical_binding(tmp_path):
             key_id="binding-key",
             nonce="binding-nonce",
             verified_at=time.time(),
+            operator_subject=payload["operator_id"],
         )
 
     queue = DurableOperatorQueue(
@@ -544,6 +558,66 @@ def test_decision_verifier_receives_the_complete_canonical_binding(tmp_path):
         "decision": "approved",
         "operator_id": "operator-a",
     }
+
+
+def test_authenticated_subject_must_match_claimed_operator(tmp_path):
+    def wrong_subject(payload, proof):
+        assert payload["operator_id"] == "claimed-operator"
+        assert proof == "signed-proof"
+        return DecisionProofVerification(
+            verifier_id="subject-verifier",
+            key_id="subject-key",
+            nonce="wrong-subject-nonce",
+            verified_at=time.time(),
+            operator_subject="different-authenticated-operator",
+        )
+
+    queue = DurableOperatorQueue(
+        tmp_path / "approvals.sqlite3",
+        audit_sink=RecordingSink(),
+        audit_required=True,
+        decision_writer_verifier=wrong_subject,
+    )
+    approval_id = queue.submit("agent-a", "export", {"scope": "bounded"})
+    with pytest.raises(ApprovalAuditError, match="authenticated decision subject"):
+        queue.approve(
+            approval_id,
+            "claimed-operator",
+            operator_proof="signed-proof",
+        )
+    assert queue.get_status(approval_id) == "pending"
+
+
+def test_pre_binding_decision_proof_cannot_survive_current_schema_attestation(tmp_path):
+    db_path = tmp_path / "approvals.sqlite3"
+    queue = DurableOperatorQueue(db_path)
+    approval_id = queue.submit("agent-a", "export", {})
+    old_proof = {
+        "verifier_id": "old-verifier",
+        "key_id": "old-key",
+        "nonce": "old-nonce",
+        "verified_at": time.time(),
+        "proof_digest": "a" * 64,
+        "binding_digest": "b" * 64,
+    }
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE approvals
+               SET status='approved', operator_id='claimed-operator', decided_at=?,
+                   expires_at=?, decision_proof_json=?, decision_nonce=?
+             WHERE approval_id=?
+            """,
+            (
+                time.time(),
+                time.time() + 300,
+                json.dumps(old_proof),
+                "old-nonce",
+                approval_id,
+            ),
+        )
+    with pytest.raises(ApprovalAuditError, match="invalid governed state"):
+        DurableOperatorQueue(db_path)
 
 
 def test_backward_clock_skew_fails_closed(tmp_path):
@@ -567,6 +641,73 @@ def test_backward_clock_skew_fails_closed(tmp_path):
             now=decided_at + 10,
         )
     assert queue.get_status(approval_id) == "approved"
+
+
+def test_consume_samples_expiry_only_after_writer_lock_is_owned(tmp_path):
+    now = [time.time()]
+    watch_clock = [False]
+    sampled = threading.Event()
+
+    def clock() -> float:
+        if watch_clock[0]:
+            sampled.set()
+        return now[0]
+
+    queue = _queue(tmp_path, approval_ttl_seconds=1, clock=clock)
+    approval_id = queue.submit("agent-a", "export", {})
+    assert queue.approve(approval_id, "operator-a", operator_proof="signed-proof")
+    expires_at = queue.get(approval_id).expires_at
+    assert expires_at is not None
+
+    opened = threading.Event()
+    original_connect = queue._connect
+
+    @contextmanager
+    def observed_connect():
+        with original_connect() as conn:
+            opened.set()
+            yield conn
+
+    queue._connect = observed_connect  # type: ignore[method-assign]
+    blocker = sqlite3.connect(tmp_path / "approvals.sqlite3")
+    blocker.execute("BEGIN IMMEDIATE")
+    result: list[object] = []
+    errors: list[BaseException] = []
+
+    def consume() -> None:
+        try:
+            result.append(
+                queue.consume_approved(
+                    approval_id,
+                    agent_id="agent-a",
+                    action="export",
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    watch_clock[0] = True
+    worker = threading.Thread(target=consume)
+    worker.start()
+    assert opened.wait(timeout=2)
+    assert not sampled.wait(timeout=0.1)
+    now[0] = expires_at + 1
+    blocker.commit()
+    blocker.close()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert errors == []
+    assert result == [None]
+    assert queue.get_status(approval_id) == "expired"
+
+
+def test_durable_control_plane_requires_injected_private_system_denier(tmp_path):
+    queue = _queue(tmp_path)
+    queue.submit("agent-a", "export", {})
+    control = ControlPlane(operator_queue=queue)
+    with pytest.raises(RuntimeError, match="safety-denial capability"):
+        control.quarantine("agent-a", "operator-a")
 
 
 def test_in_memory_expiry_uses_constructor_clock_without_public_override():
@@ -651,7 +792,10 @@ def test_legacy_schema_migrates_to_closed_sets_and_foreign_keys(tmp_path):
 def test_system_safety_denial_is_not_human_attribution_or_approval_bypass(tmp_path):
     queue = _queue(tmp_path)
     denied_id = queue.submit("agent-a", "export", {})
-    assert queue.deny(denied_id, "system/control-plane-quarantine")
+    with pytest.raises(ApprovalAuditError, match="proof"):
+        queue.deny(denied_id, "system/control-plane-quarantine")
+    assert not hasattr(queue, "_system_denier")
+    assert _bind_system_denier(queue)(denied_id, "system/control-plane-quarantine")
     denied = queue.get(denied_id)
     assert denied.status == "denied"
     assert denied.decision_proof.verifier_id == "selfconnect.system-safety-denial"
@@ -661,12 +805,14 @@ def test_system_safety_denial_is_not_human_attribution_or_approval_bypass(tmp_pa
     with pytest.raises(ApprovalAuditError, match="proof"):
         queue.approve(approval_id, "system/control-plane-quarantine")
     assert queue.get_status(approval_id) == "pending"
+    with pytest.raises(ApprovalAuditError, match="capability is invalid"):
+        queue._deny_for_system_safety(approval_id, "system/forged", object())
 
 
 def test_reused_decision_nonce_fails_closed(tmp_path):
     fixed_time = time.time()
 
-    def fixed_nonce_writer(_payload, proof):
+    def fixed_nonce_writer(payload, proof):
         if proof != "signed-proof":
             return None
         return DecisionProofVerification(
@@ -674,6 +820,7 @@ def test_reused_decision_nonce_fails_closed(tmp_path):
             key_id="test-key",
             nonce="one-use-nonce",
             verified_at=fixed_time,
+            operator_subject=payload["operator_id"],
         )
 
     queue = DurableOperatorQueue(
@@ -693,7 +840,7 @@ def test_reused_decision_nonce_fails_closed(tmp_path):
 def test_decision_nonce_tombstone_survives_approval_purge(tmp_path):
     now = [time.time()]
 
-    def fixed_nonce_writer(_payload, proof):
+    def fixed_nonce_writer(payload, proof):
         if proof != "signed-proof":
             return None
         return DecisionProofVerification(
@@ -701,6 +848,7 @@ def test_decision_nonce_tombstone_survives_approval_purge(tmp_path):
             key_id="test-key",
             nonce="purge-resistant-nonce",
             verified_at=time.time(),
+            operator_subject=payload["operator_id"],
         )
 
     queue = DurableOperatorQueue(
@@ -840,9 +988,10 @@ def test_conflicting_legacy_tombstone_owner_fails_closed(tmp_path):
     db_path = tmp_path / "approvals.sqlite3"
     now = time.time()
 
-    def writer(_payload, _proof):
+    def writer(payload, _proof):
         return DecisionProofVerification(
-            verifier_id="test", key_id="test", nonce="owned-nonce", verified_at=now
+            verifier_id="test", key_id="test", nonce="owned-nonce", verified_at=now,
+            operator_subject=payload["operator_id"],
         )
 
     queue = DurableOperatorQueue(
