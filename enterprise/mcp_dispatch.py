@@ -134,7 +134,9 @@ def _normalise_terminal_text(value: str) -> str:
 
 
 def _delivery_probe(value: str) -> str:
-    """Return the visible portion that must newly appear after injection."""
+    """Return visible text while rejecting terminal state-control characters."""
+    if any(character not in "\r\n" and not character.isprintable() for character in value):
+        raise MCPDispatchError("text must contain only printable characters or newlines")
     probe = _normalise_terminal_text(value).strip("\n")
     if not probe.strip():
         raise MCPDispatchError("text must contain a visible non-whitespace character")
@@ -701,6 +703,7 @@ class MCPDispatcher:
         return lease.to_dict(self._now())
 
     def _sc_inject_text(self, args: dict[str, Any]) -> dict[str, Any]:
+        probe = _delivery_probe(args["text"])
         lease = self._require_lease(args["lease_id"], int(args["hwnd"]))
         target = self._verify_live_target(int(args["hwnd"]), expected=lease)
         governance = self._require_execution_authorization(
@@ -715,8 +718,6 @@ class MCPDispatcher:
             raise MCPDispatchError(
                 "delivery cannot be confirmed because UIA TextPattern output is unavailable"
             )
-
-        probe = _delivery_probe(args["text"])
         before = self._read_output_once(lease.hwnd, expected=lease)
         before_count = _normalise_terminal_text(before).count(probe)
         self._verify_live_target(lease.hwnd, expected=lease)
