@@ -812,6 +812,116 @@ class TestLeaseRuntime:
         assert queue.get_status(approval_id) == "approved"
         assert router.routes == []
 
+    @pytest.mark.parametrize(
+        ("text", "expected_error"),
+        [
+            pytest.param("   ", "visible non-whitespace character", id="whitespace"),
+            pytest.param("   \t  ", "printable characters or newlines", id="tab"),
+            pytest.param("\x1b[31m\x1b[0m", "printable characters or newlines", id="ansi-color"),
+            pytest.param("\x07", "printable characters or newlines", id="bel"),
+            pytest.param("\x08", "printable characters or newlines", id="backspace"),
+            pytest.param("\x1b7", "printable characters or newlines", id="dec-save-cursor"),
+            pytest.param("\x1bc", "printable characters or newlines", id="reset-to-initial-state"),
+            pytest.param("visible\x07", "printable characters or newlines", id="mixed-visible-and-bel"),
+            pytest.param("visible\x85", "printable characters or newlines", id="mixed-visible-and-c1"),
+        ],
+    )
+    def test_non_visible_payload_is_rejected_before_approval_consumption(
+        self, text, expected_error
+    ):
+        calls = {"lease": 0, "target": 0, "policy": 0, "approval": 0}
+
+        class CountingQueue(OperatorQueue):
+            def consume_approved(self, *args, **kwargs):
+                calls["approval"] += 1
+                return super().consume_approved(*args, **kwargs)
+
+        class CountingPolicyEnforcer(AllowPolicyEnforcer):
+            def check(self, *args, **kwargs):
+                calls["policy"] += 1
+                return super().check(*args, **kwargs)
+
+        def target(hwnd, **kwargs):
+            calls["target"] += 1
+            return verified_target(hwnd, **kwargs)
+
+        queue = CountingQueue()
+        router = FakeRouter()
+        dispatcher = MCPDispatcher(
+            profile="normal",
+            router=router,
+            ledger=RecordingLedger(),
+            policy_enforcer=CountingPolicyEnforcer(requires_approval=True),
+            operator_queue=queue,
+            target_verifier=target,
+            output_reader=lambda _hwnd: router.rendered,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1029)
+        approval_context = dispatcher.approval_context_for(
+            lease_id,
+            {"hwnd": 1029, "text": text, "classification": "UNCLASSIFIED"},
+            action="sc_inject_text",
+        )
+        approval_id = queue.submit("SC-AGENT", "sc_inject_text", approval_context)
+        assert queue.approve(approval_id, "operator-1")
+        original_require_lease = dispatcher._require_lease
+
+        def require_lease(*args, **kwargs):
+            calls["lease"] += 1
+            return original_require_lease(*args, **kwargs)
+
+        dispatcher._require_lease = require_lease
+        calls.update({"lease": 0, "target": 0, "policy": 0, "approval": 0})
+
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {
+                "lease_id": lease_id,
+                "hwnd": 1029,
+                "text": text,
+                "approval_id": approval_id,
+            },
+        )
+
+        assert result["ok"] is False
+        assert expected_error in result["error"]
+        assert queue.get_status(approval_id) == "approved"
+        assert calls == {"lease": 0, "target": 0, "policy": 0, "approval": 0}
+        assert router.routes == []
+
+    def test_visible_unicode_and_newline_payload_remains_deliverable(self):
+        queue = OperatorQueue()
+        router = FakeRouter()
+        dispatcher = MCPDispatcher(
+            profile="normal",
+            router=router,
+            ledger=RecordingLedger(),
+            policy_enforcer=AllowPolicyEnforcer(requires_approval=True),
+            operator_queue=queue,
+            target_verifier=verified_target,
+            output_reader=lambda _hwnd: router.rendered,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=1030)
+        text = "hello\n\u4e16\u754c"
+        approval_context = dispatcher.approval_context_for(
+            lease_id,
+            {"hwnd": 1030, "text": text, "classification": "UNCLASSIFIED"},
+            action="sc_inject_text",
+        )
+        approval_id = queue.submit("SC-AGENT", "sc_inject_text", approval_context)
+        assert queue.approve(approval_id, "operator-1")
+
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 1030, "text": text, "approval_id": approval_id},
+        )
+
+        assert result["ok"] is True
+        assert queue.get_status(approval_id) == "consumed"
+        assert router.routes == [(1030, text, lease_id)]
+
     def test_mutation_stops_when_consumed_approval_receipt_binding_fails(self):
         class ReceiptRejectingQueue(OperatorQueue):
             @staticmethod
