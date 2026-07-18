@@ -28,6 +28,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from enterprise.control import ControlPlane
+from enterprise.logical_targets import LogicalTargetResolver
 from enterprise.mcp_tools import get_tool, get_tool_registry
 from enterprise.operator import DurableOperatorQueue, OperatorQueue
 from enterprise.runtime_lifetime import RuntimeLifetime, governed_operation
@@ -96,6 +97,7 @@ class RuntimeLease:
     target_exe_path: str = ""
     target_class: str = ""
     target_title_hash: str = ""
+    logical_target_id: str = ""
 
     @property
     def ttl_seconds(self) -> float:
@@ -369,6 +371,7 @@ class MCPDispatcher:
         identity_type: str = "software",
         now: Callable[[], float] = _now,
         runtime_lifetime: RuntimeLifetime | None = None,
+        logical_target_resolver: LogicalTargetResolver | None = None,
     ) -> None:
         if profile not in _VALID_PROFILES:
             raise ValueError(f"profile must be one of {sorted(_VALID_PROFILES)}, got {profile!r}")
@@ -389,6 +392,7 @@ class MCPDispatcher:
         self._runtime_lifetime = runtime_lifetime
         self._validator = SchemaValidator()
         self._target_verifier = target_verifier or self._load_target_verifier()
+        self._logical_target_resolver = logical_target_resolver
         self._router = router if router is not None else (
             ChannelRouter(target_verifier=self._target_verifier) if ChannelRouter else None
         )
@@ -416,6 +420,7 @@ class MCPDispatcher:
             "sc_read_output": self._sc_read_output,
             "sc_verify_target": self._sc_verify_target,
             "sc_request_lease": self._sc_request_lease,
+            "sc_request_target_lease": self._sc_request_target_lease,
             "sc_revoke_lease": self._sc_revoke_lease,
             "sc_list_leases": self._sc_list_leases,
             "sc_get_lease_info": self._sc_get_lease_info,
@@ -848,16 +853,53 @@ class MCPDispatcher:
     # ------------------------------------------------------------------
 
     def _sc_request_lease(self, args: dict[str, Any]) -> dict[str, Any]:
-        ttl = int(args.get("ttl_seconds", 300))
-        now = self._now()
         role = args.get("role")
         if role not in _VALID_LEASE_ROLES:
             raise MCPDispatchError(f"unknown lease role {role!r}")
         target = self._verify_live_target(int(args["hwnd"]))
+        return self._issue_verified_lease(
+            args=args,
+            hwnd=int(args["hwnd"]),
+            role=role,
+            target=target,
+        )
+
+    def _sc_request_target_lease(self, args: dict[str, Any]) -> dict[str, Any]:
+        role = args.get("role")
+        if role not in _VALID_LEASE_ROLES:
+            raise MCPDispatchError(f"unknown lease role {role!r}")
+        if self._logical_target_resolver is None:
+            raise MCPDispatchError("logical target resolver is not configured")
+        if self._target_verifier is None:
+            raise MCPDispatchError("governed target verifier is unavailable")
+        resolved = self._logical_target_resolver.resolve(
+            args["logical_target_id"],
+            role=role,
+            target_verifier=self._target_verifier,
+        )
+        return self._issue_verified_lease(
+            args=args,
+            hwnd=resolved.hwnd,
+            role=role,
+            target=resolved.verifier_report(),
+            logical_target_id=resolved.logical_id,
+        )
+
+    def _issue_verified_lease(
+        self,
+        *,
+        args: dict[str, Any],
+        hwnd: int,
+        role: str,
+        target: dict[str, Any],
+        logical_target_id: str = "",
+    ) -> dict[str, Any]:
+        ttl = int(args.get("ttl_seconds", 300))
+        now = self._now()
         lease = RuntimeLease(
             lease_id="lease-" + uuid.uuid4().hex[:24],
             agent_id=args["agent_id"],
-            hwnd=int(args["hwnd"]),
+            hwnd=hwnd,
             role=role,
             issued_at=now,
             expires_at=now + ttl,
@@ -866,6 +908,7 @@ class MCPDispatcher:
             target_exe_path=str(target.get("exe_path", "")),
             target_class=str(target["class"]),
             target_title_hash=_hash_text(str(target.get("title", ""))),
+            logical_target_id=logical_target_id,
         )
         self.__lease_authority_store.issue(lease)
         self._leases[lease.lease_id] = lease

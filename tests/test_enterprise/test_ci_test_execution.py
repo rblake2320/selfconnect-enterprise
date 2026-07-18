@@ -76,7 +76,7 @@ def test_runner_invokes_pytest_once_without_shell_or_summary_parsing() -> None:
 
 
 def test_collection_and_conftest_inputs_are_pinned() -> None:
-    assert EXPECTED_COLLECTION_COUNT == 1_699
+    assert EXPECTED_COLLECTION_COUNT == 1_749
     assert len(EXPECTED_COLLECTION_SHA256) == 64
     assert len(TRUSTED_CONFTEST_SHA256) == 64
 

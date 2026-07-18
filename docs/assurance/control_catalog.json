@@ -2,6 +2,17 @@
   "schema_version": 1,
   "controls": [
     {
+      "id": "TARGET-ALIAS-001",
+      "title": "Logical terminal aliases preserve canonical target verification",
+      "scope": "Process-local trusted-startup LogicalTargetSpec values and sc_request_target_lease",
+      "assertion": "Run the logical-target resolver, dispatcher, and MCP schema tests.",
+      "expected": "Unknown, unauthorized, unsafe, incomplete, zero-match, ambiguous, mutated, and post-resolution-replaced targets deny before routing; one exact match issues the existing signed lease.",
+      "evidence": "Focused pytest output and hosted CI for the reviewed commit",
+      "blind_spots": "Injected contract reports are not live-desktop proof; aliases and leases do not survive restart; discovery and later Win32 actuation are not atomic; no browser, file, classification-routing, or generalized-executor capability is covered.",
+      "tier": "quick",
+      "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_logical_targets.py", "tests/test_enterprise/test_logical_target_dispatch.py", "tests/test_enterprise/test_mcp_tools.py", "-q"]
+    },
+    {
       "id": "DOC-001",
       "title": "Evidence records are structurally linked",
       "scope": "LOG.md, WHY.md, PARKED.md, CHANGELOG.md, and README.md in this repository",

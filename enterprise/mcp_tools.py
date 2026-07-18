@@ -38,6 +38,7 @@ _TEXT_MAX       = 4096   # Must match ChannelRouter.MAX_PAYLOAD_LENGTH
 _RAW_TEXT_MAX   = 131072 # 128 KB for terminal readback buffers
 _RECEIPT_MAX    = 8192   # JSON-serialised ActionReceipt (generous but bounded)
 _PIPE_NAME_MAX  = 256    # \\.\pipe\<name> — 256 chars covers all valid local pipe names
+_LOGICAL_TARGET_ID_MAX = 128
 
 # Win32 HWND is a 32-bit value on all architectures (WOW64/native); valid range 0x0001–0xFFFF_FFFE.
 _HWND_MAX       = 0xFFFFFFFE
@@ -51,6 +52,8 @@ _LEASE_ID_PATTERN = r"^[A-Za-z0-9_\-]{1,128}$"
 
 # Pattern for agent IDs: SC-XXXXXXXX or slug forms.
 _AGENT_ID_PATTERN = r"^[A-Za-z0-9_\-]{1,128}$"
+
+_LOGICAL_TARGET_ID_PATTERN = r"^[a-z][a-z0-9._\-]{0,127}$"
 
 # Pattern for hex-encoded bytes: lowercase/uppercase hex digits only.
 _HEX_PATTERN = r"^[0-9A-Fa-f]+$"
@@ -237,6 +240,44 @@ _TOOLS: list[dict[str, Any]] = [
                     "description": "Requesting agent identifier (required for audit binding)",
                     "maxLength": _AGENT_ID_MAX,
                     "pattern": _AGENT_ID_PATTERN,
+                },
+            },
+        },
+    },
+    {
+        "name": "sc_request_target_lease",
+        "description": (
+            "Resolve a trusted startup-configured logical terminal alias through the canonical "
+            "live target guard, require exactly one safe match, and issue the same signed "
+            "process-local channel lease used by sc_request_lease."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["logical_target_id", "role", "agent_id"],
+            "additionalProperties": False,
+            "properties": {
+                "logical_target_id": {
+                    "type": "string",
+                    "maxLength": _LOGICAL_TARGET_ID_MAX,
+                    "pattern": _LOGICAL_TARGET_ID_PATTERN,
+                    "description": "Trusted startup-configured logical terminal alias",
+                },
+                "role": {
+                    "type": "string",
+                    "enum": ["sender", "receiver", "observer"],
+                    "description": "Channel role constrained by the logical target specification",
+                },
+                "ttl_seconds": {
+                    "type": "integer",
+                    "default": 300,
+                    "minimum": 30,
+                    "maximum": 3600,
+                },
+                "agent_id": {
+                    "type": "string",
+                    "maxLength": _AGENT_ID_MAX,
+                    "pattern": _AGENT_ID_PATTERN,
+                    "description": "Requesting agent identifier for lease authority and audit",
                 },
             },
         },

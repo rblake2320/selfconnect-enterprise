@@ -54,6 +54,36 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260718-006 - Resolve immutable aliases into governed terminal leases
+
+**Timestamp (UTC):** 2026-07-18T17:21:44Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, adversarial testing, documentation
+**Base commit:** `658f7345d28b90da31c5065128ee23fff435a498`
+**Change reference:** commit containing this entry; draft pull request for issue #27
+**Why:** [WHY-20260718-006](WHY.md#why-20260718-006)
+**Parked records:** [PARK-20260718-006](PARKED.md#park-20260718-006)
+
+**Changed:** Added strict immutable startup target specifications, bounded
+top-level-window discovery, canonical verification of every candidate, exact-one
+resolution, and `sc_request_target_lease`. The resolved logical ID and complete
+live target identity are bound into the existing signed process-local lease.
+
+**Reason:** Stable operator aliases are useful only when they reuse the hardened
+target verifier and lease path. The historical first-class-match registry was a
+weaker second target boundary and could silently choose the wrong window.
+
+**Full actions and links:** `enterprise/logical_targets.py`,
+`enterprise/mcp_dispatch.py`, `enterprise/mcp_tools.py`,
+`docs/LOGICAL_TARGET_LEASES.md`, focused tests, and issue #27.
+
+**Validation:** Focused logical-target, MCP dispatcher, and tool-schema tests;
+full repository suite; Ruff; hosted CI on the final reviewed commit.
+
+**Notes:** Contract tests use injected enumerators and target reports, not a live
+desktop. Aliases are process-local trusted startup configuration. Issue #27
+remains open for separately justified capabilities.
+
 ## LOG-20260718-005 - Bound the candidate-local CI gate
 
 **Timestamp (UTC):** 2026-07-18T16:54:14Z

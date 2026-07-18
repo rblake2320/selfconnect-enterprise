@@ -51,6 +51,42 @@ related records.
 
 ## Register
 
+## WHY-20260718-006 - Alias only the hardened lease path
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-18T17:21:44Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260718-006](LOG.md#log-20260718-006)
+**Parked records:** [PARK-20260718-006](PARKED.md#park-20260718-006)
+**Source state:** `selfconnect-enterprise` master at `658f7345`
+
+**Decision:** Rebuild logical targets as immutable trusted-startup terminal
+selectors that can only issue the current signed `RuntimeLease` after exactly
+one canonical live-target match.
+
+**Why:** A stable alias reduces raw-HWND operator mistakes. It must not become a
+second resolver, mutable authorization registry, or path around the current
+PID/executable/class/title checks.
+
+**Alternatives considered:** Cherry-pick the historical registry; rejected
+because it selects the first window by class, ignores its title expression,
+permits overwrite, and stores an unenforced classification ceiling. Restore the
+historical participant/executor/bridge stack; rejected as redundant or a broad
+new actuation surface. Persist aliases now; deferred until custody and signed
+configuration requirements exist.
+
+**Consequences:** Hosts may configure stable terminal aliases, but must still
+retain and use the issued HWND/lease. Configuration and authority reset on
+restart. No browser, file, classification-routing, or generalized-executor
+capability is added.
+
+**Rollback conditions:** Remove the new tool and resolver if an alias can select
+more than one safe candidate, bypass the canonical verifier, or weaken existing
+explicit-HWND lease behavior.
+
+**Evidence and links:** `docs/LOGICAL_TARGET_LEASES.md`, issue #27, focused
+adversarial tests, and [PARK-20260718-006](PARKED.md#park-20260718-006).
+
 ## WHY-20260718-005 - Treat candidate CI as regression evidence, not custody
 
 **Status:** Accepted
