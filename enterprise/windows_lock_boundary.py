@@ -253,6 +253,13 @@ def _normalized_final_path(value: str) -> str:
 
 
 def _handle_path(kernel32, handle: int) -> str:
+    kernel32.GetFinalPathNameByHandleW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
     size = kernel32.GetFinalPathNameByHandleW(
         wintypes.HANDLE(handle), None, 0, 0
     )
@@ -265,6 +272,27 @@ def _handle_path(kernel32, handle: int) -> str:
     if not written or written >= len(buffer):
         raise WindowsLockBoundaryError("cannot resolve runtime-lock ancestor handle")
     return buffer.value
+
+
+def _handle_identity(handle: int) -> tuple[int, int, int]:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_BY_HANDLE_FILE_INFORMATION),
+    ]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    opened = _BY_HANDLE_FILE_INFORMATION()
+    if not kernel32.GetFileInformationByHandle(
+        wintypes.HANDLE(handle), ctypes.byref(opened)
+    ):
+        raise WindowsLockBoundaryError("cannot inspect runtime lock file handle")
+    if opened.dwFileAttributes & _FILE_ATTRIBUTE_REPARSE_POINT:
+        raise WindowsLockBoundaryError("runtime lock file is a reparse point")
+    return (
+        opened.dwVolumeSerialNumber,
+        opened.nFileIndexHigh,
+        opened.nFileIndexLow,
+    )
 
 
 def _open_directory(path: Path, *, _before_open=None) -> int:
@@ -290,13 +318,6 @@ def _open_directory(path: Path, *, _before_open=None) -> int:
         ctypes.POINTER(_BY_HANDLE_FILE_INFORMATION),
     ]
     kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
-    kernel32.GetFinalPathNameByHandleW.argtypes = [
-        wintypes.HANDLE,
-        wintypes.LPWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-    ]
-    kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
     handle = kernel32.CreateFileW(
         str(path),
         0,
@@ -346,13 +367,6 @@ def _open_file_security_handle(path: Path) -> int:
         wintypes.HANDLE,
     ]
     kernel32.CreateFileW.restype = wintypes.HANDLE
-    kernel32.GetFinalPathNameByHandleW.argtypes = [
-        wintypes.HANDLE,
-        wintypes.LPWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-    ]
-    kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
     handle = kernel32.CreateFileW(
         str(path),
         _READ_CONTROL | _WRITE_DAC,
@@ -409,13 +423,29 @@ class WindowsLockBoundary:
             self.close()
             raise
 
-    def secure_lock_file(self, path: Path, *, created: bool) -> None:
+    def secure_lock_file(self, path: Path, fd: int, *, created: bool) -> None:
         """Validate or precisely remediate one file inside the pinned suffix."""
+        import msvcrt
+
         if path.parent.resolve(strict=True) != self.path:
             raise WindowsLockBoundaryError("runtime lock file escaped governed suffix")
         sid = _current_sid()
         security_handle = _open_file_security_handle(path)
         try:
+            opened_handle = msvcrt.get_osfhandle(fd)
+            if _handle_identity(opened_handle) != _handle_identity(security_handle):
+                raise WindowsLockBoundaryError(
+                    "runtime lock file changed before security validation"
+                )
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            opened_path = _normalized_final_path(
+                _handle_path(kernel32, opened_handle)
+            )
+            expected = _normalized_final_path(str(path.resolve(strict=True)))
+            if opened_path != expected:
+                raise WindowsLockBoundaryError(
+                    "runtime lock file opened handle was retargeted"
+                )
             descriptor = _get_file_descriptor(security_handle)
             owner = descriptor.GetSecurityDescriptorOwner()
             import win32security

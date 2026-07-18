@@ -92,7 +92,9 @@ class _ResourceLock:
             self._validate_file()
             if os.name == "nt":
                 try:
-                    lock_boundary.secure_lock_file(self.path, created=created)
+                    lock_boundary.secure_lock_file(
+                        self.path, self._handle.fileno(), created=created
+                    )
                 except Exception as exc:
                     from enterprise.windows_lock_boundary import WindowsLockBoundaryError
 
