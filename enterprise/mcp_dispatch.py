@@ -19,7 +19,7 @@ import os
 import re
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from types import MappingProxyType
 from typing import Any, Callable
 
@@ -115,13 +115,78 @@ class RuntimeLease:
 
 @dataclass(frozen=True)
 class _LeaseAuthority:
-    """Signed issuance-time authority that runtime storage cannot widen."""
+    """Signed snapshot of every issuance-time RuntimeLease authority field."""
 
-    lease_id: str
-    agent_id: str
-    hwnd: int
-    role: str
+    lease: RuntimeLease
     signature: bytes
+
+
+class _LeaseAuthorityError(RuntimeError):
+    def __init__(self, reason: str, *, issued_role: str = "missing") -> None:
+        super().__init__(reason)
+        self.issued_role = issued_role
+
+
+class _LeaseAuthorityStore:
+    """Own signed authority records and revocation state for one dispatcher.
+
+    This boundary protects against replacement or deserialization of runtime
+    lease/authority records. It is not a sandbox against arbitrary Python code
+    execution or hostile reflection inside this process.
+    """
+
+    __slots__ = ("__private_key", "__public_key", "__records", "__revoked")
+
+    def __init__(self) -> None:
+        self.__private_key = Ed25519PrivateKey.generate()
+        self.__public_key = self.__private_key.public_key()
+        self.__records: dict[str, _LeaseAuthority] = {}
+        self.__revoked: set[str] = set()
+
+    def issue(self, lease: RuntimeLease) -> None:
+        if lease.lease_id in self.__records or lease.lease_id in self.__revoked:
+            raise MCPDispatchError("lease authority already exists")
+        self.__records[lease.lease_id] = _LeaseAuthority(
+            lease=lease,
+            signature=self.__private_key.sign(_lease_authority_payload(lease)),
+        )
+
+    def revoke(self, lease: RuntimeLease) -> None:
+        if lease.lease_id not in self.__records:
+            raise MCPDispatchError("lease issuance authority is missing")
+        revoked = replace(lease, revoked=True)
+        self.__records[lease.lease_id] = _LeaseAuthority(
+            lease=revoked,
+            signature=self.__private_key.sign(_lease_authority_payload(revoked)),
+        )
+        self.__revoked.add(lease.lease_id)
+
+    def verify(self, lease: RuntimeLease) -> RuntimeLease:
+        authority = self.__records.get(lease.lease_id)
+        if authority is None:
+            raise _LeaseAuthorityError("lease issuance authority is missing")
+        issued_role = authority.lease.role
+        if lease.lease_id in self.__revoked:
+            raise _LeaseAuthorityError(
+                "lease issuance authority is revoked",
+                issued_role=issued_role,
+            )
+        try:
+            self.__public_key.verify(
+                authority.signature,
+                _lease_authority_payload(authority.lease),
+            )
+        except (InvalidSignature, TypeError, ValueError) as exc:
+            raise _LeaseAuthorityError(
+                "lease issuance authority signature is invalid",
+                issued_role=issued_role,
+            ) from exc
+        if lease != authority.lease:
+            raise _LeaseAuthorityError(
+                "lease no longer matches its signed issuance authority",
+                issued_role=issued_role,
+            )
+        return authority.lease
 
 
 @dataclass(frozen=True)
@@ -146,19 +211,10 @@ def _hash_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _lease_authority_payload(
-    *,
-    lease_id: str,
-    agent_id: str,
-    hwnd: int,
-    role: str,
-) -> bytes:
+def _lease_authority_payload(lease: RuntimeLease) -> bytes:
     return json.dumps(
         {
-            "agent_id": agent_id,
-            "hwnd": hwnd,
-            "lease_id": lease_id,
-            "role": role,
+            **asdict(lease),
             "schema": "selfconnect.lease-authority.v1",
         },
         ensure_ascii=True,
@@ -337,11 +393,7 @@ class MCPDispatcher:
         self._identity_type = identity_type
         self._now = now
         self._leases: dict[str, RuntimeLease] = {}
-        self._lease_authorities: dict[str, _LeaseAuthority] = {}
-        authority_private_key = Ed25519PrivateKey.generate()
-        authority_public_key = authority_private_key.public_key()
-        self._sign_lease_authority = authority_private_key.sign
-        self._authority_public_key = authority_public_key
+        self.__lease_authority_store = _LeaseAuthorityStore()
         self._audit: list[AuditEvent] = []
         self._read_snapshots: dict[str, str] = {}
         self._injected_text: dict[str, str] = {}
@@ -513,47 +565,17 @@ class MCPDispatcher:
         if hwnd is not None and int(hwnd) != int(lease.hwnd):
             raise MCPDispatchError("lease is not bound to requested HWND")
 
-        authority = self._lease_authorities.get(lease_id)
-        if authority is None:
+        try:
+            authority = self.__lease_authority_store.verify(lease)
+        except _LeaseAuthorityError as exc:
             self._deny_lease_role(
                 lease_id=lease_id,
                 tool=tool,
                 stored_role=lease.role,
-                issued_role="missing",
-                reason="lease issuance authority is missing",
+                issued_role=exc.issued_role,
+                reason=str(exc),
             )
         assert authority is not None
-        try:
-            self._authority_public_key.verify(
-                authority.signature,
-                _lease_authority_payload(
-                    lease_id=authority.lease_id,
-                    agent_id=authority.agent_id,
-                    hwnd=authority.hwnd,
-                    role=authority.role,
-                ),
-            )
-        except (InvalidSignature, TypeError, ValueError):
-            self._deny_lease_role(
-                lease_id=lease_id,
-                tool=tool,
-                stored_role=lease.role,
-                issued_role=authority.role,
-                reason="lease issuance authority signature is invalid",
-            )
-        if (
-            lease.lease_id != authority.lease_id
-            or lease.agent_id != authority.agent_id
-            or int(lease.hwnd) != authority.hwnd
-            or lease.role != authority.role
-        ):
-            self._deny_lease_role(
-                lease_id=lease_id,
-                tool=tool,
-                stored_role=lease.role,
-                issued_role=authority.role,
-                reason="lease no longer matches its immutable issuance authority",
-            )
 
         allowed_roles = _LEASE_TOOL_ROLES.get(tool)
         if allowed_roles is None:
@@ -822,20 +844,7 @@ class MCPDispatcher:
             target_class=str(target["class"]),
             target_title_hash=_hash_text(str(target.get("title", ""))),
         )
-        authority_payload = _lease_authority_payload(
-            lease_id=lease.lease_id,
-            agent_id=lease.agent_id,
-            hwnd=lease.hwnd,
-            role=lease.role,
-        )
-        authority = _LeaseAuthority(
-            lease_id=lease.lease_id,
-            agent_id=lease.agent_id,
-            hwnd=lease.hwnd,
-            role=lease.role,
-            signature=self._sign_lease_authority(authority_payload),
-        )
-        self._lease_authorities[lease.lease_id] = authority
+        self.__lease_authority_store.issue(lease)
         self._leases[lease.lease_id] = lease
         self._control.register(lease.agent_id)
         return lease.to_dict(now)
@@ -858,6 +867,7 @@ class MCPDispatcher:
             target_class=lease.target_class,
             target_title_hash=lease.target_title_hash,
         )
+        self.__lease_authority_store.revoke(lease)
         self._leases[lease.lease_id] = revoked
         return {"lease_id": lease.lease_id, "revoked": True, "reason": args.get("reason", "")}
 

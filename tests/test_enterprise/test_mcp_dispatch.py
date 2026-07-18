@@ -148,6 +148,12 @@ def issue_lease(
     return result["result"]["lease_id"]
 
 
+def authority_records(dispatcher: MCPDispatcher) -> dict:
+    """Reach private storage only to simulate persisted-record corruption."""
+    store = dispatcher._MCPDispatcher__lease_authority_store
+    return store._LeaseAuthorityStore__records
+
+
 class TestDispatcherCoverage:
     def test_default_profile_is_enterprise_and_rejects_legacy_queue(self):
         with pytest.raises(ValueError, match="exact durable operator queue"):
@@ -351,7 +357,7 @@ class TestLeaseRuntime:
         )
 
         assert result["ok"] is False
-        assert "immutable issuance authority" in result["error"]
+        assert "signed issuance authority" in result["error"]
         assert dispatcher._router.routes == []
         decisions = [
             entry
@@ -364,14 +370,15 @@ class TestLeaseRuntime:
     def test_double_replacement_cannot_forge_signed_issuance_authority(self):
         dispatcher = make_dispatcher()
         lease_id = issue_lease(dispatcher, hwnd=896, role="observer")
-        original_authority = dispatcher._lease_authorities[lease_id]
+        records = authority_records(dispatcher)
+        original_authority = records[lease_id]
         dispatcher._leases[lease_id] = replace(
             dispatcher._leases[lease_id],
             role="sender",
         )
-        dispatcher._lease_authorities[lease_id] = replace(
+        records[lease_id] = replace(
             original_authority,
-            role="sender",
+            lease=replace(original_authority.lease, role="sender"),
         )
 
         result = dispatcher.call_tool(
@@ -386,26 +393,26 @@ class TestLeaseRuntime:
     def test_deserialized_double_replacement_cannot_reuse_observer_signature(self):
         dispatcher = make_dispatcher()
         lease_id = issue_lease(dispatcher, hwnd=897, role="observer")
-        authority = dispatcher._lease_authorities[lease_id]
+        records = authority_records(dispatcher)
+        authority = records[lease_id]
         serialized = json.dumps(
             {
-                "lease_id": authority.lease_id,
-                "agent_id": authority.agent_id,
-                "hwnd": authority.hwnd,
-                "role": "sender",
+                "lease": {
+                    **authority.lease.to_dict(now=1000.0),
+                    "role": "sender",
+                },
                 "signature": base64.b64encode(authority.signature).decode("ascii"),
             }
         )
         restored = json.loads(serialized)
+        restored["lease"].pop("ttl_seconds")
+        restored["lease"].pop("active")
         dispatcher._leases[lease_id] = replace(
             dispatcher._leases[lease_id],
-            role=restored["role"],
+            role=restored["lease"]["role"],
         )
-        dispatcher._lease_authorities[lease_id] = type(authority)(
-            lease_id=restored["lease_id"],
-            agent_id=restored["agent_id"],
-            hwnd=restored["hwnd"],
-            role=restored["role"],
+        records[lease_id] = type(authority)(
+            lease=type(authority.lease)(**restored["lease"]),
             signature=base64.b64decode(restored["signature"]),
         )
 
@@ -417,6 +424,61 @@ class TestLeaseRuntime:
         assert result["ok"] is False
         assert "authority signature is invalid" in result["error"]
         assert dispatcher._router.routes == []
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("agent_id", "SC-EVIL"),
+            ("hwnd", 99_999),
+            ("issued_at", 999.0),
+            ("expires_at", 99_999.0),
+            ("target_pid", 9999),
+            ("target_exe", "evil.exe"),
+            ("target_exe_path", r"C:\\evil.exe"),
+            ("target_class", "EVIL_WINDOW"),
+            ("target_title_hash", "0" * 64),
+        ],
+    )
+    def test_every_immutable_lease_field_is_bound_before_injection(self, field, value):
+        dispatcher = make_dispatcher()
+        lease_id = issue_lease(dispatcher, hwnd=899, role="sender")
+        dispatcher._leases[lease_id] = replace(
+            dispatcher._leases[lease_id],
+            **{field: value},
+        )
+
+        requested_hwnd = value if field == "hwnd" else 899
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": requested_hwnd, "text": "must not route"},
+        )
+
+        assert result["ok"] is False
+        assert "signed issuance authority" in result["error"]
+        assert dispatcher._router.routes == []
+
+    def test_revoked_signed_authority_cannot_be_revived_from_old_runtime_lease(self):
+        dispatcher = make_dispatcher()
+        lease_id = issue_lease(dispatcher, hwnd=900, role="sender")
+        original = dispatcher._leases[lease_id]
+        revoked = dispatcher.call_tool("sc_revoke_lease", {"lease_id": lease_id})
+        assert revoked["ok"] is True
+        dispatcher._leases[lease_id] = original
+
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 900, "text": "must not route"},
+        )
+
+        assert result["ok"] is False
+        assert "authority is revoked" in result["error"]
+        assert dispatcher._router.routes == []
+
+    def test_dispatcher_does_not_expose_raw_authority_signer_or_verifier(self):
+        dispatcher = make_dispatcher()
+
+        assert not hasattr(dispatcher, "_sign_lease_authority")
+        assert not hasattr(dispatcher, "_authority_public_key")
 
     def test_role_denial_fails_closed_when_persistent_evidence_is_unavailable(self):
         router = FakeRouter()
@@ -445,7 +507,7 @@ class TestLeaseRuntime:
     def test_missing_issuance_authority_cannot_fall_back_to_stored_role(self):
         dispatcher = make_dispatcher()
         lease_id = issue_lease(dispatcher, hwnd=895, role="sender")
-        dispatcher._lease_authorities.pop(lease_id)
+        authority_records(dispatcher).pop(lease_id)
 
         result = dispatcher.call_tool(
             "sc_inject_text",

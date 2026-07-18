@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from tools.ci_test_gate import StructuredResults, _allowed_skip
+from tools.ci_test_gate import ALLOWED_SKIPS, StructuredResults, _allowed_skip
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,8 +16,9 @@ CI_RUNNER = ROOT / "tools" / "ci_test_gate.py"
 def test_workflow_has_one_dedicated_test_entrypoint() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     test_job = workflow.split("  test:\n", 1)[1].split("  ultra-contract-windows:\n", 1)[0]
+    isolated_entrypoint = "run: python -E -P tools/ci_test_gate.py"
 
-    assert test_job.count("run: python tools/ci_test_gate.py") == 1
+    assert test_job.count(isolated_entrypoint) == 1
     for bypass in (
         "python -m pytest",
         "pytest.main",
@@ -56,6 +57,11 @@ def test_runner_invokes_pytest_once_without_shell_or_summary_parsing() -> None:
     )
     assert "re.search" not in source
     assert " passed'" not in source
+    assert source.index('os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"]') < source.index(
+        "pytest = _load_trusted_pytest()"
+    )
+    assert "spec_from_file_location" in source
+    assert "installed pytest package hash does not match RECORD" in source
 
 
 def test_structured_results_count_reports_not_terminal_text() -> None:
@@ -76,8 +82,12 @@ def test_structured_results_count_reports_not_terminal_text() -> None:
 
 
 def test_skip_policy_uses_nodeid_and_reason() -> None:
+    assert len(ALLOWED_SKIPS) == 38
     assert _allowed_skip(
         "tests/test_e2e_ultra_gate.py::test_live",
-        "Ultra Server not available on localhost:7777",
-    )
-    assert not _allowed_skip("tests/test_other.py::test_hidden", "Ultra Server not available")
+        "Skipped: Ultra Server not available on localhost:7777",
+    ) is False
+    allowed_nodeid, allowed_reason = next(iter(ALLOWED_SKIPS.items()))
+    assert _allowed_skip(allowed_nodeid, allowed_reason)
+    assert not _allowed_skip(allowed_nodeid, allowed_reason + " extra")
+    assert not _allowed_skip("tests/test_other.py::test_hidden", allowed_reason)

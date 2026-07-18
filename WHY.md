@@ -63,7 +63,10 @@ related records.
 
 **Decision:** Run the complete pytest suite once through one dedicated Windows
 CI runner. Derive pass, failure, and skip policy from pytest report objects,
-while retaining pytest's complete human-readable output.
+while retaining pytest's complete human-readable output. Start Python without
+repository/environment import-path injection, disable plugin autoload, verify
+pytest against its installed RECORD hash, and allow only exact skip identities
+and reasons.
 
 **Why:** Re-executing the suite does not strengthen evidence: it evaluates a
 different run. Capturing that second run without printing its failure details
@@ -96,10 +99,12 @@ treated as distinct tests with complete diagnostics.
 **Source state:** `selfconnect-enterprise`, `origin/master`,
 `c094fb3c2de238aeb3c8411dd7366b7c4b6f246f`
 
-**Decision:** Sign each channel lease's role at issuance with a process-local
-Ed25519 key and enforce a closed tool-to-role capability matrix on every
-lease-authorized inject/read path. Runtime lease storage must match a
-signature-valid issuance authority before the role can authorize an operation.
+**Decision:** Sign every immutable channel-lease field at issuance with a
+process-local Ed25519 key owned by a dedicated authority store and enforce a
+closed tool-to-role capability matrix on every lease-authorized inject/read
+path. Runtime storage must exactly match a signature-valid snapshot. Revocation
+is tracked independently so restoring an older signed snapshot cannot revive a
+lease.
 
 **Why:** Role validation in JSON Schema prevented unknown values at the public
 tool boundary but did not authorize behavior. The dispatcher accepted any
@@ -121,6 +126,8 @@ behavior is preserved by explicitly allowing sender, receiver, and observer
 leases to read. When a persistent ledger is configured, role-denial evidence
 names the tool, issued/stored role, allowed roles, and reason without storing
 payload content; unavailable or failing denial evidence fails the request.
+The boundary covers record replacement and deserialization, not arbitrary code
+execution or hostile reflection inside the dispatcher process.
 
 **Rollback conditions:** Replace this binding only with an equal or stronger
 cryptographically or durably bound capability model. Do not restore descriptive

@@ -50,9 +50,9 @@
       "title": "Channel lease roles bound explicit runtime capabilities",
       "scope": "Enterprise MCP channel lease issuance plus governed text injection and output reads",
       "assertion": "Run MCP dispatcher and governed-runtime tests, including adversarial role-confusion cases.",
-      "expected": "Only sender leases inject; sender, receiver, and observer leases read; missing, unknown, wildcard, issuance-authority-missing, store-mutated, double-replaced, deserialized-forged, or signature-invalid roles deny before routing or approval consumption. A configured ledger records denial evidence; missing or failing persistence fails closed.",
+      "expected": "Only sender leases inject; sender, receiver, and observer leases read; every immutable lease field exactly matches its signed issuance snapshot; missing, unknown, wildcard, extended, revived, target-rebound, double-replaced, deserialized-forged, or signature-invalid authority denies before routing or approval consumption. A configured ledger records denial evidence; missing or failing persistence fails closed.",
       "evidence": "pytest output, hosted CI, signed ledger role-decision entries, and the release conformance JSON report",
-      "blind_spots": "The signing key is process-local and leases are not restart-durable. Arbitrary code execution inside the dispatcher process could replace the verifier itself. Direct SDK calls outside MCPDispatcher and the historical participant-mode, logical-target, generalized-executor, and bridge features remain outside this control.",
+      "blind_spots": "The authority store and signing key are process-local and leases are not restart-durable. This protects storage mutation and deserialization, not arbitrary code execution or hostile reflection inside the dispatcher process. Direct SDK calls outside MCPDispatcher and the historical participant-mode, logical-target, generalized-executor, and bridge features remain outside this control.",
       "tier": "release",
       "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_mcp_dispatch.py", "tests/test_enterprise/test_governed_runtime.py", "-q"]
     },
