@@ -13,13 +13,15 @@
 
 ### Lease role authority
 
-- Bound each issued channel lease to a separate immutable authority record and
-  enforce a closed capability matrix at every governed inject/read check.
+- Bound each issued channel lease to an Ed25519-signed authority record and
+  enforce a closed capability matrix and signature check at every governed
+  inject/read check.
 - Restricted `sc_inject_text` to sender leases. Receiver and observer leases
   remain read-only; current sender, receiver, and observer leases may use
   `sc_read_output`.
-- Reject missing, unknown, wildcard, or mutated roles without routing and record
-  role-specific denial evidence. Evidence:
+- Reject missing, unknown, wildcard, mutated, or signature-invalid roles without
+  routing. Persist role-specific denial evidence when a ledger is configured;
+  fail closed if that evidence cannot be persisted. Evidence:
   [LOG-20260718-003](LOG.md#log-20260718-003), rationale:
   [WHY-20260718-003](WHY.md#why-20260718-003), recovery:
   [PARK-20260718-003](PARKED.md#park-20260718-003).

@@ -113,8 +113,8 @@ captured output.
 **Reason parked:** The workflow ran the full suite twice and suppressed the
 captured second run's failure identity. The two executions could produce
 different results while the gate reported only a count.
-**Replacement:** One authoritative pytest execution prints complete output and
-then enforces its return code, test floor, and skip allowlist.
+**Replacement:** One dedicated pytest runner prints complete output and applies
+the result and skip policy to structured pytest report objects.
 
 **Restore when:** A demonstrated requirement for two independent suite
 executions that cannot be met by repeatability or stress jobs with retained
@@ -158,8 +158,9 @@ role could therefore call `sc_inject_text`.
 the authority that lease carried. Observer and receiver leases could actuate a
 target, and replacing the stored frozen lease object could rewrite its role.
 
-**Replacement:** Closed `_LEASE_TOOL_ROLES`, independent `_LeaseAuthority`,
-per-operation binding checks, and role-denial evidence.
+**Replacement:** Closed `_LEASE_TOOL_ROLES`, Ed25519-signed `_LeaseAuthority`,
+per-operation signature and binding checks, and fail-closed role-denial
+evidence.
 
 **Restore when:** Do not restore. Replace only with a stronger capability system
 that proves equivalent sender-only actuation and fail-closed role mutation.

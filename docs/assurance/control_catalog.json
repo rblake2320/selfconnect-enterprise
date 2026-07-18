@@ -50,9 +50,9 @@
       "title": "Channel lease roles bound explicit runtime capabilities",
       "scope": "Enterprise MCP channel lease issuance plus governed text injection and output reads",
       "assertion": "Run MCP dispatcher and governed-runtime tests, including adversarial role-confusion cases.",
-      "expected": "Only sender leases inject; sender, receiver, and observer leases read; missing, unknown, wildcard, issuance-authority-missing, or store-mutated roles deny before routing or approval consumption and produce denial evidence.",
+      "expected": "Only sender leases inject; sender, receiver, and observer leases read; missing, unknown, wildcard, issuance-authority-missing, store-mutated, double-replaced, deserialized-forged, or signature-invalid roles deny before routing or approval consumption. A configured ledger records denial evidence; missing or failing persistence fails closed.",
       "evidence": "pytest output, hosted CI, signed ledger role-decision entries, and the release conformance JSON report",
-      "blind_spots": "This in-process authority binding does not prevent hostile reflection that mutates both private authority and lease stores, direct SDK calls outside MCPDispatcher, or establish the historical participant-mode, logical-target, generalized-executor, or bridge features.",
+      "blind_spots": "The signing key is process-local and leases are not restart-durable. Arbitrary code execution inside the dispatcher process could replace the verifier itself. Direct SDK calls outside MCPDispatcher and the historical participant-mode, logical-target, generalized-executor, and bridge features remain outside this control.",
       "tier": "release",
       "command": ["{python}", "-m", "pytest", "tests/test_enterprise/test_mcp_dispatch.py", "tests/test_enterprise/test_governed_runtime.py", "-q"]
     },

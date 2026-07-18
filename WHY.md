@@ -61,8 +61,9 @@ related records.
 **Source state:** `selfconnect-enterprise` draft PR #37 at
 `f0e2d820f4488f4ff0622f213220cc5da45d8439`
 
-**Decision:** Run the complete pytest suite once in the Windows CI lane, expose
-its full output, and apply the count and named-skip policy to that same result.
+**Decision:** Run the complete pytest suite once through one dedicated Windows
+CI runner. Derive pass, failure, and skip policy from pytest report objects,
+while retaining pytest's complete human-readable output.
 
 **Why:** Re-executing the suite does not strengthen evidence: it evaluates a
 different run. Capturing that second run without printing its failure details
@@ -74,9 +75,9 @@ rejected because it preserves duplicate cost and nondeterminism. Persist the
 first step's console output for a later step; rejected because the combined
 step is simpler and keeps result ownership explicit.
 
-**Consequences:** CI runs faster and every pytest failure remains visible. The
-workflow depends on pytest's stable terminal summary for count parsing, as it
-did previously.
+**Consequences:** CI runs faster, every pytest failure remains visible, and
+crafted terminal text cannot spoof the structured result policy. The dedicated
+runner is now part of the test-control boundary.
 
 **Rollback conditions:** Restore the prior two-step gate only if a separately
 versioned evidence artifact is required and both executions are intentionally
@@ -85,7 +86,7 @@ treated as distinct tests with complete diagnostics.
 **Evidence and links:** Hosted run 29650683874, actionlint, and
 `tests/test_enterprise/test_ci_test_execution.py`.
 
-## WHY-20260718-003 - Treat channel lease roles as immutable authority
+## WHY-20260718-003 - Treat signed channel lease roles as authority
 
 **Status:** Accepted
 **Decision date (UTC):** 2026-07-18T15:36:54Z
@@ -95,10 +96,10 @@ treated as distinct tests with complete diagnostics.
 **Source state:** `selfconnect-enterprise`, `origin/master`,
 `c094fb3c2de238aeb3c8411dd7366b7c4b6f246f`
 
-**Decision:** Bind each channel lease's role at issuance and enforce a closed
-tool-to-role capability matrix on every lease-authorized inject/read path.
-Runtime lease storage must match the independent issuance authority before the
-role can authorize an operation.
+**Decision:** Sign each channel lease's role at issuance with a process-local
+Ed25519 key and enforce a closed tool-to-role capability matrix on every
+lease-authorized inject/read path. Runtime lease storage must match a
+signature-valid issuance authority before the role can authorize an operation.
 
 **Why:** Role validation in JSON Schema prevented unknown values at the public
 tool boundary but did not authorize behavior. The dispatcher accepted any
@@ -111,12 +112,15 @@ was rejected because unknown modes became unrestricted and invalid Win32 tags
 downgraded to `agent`. Treating the frozen `RuntimeLease` alone as authority was
 rejected because the containing dictionary can replace the object. A role check
 only at issuance was rejected because it would not protect later tool calls.
+An unsigned duplicate authority map was rejected after adversarial review
+showed that replacing both runtime records could otherwise widen authority.
 
 **Consequences:** Injection is sender-only and denial occurs before target
 verification, policy/approval consumption, or routing. Existing request/response
 behavior is preserved by explicitly allowing sender, receiver, and observer
-leases to read. Role-denial evidence names the tool, issued/stored role, allowed
-roles, and reason without storing payload content.
+leases to read. When a persistent ledger is configured, role-denial evidence
+names the tool, issued/stored role, allowed roles, and reason without storing
+payload content; unavailable or failing denial evidence fails the request.
 
 **Rollback conditions:** Replace this binding only with an equal or stronger
 cryptographically or durably bound capability model. Do not restore descriptive

@@ -1,6 +1,7 @@
 """Tests for enterprise.mcp_dispatch — runtime execution for MCP tools."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from dataclasses import replace
@@ -359,6 +360,87 @@ class TestLeaseRuntime:
         ]
         assert decisions[-1]["metadata"]["stored_role"] == "sender"
         assert decisions[-1]["metadata"]["issued_role"] == "observer"
+
+    def test_double_replacement_cannot_forge_signed_issuance_authority(self):
+        dispatcher = make_dispatcher()
+        lease_id = issue_lease(dispatcher, hwnd=896, role="observer")
+        original_authority = dispatcher._lease_authorities[lease_id]
+        dispatcher._leases[lease_id] = replace(
+            dispatcher._leases[lease_id],
+            role="sender",
+        )
+        dispatcher._lease_authorities[lease_id] = replace(
+            original_authority,
+            role="sender",
+        )
+
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 896, "text": "must not route"},
+        )
+
+        assert result["ok"] is False
+        assert "authority signature is invalid" in result["error"]
+        assert dispatcher._router.routes == []
+
+    def test_deserialized_double_replacement_cannot_reuse_observer_signature(self):
+        dispatcher = make_dispatcher()
+        lease_id = issue_lease(dispatcher, hwnd=897, role="observer")
+        authority = dispatcher._lease_authorities[lease_id]
+        serialized = json.dumps(
+            {
+                "lease_id": authority.lease_id,
+                "agent_id": authority.agent_id,
+                "hwnd": authority.hwnd,
+                "role": "sender",
+                "signature": base64.b64encode(authority.signature).decode("ascii"),
+            }
+        )
+        restored = json.loads(serialized)
+        dispatcher._leases[lease_id] = replace(
+            dispatcher._leases[lease_id],
+            role=restored["role"],
+        )
+        dispatcher._lease_authorities[lease_id] = type(authority)(
+            lease_id=restored["lease_id"],
+            agent_id=restored["agent_id"],
+            hwnd=restored["hwnd"],
+            role=restored["role"],
+            signature=base64.b64decode(restored["signature"]),
+        )
+
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 897, "text": "must not route"},
+        )
+
+        assert result["ok"] is False
+        assert "authority signature is invalid" in result["error"]
+        assert dispatcher._router.routes == []
+
+    def test_role_denial_fails_closed_when_persistent_evidence_is_unavailable(self):
+        router = FakeRouter()
+        dispatcher = MCPDispatcher(
+            profile="normal",
+            router=router,
+            ledger=None,
+            policy_enforcer=AllowPolicyEnforcer(),
+            operator_queue=OperatorQueue(),
+            target_verifier=verified_target,
+            output_reader=lambda _hwnd: router.rendered,
+            now=lambda: 1000.0,
+        )
+        lease_id = issue_lease(dispatcher, hwnd=898, role="observer")
+
+        result = dispatcher.call_tool(
+            "sc_inject_text",
+            {"lease_id": lease_id, "hwnd": 898, "text": "must not route"},
+        )
+
+        assert result["ok"] is False
+        assert "denial evidence could not be persisted" in result["error"]
+        assert "persistent lease role denial evidence is unavailable" in result["error"]
+        assert router.routes == []
 
     def test_missing_issuance_authority_cannot_fall_back_to_stored_role(self):
         dispatcher = make_dispatcher()

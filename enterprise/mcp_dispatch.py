@@ -24,6 +24,7 @@ from types import MappingProxyType
 from typing import Any, Callable
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from enterprise.control import ControlPlane
@@ -114,12 +115,13 @@ class RuntimeLease:
 
 @dataclass(frozen=True)
 class _LeaseAuthority:
-    """Issuance-time authority that mutable runtime lease storage cannot widen."""
+    """Signed issuance-time authority that runtime storage cannot widen."""
 
     lease_id: str
     agent_id: str
     hwnd: int
     role: str
+    signature: bytes
 
 
 @dataclass(frozen=True)
@@ -142,6 +144,27 @@ def _now() -> float:
 
 def _hash_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _lease_authority_payload(
+    *,
+    lease_id: str,
+    agent_id: str,
+    hwnd: int,
+    role: str,
+) -> bytes:
+    return json.dumps(
+        {
+            "agent_id": agent_id,
+            "hwnd": hwnd,
+            "lease_id": lease_id,
+            "role": role,
+            "schema": "selfconnect.lease-authority.v1",
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
 
 
 def _bound_error(value: str) -> str:
@@ -315,6 +338,10 @@ class MCPDispatcher:
         self._now = now
         self._leases: dict[str, RuntimeLease] = {}
         self._lease_authorities: dict[str, _LeaseAuthority] = {}
+        authority_private_key = Ed25519PrivateKey.generate()
+        authority_public_key = authority_private_key.public_key()
+        self._sign_lease_authority = authority_private_key.sign
+        self._authority_public_key = authority_public_key
         self._audit: list[AuditEvent] = []
         self._read_snapshots: dict[str, str] = {}
         self._injected_text: dict[str, str] = {}
@@ -432,7 +459,9 @@ class MCPDispatcher:
         reason: str,
     ) -> None:
         if self._ledger is None:
-            return
+            raise MCPDispatchError(
+                "persistent lease role denial evidence is unavailable"
+            )
         self._ledger.log(
             "lease_role_decision",
             result="denied",
@@ -494,6 +523,24 @@ class MCPDispatcher:
                 reason="lease issuance authority is missing",
             )
         assert authority is not None
+        try:
+            self._authority_public_key.verify(
+                authority.signature,
+                _lease_authority_payload(
+                    lease_id=authority.lease_id,
+                    agent_id=authority.agent_id,
+                    hwnd=authority.hwnd,
+                    role=authority.role,
+                ),
+            )
+        except (InvalidSignature, TypeError, ValueError):
+            self._deny_lease_role(
+                lease_id=lease_id,
+                tool=tool,
+                stored_role=lease.role,
+                issued_role=authority.role,
+                reason="lease issuance authority signature is invalid",
+            )
         if (
             lease.lease_id != authority.lease_id
             or lease.agent_id != authority.agent_id
@@ -775,11 +822,18 @@ class MCPDispatcher:
             target_class=str(target["class"]),
             target_title_hash=_hash_text(str(target.get("title", ""))),
         )
+        authority_payload = _lease_authority_payload(
+            lease_id=lease.lease_id,
+            agent_id=lease.agent_id,
+            hwnd=lease.hwnd,
+            role=lease.role,
+        )
         authority = _LeaseAuthority(
             lease_id=lease.lease_id,
             agent_id=lease.agent_id,
             hwnd=lease.hwnd,
             role=lease.role,
+            signature=self._sign_lease_authority(authority_payload),
         )
         self._lease_authorities[lease.lease_id] = authority
         self._leases[lease.lease_id] = lease

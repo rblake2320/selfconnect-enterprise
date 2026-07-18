@@ -64,9 +64,10 @@ related records sufficient to reconstruct the action.
 **Why:** [WHY-20260718-004](WHY.md#why-20260718-004)
 **Parked records:** [PARK-20260718-004](PARKED.md#park-20260718-004)
 
-**Changed:** Combined the Windows unit-test and result-policy steps into one
-pytest execution, print its complete output before enforcing its return code,
-and added a workflow regression test.
+**Changed:** Replaced the Windows unit-test and result-policy steps with one
+dedicated runner. A pytest plugin records structured report objects directly,
+while pytest prints its normal diagnostics. Workflow and AST regressions enforce
+the sole entrypoint and one `pytest.main` call without shell/subprocess aliases.
 
 **Reason:** Hosted run 29650683874 passed its first full suite (1,639 passed)
 then failed a redundant second run. The second step captured and suppressed the
@@ -94,11 +95,12 @@ product defect because the former workflow did not retain its identity.
 **Why:** [WHY-20260718-003](WHY.md#why-20260718-003)
 **Parked records:** [PARK-20260718-003](PARKED.md#park-20260718-003)
 
-**Changed:** Added a closed lease-role capability matrix, a separate immutable
-issuance-authority record, per-operation authority revalidation, and explicit
-denial evidence. `sc_inject_text` is sender-only. Existing sender, receiver, and
-observer roles may read output. Unknown, wildcard, missing, or store-mutated
-roles cannot create or widen actuation authority.
+**Changed:** Added a closed lease-role capability matrix, a separately signed
+issuance-authority record, per-operation signature and authority revalidation,
+and explicit denial evidence. `sc_inject_text` is sender-only. Existing sender,
+receiver, and observer roles may read output. Unknown, wildcard, missing,
+store-mutated, double-replaced, or deserialized-forged roles cannot create or
+widen actuation authority.
 
 **Reason:** The tool schema constrained role names, but the runtime used the
 stored role only for display and filtering. A valid observer lease could invoke
