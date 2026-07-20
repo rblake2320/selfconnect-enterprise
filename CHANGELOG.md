@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Authenticated stream process
+
+- Added a shipped receiver service and bounded publisher command for the Ultra
+  independent-state outbox. Both require file-held keys and schema attestation;
+  remote plaintext transport is refused.
+
 ### Authenticated Ultra state transport
 
 - Added production composition factories for the Ultra ordered publisher and

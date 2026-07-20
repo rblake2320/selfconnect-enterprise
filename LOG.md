@@ -54,6 +54,37 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260720-009 - Ship the authenticated stream process boundary
+
+**Timestamp (UTC):** 2026-07-20T22:05:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation and verification
+**Base commit:** `2a2f20e60ee70e4cb3fe91daaaad327165af9e38`
+**Change reference:** commit containing this entry
+**Why:** [WHY-20260720-009](WHY.md#why-20260720-009)
+**Parked records:** None
+
+**Changed:** Added a shipped receiver service and bounded publisher command
+that open independently attested PostgreSQL authorities, load transport and
+Ed25519 keys from files, and compose the authenticated Ultra state stream.
+
+**Reason:** The reviewed transport factories were not yet reachable through a
+supported production process, so deployment could not exercise them without
+custom glue.
+
+**Full actions and links:** `ultra_server/ultra-state-stream-command.mjs`,
+`ultra_server/ultra-state-outbox.test.mjs`, the Ultra Server README, and the
+independent-state operations runbook.
+
+**Validation:** The real two-PostgreSQL drill now starts the shipped receiver as
+a child process, drains through a separate publisher process over HTTP, verifies
+five signed acknowledgements, and proves the receiver state and durable source
+ACKs. The ordinary Ultra unit and package-content suites also pass.
+
+**Boundary:** The built-in listener is loopback-only and remote publisher URLs
+must use HTTPS. Site availability and failover evidence remain tracked in
+Enterprise issue 28.
+
 ## LOG-20260720-008 - Compose authenticated Ultra outbox transport
 
 **Timestamp (UTC):** 2026-07-20T22:00:00Z

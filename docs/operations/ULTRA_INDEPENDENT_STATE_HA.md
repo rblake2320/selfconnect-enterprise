@@ -112,6 +112,16 @@ durable receipt contains no secret. Retries return the same credential.
 Manifest v1 heads are not upgraded at the same epoch. Run a new governed
 promotion to produce a v2 manifest and new target credentials.
 
+## Authenticated stream process
+
+`ultra-state-stream-command.mjs receiver` opens the attested receiver database
+and durable replay-nonce authority, then binds loopback. `publish-once` opens
+the attested source database, drains in order, and exits with a JSON result.
+Neither command provisions schemas or authority rows. Remote plaintext URLs and
+direct non-loopback receiver binds are refused; use an authenticated TLS/mTLS
+proxy between sites. Request, response-envelope, and receiver-signing keys are
+separate file-held custody boundaries.
+
 This mechanism is not a government authorization or a claim about an untested
 cloud/site topology. Site-fault, restore/resync, failback, monitoring, and
 measured RPO/RTO evidence remain required before closing Enterprise issue #28.

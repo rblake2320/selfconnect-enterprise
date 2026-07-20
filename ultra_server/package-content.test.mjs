@@ -17,6 +17,7 @@ const expectedRuntimeFiles = [
   'security-boundary.js',
   'server.js',
   'ultra-state-outbox.js',
+  'ultra-state-stream-command.mjs',
 ];
 
 test('npm package uses an explicit runtime-only file allowlist', async () => {
