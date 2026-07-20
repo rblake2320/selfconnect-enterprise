@@ -29,6 +29,12 @@ import {
 import { enforceBpcAuthorization } from './security-boundary.js';
 import { UltraHaController, loadUltraHaConfig } from './ha-controller.js';
 import {
+  PgNonceTombstoneStore,
+  ULTRA_INDEPENDENT_STATE_SCHEMA,
+  assertIndependentStateReady,
+  loadIndependentStateRuntimeConfig,
+} from './independent-state.js';
+import {
   createMetricsAuthMiddleware,
   metricAuthFailureLabel,
   metricMethodLabel,
@@ -54,7 +60,7 @@ import {
   MemoryNonceBackend,
   MemoryAnomalyStore,
   PgPairStore,
-  PG_SCHEMA,
+  BPC_PAIR_PG_SCHEMA,
   RedisAnomalyStore,
   RedisNonceStore,
   RedisRateLimiter,
@@ -105,6 +111,8 @@ if (!['development', 'production'].includes(RUNTIME_MODE)) {
   throw new Error('ULTRA_RUNTIME_MODE must be development or production');
 }
 const HA_CONFIG = loadUltraHaConfig(process.env, RUNTIME_MODE);
+const INDEPENDENT_CONFIG = loadIndependentStateRuntimeConfig(process.env, HA_CONFIG, RUNTIME_MODE);
+const HA_STATE_MODE = INDEPENDENT_CONFIG.mode;
 
 // Operator authorization is separate from the per-agent Ed25519 proof.
 // LIFECYCLE_SECRET remains a development compatibility alias only.
@@ -133,6 +141,7 @@ let nonceBackendType;
 let rateLimiter;
 let ipRateLimiter;
 let haController = null;
+let independentStateReady = null;
 
 const RATE_LIMIT_WINDOW_MS = parseInt(process.env.BPC_RATE_LIMIT_WINDOW_MS ?? '60000', 10);
 const IP_RATE_LIMIT = parseInt(process.env.BPC_IP_RATE_LIMIT ?? '200', 10);
@@ -175,7 +184,12 @@ if (RUNTIME_MODE === 'production') {
   const [{ Pool }, { default: Redis }] = await Promise.all([import('pg'), import('ioredis')]);
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   await pool.query('SELECT 1');
-  await initializePgSchemas(pool, PG_SCHEMA, ULTRA_PG_SCHEMA);
+  await initializePgSchemas(
+    pool,
+    BPC_PAIR_PG_SCHEMA,
+    ULTRA_PG_SCHEMA,
+    ...(HA_STATE_MODE === 'independent' ? [ULTRA_INDEPENDENT_STATE_SCHEMA] : []),
+  );
 
   const redisClient = new Redis(process.env.REDIS_URL, {
     lazyConnect: true,
@@ -188,7 +202,9 @@ if (RUNTIME_MODE === 'production') {
   await redisClient.connect();
   pairStore = new PgPairStore(pool);
   anomalyStore = new RedisAnomalyStore(redisClient, 'ultra:anomaly:');
-  nonceBackend = new RedisNonceStore(redisClient, 'ultra:nonce:');
+  nonceBackend = HA_STATE_MODE === 'independent'
+    ? new PgNonceTombstoneStore(pool)
+    : new RedisNonceStore(redisClient, 'ultra:nonce:');
   const pgTskStore = new PgTumblerStore(pool);
   if (HA_CONFIG.enabled) {
     const fenceStore = new RedisFencingStore(redisClient, HA_CONFIG.fenceKey);
@@ -208,9 +224,12 @@ if (RUNTIME_MODE === 'production') {
   }
   identityBinding = new PgIdentityBindingStore(pool);
   idempotencyStore = new PgIdempotencyStore(pool);
-  nonceBackendType = 'redis';
+  nonceBackendType = HA_STATE_MODE === 'independent' ? 'postgresql-ha' : 'redis';
   ipRateLimiter = new RedisRateLimiter(redisClient, IP_RATE_LIMIT, RATE_LIMIT_WINDOW_MS, 'ultra:rate:ip:');
   rateLimiter = new RedisRateLimiter(redisClient, PAIR_RATE_LIMIT, RATE_LIMIT_WINDOW_MS, 'ultra:rate:pair:');
+  if (INDEPENDENT_CONFIG.expected) {
+    independentStateReady = await assertIndependentStateReady(pool, INDEPENDENT_CONFIG.expected);
+  }
 } else {
   pairStore = new MemoryPairStore();
   anomalyStore = new MemoryAnomalyStore();
@@ -891,6 +910,14 @@ app.get('/ready', async (_req, res) => {
   if (!writable.ok) {
     return res.status(503).json({ ok: false, haEnabled: true, writable: false, error: 'ULTRA_WRITER_FENCED' });
   }
+  if (HA_STATE_MODE === 'independent' && !independentStateReady) {
+    return res.status(503).json({
+      ok: false,
+      haEnabled: true,
+      writable: false,
+      error: 'ULTRA_INDEPENDENT_STATE_NOT_ATTESTED',
+    });
+  }
   return res.json({
     ok: true,
     haEnabled: true,
@@ -1014,6 +1041,7 @@ app.get('/status', requireAdminAuth, async (req, res) => {
       nonceBackend: nonceBackendType,
       runtimeMode:  RUNTIME_MODE,
       ha,
+      haStateMode: HA_STATE_MODE,
       keyRotation: {
         adminVerificationKeys: [ADMIN_TOKEN, ADMIN_TOKEN_PREVIOUS].filter(Boolean).length,
         recoveryVerificationKeys: recoveryKeyring.verificationKeys.size,

@@ -54,6 +54,73 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260720-003 - Add independent Ultra state handoff foundation
+
+**Timestamp (UTC):** 2026-07-20T20:51:24Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, security, test, documentation
+**Base commit:** `1d4931eeac788ad678af6292c2ffe70de2be7679`
+**Change reference:** commit containing this entry; draft PR #40; Enterprise issue #28
+**Why:** [WHY-20260720-003](WHY.md#why-20260720-003)
+**Parked records:** [PARK-20260720-003](PARKED.md#park-20260720-003)
+
+**Changed:** Added `ultra_server/independent-state.js`, its custody-separated
+CLI, PostgreSQL schemas, production replay-nonce selection, fail-closed runtime
+readiness binding, two-authority CI drill, and the independent-state runbook.
+Also replaced repeated use of BPC's deliberately fresh-only `PG_SCHEMA` with
+the exact idempotent `BPC_PAIR_PG_SCHEMA` compatibility DDL.
+
+**Reason:** Completed BPC/TSK authorities did not cover Enterprise-owned
+identity, idempotency, or request-replay state, and the new BPC fresh-install
+guard correctly made Ultra's former restart behavior fail.
+
+**Full actions and links:** `ultra_server/independent-state.js`,
+`ultra_server/independent-state-command.mjs`, the independent-state tests and
+runbook, draft PR #40, and Enterprise issue #28.
+
+**Validation:** Local Node suite passed 35/35 with two named PostgreSQL
+environment skips. The fail-not-skip independent-state drill passed against
+two digest-pinned PostgreSQL 17.5 containers with distinct
+`pg_control_system()` identifiers. The exact pinned BPC package started,
+stopped, and restarted over the same database after the schema fix. Hosted CI
+run 29778730680 passed all four required jobs on PR head `741c05e`, including
+1,751 collected Python tests, the Windows live contract, and the production
+PostgreSQL/Redis durability job.
+
+**Notes:** Issue #28 remains open for full BPC/TSK runtime composition,
+site/Redis/host fault injection, restore/resync/failback, key ceremony,
+monitoring, and measured RPO/RTO.
+
+## LOG-20260720-002 - Adopt completed BPC and TSK HA foundations
+
+**Timestamp (UTC):** 2026-07-20T20:40:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, dependency, test
+**Base commit:** `9e69c6eaff0b7ca522a808075daea6bf41b592ad`
+**Change reference:** commit containing this entry; Enterprise issue #28
+**Why:** [WHY-20260720-002](WHY.md#why-20260720-002)
+**Parked records:** [PARK-20260720-002](PARKED.md#park-20260720-002)
+
+**Changed:** Advanced `portfolio-lock.json` from BPC `772271e1` to
+`aedf67b8` and from TSK `9cff3e25` to `00e7457f`, retaining full immutable
+commit identities.
+
+**Reason:** The prior pins predated the merged production PostgreSQL
+transactors, durable application-level replication, authenticated transport,
+fenced promotion, receiver import, Sentinel/quorum, partition, and crash drills
+needed as reviewed foundations for Enterprise independent-state composition.
+
+**Full actions and links:** `portfolio-lock.json`, BPC master
+`aedf67b89574066e1df0575e68fdb58ea0dc9297`, TSK master
+`00e7457f4ca19435794b3e876a37bd7f90b99317`, and Enterprise issue #28.
+
+**Validation:** Portfolio conformance, both pinned protocol suites, Ultra unit
+and live contract suites, and the hosted PostgreSQL/Redis durability job attach
+to the resulting commit.
+
+**Notes:** A compatible pin is a prerequisite, not an Enterprise multi-site HA
+claim. Ultra composition and its own acceptance drill remain required.
+
 ## LOG-20260720-001 - Compose the verified TPM platform quote path
 
 **Timestamp (UTC):** 2026-07-20T20:20:00Z

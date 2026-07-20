@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Independent Ultra state handoff foundation
+
+- Added a custody-separated, dual-signed A-to-B handoff for Enterprise-owned
+  identity bindings, completed idempotency tombstones, and durable replay-nonce
+  hashes. The manifest binds the exact BPC and TSK promotion receipt digests.
+- Independent mode now uses PostgreSQL as the nonce authority and refuses
+  tamper, rollback, same-epoch forks, in-flight work, same-database targets, and
+  secret-bearing response export. This is a mechanism slice toward issue #28,
+  not its site-availability acceptance. Evidence: [LOG-20260720-003](LOG.md#log-20260720-003),
+  rationale: [WHY-20260720-003](WHY.md#why-20260720-003), recovery:
+  [PARK-20260720-003](PARKED.md#park-20260720-003).
+
+### Completed protocol HA foundations
+
+- Advanced the immutable BPC and TSK pins to their exact green masters after
+  their independent-state promotion, partition, crash-recovery, and durability
+  acceptance work completed. This makes those reviewed mechanisms available to
+  the Enterprise Ultra composition without reimplementing them here.
+- This dependency advance alone does not close Enterprise issue #28; Ultra must
+  still compose the authorities and pass its own named topology drill. Evidence:
+  [LOG-20260720-002](LOG.md#log-20260720-002), rationale:
+  [WHY-20260720-002](WHY.md#why-20260720-002), recovery:
+  [PARK-20260720-002](PARKED.md#park-20260720-002).
+
 ### Pinned TPM platform attestation
 
 - Advanced the SelfConnect SDK pin to `787a6b88` and made its operator-pinned,
