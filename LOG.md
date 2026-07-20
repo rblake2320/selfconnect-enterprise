@@ -74,6 +74,10 @@ the exact idempotent `BPC_PAIR_PG_SCHEMA` compatibility DDL.
 identity, idempotency, or request-replay state, and the new BPC fresh-install
 guard correctly made Ultra's former restart behavior fail.
 
+**Full actions and links:** `ultra_server/independent-state.js`,
+`ultra_server/independent-state-command.mjs`, the independent-state tests and
+runbook, draft PR #40, and Enterprise issue #28.
+
 **Validation:** Local Node suite passed 33/33 with two environment skips. The
 fail-not-skip independent-state drill passed against two digest-pinned
 PostgreSQL 17.5 containers with distinct `pg_control_system()` identifiers.

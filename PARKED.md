@@ -94,20 +94,47 @@ sources, limitations, and all related records.
 ## PARK-20260720-003 - Shared Redis replay authority and fresh-only restart call
 
 **Status:** Parked
-**Source:** `selfconnect-enterprise` commit `1d4931ee`,
-`ultra_server/server.js`
+**Category:** security property
+**Former location:** `ultra_server/server.js`, replay nonce selection and
+PostgreSQL schema initialization
+**Source commit:** `1d4931eeac788ad678af6292c2ffe70de2be7679`
+**Affected paths:** `ultra_server/server.js`, `ultra_server/storage.js`,
+`ultra_server/independent-state.js`, and production HA configuration
+**Action log:** [LOG-20260720-003](LOG.md#log-20260720-003)
+**Why changed:** [WHY-20260720-003](WHY.md#why-20260720-003)
+**Parked by:** commit containing this record
+
+**Former wording:** Independent and shared deployments both used Redis replay
+nonces, and startup repeatedly executed BPC's fresh-install-only `PG_SCHEMA`.
+
+**Recovery source:** `ultra_server/server.js` at the source commit.
+
 **Reason parked:** Independent mode requires replay tombstones to move with its
 authoritative PostgreSQL state. The newly pinned BPC `PG_SCHEMA` is deliberately
 fresh-only and cannot be invoked on every restart.
+
 **Replacement:** `PgNonceTombstoneStore` in independent mode and exact
 `BPC_PAIR_PG_SCHEMA` compatibility initialization.
-**Restore:** Revert the implementation commit containing LOG-20260720-003 and
-set `ULTRA_HA_STATE_MODE=shared`. Do not call that rollback independent-state
-HA.
-**Validation:** Run `npm test --prefix ultra_server`, the production restart
-job, and the independent-state drill as applicable.
-**Rehearsal:** The former shared mode remains covered; full rollback was not
-performed because it would intentionally restore the detected restart defect.
+
+**Restore when:** Only after reproducing an incompatibility in shared mode;
+never as an independent-state HA configuration.
+
+**Restore procedure:** Set `ULTRA_HA_STATE_MODE=shared`, revert the
+implementation commit containing LOG-20260720-003, and retain the restart
+regression while investigating the incompatibility.
+
+**Validation after restore:** Run `npm test --prefix ultra_server`, the
+production restart job, and the independent-state drill as applicable.
+
+**Recovery rehearsal:** Not rehearsed. The former shared mode remains covered,
+but restoring the detected fresh-schema restart defect is not acceptable.
+
+**Restoration risks:** Replay tombstones would no longer follow an independent
+PostgreSQL authority, and repeated fresh-only DDL would break restart.
+
+**Evidence and links:** [LOG-20260720-003](LOG.md#log-20260720-003),
+[WHY-20260720-003](WHY.md#why-20260720-003), draft PR #40, and Enterprise
+issue #28.
 
 ## PARK-20260720-002 - Pre-completion BPC and TSK protocol pins
 

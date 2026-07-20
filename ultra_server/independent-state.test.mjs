@@ -121,6 +121,7 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
   const pairId = `pair-${suffix}`;
   const safeKey = randomUUID();
   const secretKey = randomUUID();
+  const processingKey = randomUUID();
   const lockKey = `ultra-ha:${clusterId}:transition`;
   const nonceHash = createHash('sha256').update(`nonce-${suffix}`, 'utf8').digest('hex');
   try {
@@ -253,6 +254,15 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     )).rows[0].response.error, 'SECRET_REPROVISION_REQUIRED');
     const nonceB = new PgNonceTombstoneStore(b);
     assert.equal(await nonceB.checkAndConsume(`nonce-${suffix}`, 120_000), true);
+    await b.query(
+      `INSERT INTO ultra_idempotency (idempotency_key, operation, agent_id, state)
+       VALUES ($1,'in-flight-op',$2,'processing')`,
+      [processingKey, `agent-${suffix}`],
+    );
+    await assert.rejects(assertIndependentStateReady(b, {
+      clusterId, commandId, sourceEpoch: 1, manifestDigest: bundle.manifestDigest,
+    }), /in-flight idempotency/);
+    await b.query('DELETE FROM ultra_idempotency WHERE idempotency_key=$1', [processingKey]);
     assert.equal((await assertIndependentStateReady(b, {
       clusterId, commandId, sourceEpoch: 1, manifestDigest: bundle.manifestDigest,
     })).targetSystemId, systemB.rows[0].id);
@@ -290,7 +300,10 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     for (const pool of [a, b]) {
       await pool.query('DELETE FROM ultra_ha_import_head WHERE cluster_id=$1', [clusterId]).catch(() => {});
       await pool.query('DELETE FROM ultra_identity_bindings WHERE pair_id=$1', [pairId]).catch(() => {});
-      await pool.query('DELETE FROM ultra_idempotency WHERE idempotency_key IN ($1,$2)', [safeKey, secretKey]).catch(() => {});
+      await pool.query(
+        'DELETE FROM ultra_idempotency WHERE idempotency_key IN ($1,$2,$3)',
+        [safeKey, secretKey, processingKey],
+      ).catch(() => {});
       await pool.query('DELETE FROM ultra_nonce_tombstones WHERE nonce_hash=$1', [nonceHash]).catch(() => {});
       await pool.end();
     }

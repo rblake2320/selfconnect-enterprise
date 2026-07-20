@@ -586,27 +586,35 @@ export async function importIndependentState(pool, bundle, input) {
 }
 
 export async function assertIndependentStateReady(pool, expected) {
-  const { rows } = await pool.query(
-    `SELECT command_id, source_epoch, source_system_id, target_system_id,
-            manifest_digest, authority_digest
-     FROM ultra_ha_import_head WHERE cluster_id=$1`,
-    [expected.clusterId],
-  );
-  const row = rows[0];
-  if (!row || row.command_id !== expected.commandId || Number(row.source_epoch) !== expected.sourceEpoch ||
-      row.manifest_digest !== expected.manifestDigest) throw new Error('independent state is not ready');
-  const liveSystemId = await systemIdentifier(pool);
-  if (row.target_system_id !== liveSystemId || row.source_system_id === liveSystemId) {
-    throw new Error('independent state authority mismatch');
-  }
-  if (digest(await readTargetAuthorityState(pool)) !== row.authority_digest) {
-    throw new Error('independent state authority was rolled back or tampered');
-  }
-  return Object.freeze({
-    clusterId: expected.clusterId,
-    commandId: expected.commandId,
-    manifestDigest: expected.manifestDigest,
-    sourceEpoch: expected.sourceEpoch,
-    targetSystemId: liveSystemId,
+  return withSerializable(pool, async (client) => {
+    const { rows } = await client.query(
+      `SELECT command_id, source_epoch, source_system_id, target_system_id,
+              manifest_digest, authority_digest
+       FROM ultra_ha_import_head WHERE cluster_id=$1 FOR SHARE`,
+      [expected.clusterId],
+    );
+    const row = rows[0];
+    if (!row || row.command_id !== expected.commandId || Number(row.source_epoch) !== expected.sourceEpoch ||
+        row.manifest_digest !== expected.manifestDigest) throw new Error('independent state is not ready');
+    const processing = await client.query(
+      "SELECT COUNT(*)::int AS count FROM ultra_idempotency WHERE state='processing'",
+    );
+    if (processing.rows[0].count !== 0) {
+      throw new Error('independent state contains in-flight idempotency work');
+    }
+    const liveSystemId = await systemIdentifier(client);
+    if (row.target_system_id !== liveSystemId || row.source_system_id === liveSystemId) {
+      throw new Error('independent state authority mismatch');
+    }
+    if (digest(await readTargetAuthorityState(client)) !== row.authority_digest) {
+      throw new Error('independent state authority was rolled back or tampered');
+    }
+    return Object.freeze({
+      clusterId: expected.clusterId,
+      commandId: expected.commandId,
+      manifestDigest: expected.manifestDigest,
+      sourceEpoch: expected.sourceEpoch,
+      targetSystemId: liveSystemId,
+    });
   });
 }
