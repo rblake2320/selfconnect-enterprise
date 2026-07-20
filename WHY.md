@@ -51,6 +51,39 @@ related records.
 
 ## Register
 
+## WHY-20260720-008 - Require authenticated decision-bound delivery
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T22:00:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-008](LOG.md#log-20260720-008)
+**Parked records:** None
+**Source state:** Enterprise master at `d036645a71bd84de482b60f625eb76ca4e56d27d`
+
+**Decision:** Compose the Enterprise stream with BPC's bounded HMAC HTTP
+transport and durable replay store, then require an Ed25519 receipt binding the
+exact record, decision, key, and expected receiver identity before source ACK.
+
+**Why:** TLS location or HTTP success alone does not prove that the authorized
+receiver durably applied a particular record. A replayable or decision-unbound
+ACK can drop unapplied authority state.
+
+**Alternatives considered:** Plain JSON POST (rejected as unauthenticated and
+replayable); trust HTTP 200 (rejected because transport completion is not
+durable ownership); HMAC-only inner receipt (rejected because receiver custody
+would be indistinguishable from shared transport-key custody).
+
+**Consequences:** Transport has separate request, response-envelope, and
+receiver-signing authorities. Network ambiguity leaves the source row unacked;
+receiver idempotency makes a later redelivery safe.
+
+**Rollback conditions:** Replace only with a transport that preserves bounded
+raw-body authentication, durable nonce replay rejection, request-attempt-bound
+responses, expected-receiver signatures, and record/decision binding.
+
+**Evidence and links:** `ultra_server/ultra-state-outbox.test.mjs`,
+[LOG-20260720-008](LOG.md#log-20260720-008), and Enterprise issue #28.
+
 ## WHY-20260720-007 - Reuse the reviewed durable-outbox contract
 
 **Status:** Accepted

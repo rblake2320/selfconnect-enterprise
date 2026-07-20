@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Authenticated Ultra state transport
+
+- Added production composition factories for the Ultra ordered publisher and
+  receiver over the BPC authenticated HTTP transport. Receiver decisions are
+  Ed25519-signed over the exact record and receiver identity; request replay is
+  rejected by the durable PostgreSQL nonce authority. Evidence:
+  [LOG-20260720-008](LOG.md#log-20260720-008), rationale:
+  [WHY-20260720-008](WHY.md#why-20260720-008).
+
 ### Transactional Ultra state outbox
 
 - Added BPC-contract-backed durable outbox adapters for Enterprise identity

@@ -58,6 +58,14 @@ and verify checkpoint convergence before declaring a target current. BPC pair
 authority and TSK HOTP/source authority continue to use their own pinned
 protocol implementations; this Ultra stream does not replace them.
 
+The same module exposes `createUltraStateHttpPublisher` and
+`createUltraStateHttpReceiver`. They compose BPC's hard-capped HMAC transport,
+PostgreSQL replay-nonce authority, ordered publisher, and receiver checkpoint.
+The receiver additionally signs its exact decision with an Ed25519 custody key;
+the publisher pins the expected receiver ID and public key. Request HMAC,
+response-envelope HMAC, and receiver-signing keys are separate rotation and
+custody boundaries.
+
 ## Custody-separated commands
 
 All JSON descriptors are non-secret. `DATABASE_URL` stays in the process

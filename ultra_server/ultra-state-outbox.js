@@ -1,6 +1,13 @@
-import { createHash } from 'node:crypto';
+import { createHash, sign as cryptoSign, verify as cryptoVerify } from 'node:crypto';
 
-import { ContractValidationError, canonicalize } from '@bpc/server';
+import {
+  ContractValidationError,
+  HttpOutboxTransport,
+  PgDurablePublisher,
+  PgReceiverCheckpoint,
+  canonicalize,
+  createHttpOutboxReceiver,
+} from '@bpc/server';
 
 const ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -36,6 +43,117 @@ function uuid(value, name) {
 
 function digest(value) {
   return createHash('sha256').update(canonicalize(value), 'utf8').digest('hex');
+}
+
+function ackMessage(receipt) {
+  return Buffer.from(canonicalize({
+    domain: 'selfconnect-ultra-state-ack/v1',
+    streamId: receipt.streamId,
+    sourceEpoch: receipt.sourceEpoch,
+    sequence: receipt.sequence,
+    opDigest: receipt.opDigest,
+    decision: receipt.decision,
+    receiverId: receipt.receiverId,
+    keyId: receipt.keyId,
+    issuedAt: receipt.issuedAt,
+  }), 'utf8');
+}
+
+export function signUltraStateAck(record, decision, options) {
+  const privateKey = options.privateKey;
+  if (!privateKey || privateKey.type !== 'private' || privateKey.asymmetricKeyType !== 'ed25519') {
+    throw new ContractValidationError('Ultra ACK signer requires a private Ed25519 KeyObject');
+  }
+  const receipt = {
+    streamId: id(record.streamId, 'record.streamId'),
+    sourceEpoch: id(record.sourceEpoch, 'record.sourceEpoch'),
+    sequence: record.sequence,
+    opDigest: record.opDigest,
+    decision,
+    receiverId: id(options.receiverId, 'receiverId'),
+    keyId: id(options.keyId, 'keyId'),
+    issuedAt: new Date(options.now?.() ?? Date.now()).toISOString(),
+  };
+  if (!Number.isSafeInteger(receipt.sequence) || receipt.sequence < 1 ||
+      !HEX64.test(receipt.opDigest) || typeof receipt.decision !== 'string') {
+    throw new ContractValidationError('Ultra ACK fields invalid');
+  }
+  return Object.freeze({
+    ...receipt,
+    signature: cryptoSign(null, ackMessage(receipt), privateKey).toString('base64url'),
+  });
+}
+
+export function createUltraStateAckVerifier(resolvePublicKey, expectedReceiverId) {
+  if (typeof resolvePublicKey !== 'function') throw new ContractValidationError('Ultra ACK key resolver required');
+  id(expectedReceiverId, 'expectedReceiverId');
+  return Object.freeze({
+    async verify(receipt, record) {
+      const publicKey = resolvePublicKey(receipt.keyId);
+      if (!publicKey || publicKey.type !== 'public' || publicKey.asymmetricKeyType !== 'ed25519') {
+        throw new ContractValidationError('Ultra ACK key is unknown or not public Ed25519');
+      }
+      if (receipt.receiverId !== expectedReceiverId ||
+          receipt.streamId !== record.streamId || receipt.sourceEpoch !== record.sourceEpoch ||
+          receipt.sequence !== record.sequence || receipt.opDigest !== record.opDigest ||
+          !cryptoVerify(null, ackMessage(receipt), publicKey, Buffer.from(receipt.signature, 'base64url'))) {
+        throw new ContractValidationError('Ultra ACK is forged or not bound to the record');
+      }
+    },
+  });
+}
+
+export function createUltraStateHttpReceiver(options) {
+  const ackVerifier = createUltraStateAckVerifier(options.resolveAckPublicKey, options.receiverId);
+  const checkpoint = new PgReceiverCheckpoint(
+    options.db, id(options.streamId, 'streamId'), ultraStateMutationSanitizer,
+    new UltraStateMutationApplier(), options.ready,
+  );
+  const handler = createHttpOutboxReceiver({
+    expectedPath: options.expectedPath,
+    resolveRequestKey: options.resolveRequestKey,
+    responseKeyId: options.responseKeyId,
+    responseSecret: options.responseSecret,
+    nonceStore: options.nonceStore,
+    freshnessMs: options.freshnessMs,
+    nonceSafetyMs: options.nonceSafetyMs,
+    maxBodyBytes: options.maxBodyBytes,
+    bodyReadMs: options.bodyReadMs,
+    receive: async (record) => signUltraStateAck(
+      record,
+      await checkpoint.verifyAndApplyDelivered(record),
+      {
+        receiverId: options.receiverId,
+        keyId: options.ackKeyId,
+        privateKey: options.ackPrivateKey,
+        now: options.now,
+      },
+    ),
+  });
+  return Object.freeze({ ackVerifier, checkpoint, handler });
+}
+
+export function createUltraStateHttpPublisher(options) {
+  const ackVerifier = createUltraStateAckVerifier(
+    options.resolveAckPublicKey, options.expectedReceiverId,
+  );
+  const transport = new HttpOutboxTransport({
+    url: options.url,
+    fetch: options.fetch,
+    requestKeyId: options.requestKeyId,
+    requestSecret: options.requestSecret,
+    resolveResponseKey: options.resolveResponseKey,
+    ackVerifier,
+    timeoutMs: options.timeoutMs,
+    maxRequestBytes: options.maxRequestBytes,
+    maxResponseBytes: options.maxResponseBytes,
+  });
+  const publisher = new PgDurablePublisher(
+    options.db, id(options.streamId, 'streamId'), transport,
+    'fail-authoritative-mutation', ultraStateMutationSanitizer,
+    ackVerifier, options.ready, { leaseMs: options.leaseMs ?? 30_000 },
+  );
+  return Object.freeze({ ackVerifier, publisher, transport });
 }
 
 function containsSecret(value, key = '') {
