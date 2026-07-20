@@ -54,6 +54,38 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260720-007 - Couple Ultra mutations to a durable outbox
+
+**Timestamp (UTC):** 2026-07-20T21:50:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security, implementation, test, documentation
+**Base commit:** `0bafcfcb085315024470e942bbb9d2124f8fe869`
+**Change reference:** commit containing this entry; Enterprise issue #28
+**Why:** [WHY-20260720-007](WHY.md#why-20260720-007)
+**Parked records:** [PARK-20260720-007](PARKED.md#park-20260720-007)
+
+**Changed:** Added strict Ultra mutation sanitization, replicated identity,
+idempotency, and nonce stores, and an independent receiver applier on the
+reviewed BPC durable-outbox/checkpoint contract.
+
+**Reason:** Snapshot handoff freezes a bounded authority, but mutations made
+between snapshots need an atomic ordered replication record. Writing data and
+a later best-effort record can lose or invent the standby tail.
+
+**Full actions and links:** `ultra_server/ultra-state-outbox.js`, its real
+two-authority test, package boundary, hosted CI wiring, and Enterprise issue
+#28.
+
+**Validation:** Local Ultra tests passed 36/36 with two named PostgreSQL skips.
+The fail-not-skip outbox drill passed against two distinct PostgreSQL 17
+authorities: five in-order records, independent atomic apply, duplicate-ok,
+secret stripping, rollback after append, and stale-fence rollback.
+
+**Notes:** This slice provides the Enterprise mutation adapters and receiver.
+Production server selection, transport/publisher operation, upstream BPC/TSK
+authority selection, and the full site fault matrix remain subsequent work in
+issue 28.
+
 ## LOG-20260720-006 - Pin the independent-state PostgreSQL catalog
 
 **Timestamp (UTC):** 2026-07-20T21:37:43Z

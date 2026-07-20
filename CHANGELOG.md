@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Transactional Ultra state outbox
+
+- Added BPC-contract-backed durable outbox adapters for Enterprise identity
+  bindings, idempotency state, and PostgreSQL nonce tombstones. Each authority
+  mutation and its ordered replication record now share one serializable
+  transaction; secret-bearing responses become deterministic reprovision
+  tombstones before leaving the source. Evidence: [LOG-20260720-007](LOG.md#log-20260720-007),
+  rationale: [WHY-20260720-007](WHY.md#why-20260720-007), recovery:
+  [PARK-20260720-007](PARKED.md#park-20260720-007).
+
 ### Compiled independent-state schema authority
 
 - Every independent-state transaction now pins `public`, holds `ACCESS SHARE`

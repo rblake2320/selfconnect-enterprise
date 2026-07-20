@@ -17,7 +17,8 @@
     "recovery-token.js",
     "runtime-stores.js",
     "security-boundary.js",
-    "server.js"
+    "server.js",
+    "ultra-state-outbox.js"
   ],
   "scripts": {
     "start": "node server.js",
@@ -27,6 +28,7 @@
     "test:ha-live": "node ha-live-conformance.mjs",
     "test": "node --test agent-auth.test.mjs ha-controller.test.mjs independent-state-config.test.mjs monitoring-config.test.mjs monitoring-security.test.mjs package-content.test.mjs recovery-token.test.mjs runtime-stores.test.mjs security-boundary.test.mjs",
     "test:independent-state": "node --test independent-state.test.mjs",
+    "test:ultra-outbox": "node --test ultra-state-outbox.test.mjs",
     "test:live": "node server.test.mjs"
   },
   "dependencies": {
