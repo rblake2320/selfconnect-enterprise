@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { loadIndependentStateRuntimeConfig } from './independent-state.js';
+import {
+  independentStateAllowsWrites,
+  loadIndependentStateRuntimeConfig,
+} from './independent-state.js';
 
 const ha = { enabled: true, clusterId: 'cluster-1' };
 
@@ -39,4 +42,10 @@ test('independent-state promotion pins are all-or-none and strictly validated', 
     ULTRA_HA_REQUIRED_SOURCE_EPOCH: '0',
     ULTRA_HA_REQUIRED_MANIFEST_DIGEST: 'a'.repeat(64),
   }, ha, 'production'), /positive safe integer/);
+});
+
+test('every HA writer route fails closed until independent state is attested', () => {
+  assert.equal(independentStateAllowsWrites('independent', null), false);
+  assert.equal(independentStateAllowsWrites('independent', Object.freeze({ attested: true })), true);
+  assert.equal(independentStateAllowsWrites('shared', null), true);
 });

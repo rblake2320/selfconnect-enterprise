@@ -119,6 +119,10 @@ export function loadIndependentStateRuntimeConfig(env, haConfig, runtimeMode) {
   });
 }
 
+export function independentStateAllowsWrites(mode, ready) {
+  return mode !== 'independent' || ready !== null;
+}
+
 function requirePublicEd25519(key, name) {
   if (!key || key.type !== 'public' || key.asymmetricKeyType !== 'ed25519') {
     throw new Error(`${name} must be a public Ed25519 KeyObject`);
