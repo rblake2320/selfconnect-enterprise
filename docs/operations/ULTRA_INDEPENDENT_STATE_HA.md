@@ -45,10 +45,12 @@ node ultra_server/independent-state-command.mjs ready ready.json
 ```
 
 The export descriptor includes `clusterId`, `commandId`, `sourceEpoch`,
-`advisoryLockKey`, `bpcPromotionDigest`, `tskActivationDigest`, `sourceKeyId`,
-and `sourcePrivateKeyFile`. Import repeats all promotion bindings and names the
-signed bundle plus source/guard public-key files. Never transfer either private
-key with the bundle.
+`advisoryLockKey`, the full `protocolEvidence` object (BPC promotion
+attestation, TSK B-finalized receipt, and TSK activated lease), `sourceKeyId`,
+and `sourcePrivateKeyFile`. Guard and import descriptors provide public-key
+file maps for all three protocol resolvers. Import also repeats the three
+expected receipt digests, so a valid bundle cannot be substituted across an
+operator-approved cutover. Never transfer either private key with the bundle.
 
 ## Runtime gate
 

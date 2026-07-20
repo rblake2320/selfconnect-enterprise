@@ -28,6 +28,23 @@ async function publicKey(path) {
   return createPublicKey(await readFile(path));
 }
 
+async function resolverFromFiles(files, name) {
+  if (!files || typeof files !== 'object' || Array.isArray(files) || Object.keys(files).length === 0) {
+    throw new Error(`${name} public-key file map is required`);
+  }
+  const keys = new Map();
+  for (const [keyId, path] of Object.entries(files)) keys.set(keyId, await publicKey(path));
+  return { resolve: (keyId) => keys.get(keyId) ?? null };
+}
+
+async function protocolResolvers(input) {
+  return {
+    bpcResolver: await resolverFromFiles(input.bpcPublicKeyFiles, 'BPC'),
+    tskBResolver: await resolverFromFiles(input.tskBPublicKeyFiles, 'TSK B'),
+    tskGuardResolver: await resolverFromFiles(input.tskGuardPublicKeyFiles, 'TSK guard'),
+  };
+}
+
 async function atomicJson(path, value) {
   const temporary = `${path}.tmp-${process.pid}`;
   await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
@@ -46,6 +63,7 @@ if (command === 'countersign') {
     sourcePublicKey: await publicKey(input.sourcePublicKeyFile),
     guardKeyId: input.guardKeyId,
     guardPrivateKey: await privateKey(input.guardPrivateKeyFile),
+    ...await protocolResolvers(input),
   });
   await atomicJson(outputPath, result);
   process.stdout.write(`${JSON.stringify({ ok: true, manifestDigest: result.manifestDigest })}\n`);
@@ -70,6 +88,7 @@ try {
       ...input,
       sourcePublicKey: await publicKey(input.sourcePublicKeyFile),
       guardPublicKey: await publicKey(input.guardPublicKeyFile),
+      ...await protocolResolvers(input),
     });
     process.stdout.write(`${JSON.stringify({ ok: true, ...result })}\n`);
   } else if (command === 'ready') {

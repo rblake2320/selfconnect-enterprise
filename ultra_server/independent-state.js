@@ -3,6 +3,8 @@ import {
   sign as cryptoSign,
   verify as cryptoVerify,
 } from 'node:crypto';
+import { verifyPromotionReadinessAttestation } from '@bpc/server';
+import { verifyBFinalizedReceipt, verifyLeaseGrant } from '@tsk/server';
 
 const IDENTIFIER = /^[A-Za-z0-9_.:-]{1,128}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
@@ -219,8 +221,16 @@ export async function exportIndependentState(pool, input) {
   const clusterId = requiredIdentifier(input.clusterId, 'clusterId');
   const commandId = requiredIdentifier(input.commandId, 'commandId');
   const sourceEpoch = positiveSafeInteger(input.sourceEpoch, 'sourceEpoch');
-  const bpcPromotionDigest = requiredDigest(input.bpcPromotionDigest, 'bpcPromotionDigest');
-  const tskActivationDigest = requiredDigest(input.tskActivationDigest, 'tskActivationDigest');
+  const protocolEvidence = structuredClone(input.protocolEvidence);
+  const bpcPromotionDigest = requiredDigest(
+    protocolEvidence?.bpcPromotionAttestation?.attestationDigest, 'bpcPromotionDigest',
+  );
+  const tskFinalizedDigest = requiredDigest(
+    protocolEvidence?.tskFinalizedReceipt?.receiptDigest, 'tskFinalizedDigest',
+  );
+  const tskActivationDigest = requiredDigest(
+    protocolEvidence?.tskActivationLease?.grantDigest, 'tskActivationDigest',
+  );
   const maxItems = positiveSafeInteger(input.maxItems ?? 100_000, 'maxItems');
   const maxBytes = positiveSafeInteger(input.maxBytes ?? 64 * 1024 * 1024, 'maxBytes');
   return withSerializable(pool, async (client) => {
@@ -254,11 +264,13 @@ export async function exportIndependentState(pool, input) {
       stateBytes,
       stateDigest: digest(state),
       tskActivationDigest,
+      tskFinalizedDigest,
     };
     const manifestDigest = digest(manifest);
     return {
       manifest,
       manifestDigest,
+      protocolEvidence,
       sourceKeyId: requiredIdentifier(input.sourceKeyId, 'sourceKeyId'),
       sourceSignature: signDigest(input.sourcePrivateKey, manifestDigest),
     };
@@ -267,6 +279,7 @@ export async function exportIndependentState(pool, input) {
 
 export function guardCountersignIndependentState(sourceBundle, input) {
   verifySourceBundle(sourceBundle, input.sourcePublicKey);
+  verifyProtocolEvidence(sourceBundle.protocolEvidence, sourceBundle.manifest, input);
   validateState(sourceBundle.manifest.state);
   if (sourceBundle.manifest.commandId !== input.expectedCommandId) throw new Error('source command mismatch');
   const guardDigest = digest({
@@ -284,7 +297,9 @@ export function guardCountersignIndependentState(sourceBundle, input) {
 }
 
 function verifySourceBundle(bundle, sourcePublicKey) {
-  strictKeys(bundle, new Set(['manifest', 'manifestDigest', 'sourceKeyId', 'sourceSignature']), 'source bundle');
+  strictKeys(bundle, new Set([
+    'manifest', 'manifestDigest', 'protocolEvidence', 'sourceKeyId', 'sourceSignature',
+  ]), 'source bundle');
   if (digest(bundle.manifest) !== bundle.manifestDigest || !DIGEST.test(bundle.manifestDigest)) {
     throw new Error('source manifest digest mismatch');
   }
@@ -298,14 +313,16 @@ function verifySourceBundle(bundle, sourcePublicKey) {
 export function verifyIndependentStateBundle(bundle, keys) {
   strictKeys(bundle, new Set([
     'guardDigest', 'guardKeyId', 'guardSignature', 'manifest', 'manifestDigest',
-    'sourceKeyId', 'sourceSignature',
+    'protocolEvidence', 'sourceKeyId', 'sourceSignature',
   ]), 'independent state bundle');
   verifySourceBundle({
     manifest: bundle.manifest,
     manifestDigest: bundle.manifestDigest,
+    protocolEvidence: bundle.protocolEvidence,
     sourceKeyId: bundle.sourceKeyId,
     sourceSignature: bundle.sourceSignature,
   }, keys.sourcePublicKey);
+  verifyProtocolEvidence(bundle.protocolEvidence, bundle.manifest, keys);
   const expectedGuardDigest = digest({
     domain: 'selfconnect-ultra-independent-state-guard-v1',
     manifestDigest: bundle.manifestDigest,
@@ -346,6 +363,7 @@ function validateManifest(manifest) {
   strictKeys(manifest, new Set([
     'authorityDigest', 'bpcPromotionDigest', 'clusterId', 'commandId', 'format', 'itemCount', 'sourceEpoch',
     'sourceSystemId', 'state', 'stateBytes', 'stateDigest', 'tskActivationDigest',
+    'tskFinalizedDigest',
   ]), 'independent state manifest');
   if (manifest.format !== 'selfconnect-ultra-independent-state-v1') throw new Error('manifest format invalid');
   requiredIdentifier(manifest.clusterId, 'manifest.clusterId');
@@ -354,6 +372,7 @@ function validateManifest(manifest) {
   requiredDigest(manifest.bpcPromotionDigest, 'manifest.bpcPromotionDigest');
   requiredDigest(manifest.authorityDigest, 'manifest.authorityDigest');
   requiredDigest(manifest.tskActivationDigest, 'manifest.tskActivationDigest');
+  requiredDigest(manifest.tskFinalizedDigest, 'manifest.tskFinalizedDigest');
   requiredDigest(manifest.stateDigest, 'manifest.stateDigest');
   validateState(manifest.state);
   const itemCount = manifest.state.identityBindings.length + manifest.state.idempotency.length +
@@ -367,18 +386,51 @@ function validateManifest(manifest) {
   })) throw new Error('manifest authority digest mismatch');
 }
 
+function verifyProtocolEvidence(evidence, manifest, resolvers) {
+  strictKeys(evidence, new Set([
+    'bpcPromotionAttestation', 'tskActivationLease', 'tskFinalizedReceipt',
+  ]), 'protocol evidence');
+  if (!resolvers.bpcResolver || !resolvers.tskBResolver || !resolvers.tskGuardResolver) {
+    throw new Error('BPC, TSK B, and TSK guard public-key resolvers are required');
+  }
+  verifyPromotionReadinessAttestation(resolvers.bpcResolver, evidence.bpcPromotionAttestation);
+  verifyBFinalizedReceipt(resolvers.tskBResolver, evidence.tskFinalizedReceipt);
+  verifyLeaseGrant(resolvers.tskGuardResolver, evidence.tskActivationLease);
+  const bpc = evidence.bpcPromotionAttestation;
+  const finalized = evidence.tskFinalizedReceipt;
+  const lease = evidence.tskActivationLease;
+  if (bpc.attestationDigest !== manifest.bpcPromotionDigest ||
+      finalized.receiptDigest !== manifest.tskFinalizedDigest ||
+      lease.grantDigest !== manifest.tskActivationDigest) {
+    throw new Error('protocol evidence digest mismatch');
+  }
+  if (bpc.commandId !== manifest.commandId || finalized.commandId !== manifest.commandId ||
+      lease.commandId !== manifest.commandId || bpc.targetEpoch !== manifest.sourceEpoch ||
+      lease.leaseEpoch !== manifest.sourceEpoch || finalized.epoch !== manifest.sourceEpoch - 1 ||
+      lease.leaseStatus !== 'active' || lease.holderNodeId !== finalized.bKeyId ||
+      bpc.targetSystemId !== finalized.bSystemId || finalized.sourceSystemId !== manifest.sourceSystemId ||
+      bpc.streamId !== finalized.streamId || finalized.streamId !== lease.streamId) {
+    throw new Error('protocol evidence promotion binding mismatch');
+  }
+}
+
 export async function importIndependentState(pool, bundle, input) {
   verifyIndependentStateBundle(bundle, input);
   const manifest = bundle.manifest;
   if (manifest.clusterId !== input.clusterId || manifest.commandId !== input.commandId ||
       manifest.sourceEpoch !== input.sourceEpoch ||
       manifest.bpcPromotionDigest !== input.bpcPromotionDigest ||
-      manifest.tskActivationDigest !== input.tskActivationDigest) throw new Error('promotion binding mismatch');
+      manifest.tskActivationDigest !== input.tskActivationDigest ||
+      manifest.tskFinalizedDigest !== input.tskFinalizedDigest) throw new Error('promotion binding mismatch');
   validateState(manifest.state);
   return withSerializable(pool, async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [input.advisoryLockKey]);
     const targetSystemId = await systemIdentifier(client);
     if (targetSystemId === manifest.sourceSystemId) throw new Error('source and target PostgreSQL authorities are not independent');
+    if (targetSystemId !== bundle.protocolEvidence.bpcPromotionAttestation.targetSystemId ||
+        targetSystemId !== bundle.protocolEvidence.tskFinalizedReceipt.bSystemId) {
+      throw new Error('protocol evidence belongs to a different target PostgreSQL authority');
+    }
     const current = await client.query('SELECT * FROM ultra_ha_import_head WHERE cluster_id=$1 FOR UPDATE', [manifest.clusterId]);
     if (current.rows[0]) {
       const row = current.rows[0];
