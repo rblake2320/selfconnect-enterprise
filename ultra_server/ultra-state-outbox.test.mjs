@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import {
@@ -19,7 +23,6 @@ import {
   PgReplicatedIdempotencyStore,
   PgReplicatedIdentityBindingStore,
   PgReplicatedNonceTombstoneStore,
-  createUltraStateHttpPublisher,
   createUltraStateHttpReceiver,
   signUltraStateAck,
   ultraStateMutationSanitizer,
@@ -57,7 +60,8 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
   const idemKey = randomUUID();
   const nonceValue = `nonce-${randomUUID()}`;
   const nonceHash = createHash('sha256').update(nonceValue, 'utf8').digest('hex');
-  let httpServer;
+  let receiverProcess;
+  let runtimeDirectory;
   try {
     await initializePgSchemas(a, HA_OUTBOX_PG_SCHEMA, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA);
     await initializePgSchemas(
@@ -140,18 +144,69 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
       receiverRuntime.ackVerifier.verify(wrongReceiver, records[0]),
       /forged or not bound/,
     );
-    httpServer = createServer(receiverRuntime.handler);
-    await new Promise((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
-    const port = httpServer.address().port;
-    const publisherRuntime = createUltraStateHttpPublisher({
-      db: dbA, ready: readyA, streamId, expectedReceiverId: 'site-b',
-      url: `http://127.0.0.1:${port}/v1/ultra-state`, fetch: globalThis.fetch,
-      requestKeyId: 'transport-key-1', requestSecret,
-      resolveResponseKey: (keyId) => keyId === 'response-key-1' ? responseSecret : null,
-      resolveAckPublicKey, leaseMs: 5_000,
+    // Exercise the shipped receiver and publisher process boundary, including
+    // file-held key custody and independent database connections.
+    const portProbe = createServer();
+    await new Promise((resolve) => portProbe.listen(0, '127.0.0.1', resolve));
+    const port = portProbe.address().port;
+    await new Promise((resolve) => portProbe.close(resolve));
+    runtimeDirectory = await mkdtemp(join(tmpdir(), 'ultra-state-stream-'));
+    const files = {
+      request: join(runtimeDirectory, 'request.secret'),
+      response: join(runtimeDirectory, 'response.secret'),
+      privateAck: join(runtimeDirectory, 'ack-private.pem'),
+      publicAck: join(runtimeDirectory, 'ack-public.pem'),
+      receiver: join(runtimeDirectory, 'receiver.json'),
+      publisher: join(runtimeDirectory, 'publisher.json'),
+    };
+    await Promise.all([
+      writeFile(files.request, requestSecret),
+      writeFile(files.response, responseSecret),
+      writeFile(files.privateAck, ackKeys.privateKey.export({ type: 'pkcs8', format: 'pem' })),
+      writeFile(files.publicAck, ackKeys.publicKey.export({ type: 'spki', format: 'pem' })),
+      writeFile(files.receiver, JSON.stringify({
+        streamId, expectedPath: '/v1/ultra-state', host: '127.0.0.1', port,
+        requestKeyId: 'transport-key-1', requestSecretFile: files.request,
+        responseKeyId: 'response-key-1', responseSecretFile: files.response,
+        receiverId: 'site-b', ackKeyId: 'receiver-key-1', ackPrivateKeyFile: files.privateAck,
+        ackPublicKeyFiles: { 'receiver-key-1': files.publicAck },
+      })),
+      writeFile(files.publisher, JSON.stringify({
+        streamId, expectedReceiverId: 'site-b', url: `http://127.0.0.1:${port}/v1/ultra-state`,
+        requestKeyId: 'transport-key-1', requestSecretFile: files.request,
+        responseKeyId: 'response-key-1', responseSecretFile: files.response,
+        ackPublicKeyFiles: { 'receiver-key-1': files.publicAck }, leaseMs: 5_000,
+      })),
+    ]);
+    receiverProcess = spawn(process.execPath, ['ultra-state-stream-command.mjs', 'receiver', files.receiver], {
+      cwd: new URL('.', import.meta.url), env: { ...process.env, DATABASE_URL: urlB },
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
-    assert.deepEqual(await publisherRuntime.publisher.drainOnce(), {
-      published: 5, acked: 5, quarantined: 0, retriable: false,
+    const readyLine = await new Promise((resolve, reject) => {
+      let stdout = ''; let stderr = '';
+      const timer = setTimeout(() => reject(new Error(`receiver startup timed out: ${stderr}`)), 10_000);
+      receiverProcess.stdout.on('data', (chunk) => {
+        stdout += chunk;
+        if (stdout.includes('\n')) { clearTimeout(timer); resolve(stdout.trim()); }
+      });
+      receiverProcess.stderr.on('data', (chunk) => { stderr += chunk; });
+      receiverProcess.once('exit', (code) => {
+        clearTimeout(timer); reject(new Error(`receiver exited ${code}: ${stderr}`));
+      });
+    });
+    assert.equal(JSON.parse(readyLine).mode, 'receiver');
+    const publisherOutput = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['ultra-state-stream-command.mjs', 'publish-once', files.publisher], {
+        cwd: new URL('.', import.meta.url), env: { ...process.env, DATABASE_URL: urlA },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = ''; let stderr = '';
+      child.stdout.on('data', (chunk) => { stdout += chunk; });
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.once('exit', (code) => code === 0 ? resolve(stdout.trim()) : reject(new Error(stderr)));
+    });
+    assert.deepEqual(JSON.parse(publisherOutput), {
+      ok: true, mode: 'publish-once', published: 5, acked: 5, quarantined: 0, retriable: false,
     });
     assert.equal(Number((await a.query(
       'SELECT count(*) FROM ha_outbox_rows WHERE stream_id=$1 AND acked_at IS NOT NULL', [streamId],
@@ -179,7 +234,11 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
       'SELECT count(*) FROM ha_outbox_rows WHERE stream_id=$1', [streamId],
     )).rows[0].count), 5);
   } finally {
-    if (httpServer) await new Promise((resolve) => httpServer.close(resolve));
+    if (receiverProcess && receiverProcess.exitCode === null) {
+      receiverProcess.kill('SIGTERM');
+      await new Promise((resolve) => receiverProcess.once('exit', resolve));
+    }
+    if (runtimeDirectory) await rm(runtimeDirectory, { recursive: true, force: true });
     for (const pool of [a, b]) {
       try {
         await pool.query('DELETE FROM ultra_nonce_tombstones WHERE nonce_hash=$1', [nonceHash]);

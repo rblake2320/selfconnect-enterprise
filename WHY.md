@@ -51,6 +51,42 @@ related records.
 
 ## Register
 
+## WHY-20260720-009 - Separate the stream process from the identity sidecar
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T22:05:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-009](LOG.md#log-20260720-009)
+**Parked records:** None
+**Source state:** `selfconnect-enterprise`, `origin/master`,
+`2a2f20e60ee70e4cb3fe91daaaad327165af9e38`
+
+**Decision:** Operate replication through a dedicated receiver service and a
+bounded publisher invocation instead of hiding an ungoverned background loop in
+the identity HTTP process.
+
+**Why:** Separate processes make database identity, key custody, restart
+behavior, and supervision explicit. Refusing auto-provisioning and plaintext
+remote transport prevents convenience startup from silently redefining the
+reviewed authority boundary.
+
+**Alternatives considered:** An implicit background loop in `server.js` was
+rejected because it couples identity-service availability and replication
+lifecycle. Inline key material and automatic schema provisioning were rejected
+because they weaken custody and migration review.
+
+**Consequences:** Operators must provision the schema and stream beforehand and
+supervise repeated publisher invocations. Remote deployments must place the
+loopback receiver behind authenticated TLS/mTLS.
+
+**Rollback conditions:** Replace the commands only with a service manager or
+integrated runtime that preserves the same schema attestation, file-held key
+custody, endpoint restrictions, and durable retry behavior.
+
+**Evidence and links:** [LOG-20260720-009](LOG.md#log-20260720-009),
+`ultra_server/ultra-state-outbox.test.mjs`, and
+`docs/operations/ULTRA_INDEPENDENT_STATE_HA.md`.
+
 ## WHY-20260720-008 - Require authenticated decision-bound delivery
 
 **Status:** Accepted
