@@ -51,6 +51,39 @@ related records.
 
 ## Register
 
+## WHY-20260720-003 - Move replay authority and bounded Enterprise state together
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T20:51:24Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-003](LOG.md#log-20260720-003)
+**Parked records:** [PARK-20260720-003](PARKED.md#park-20260720-003)
+**Source state:** draft PR #40 at `1d4931ee`
+
+**Decision:** In independent mode, use PostgreSQL nonce tombstones and transfer
+them atomically with Ultra identity/idempotency state under a source+guard
+signed manifest bound to exact BPC and TSK promotion receipts.
+
+**Why:** Redis-only nonce data can roll back or disappear independently during
+a site transition. Copying raw nonces or secret-bearing idempotent responses
+would create a new disclosure path. A signed bounded snapshot with hashes only,
+secret reprovision tombstones, independent database identity, and monotonic
+import head provides a small fail-closed Enterprise composition layer.
+
+**Alternatives considered:** Treat Redis as durable authority (rejected for
+independent-site rollback); copy secret responses (rejected); reimplement BPC
+or TSK state (rejected because their reviewed authorities already own it).
+
+**Consequences:** Promotion needs separate source and guard custody steps and a
+secret reprovision ceremony. Large state is bounded and currently O(N). Full
+site acceptance remains separate.
+
+**Rollback conditions:** Restore the shared-state behavior if the independent
+mode fails its named topology drill, while retaining issue #28 as open.
+
+**Evidence and links:** `ultra_server/independent-state.test.mjs`,
+`docs/operations/ULTRA_INDEPENDENT_STATE_HA.md`, draft PR #40.
+
 ## WHY-20260720-002 - Compose reviewed protocol authorities instead of cloning them
 
 **Status:** Accepted

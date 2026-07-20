@@ -1,0 +1,83 @@
+#!/usr/bin/env node
+import { readFile, rename, writeFile } from 'node:fs/promises';
+import { createPrivateKey, createPublicKey } from 'node:crypto';
+import { Pool } from 'pg';
+
+import {
+  assertIndependentStateReady,
+  exportIndependentState,
+  guardCountersignIndependentState,
+  importIndependentState,
+} from './independent-state.js';
+
+function usage() {
+  throw new Error(
+    'usage: independent-state-command.mjs export|countersign|import|ready INPUT_JSON [OUTPUT_JSON]',
+  );
+}
+
+async function jsonFile(path) {
+  return JSON.parse(await readFile(path, 'utf8'));
+}
+
+async function privateKey(path) {
+  return createPrivateKey(await readFile(path));
+}
+
+async function publicKey(path) {
+  return createPublicKey(await readFile(path));
+}
+
+async function atomicJson(path, value) {
+  const temporary = `${path}.tmp-${process.pid}`;
+  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+  await rename(temporary, path);
+}
+
+const [command, inputPath, outputPath] = process.argv.slice(2);
+if (!command || !inputPath) usage();
+const input = await jsonFile(inputPath);
+
+if (command === 'countersign') {
+  if (!outputPath) usage();
+  const bundle = await jsonFile(input.sourceBundlePath);
+  const result = guardCountersignIndependentState(bundle, {
+    expectedCommandId: input.commandId,
+    sourcePublicKey: await publicKey(input.sourcePublicKeyFile),
+    guardKeyId: input.guardKeyId,
+    guardPrivateKey: await privateKey(input.guardPrivateKeyFile),
+  });
+  await atomicJson(outputPath, result);
+  process.stdout.write(`${JSON.stringify({ ok: true, manifestDigest: result.manifestDigest })}\n`);
+  process.exit(0);
+}
+
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) throw new Error('DATABASE_URL is required');
+const pool = new Pool({ connectionString: databaseUrl });
+try {
+  if (command === 'export') {
+    if (!outputPath) usage();
+    const result = await exportIndependentState(pool, {
+      ...input,
+      sourcePrivateKey: await privateKey(input.sourcePrivateKeyFile),
+    });
+    await atomicJson(outputPath, result);
+    process.stdout.write(`${JSON.stringify({ ok: true, manifestDigest: result.manifestDigest })}\n`);
+  } else if (command === 'import') {
+    const bundle = await jsonFile(input.bundlePath);
+    const result = await importIndependentState(pool, bundle, {
+      ...input,
+      sourcePublicKey: await publicKey(input.sourcePublicKeyFile),
+      guardPublicKey: await publicKey(input.guardPublicKeyFile),
+    });
+    process.stdout.write(`${JSON.stringify({ ok: true, ...result })}\n`);
+  } else if (command === 'ready') {
+    const result = await assertIndependentStateReady(pool, input);
+    process.stdout.write(`${JSON.stringify({ ok: true, ...result })}\n`);
+  } else {
+    usage();
+  }
+} finally {
+  await pool.end();
+}

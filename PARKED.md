@@ -91,6 +91,24 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260720-003 - Shared Redis replay authority and fresh-only restart call
+
+**Status:** Parked
+**Source:** `selfconnect-enterprise` commit `1d4931ee`,
+`ultra_server/server.js`
+**Reason parked:** Independent mode requires replay tombstones to move with its
+authoritative PostgreSQL state. The newly pinned BPC `PG_SCHEMA` is deliberately
+fresh-only and cannot be invoked on every restart.
+**Replacement:** `PgNonceTombstoneStore` in independent mode and exact
+`BPC_PAIR_PG_SCHEMA` compatibility initialization.
+**Restore:** Revert the implementation commit containing LOG-20260720-003 and
+set `ULTRA_HA_STATE_MODE=shared`. Do not call that rollback independent-state
+HA.
+**Validation:** Run `npm test --prefix ultra_server`, the production restart
+job, and the independent-state drill as applicable.
+**Rehearsal:** The former shared mode remains covered; full rollback was not
+performed because it would intentionally restore the detected restart defect.
+
 ## PARK-20260720-002 - Pre-completion BPC and TSK protocol pins
 
 **Status:** Parked

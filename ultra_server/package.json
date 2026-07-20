@@ -11,6 +11,8 @@
     "agent-auth.js",
     "ha-command.mjs",
     "ha-controller.js",
+    "independent-state-command.mjs",
+    "independent-state.js",
     "monitoring-security.js",
     "recovery-token.js",
     "runtime-stores.js",
@@ -21,8 +23,10 @@
     "start": "node server.js",
     "install-deps": "npm install",
     "ha:command": "node ha-command.mjs",
+    "ha:state": "node independent-state-command.mjs",
     "test:ha-live": "node ha-live-conformance.mjs",
     "test": "node --test agent-auth.test.mjs ha-controller.test.mjs monitoring-config.test.mjs monitoring-security.test.mjs package-content.test.mjs recovery-token.test.mjs runtime-stores.test.mjs security-boundary.test.mjs",
+    "test:independent-state": "node --test independent-state.test.mjs",
     "test:live": "node server.test.mjs"
   },
   "dependencies": {

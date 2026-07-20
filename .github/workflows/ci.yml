@@ -186,6 +186,19 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      postgres_b:
+        image: postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ultra
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ultra"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
       redis:
         image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
         ports:
@@ -250,6 +263,12 @@ jobs:
           npm run typecheck --prefix "$deps_root/tsk-protocol"
           npm ci --prefix ultra_server
           npm test --prefix ultra_server
+
+      - name: Run independent-state handoff against separate PostgreSQL authorities
+        env:
+          ULTRA_TEST_POSTGRES_URL_A: postgresql://postgres:postgres@127.0.0.1:5432/ultra
+          ULTRA_TEST_POSTGRES_URL_B: postgresql://postgres:postgres@127.0.0.1:5433/ultra
+        run: npm run test:independent-state --prefix ultra_server
 
       - name: Install Python contract dependencies
         run: |

@@ -54,6 +54,36 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260720-003 - Add independent Ultra state handoff foundation
+
+**Timestamp (UTC):** 2026-07-20T20:51:24Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, security, test, documentation
+**Base commit:** `1d4931eeac788ad678af6292c2ffe70de2be7679`
+**Change reference:** commit containing this entry; draft PR #40; Enterprise issue #28
+**Why:** [WHY-20260720-003](WHY.md#why-20260720-003)
+**Parked records:** [PARK-20260720-003](PARKED.md#park-20260720-003)
+
+**Changed:** Added `ultra_server/independent-state.js`, its custody-separated
+CLI, PostgreSQL schemas, production replay-nonce selection, fail-closed runtime
+readiness binding, two-authority CI drill, and the independent-state runbook.
+Also replaced repeated use of BPC's deliberately fresh-only `PG_SCHEMA` with
+the exact idempotent `BPC_PAIR_PG_SCHEMA` compatibility DDL.
+
+**Reason:** Completed BPC/TSK authorities did not cover Enterprise-owned
+identity, idempotency, or request-replay state, and the new BPC fresh-install
+guard correctly made Ultra's former restart behavior fail.
+
+**Validation:** Local Node suite passed 33/33 with two environment skips. The
+fail-not-skip independent-state drill passed against two digest-pinned
+PostgreSQL 17.5 containers with distinct `pg_control_system()` identifiers.
+The exact pinned BPC package started, stopped, and restarted over the same
+database after the schema fix. Hosted evidence is pending on this PR head.
+
+**Notes:** Issue #28 remains open for full BPC/TSK runtime composition,
+site/Redis/host fault injection, restore/resync/failback, key ceremony,
+monitoring, and measured RPO/RTO.
+
 ## LOG-20260720-002 - Adopt completed BPC and TSK HA foundations
 
 **Timestamp (UTC):** 2026-07-20T20:40:00Z
