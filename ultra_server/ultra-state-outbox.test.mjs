@@ -11,21 +11,23 @@ import {
   HA_OUTBOX_PG_SCHEMA,
   BPC_TRANSPORT_NONCE_SCHEMA,
   NodePostgresTransactor,
-  PgDurableOutbox,
   PgReplayNonceStore,
   adoptCurrentSchemaVersion,
 } from '@bpc/server';
+import {
+  TSK_SOURCE_LEASE_SCHEMA,
+  assertSourceFenceReady,
+  installLeaseGrant,
+  signLeaseGrant,
+} from '@tsk/server';
 import { Pool } from 'pg';
 
 import { ULTRA_INDEPENDENT_STATE_SCHEMA } from './independent-state.js';
 import { ULTRA_PG_SCHEMA, initializePgSchemas } from './runtime-stores.js';
 import {
-  PgReplicatedIdempotencyStore,
-  PgReplicatedIdentityBindingStore,
-  PgReplicatedNonceTombstoneStore,
+  createGovernedUltraStateAuthority,
   createUltraStateHttpReceiver,
   signUltraStateAck,
-  ultraStateMutationSanitizer,
 } from './ultra-state-outbox.js';
 
 const urlA = process.env.ULTRA_TEST_POSTGRES_URL_A;
@@ -52,7 +54,7 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
   const a = new Pool({ connectionString: urlA });
   const b = new Pool({ connectionString: urlB });
   const streamId = `ultra-${randomUUID()}`;
-  const epoch = `epoch-${randomUUID()}`;
+  const epoch = 1;
   const pairId = `pair-${randomUUID()}`;
   const oldClientId = `client-${randomUUID()}`;
   const newClientId = `client-${randomUUID()}`;
@@ -63,7 +65,10 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
   let receiverProcess;
   let runtimeDirectory;
   try {
-    await initializePgSchemas(a, HA_OUTBOX_PG_SCHEMA, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA);
+    await initializePgSchemas(
+      a, HA_OUTBOX_PG_SCHEMA, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA,
+      TSK_SOURCE_LEASE_SCHEMA,
+    );
     await initializePgSchemas(
       b, HA_OUTBOX_PG_SCHEMA, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA,
       BPC_TRANSPORT_NONCE_SCHEMA,
@@ -72,15 +77,29 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
     const dbB = new NodePostgresTransactor(b);
     const readyA = await adoptCurrentSchemaVersion(dbA, 'public');
     const readyB = await adoptCurrentSchemaVersion(dbB, 'public');
-    await provisionStream(dbA, streamId, epoch, 1);
-    await provisionStream(dbB, streamId, epoch, 1);
-    const outbox = new PgDurableOutbox(dbA, readyA, {
-      streamId, sanitizer: ultraStateMutationSanitizer, maxPendingRows: 100,
-      backpressure: 'fail-authoritative-mutation',
+    await provisionStream(dbA, streamId, String(epoch), 1);
+    await provisionStream(dbB, streamId, String(epoch), 1);
+    const guardKeys = generateKeyPairSync('ed25519');
+    const sourceLeaseResolver = {
+      resolve: (keyId) => keyId === 'source-guard-1' ? guardKeys.publicKey : null,
+    };
+    const lease = signLeaseGrant('source-guard-1', guardKeys.privateKey, {
+      streamId, leaseEpoch: epoch, leaseStatus: 'active', holderNodeId: 'site-a',
+      leaseId: 'site-a-lease-1', commandId: 'site-a-grant-1',
+      leaseExpiresAtMs: Date.now() + 300_000, leaseGrantSeq: 1, prevGrantDigest: null,
     });
-    const bindings = new PgReplicatedIdentityBindingStore(outbox, streamId, 1n);
-    const idempotency = new PgReplicatedIdempotencyStore(a, outbox, streamId, 1n);
-    const nonces = new PgReplicatedNonceTombstoneStore(outbox, streamId, 1n);
+    await dbA.transaction((exec) => installLeaseGrant(exec, sourceLeaseResolver, lease));
+    const sourceFenceReady = await assertSourceFenceReady(dbA, 'public', sourceLeaseResolver, {
+      streamId, holderNodeId: lease.holderNodeId, leaseId: lease.leaseId,
+      grantDigest: lease.grantDigest,
+    });
+    const authority = await createGovernedUltraStateAuthority({
+      pool: a, db: dbA, outboxReady: readyA, sourceFenceReady, sourceLeaseResolver,
+      schema: 'public', streamId, sourceEpoch: epoch, controlToASkewBoundMs: 5_000,
+      maxPendingRows: 100,
+    });
+    const { outbox, identityBinding: bindings, idempotencyStore: idempotency,
+      nonceBackend: nonces } = authority;
 
     await bindings.set(pairId, { tskClientId: oldClientId, agentId });
     assert.equal(await bindings.compareAndSwap(
@@ -225,10 +244,35 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
       originalResponseDigest: records[3].mutation.responseDigest,
     });
 
-    await a.query('UPDATE ha_outbox_fence SET fence_token=2 WHERE stream_id=$1', [streamId]);
+    const revoked = signLeaseGrant('source-guard-1', guardKeys.privateKey, {
+      streamId, leaseEpoch: epoch, leaseStatus: 'revoked', holderNodeId: lease.holderNodeId,
+      leaseId: lease.leaseId, commandId: 'site-a-revoke-1',
+      leaseExpiresAtMs: lease.leaseExpiresAtMs, leaseGrantSeq: 2,
+      prevGrantDigest: lease.grantDigest,
+    });
+    const preCommitPairId = `pair-${randomUUID()}`;
+    await assert.rejects(outbox.withOutboxTx(async (tx, exec) => {
+      const mutation = {
+        kind: 'ultra.binding.set.v1', pairId: preCommitPairId,
+        tskClientId: `client-${randomUUID()}`, agentId,
+      };
+      await outbox.appendInTx(tx, { streamId, fenceToken: 1n, rawMutation: mutation });
+      await exec.query(
+        'INSERT INTO ultra_identity_bindings(pair_id,tsk_client_id,agent_id) VALUES($1,$2,$3)',
+        [mutation.pairId, mutation.tskClientId, mutation.agentId],
+      );
+      // The lease changes after the authoritative DML but before the outbox
+      // pre-commit gate. The entire source transaction must roll back.
+      await dbA.transaction((leaseExec) => installLeaseGrant(
+        leaseExec, sourceLeaseResolver, revoked,
+      ));
+    }), /source lease is revoked|grant digest|could not serialize access due to concurrent update/i);
+    assert.equal((await a.query(
+      'SELECT 1 FROM ultra_identity_bindings WHERE pair_id=$1', [preCommitPairId],
+    )).rowCount, 0);
     await assert.rejects(
       bindings.set(`pair-${randomUUID()}`, { tskClientId: `client-${randomUUID()}`, agentId }),
-      /fence token .* stale/i,
+      /source lease is revoked|grant digest/i,
     );
     assert.equal(Number((await a.query(
       'SELECT count(*) FROM ha_outbox_rows WHERE stream_id=$1', [streamId],
@@ -251,6 +295,8 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
         await pool.query('DELETE FROM ha_outbox_receiver_checkpoint WHERE stream_id=$1', [streamId]);
         await pool.query('DELETE FROM ha_outbox_source_checkpoint WHERE stream_id=$1', [streamId]);
         await pool.query('DELETE FROM ha_outbox_fence WHERE stream_id=$1', [streamId]);
+        await pool.query('DELETE FROM tsk_source_lease_history WHERE stream_id=$1', [streamId]);
+        await pool.query('DELETE FROM tsk_source_lease WHERE stream_id=$1', [streamId]);
       } catch { /* preserve the primary assertion failure */ }
     }
     await a.end();

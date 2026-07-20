@@ -3,11 +3,17 @@ import { createHash, sign as cryptoSign, verify as cryptoVerify } from 'node:cry
 import {
   ContractValidationError,
   HttpOutboxTransport,
+  PgDurableOutbox,
   PgDurablePublisher,
   PgReceiverCheckpoint,
   canonicalize,
   createHttpOutboxReceiver,
 } from '@bpc/server';
+import {
+  assertSourceLeaseWritable,
+  fenceTokenForEpoch,
+  requireSourceFenceReady,
+} from '@tsk/server';
 
 const ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -154,6 +160,64 @@ export function createUltraStateHttpPublisher(options) {
     ackVerifier, options.ready, { leaseMs: options.leaseMs ?? 30_000 },
   );
   return Object.freeze({ ackVerifier, publisher, transport });
+}
+
+/**
+ * Compose the BPC atomic outbox with TSK's signed source-lease authority.
+ * The readiness capability proves the complete lease chain once; every
+ * authoritative Ultra mutation then rechecks the exact live lease head both
+ * during append and at the outbox pre-commit boundary.
+ */
+export async function createGovernedUltraStateAuthority(options) {
+  const streamId = id(options.streamId, 'streamId');
+  const sourceEpoch = options.sourceEpoch;
+  if (!Number.isSafeInteger(sourceEpoch) || sourceEpoch < 0 || sourceEpoch > 2 ** 40) {
+    throw new ContractValidationError('sourceEpoch must be a safe integer in the TSK epoch range');
+  }
+  const schema = options.schema ?? 'public';
+  const bound = requireSourceFenceReady(options.sourceFenceReady, {
+    db: options.db, schema, streamId,
+  });
+  if (!options.sourceLeaseResolver || typeof options.sourceLeaseResolver.resolve !== 'function') {
+    throw new ContractValidationError('sourceLeaseResolver required');
+  }
+  const skew = options.controlToASkewBoundMs;
+  if (!Number.isSafeInteger(skew) || skew < 0 || skew > 3_600_000) {
+    throw new ContractValidationError('controlToASkewBoundMs invalid');
+  }
+  const fenceToken = BigInt(fenceTokenForEpoch(sourceEpoch));
+  const outbox = new PgDurableOutbox(options.db, options.outboxReady, {
+    streamId,
+    sanitizer: ultraStateMutationSanitizer,
+    maxPendingRows: options.maxPendingRows ?? 10_000,
+    backpressure: 'fail-authoritative-mutation',
+    preCommitCheck: (exec) => assertSourceLeaseWritable(
+      exec, options.sourceLeaseResolver, streamId, sourceEpoch, skew, bound,
+    ),
+  });
+  // Use the outbox-owned, schema-pinned serializable scope for startup checks;
+  // never perform authority reads through an ambient pool/search_path.
+  await outbox.withOutboxTx(async (_tx, exec) => {
+    const checkpoint = (await exec.query(
+      'SELECT source_epoch,sequence FROM ha_outbox_source_checkpoint WHERE stream_id=$1', [streamId],
+    )).rows[0];
+    const fence = (await exec.query(
+      'SELECT fence_token::text FROM ha_outbox_fence WHERE stream_id=$1', [streamId],
+    )).rows[0];
+    if (!checkpoint || checkpoint.source_epoch !== String(sourceEpoch) || !fence ||
+        fence.fence_token !== fenceToken.toString()) {
+      throw new ContractValidationError('Ultra outbox checkpoint/fence does not match the governed source epoch');
+    }
+    await assertSourceLeaseWritable(
+      exec, options.sourceLeaseResolver, streamId, sourceEpoch, skew, bound,
+    );
+  });
+  return Object.freeze({
+    outbox,
+    identityBinding: new PgReplicatedIdentityBindingStore(outbox, streamId, fenceToken),
+    idempotencyStore: new PgReplicatedIdempotencyStore(options.pool, outbox, streamId, fenceToken),
+    nonceBackend: new PgReplicatedNonceTombstoneStore(outbox, streamId, fenceToken),
+  });
 }
 
 function containsSecret(value, key = '') {
