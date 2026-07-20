@@ -51,6 +51,41 @@ related records.
 
 ## Register
 
+## WHY-20260720-001 - Reuse one verified TPM quote authority
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T20:20:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-001](LOG.md#log-20260720-001)
+**Parked records:** [PARK-20260720-001](PARKED.md#park-20260720-001)
+**Source state:** `selfconnect-enterprise` master at `2e617ebb`
+
+**Decision:** Use the pinned SelfConnect TPM module as the default Enterprise
+platform-attestation mechanism. Require an operator-configured public-key digest
+and keep the former probe only as an explicit legacy backend.
+
+**Why:** The SDK path has real hardware evidence, verifies the quote signature,
+PCR selection and digest, verifier nonce, and durable replay state. Maintaining a
+second incomplete parser in Enterprise would recreate divergence and had already
+produced a false unsupported diagnosis on this host.
+
+**Alternatives considered:** Patch only the old `NCryptCreateClaim` call; rejected
+because it would retain a second parser and replay policy. Trust the public-key
+digest carried by the artifact; rejected because that permits key substitution.
+Automatically overwrite or reprovision the production key; rejected because key
+replacement is an operator-governed lifecycle action.
+
+**Consequences:** Enterprise now fails closed when the key digest is not pinned
+and obtains the full local mechanism proof when it is configured. The ordinary
+DPAPI agent-signing key remains separate from the platform quote.
+
+**Rollback conditions:** Restore the legacy backend as default only if the pinned
+SDK dependency cannot be deployed and the legacy path is independently upgraded
+to equivalent key pinning, quote parsing, and replay controls.
+
+**Evidence and links:** `enterprise/tpm_attestation.py`, focused tests,
+`docs/ato/TPM_LIVE_PROBE_2026-07-20.*`, SelfConnect PR #30, ecosystem issue #3.
+
 ## WHY-20260718-006 - Alias only the hardened lease path
 
 **Status:** Accepted

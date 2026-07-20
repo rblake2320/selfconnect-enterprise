@@ -54,6 +54,43 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260720-001 - Compose the verified TPM platform quote path
+
+**Timestamp (UTC):** 2026-07-20T20:20:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, test, evidence, documentation
+**Base commit:** `2e617ebb1d6955ac42523774a739b7e7206c4ca6`
+**Change reference:** commit containing this entry; ecosystem issue #3
+**Why:** [WHY-20260720-001](WHY.md#why-20260720-001)
+**Parked records:** [PARK-20260720-001](PARKED.md#park-20260720-001)
+
+**Changed:** Advanced the pinned SelfConnect SDK to `787a6b88`, made the
+operator-pinned SelfConnect TPM quote verifier the default `tpm_probe` backend,
+retained the prior CNG path as an explicit compatibility backend, added negative
+and composition tests, and recorded a new redacted live PASS artifact.
+
+**Reason:** The historical probe used an ephemeral ECDSA provider key and called
+the platform-claim API without the provisioned PCP identity-key authority. It
+therefore continued to report `0x80090026` on a host that can produce a valid
+platform quote. The SDK now owns the exercised key provisioning and strict quote
+parser, avoiding a second security implementation.
+
+**Full actions and links:** Updated `portfolio-lock.json`, `pyproject.toml`,
+`enterprise/tpm_attestation.py`, focused tests, the ATO evidence index, and the
+dated redacted evidence artifacts. Related work: SelfConnect PR #30 and
+selfconnect-ecosystem issue #3.
+
+**Validation:** `33 passed` for the focused TPM suite; Ruff passed; portfolio
+conformance passed; the live probe returned supported/verified/replay-checked
+true with PCR mask `0x00FFFFFF`. The full suite passed 1,713 tests with the
+reviewed 1,751-test collection identity
+`d2517b086dc44aa2e6e6f5ac6fe7903a5520969e168a4a30598502d74212c3fd`;
+hosted CI evidence attaches to the change commit.
+
+**Notes:** This is local mechanism evidence. Manufacturer/EK trust, remote
+enrollment/revocation, agent-signing-key binding, assessment, and authorization
+remain separate.
+
 ## LOG-20260718-006 - Resolve immutable aliases into governed terminal leases
 
 **Timestamp (UTC):** 2026-07-18T17:21:44Z

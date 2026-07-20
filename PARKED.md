@@ -91,6 +91,51 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260720-001 - Legacy Enterprise TPM probe default
+
+**Status:** Parked
+**Category:** security property
+**Former location:** `enterprise/tpm_attestation.py:tpm_probe`
+**Source commit:** `2e617ebb1d6955ac42523774a739b7e7206c4ca6`
+**Affected paths:** `enterprise/tpm_attestation.py`, SDK pin and TPM evidence docs
+**Action log:** [LOG-20260720-001](LOG.md#log-20260720-001)
+**Why changed:** [WHY-20260720-001](WHY.md#why-20260720-001)
+**Parked by:** commit containing this entry
+
+**Former wording:** The no-argument `tpm_probe()` created an ephemeral ECDSA
+provider key and used the local `NCryptVerifyClaim` path. On the tested host it
+returned an honest NA with `NCryptCreateClaim -> 0x80090026`.
+
+**Recovery source:** Git commit `2e617ebb`, path
+`enterprise/tpm_attestation.py`. The implementation remains callable as
+`tpm_probe(backend="legacy")` for bounded compatibility tests.
+
+**Reason parked:** The legacy path used a separate partial verifier and the wrong
+key composition, causing `0x80090026` on a host with working TPM platform claims.
+
+**Replacement:** The default probe uses SelfConnect's provisioned PCP identity
+key, operator-pinned public digest, strict quote verifier, and durable nonce
+replay store.
+
+**Restore when:** The pinned SDK cannot be deployed and the legacy path has been
+independently upgraded to equivalent key pinning, parsing, and replay controls.
+
+**Restore procedure:** Change the `tpm_probe` default to `legacy`, keep the SDK
+backend available, then regenerate a dated live evidence artifact without
+rewriting the July PASS record.
+
+**Validation after restore:** Run the focused TPM suite, full Enterprise suite,
+portfolio conformance, and a live nonce/PCR/signature/replay drill.
+
+**Recovery rehearsal:** The legacy compatibility backend is covered by focused
+tests; changing the public default back has not been rehearsed.
+
+**Restoration risks:** Restoring the old default can recreate a false hardware
+NA and loses the canonical strict quote parser and durable replay control.
+
+**Evidence and links:** SelfConnect PR #30, ecosystem issue #3, and
+`docs/ato/TPM_LIVE_PROBE_2026-07-20.*`.
+
 ## PARK-20260718-006 - Historical participant, executor, and bridge expansion
 
 **Status:** Parked

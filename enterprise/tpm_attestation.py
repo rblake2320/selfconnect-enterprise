@@ -1,20 +1,18 @@
 """enterprise.tpm_attestation — TPM platform attestation.
 
-Hardware-rooted platform evidence via NCryptCreateClaim / NCryptVerifyClaim.
+Hardware-rooted platform evidence composed over SelfConnect's TPM verifier.
 
-The module creates a TPM-backed key under the Microsoft Platform Crypto
-Provider and attempts to create a platform attestation claim over PCR state
-using a nonce for freshness. Windows exposes NCRYPT_CLAIM_PLATFORM as platform
-PCR evidence; binding that evidence to a specific agent key is a higher-level
-protocol composition, not something this function falsely claims when the
-platform claim itself is unavailable.
+The default probe uses SelfConnect's provisioned, non-exportable PCP identity
+key and strict nonce, PCR, signature, public-key-pin, and replay verification.
+The former local NCrypt probe remains available as an explicit compatibility
+backend, not the production default.
 
 Scope note
 ----------
-This is a platform-state claim probe. It is not a machine-bound agent identity:
-the ordinary agent signature is produced by a separate software key, and the
-current protocol does not bind that key or payload into this claim. Unsupported
-machines return supported=False with the Windows status code.
+This is a platform-state claim probe. It is not the ordinary agent signature:
+the current protocol does not bind that separate DPAPI key or its payload into
+this claim. Missing public-key pin, key, TPM support, or verification returns
+`supported=False`.
 
 API
 ---
@@ -37,9 +35,12 @@ Version: 1.0.0-enterprise
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 # ---------------------------------------------------------------------------
@@ -623,25 +624,8 @@ def verify_tpm_platform_claim(result: TpmAttestationResult) -> bool:
                 pass
 
 
-def tpm_probe() -> dict:
-    """Run a self-contained TPM attestation probe and return a status dict.
-
-    This function NEVER returns a fake PASS.  If the TPM or Platform Crypto
-    Provider is unavailable on this machine, ``supported=False`` is returned —
-    that is a normal NA condition, not a test failure.
-
-    Returns
-    -------
-    dict with keys:
-        supported   — bool: True only when a claim was created and verified
-        verified    — bool: local NCryptVerifyClaim result
-        identity_key_bound — always False for this platform-state probe
-        claim_size  — int: size in bytes of the claim blob (0 if not supported)
-        nonce_hex   — str: hex of the random nonce used
-        pubkey_hex  — str: hex of the ECCPUBLICBLOB (empty string if unsupported)
-        error       — str | None: human-readable reason when not supported
-    """
-    nonce = os.urandom(32)
+def _legacy_tpm_probe(nonce: bytes) -> dict[str, Any]:
+    """Compatibility probe for callers explicitly testing the old CNG path."""
     try:
         result = create_tpm_platform_claim(nonce)
     except Exception as exc:  # noqa: BLE001
@@ -665,6 +649,115 @@ def tpm_probe() -> dict:
         "pubkey_hex": result.public_key_blob.hex(),
         "error": result.error if verified or not result.supported else "local claim verification failed",
     }
+
+
+def _sdk_tpm_probe(nonce: bytes) -> dict[str, Any]:
+    """Use the pinned SelfConnect TPM identity and full quote verifier."""
+    try:
+        import sc_tpm_attestation as sdk
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "supported": False,
+            "verified": False,
+            "identity_key_bound": False,
+            "platform_key_bound": False,
+            "manufacturer_chain_verified": False,
+            "claim_size": 0,
+            "nonce_hex": nonce.hex(),
+            "nonce_sha256": hashlib.sha256(nonce).hexdigest(),
+            "pubkey_hex": "",
+            "public_key_sha256": "",
+            "error": f"SelfConnect TPM verifier unavailable: {exc}",
+        }
+
+    expected_key = os.environ.get("SELFCONNECT_TPM_PUBLIC_KEY_SHA256", "").strip().lower()
+    if len(expected_key) != 64 or any(ch not in "0123456789abcdef" for ch in expected_key):
+        return {
+            "supported": False,
+            "verified": False,
+            "identity_key_bound": False,
+            "platform_key_bound": False,
+            "manufacturer_chain_verified": False,
+            "claim_size": 0,
+            "nonce_hex": nonce.hex(),
+            "nonce_sha256": hashlib.sha256(nonce).hexdigest(),
+            "pubkey_hex": "",
+            "public_key_sha256": "",
+            "error": "SELFCONNECT_TPM_PUBLIC_KEY_SHA256 is not configured",
+        }
+
+    key_name = os.environ.get("SELFCONNECT_TPM_KEY_NAME", sdk.DEFAULT_KEY_NAME).strip()
+    replay_path = Path.home() / ".selfconnect" / "enterprise_tpm_nonces.json"
+    try:
+        artifact = sdk.issue_platform_attestation(nonce, key_name=key_name)
+        encoded_claim = artifact["claim_b64u"]
+        claim = base64.urlsafe_b64decode(encoded_claim + "=" * (-len(encoded_claim) % 4))
+        encoded_public = artifact["public_key_blob_b64u"]
+        public_blob = base64.urlsafe_b64decode(encoded_public + "=" * (-len(encoded_public) % 4))
+        verified = sdk.verify_and_consume(
+            artifact,
+            nonce,
+            expected_public_key_sha256=expected_key,
+            replay_store=sdk.NonceReplayStore(replay_path),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "supported": False,
+            "verified": False,
+            "identity_key_bound": False,
+            "platform_key_bound": False,
+            "manufacturer_chain_verified": False,
+            "claim_size": 0,
+            "nonce_hex": nonce.hex(),
+            "nonce_sha256": hashlib.sha256(nonce).hexdigest(),
+            "pubkey_hex": "",
+            "public_key_sha256": expected_key,
+            "error": f"TPM platform attestation failed: {exc}",
+        }
+    return {
+        "supported": True,
+        "verified": True,
+        "identity_key_bound": False,
+        "platform_key_bound": True,
+        "manufacturer_chain_verified": False,
+        "claim_size": len(claim),
+        "claim_sha256": verified["claim_sha256"],
+        "nonce_hex": nonce.hex(),
+        "nonce_sha256": verified["nonce_sha256"],
+        "pubkey_hex": public_blob.hex(),
+        "public_key_sha256": verified["public_key_sha256"],
+        "pcr_mask": verified["pcr_mask"],
+        "pcr_algorithm": verified["pcr_algorithm"],
+        "pcr_values_sha256": verified["pcr_values_sha256"],
+        "replay_checked": verified["replay_checked"],
+        "error": None,
+    }
+
+
+def tpm_probe(*, backend: str = "sdk") -> dict:
+    """Run a self-contained TPM attestation probe and return a status dict.
+
+    The default path delegates to SelfConnect's pinned, nonce-bound quote
+    verifier. The legacy backend remains available only for compatibility and
+    isolated regression tests.
+
+    Returns
+    -------
+    dict with keys:
+        supported   — bool: True only when a claim was created and verified
+        verified    — bool: local NCryptVerifyClaim result
+        identity_key_bound — always False for this platform-state probe
+        claim_size  — int: size in bytes of the claim blob (0 if not supported)
+        nonce_hex   — str: hex of the random nonce used
+        pubkey_hex  — str: hex of the ECCPUBLICBLOB (empty string if unsupported)
+        error       — str | None: human-readable reason when not supported
+    """
+    nonce = os.urandom(32)
+    if backend == "legacy":
+        return _legacy_tpm_probe(nonce)
+    if backend != "sdk":
+        raise ValueError("backend must be 'sdk' or 'legacy'")
+    return _sdk_tpm_probe(nonce)
 
 
 __all__ = [

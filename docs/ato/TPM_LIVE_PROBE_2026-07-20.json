@@ -1,0 +1,22 @@
+{
+  "claim_sha256": "0de77b600b016a118473d3fd8491c655df6d35e352e02482bb6b94093dd95920",
+  "claim_size": 1187,
+  "enterprise_source_parent": "2e617ebb1d6955ac42523774a739b7e7206c4ca6",
+  "identity_key_bound": false,
+  "manufacturer_chain_verified": false,
+  "nonce_sha256": "172f7f381061960202b4335042ead5e8dbe9f3b9a297630d72a70f5119391a3b",
+  "pcr_algorithm": 11,
+  "pcr_mask": 16777215,
+  "pcr_values_sha256": "cfa6d2a34942a42a3e96ce4ed26037f138d6695ad8d127824a13ccba6d22540d",
+  "platform_key_bound": true,
+  "public_key_sha256": "e5954da7514dcc6574cd9d429d7cf36fa3fa0ca8a57da348fb6e99d48402ba96",
+  "raw_claim_included": false,
+  "raw_nonce_included": false,
+  "raw_public_key_included": false,
+  "replay_checked": true,
+  "schema_version": 1,
+  "selfconnect_commit": "787a6b88d9ff4a79917ebba94bffc7fe38d700d2",
+  "supported": true,
+  "verified": true,
+  "verdict": "PASS"
+}
