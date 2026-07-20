@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Pinned TPM platform attestation
+
+- Advanced the SelfConnect SDK pin to `787a6b88` and made its operator-pinned,
+  non-exportable PCP identity-key quote verifier the default Enterprise TPM
+  probe. The legacy CNG probe remains explicitly selectable for compatibility.
+- Recorded a redacted live PASS for nonce, PCR 0-23, signature, and durable
+  replay verification. Manufacturer/EK-chain trust, remote enrollment, and the
+  separate DPAPI agent-signing key remain outside the claim. Evidence:
+  [LOG-20260720-001](LOG.md#log-20260720-001), rationale:
+  [WHY-20260720-001](WHY.md#why-20260720-001), recovery:
+  [PARK-20260720-001](PARKED.md#park-20260720-001).
+
 ### Immutable logical target leases
 
 - Added strict trusted-startup terminal aliases that enumerate a bounded live
