@@ -205,6 +205,12 @@ test('every state-mutating HTTP route declares the HA writer boundary', async ()
     } else if (route.path === '/ha/command') {
       assert.equal(route.firstGuard, 'requireAdminAuth');
       assert.match(source, /app\.post\('\/ha\/command', requireAdminAuth, serializeHaTransition,/);
+    } else if (route.path === '/ha/reprovision-tsk') {
+      assert.equal(route.firstGuard, 'requireAdminAuth');
+      assert.match(
+        source,
+        /app\.post\('\/ha\/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromotionWriterLease,/,
+      );
     } else {
       assert.equal(
         route.firstGuard,

@@ -17,6 +17,11 @@ nonce hashes between independent PostgreSQL authorities.
 - An idempotency response containing a secret-like field is not exported. The
   target receives a deterministic `SECRET_REPROVISION_REQUIRED` tombstone.
   Secret unseal or re-provisioning is a separate authorized ceremony.
+- TSK shared secrets never enter the manifest. Manifest v2 proves each source
+  binding referenced an active owned credential and refuses an unfinished
+  active rotation candidate. Import deletes target credential state, records a
+  durable obligation per binding, and remains unready until each identity is
+  rebound to a fresh target-only credential.
 - Import is one `SERIALIZABLE` transaction. It refuses the source PostgreSQL
   system identifier, in-flight target work, rollback, same-epoch forks,
   signature failure, inventory mismatch, and protocol-receipt mismatch.
@@ -59,6 +64,16 @@ also sets `ULTRA_HA_REQUIRED_COMMAND_ID`, `ULTRA_HA_REQUIRED_SOURCE_EPOCH`, and
 `ULTRA_HA_REQUIRED_MANIFEST_DIGEST`. Startup verifies the imported head against
 the exact local PostgreSQL system identifier. `/ready` remains fail-closed
 until that attestation exists and the ordinary writer fence is valid.
+
+After import, call `POST /ha/reprovision-tsk` once per imported binding with
+the exact pinned `clusterId`, `commandId`, `sourceEpoch`, `pairId`,
+`sourceClientId`, and `agentId`. The route requires both operator bearer auth
+and the body-bound agent proof, plus the current Redis writer fence. It returns
+the fresh secret and provision payload only to that authorized caller; the
+durable receipt contains no secret. Retries return the same credential.
+
+Manifest v1 heads are not upgraded at the same epoch. Run a new governed
+promotion to produce a v2 manifest and new target credentials.
 
 This mechanism is not a government authorization or a claim about an untested
 cloud/site topology. Site-fault, restore/resync, failback, monitoring, and

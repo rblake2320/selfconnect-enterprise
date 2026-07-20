@@ -3,11 +3,13 @@ import { createHash, generateKeyPairSync, randomUUID, sign as edSign } from 'nod
 import test from 'node:test';
 
 import { Pool } from 'pg';
+import { generateTumblerMap } from '@tsk/core';
 
 import {
   PgNonceTombstoneStore,
   ULTRA_INDEPENDENT_STATE_SCHEMA,
   assertIndependentStateReady,
+  completeImportedTskReprovision,
   exportIndependentState,
   guardCountersignIndependentState,
   importIndependentState,
@@ -124,6 +126,8 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
   const processingKey = randomUUID();
   const lockKey = `ultra-ha:${clusterId}:transition`;
   const nonceHash = createHash('sha256').update(`nonce-${suffix}`, 'utf8').digest('hex');
+  let sourceMap;
+  let targetMap;
   try {
     await initializePgSchemas(a, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA);
     await initializePgSchemas(b, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA);
@@ -147,9 +151,20 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       tskGuardResolver: { resolve: (keyId) => keyId === 'tsk-guard-key-1' ? protocolKeys.guard.publicKey : null },
     };
 
+    sourceMap = generateTumblerMap();
+    sourceMap.label = `agent:agent-${suffix}`;
+    sourceMap.status = 'active';
+    targetMap = generateTumblerMap();
+    targetMap.label = `agent:agent-${suffix}`;
+    targetMap.status = 'active';
+
     await a.query(
       'INSERT INTO ultra_identity_bindings (pair_id, tsk_client_id, agent_id) VALUES ($1,$2,$3)',
-      [pairId, `tsk-${suffix}`, `agent-${suffix}`],
+      [pairId, sourceMap.clientId, `agent-${suffix}`],
+    );
+    await a.query(
+      'INSERT INTO ultra_tumbler_maps (client_id, map) VALUES ($1,$2::jsonb)',
+      [sourceMap.clientId, JSON.stringify(sourceMap)],
     );
     await a.query(
       `INSERT INTO ultra_idempotency (idempotency_key, operation, agent_id, state, response)
@@ -161,7 +176,7 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     assert.equal(await nonceA.checkAndConsume(`nonce-${suffix}`, 120_000), false);
     assert.equal(await nonceA.checkAndConsume(`nonce-${suffix}`, 120_000), true);
 
-    const sourceBundle = await exportIndependentState(a, {
+    const exportInput = {
       advisoryLockKey: lockKey,
       clusterId,
       commandId,
@@ -169,9 +184,21 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       sourceKeyId: 'source-key-1',
       sourcePrivateKey: source.privateKey,
       protocolEvidence,
-    });
+    };
+    const unboundMap = generateTumblerMap();
+    unboundMap.label = `agent:agent-${suffix}`;
+    unboundMap.status = 'active';
+    await a.query(
+      'INSERT INTO ultra_tumbler_maps (client_id, map) VALUES ($1,$2::jsonb)',
+      [unboundMap.clientId, JSON.stringify(unboundMap)],
+    );
+    await assert.rejects(exportIndependentState(a, exportInput), /active unbound TSK credential/);
+    await a.query('DELETE FROM ultra_tumbler_maps WHERE client_id=$1', [unboundMap.clientId]);
+
+    const sourceBundle = await exportIndependentState(a, exportInput);
     const serialized = JSON.stringify(sourceBundle);
     assert.equal(serialized.includes('must-not-cross-sites'), false);
+    assert.equal(serialized.includes(sourceMap.sharedSecret), false);
     assert.equal(sourceBundle.manifest.state.idempotency.find(
       (item) => item.idempotencyKey === secretKey,
     ).secretReprovisionRequired, true);
@@ -248,7 +275,7 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     })).idempotent, true);
     assert.deepEqual((await b.query(
       'SELECT tsk_client_id, agent_id FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
-    )).rows[0], { tsk_client_id: `tsk-${suffix}`, agent_id: `agent-${suffix}` });
+    )).rows[0], { tsk_client_id: sourceMap.clientId, agent_id: `agent-${suffix}` });
     assert.deepEqual((await b.query(
       'SELECT response FROM ultra_idempotency WHERE idempotency_key=$1', [secretKey],
     )).rows[0].response.error, 'SECRET_REPROVISION_REQUIRED');
@@ -263,9 +290,78 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       clusterId, commandId, sourceEpoch: 1, manifestDigest: bundle.manifestDigest,
     }), /in-flight idempotency/);
     await b.query('DELETE FROM ultra_idempotency WHERE idempotency_key=$1', [processingKey]);
+    await assert.rejects(assertIndependentStateReady(b, {
+      clusterId, commandId, sourceEpoch: 1, manifestDigest: bundle.manifestDigest,
+    }), /requires TSK credential reprovisioning/);
+    await assert.rejects(completeImportedTskReprovision(b, {
+      advisoryLockKey: lockKey,
+      agentId: `agent-${suffix}`,
+      assertWritable: async () => ({ ok: true, fenceEpoch: 2 }),
+      clusterId,
+      commandId,
+      pairId,
+      sourceClientId: sourceMap.clientId,
+      sourceEpoch: 1,
+      targetMap,
+    }), /writer fence was lost/);
+    const reprovision = await completeImportedTskReprovision(b, {
+      advisoryLockKey: lockKey,
+      agentId: `agent-${suffix}`,
+      clusterId,
+      commandId,
+      pairId,
+      assertWritable: async () => ({ ok: true, fenceEpoch: 1 }),
+      sourceClientId: sourceMap.clientId,
+      sourceEpoch: 1,
+      targetMap,
+    });
+    assert.equal(reprovision.idempotent, false);
+    assert.equal(JSON.stringify(reprovision).includes(targetMap.sharedSecret), false);
+    assert.equal((await completeImportedTskReprovision(b, {
+      advisoryLockKey: lockKey,
+      agentId: `agent-${suffix}`,
+      clusterId,
+      commandId,
+      pairId,
+      assertWritable: async () => ({ ok: true, fenceEpoch: 1 }),
+      sourceClientId: sourceMap.clientId,
+      sourceEpoch: 1,
+      targetMap,
+    })).idempotent, true);
+    assert.equal((await b.query(
+      'SELECT tsk_client_id FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
+    )).rows[0].tsk_client_id, targetMap.clientId);
     assert.equal((await assertIndependentStateReady(b, {
       clusterId, commandId, sourceEpoch: 1, manifestDigest: bundle.manifestDigest,
     })).targetSystemId, systemB.rows[0].id);
+    await b.query(
+      "UPDATE ultra_tumbler_maps SET map=jsonb_set(map, '{sharedSecret}', '\"attacker-secret-attacker-secret-00\"'::jsonb) WHERE client_id=$1",
+      [targetMap.clientId],
+    );
+    await assert.rejects(assertIndependentStateReady(b, {
+      clusterId, commandId, sourceEpoch: 1, manifestDigest: bundle.manifestDigest,
+    }), /rolled back or tampered/);
+    await b.query('UPDATE ultra_tumbler_maps SET map=$2::jsonb WHERE client_id=$1', [
+      targetMap.clientId, JSON.stringify(targetMap),
+    ]);
+    await b.query(
+      "UPDATE ultra_tumbler_maps SET map=jsonb_set(map, '{status}', '\"revoked\"'::jsonb) WHERE client_id=$1",
+      [targetMap.clientId],
+    );
+    await assert.rejects(assertIndependentStateReady(b, {
+      clusterId, commandId, sourceEpoch: 1, manifestDigest: bundle.manifestDigest,
+    }), /rolled back or tampered/);
+    await b.query('UPDATE ultra_tumbler_maps SET map=$2::jsonb WHERE client_id=$1', [
+      targetMap.clientId, JSON.stringify(targetMap),
+    ]);
+    await b.query(
+      'INSERT INTO ultra_tumbler_maps (client_id, map) VALUES ($1,$2::jsonb)',
+      [unboundMap.clientId, JSON.stringify(unboundMap)],
+    );
+    await assert.rejects(assertIndependentStateReady(b, {
+      clusterId, commandId, sourceEpoch: 1, manifestDigest: bundle.manifestDigest,
+    }), /active unbound TSK credential/);
+    await b.query('DELETE FROM ultra_tumbler_maps WHERE client_id=$1', [unboundMap.clientId]);
     await b.query('UPDATE ultra_identity_bindings SET agent_id=$2 WHERE pair_id=$1', [pairId, 'attacker']);
     await assert.rejects(assertIndependentStateReady(b, {
       clusterId, commandId, sourceEpoch: 1, manifestDigest: bundle.manifestDigest,
@@ -300,6 +396,10 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     for (const pool of [a, b]) {
       await pool.query('DELETE FROM ultra_ha_import_head WHERE cluster_id=$1', [clusterId]).catch(() => {});
       await pool.query('DELETE FROM ultra_identity_bindings WHERE pair_id=$1', [pairId]).catch(() => {});
+      await pool.query(
+        'DELETE FROM ultra_tumbler_maps WHERE client_id IN ($1,$2)',
+        [sourceMap?.clientId ?? '', targetMap?.clientId ?? ''],
+      ).catch(() => {});
       await pool.query(
         'DELETE FROM ultra_idempotency WHERE idempotency_key IN ($1,$2,$3)',
         [safeKey, secretKey, processingKey],

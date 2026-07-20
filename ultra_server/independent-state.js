@@ -29,6 +29,20 @@ CREATE TABLE IF NOT EXISTS ultra_ha_import_head (
   authority_digest TEXT NOT NULL CHECK (authority_digest ~ '^[0-9a-f]{64}$'),
   imported_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
+
+CREATE TABLE IF NOT EXISTS ultra_ha_tsk_reprovision (
+  cluster_id TEXT NOT NULL REFERENCES ultra_ha_import_head(cluster_id) ON DELETE CASCADE,
+  pair_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  source_client_id TEXT NOT NULL,
+  target_client_id TEXT,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'complete')),
+  receipt_digest TEXT CHECK (receipt_digest IS NULL OR receipt_digest ~ '^[0-9a-f]{64}$'),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (cluster_id, pair_id),
+  UNIQUE (cluster_id, source_client_id),
+  UNIQUE (cluster_id, target_client_id)
+);
 `;
 
 function requiredIdentifier(value, name) {
@@ -269,12 +283,47 @@ async function readTargetAuthorityState(exec) {
   const idempotency = await exec.query(
     "SELECT idempotency_key::text, operation, agent_id, response FROM ultra_idempotency WHERE state='complete' ORDER BY idempotency_key::text COLLATE \"C\"",
   );
-  return {
-    identityBindings: bindings.rows.map((row) => ({
+  const identityBindings = bindings.rows.map((row) => ({
       agentId: row.agent_id, pairId: row.pair_id, tskClientId: row.tsk_client_id,
-    })),
+    }));
+  const tskCredentials = [];
+  for (const binding of identityBindings) {
+    const maps = await exec.query('SELECT map FROM ultra_tumbler_maps WHERE client_id=$1', [binding.tskClientId]);
+    if (maps.rows[0]) {
+      tskCredentials.push({
+        clientId: binding.tskClientId,
+        credentialDigest: digest(maps.rows[0].map),
+      });
+    }
+  }
+  return {
+    identityBindings,
     idempotency: idempotency.rows.map(targetIdempotencyRecord),
+    tskCredentials,
   };
+}
+
+async function assertNoActiveUnboundCredentials(exec) {
+  const { rows } = await exec.query(
+    `SELECT COUNT(*)::int AS count FROM ultra_tumbler_maps m
+     WHERE m.map->>'status' IN ('active','expiring')
+       AND NOT EXISTS (
+         SELECT 1 FROM ultra_identity_bindings b WHERE b.tsk_client_id=m.client_id
+       )`,
+  );
+  if (rows[0].count !== 0) throw new Error('active unbound TSK credential detected');
+}
+
+function publicTskMapDigest(map) {
+  const publicMap = structuredClone(map);
+  delete publicMap.sharedSecret;
+  if (Array.isArray(publicMap.segments)) {
+    for (const segment of publicMap.segments) {
+      delete segment.secret;
+      delete segment.key;
+    }
+  }
+  return digest(publicMap);
 }
 
 export async function exportIndependentState(pool, input) {
@@ -302,22 +351,55 @@ export async function exportIndependentState(pool, input) {
     const bindings = await client.query(
       'SELECT pair_id, tsk_client_id, agent_id FROM ultra_identity_bindings ORDER BY pair_id COLLATE "C"',
     );
+    const credentialBindings = [];
+    const boundClientIds = new Set(bindings.rows.map((binding) => binding.tsk_client_id));
+    const allMaps = await client.query('SELECT client_id, map FROM ultra_tumbler_maps ORDER BY client_id COLLATE "C"');
+    for (const row of allMaps.rows) {
+      const map = row.map;
+      if (!boundClientIds.has(row.client_id) && ['active', 'expiring'].includes(map?.status)) {
+        throw new Error('cannot export with an active unbound TSK credential');
+      }
+    }
+    for (const binding of bindings.rows) {
+      const maps = await client.query(
+        'SELECT map FROM ultra_tumbler_maps WHERE client_id=$1', [binding.tsk_client_id],
+      );
+      const map = maps.rows[0]?.map;
+      const ownedLabel = map?.label === `agent:${binding.agent_id}` ||
+        map?.label?.startsWith(`rotation:${binding.agent_id}:${binding.pair_id}:`);
+      if (!map || map.clientId !== binding.tsk_client_id || !ownedLabel || map.status !== 'active') {
+        throw new Error('identity binding does not reference an active owned TSK credential');
+      }
+      credentialBindings.push({
+        agentId: binding.agent_id,
+        pairId: binding.pair_id,
+        sourceClientId: binding.tsk_client_id,
+      });
+    }
     const idempotency = await client.query(
       "SELECT idempotency_key::text, operation, agent_id, response FROM ultra_idempotency WHERE state='complete' ORDER BY idempotency_key::text COLLATE \"C\"",
     );
     const nonces = await client.query(
       'SELECT nonce_hash, expires_at FROM ultra_nonce_tombstones ORDER BY nonce_hash COLLATE "C"',
     );
-    const state = snapshotFromRows({ bindings: bindings.rows, idempotency: idempotency.rows, nonces: nonces.rows });
-    const itemCount = state.identityBindings.length + state.idempotency.length + state.nonceTombstones.length;
+    const state = {
+      ...snapshotFromRows({ bindings: bindings.rows, idempotency: idempotency.rows, nonces: nonces.rows }),
+      credentialBindings,
+    };
+    const itemCount = state.identityBindings.length + state.idempotency.length +
+      state.nonceTombstones.length + state.credentialBindings.length;
     const stateBytes = Buffer.byteLength(canonicalJson(state), 'utf8');
     if (itemCount > maxItems || stateBytes > maxBytes) throw new Error('independent state exceeds export bounds');
     const manifest = {
-      authorityDigest: digest({ identityBindings: state.identityBindings, idempotency: state.idempotency }),
+      authorityDigest: digest({
+        identityBindings: state.identityBindings,
+        idempotency: state.idempotency,
+        tskCredentials: [],
+      }),
       bpcPromotionDigest,
       clusterId,
       commandId,
-      format: 'selfconnect-ultra-independent-state-v1',
+      format: 'selfconnect-ultra-independent-state-v2',
       itemCount,
       sourceEpoch,
       sourceSystemId: await systemIdentifier(client),
@@ -418,13 +500,33 @@ export function verifyIndependentStateBundle(bundle, keys) {
 
 function validateState(state) {
   if (!state || !Array.isArray(state.identityBindings) || !Array.isArray(state.idempotency) ||
-      !Array.isArray(state.nonceTombstones)) throw new Error('state inventory invalid');
+      !Array.isArray(state.nonceTombstones) || !Array.isArray(state.credentialBindings)) {
+    throw new Error('state inventory invalid');
+  }
   const unique = (values, name) => {
     if (new Set(values).size !== values.length) throw new Error(`${name} contains duplicates`);
   };
   unique(state.identityBindings.map((item) => item.pairId), 'identity bindings');
   unique(state.idempotency.map((item) => item.idempotencyKey), 'idempotency');
   unique(state.nonceTombstones.map((item) => item.nonceHash), 'nonce tombstones');
+  unique(state.credentialBindings.map((item) => item.pairId), 'credential bindings');
+  if (state.credentialBindings.length !== state.identityBindings.length) {
+    throw new Error('credential binding inventory mismatch');
+  }
+  for (let index = 0; index < state.identityBindings.length; index += 1) {
+    const binding = state.identityBindings[index];
+    const credential = state.credentialBindings[index];
+    requiredIdentifier(binding.agentId, 'identityBindings.agentId');
+    requiredIdentifier(binding.pairId, 'identityBindings.pairId');
+    requiredIdentifier(binding.tskClientId, 'identityBindings.tskClientId');
+    requiredIdentifier(credential.agentId, 'credentialBindings.agentId');
+    requiredIdentifier(credential.pairId, 'credentialBindings.pairId');
+    requiredIdentifier(credential.sourceClientId, 'credentialBindings.sourceClientId');
+    if (binding.agentId !== credential.agentId || binding.pairId !== credential.pairId ||
+        binding.tskClientId !== credential.sourceClientId) {
+      throw new Error('credential binding does not match identity binding');
+    }
+  }
   for (const item of state.idempotency) {
     if (typeof item.secretReprovisionRequired !== 'boolean' || !DIGEST.test(item.responseDigest)) {
       throw new Error('idempotency record invalid');
@@ -446,7 +548,7 @@ function validateManifest(manifest) {
     'sourceSystemId', 'state', 'stateBytes', 'stateDigest', 'tskActivationDigest',
     'tskFinalizedDigest',
   ]), 'independent state manifest');
-  if (manifest.format !== 'selfconnect-ultra-independent-state-v1') throw new Error('manifest format invalid');
+  if (manifest.format !== 'selfconnect-ultra-independent-state-v2') throw new Error('manifest format invalid');
   requiredIdentifier(manifest.clusterId, 'manifest.clusterId');
   requiredIdentifier(manifest.commandId, 'manifest.commandId');
   positiveSafeInteger(manifest.sourceEpoch, 'manifest.sourceEpoch');
@@ -457,13 +559,14 @@ function validateManifest(manifest) {
   requiredDigest(manifest.stateDigest, 'manifest.stateDigest');
   validateState(manifest.state);
   const itemCount = manifest.state.identityBindings.length + manifest.state.idempotency.length +
-    manifest.state.nonceTombstones.length;
+    manifest.state.nonceTombstones.length + manifest.state.credentialBindings.length;
   if (manifest.itemCount !== itemCount || manifest.stateBytes !== Buffer.byteLength(canonicalJson(manifest.state), 'utf8')) {
     throw new Error('manifest inventory mismatch');
   }
   if (manifest.authorityDigest !== digest({
     identityBindings: manifest.state.identityBindings,
     idempotency: manifest.state.idempotency,
+    tskCredentials: [],
   })) throw new Error('manifest authority digest mismatch');
 }
 
@@ -521,10 +624,10 @@ export async function importIndependentState(pool, bundle, input) {
           throw new Error('same-epoch state fork refused');
         }
         if (row.target_system_id !== targetSystemId || row.source_system_id !== manifest.sourceSystemId ||
-            row.authority_digest !== manifest.authorityDigest ||
-            digest(await readTargetAuthorityState(client)) !== manifest.authorityDigest) {
+            digest(await readTargetAuthorityState(client)) !== row.authority_digest) {
           throw new Error('same-epoch imported authority was rolled back or tampered');
         }
+        await assertNoActiveUnboundCredentials(client);
         for (const item of manifest.state.nonceTombstones) {
           await client.query(
             `INSERT INTO ultra_nonce_tombstones (nonce_hash, expires_at)
@@ -540,9 +643,11 @@ export async function importIndependentState(pool, bundle, input) {
     }
     const processing = await client.query("SELECT COUNT(*)::int AS count FROM ultra_idempotency WHERE state='processing'");
     if (processing.rows[0].count !== 0) throw new Error('target contains in-flight idempotency work');
+    await client.query('DELETE FROM ultra_ha_tsk_reprovision WHERE cluster_id=$1', [manifest.clusterId]);
     await client.query('DELETE FROM ultra_identity_bindings');
     await client.query('DELETE FROM ultra_idempotency');
     await client.query('DELETE FROM ultra_nonce_tombstones');
+    await client.query('DELETE FROM ultra_tumbler_maps');
     for (const item of manifest.state.identityBindings) {
       await client.query(
         'INSERT INTO ultra_identity_bindings (pair_id, tsk_client_id, agent_id) VALUES ($1,$2,$3)',
@@ -583,9 +688,121 @@ export async function importIndependentState(pool, bundle, input) {
          manifest_digest=EXCLUDED.manifest_digest, authority_digest=EXCLUDED.authority_digest,
          imported_at=clock_timestamp()`,
       [manifest.clusterId, manifest.commandId, manifest.sourceEpoch, manifest.sourceSystemId,
-       targetSystemId, bundle.manifestDigest, manifest.authorityDigest],
+      targetSystemId, bundle.manifestDigest, manifest.authorityDigest],
     );
+    for (const item of manifest.state.credentialBindings) {
+      await client.query(
+        `INSERT INTO ultra_ha_tsk_reprovision
+           (cluster_id, pair_id, agent_id, source_client_id, status)
+         VALUES ($1,$2,$3,$4,'pending')`,
+        [manifest.clusterId, item.pairId, item.agentId, item.sourceClientId],
+      );
+    }
     return { idempotent: false, manifestDigest: bundle.manifestDigest, targetSystemId };
+  });
+}
+
+export async function completeImportedTskReprovision(pool, input) {
+  const targetMap = JSON.parse(JSON.stringify(input.targetMap));
+  requiredIdentifier(input.clusterId, 'clusterId');
+  requiredIdentifier(input.commandId, 'commandId');
+  positiveSafeInteger(input.sourceEpoch, 'sourceEpoch');
+  requiredIdentifier(input.pairId, 'pairId');
+  requiredIdentifier(input.agentId, 'agentId');
+  requiredIdentifier(input.sourceClientId, 'sourceClientId');
+  requiredIdentifier(targetMap?.clientId, 'targetMap.clientId');
+  if (targetMap.clientId === input.sourceClientId || targetMap.label !== `agent:${input.agentId}` ||
+      targetMap.status !== 'active' || typeof targetMap.sharedSecret !== 'string' ||
+      targetMap.sharedSecret.length < 32 || !Array.isArray(targetMap.segments) ||
+      targetMap.segments.length === 0) {
+    throw new Error('target TSK credential is not a fresh active owned credential');
+  }
+  if (typeof input.assertWritable !== 'function') {
+    throw new Error('TSK reprovision requires a live writer-fence assertion');
+  }
+  return withSerializable(pool, async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [input.advisoryLockKey]);
+    const head = (await client.query(
+      `SELECT command_id, source_epoch FROM ultra_ha_import_head
+       WHERE cluster_id=$1 FOR UPDATE`, [input.clusterId],
+    )).rows[0];
+    if (!head || head.command_id !== input.commandId || Number(head.source_epoch) !== input.sourceEpoch) {
+      throw new Error('TSK reprovision does not match the imported promotion');
+    }
+    const pending = (await client.query(
+      `SELECT agent_id, source_client_id, target_client_id, status, receipt_digest
+       FROM ultra_ha_tsk_reprovision WHERE cluster_id=$1 AND pair_id=$2 FOR UPDATE`,
+      [input.clusterId, input.pairId],
+    )).rows[0];
+    if (!pending || pending.agent_id !== input.agentId || pending.source_client_id !== input.sourceClientId) {
+      throw new Error('TSK reprovision binding mismatch');
+    }
+    const receipt = {
+      agentId: input.agentId,
+      clusterId: input.clusterId,
+      commandId: input.commandId,
+      pairId: input.pairId,
+      publicMapDigest: publicTskMapDigest(targetMap),
+      sourceClientId: input.sourceClientId,
+      sourceEpoch: input.sourceEpoch,
+      targetClientId: targetMap.clientId,
+    };
+    const receiptDigest = digest(receipt);
+    if (pending.status === 'complete') {
+      if (pending.target_client_id !== targetMap.clientId || pending.receipt_digest !== receiptDigest) {
+        throw new Error('TSK reprovision retry conflicts with completed receipt');
+      }
+      const writable = await input.assertWritable();
+      if (!writable?.ok || Number(writable.fenceEpoch) !== input.sourceEpoch) {
+        throw new Error('TSK reprovision writer fence is not current');
+      }
+      return Object.freeze({ ...receipt, receiptDigest, idempotent: true });
+    }
+    await client.query(
+      'INSERT INTO ultra_tumbler_maps (client_id, map) VALUES ($1,$2::jsonb)',
+      [targetMap.clientId, JSON.stringify(targetMap)],
+    );
+    const rebound = await client.query(
+      `UPDATE ultra_identity_bindings SET tsk_client_id=$3, updated_at=clock_timestamp()
+       WHERE pair_id=$1 AND agent_id=$2 AND tsk_client_id=$4`,
+      [input.pairId, input.agentId, targetMap.clientId, input.sourceClientId],
+    );
+    if (rebound.rowCount !== 1) throw new Error('imported identity rebind failed');
+    await client.query(
+      `UPDATE ultra_ha_tsk_reprovision SET target_client_id=$3, status='complete',
+         receipt_digest=$4, updated_at=clock_timestamp()
+       WHERE cluster_id=$1 AND pair_id=$2`,
+      [input.clusterId, input.pairId, targetMap.clientId, receiptDigest],
+    );
+    const authorityDigest = digest(await readTargetAuthorityState(client));
+    await client.query(
+      'UPDATE ultra_ha_import_head SET authority_digest=$2 WHERE cluster_id=$1',
+      [input.clusterId, authorityDigest],
+    );
+    const writable = await input.assertWritable();
+    if (!writable?.ok || Number(writable.fenceEpoch) !== input.sourceEpoch) {
+      throw new Error('TSK reprovision writer fence was lost before commit');
+    }
+    return Object.freeze({ ...receipt, receiptDigest, idempotent: false });
+  });
+}
+
+export async function readImportedTskReprovision(pool, input) {
+  requiredIdentifier(input.clusterId, 'clusterId');
+  requiredIdentifier(input.pairId, 'pairId');
+  const { rows } = await pool.query(
+    `SELECT agent_id, source_client_id, target_client_id, status, receipt_digest
+     FROM ultra_ha_tsk_reprovision WHERE cluster_id=$1 AND pair_id=$2`,
+    [input.clusterId, input.pairId],
+  );
+  if (!rows[0]) return null;
+  return Object.freeze({
+    agentId: rows[0].agent_id,
+    pairId: input.pairId,
+    receiptDigest: rows[0].receipt_digest,
+    sourceClientId: rows[0].source_client_id,
+    status: rows[0].status,
+    targetClientId: rows[0].target_client_id,
   });
 }
 
@@ -606,6 +823,14 @@ export async function assertIndependentStateReady(pool, expected) {
     if (processing.rows[0].count !== 0) {
       throw new Error('independent state contains in-flight idempotency work');
     }
+    const pending = await client.query(
+      "SELECT COUNT(*)::int AS count FROM ultra_ha_tsk_reprovision WHERE cluster_id=$1 AND status='pending'",
+      [expected.clusterId],
+    );
+    if (pending.rows[0].count !== 0) {
+      throw new Error('independent state requires TSK credential reprovisioning');
+    }
+    await assertNoActiveUnboundCredentials(client);
     const liveSystemId = await systemIdentifier(client);
     if (row.target_system_id !== liveSystemId || row.source_system_id === liveSystemId) {
       throw new Error('independent state authority mismatch');

@@ -91,6 +91,48 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260720-005 - Manifest v1 credential omission
+
+**Status:** Parked
+**Category:** security property
+**Former location:** `ultra_server/independent-state.js`, manifest format
+`selfconnect-ultra-independent-state-v1`
+**Source commit:** `e4cfbd635490b3dc6898ce71b2cbccaebef80bfd`
+**Affected paths:** independent-state schema, export, import, readiness, server
+promotion operations, tests, and runbook
+**Action log:** [LOG-20260720-005](LOG.md#log-20260720-005)
+**Why changed:** [WHY-20260720-005](WHY.md#why-20260720-005)
+**Parked by:** commit containing this record
+
+**Former wording:** Manifest v1 transferred identity bindings without proving
+or recreating the TSK credential authority referenced by those bindings.
+
+**Recovery source:** The source commit and its signed Git history.
+
+**Reason parked:** A promoted node could have an attested binding whose TSK
+credential was missing or stale, while source shared secrets were deliberately
+excluded from the handoff.
+
+**Replacement:** Manifest v2 credential ownership inventory plus durable,
+target-only reprovision obligations and the governed reprovision endpoint.
+
+**Restore when:** Only for offline forensic reproduction with independent mode
+disabled.
+
+**Restore procedure:** Check out the source commit in an isolated worktree,
+use disposable databases, and do not expose the resulting server to traffic.
+
+**Validation after restore:** Reproduce the v1 omission test, then return to v2
+and run the full independent-state drill.
+
+**Recovery rehearsal:** Not rehearsed.
+
+**Restoration risks:** Missing authentication state, stale target credentials,
+and an incorrect readiness decision.
+
+**Evidence and links:** [LOG-20260720-005](LOG.md#log-20260720-005),
+[WHY-20260720-005](WHY.md#why-20260720-005), and Enterprise issue #28.
+
 ## PARK-20260720-003 - Shared Redis replay authority and fresh-only restart call
 
 **Status:** Parked

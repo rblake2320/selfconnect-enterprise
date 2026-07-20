@@ -54,6 +54,37 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260720-005 - Add target-only TSK reprovision ceremony
+
+**Timestamp (UTC):** 2026-07-20T21:25:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security, implementation, test, documentation
+**Base commit:** `e27784fee6623844883a90e882830c991815d005`
+**Change reference:** commit containing this entry; Enterprise issue #28
+**Why:** [WHY-20260720-005](WHY.md#why-20260720-005)
+**Parked records:** [PARK-20260720-005](PARKED.md#park-20260720-005)
+
+**Changed:** Advanced the independent-state manifest to v2, validated that
+every imported binding owns an active TSK credential, cleared target-held
+credentials during import, recorded durable reprovision obligations, and added
+the dual-authorized `/ha/reprovision-tsk` ceremony.
+
+**Reason:** Identity bindings alone are not usable authority. Their TSK shared
+secrets cannot be copied in the signed handoff and must be regenerated at the
+target before the promoted node serves mutations.
+
+**Full actions and links:** `ultra_server/independent-state.js`,
+`ultra_server/server.js`, the real PostgreSQL handoff drill,
+`docs/operations/ULTRA_INDEPENDENT_STATE_HA.md`, and Enterprise issue #28.
+
+**Validation:** Local Ultra tests passed 36/36 with two named PostgreSQL skips;
+the fail-not-skip two-authority drill passed with credential absence,
+reprovision, atomic rebind, idempotent retry, and readiness checks. Hosted
+exact-head evidence is required before merge.
+
+**Notes:** The response returns the new secret only to the already-required
+operator+agent authorized caller. Logs and receipts remain non-secret.
+
 ## LOG-20260720-004 - Fail closed before independent-state readiness
 
 **Timestamp (UTC):** 2026-07-20T21:14:00Z
