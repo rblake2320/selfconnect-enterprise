@@ -499,6 +499,9 @@ export function verifyIndependentStateBundle(bundle, keys) {
 }
 
 function validateState(state) {
+  strictKeys(state, new Set([
+    'credentialBindings', 'identityBindings', 'idempotency', 'nonceTombstones',
+  ]), 'state');
   if (!state || !Array.isArray(state.identityBindings) || !Array.isArray(state.idempotency) ||
       !Array.isArray(state.nonceTombstones) || !Array.isArray(state.credentialBindings)) {
     throw new Error('state inventory invalid');
@@ -516,6 +519,8 @@ function validateState(state) {
   for (let index = 0; index < state.identityBindings.length; index += 1) {
     const binding = state.identityBindings[index];
     const credential = state.credentialBindings[index];
+    strictKeys(binding, new Set(['agentId', 'pairId', 'tskClientId']), 'identity binding');
+    strictKeys(credential, new Set(['agentId', 'pairId', 'sourceClientId']), 'credential binding');
     requiredIdentifier(binding.agentId, 'identityBindings.agentId');
     requiredIdentifier(binding.pairId, 'identityBindings.pairId');
     requiredIdentifier(binding.tskClientId, 'identityBindings.tskClientId');
@@ -528,6 +533,13 @@ function validateState(state) {
     }
   }
   for (const item of state.idempotency) {
+    strictKeys(item, new Set([
+      'agentId', 'idempotencyKey', 'operation', 'response', 'responseDigest',
+      'secretReprovisionRequired',
+    ]), 'idempotency record');
+    requiredIdentifier(item.agentId, 'idempotency.agentId');
+    requiredIdentifier(item.idempotencyKey, 'idempotency.idempotencyKey');
+    requiredIdentifier(item.operation, 'idempotency.operation');
     if (typeof item.secretReprovisionRequired !== 'boolean' || !DIGEST.test(item.responseDigest)) {
       throw new Error('idempotency record invalid');
     }
@@ -536,7 +548,9 @@ function validateState(state) {
     }
   }
   for (const nonce of state.nonceTombstones) {
-    if (!DIGEST.test(nonce.nonceHash) || !Number.isFinite(Date.parse(nonce.expiresAt))) {
+    strictKeys(nonce, new Set(['expiresAt', 'nonceHash']), 'nonce tombstone');
+    if (!DIGEST.test(nonce.nonceHash) || !Number.isFinite(Date.parse(nonce.expiresAt)) ||
+        new Date(nonce.expiresAt).toISOString() !== nonce.expiresAt) {
       throw new Error('nonce tombstone invalid');
     }
   }
