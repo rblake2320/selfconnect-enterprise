@@ -32,6 +32,7 @@ import {
   PgNonceTombstoneStore,
   ULTRA_INDEPENDENT_STATE_SCHEMA,
   assertIndependentStateReady,
+  loadIndependentStateRuntimeConfig,
 } from './independent-state.js';
 import {
   createMetricsAuthMiddleware,
@@ -110,13 +111,8 @@ if (!['development', 'production'].includes(RUNTIME_MODE)) {
   throw new Error('ULTRA_RUNTIME_MODE must be development or production');
 }
 const HA_CONFIG = loadUltraHaConfig(process.env, RUNTIME_MODE);
-const HA_STATE_MODE = process.env.ULTRA_HA_STATE_MODE ?? 'shared';
-if (!['shared', 'independent'].includes(HA_STATE_MODE)) {
-  throw new Error('ULTRA_HA_STATE_MODE must be shared or independent');
-}
-if (HA_STATE_MODE === 'independent' && !HA_CONFIG.enabled) {
-  throw new Error('ULTRA_HA_STATE_MODE=independent requires ULTRA_HA_ENABLED=true');
-}
+const INDEPENDENT_CONFIG = loadIndependentStateRuntimeConfig(process.env, HA_CONFIG, RUNTIME_MODE);
+const HA_STATE_MODE = INDEPENDENT_CONFIG.mode;
 
 // Operator authorization is separate from the per-agent Ed25519 proof.
 // LIFECYCLE_SECRET remains a development compatibility alias only.
@@ -231,14 +227,8 @@ if (RUNTIME_MODE === 'production') {
   nonceBackendType = HA_STATE_MODE === 'independent' ? 'postgresql-ha' : 'redis';
   ipRateLimiter = new RedisRateLimiter(redisClient, IP_RATE_LIMIT, RATE_LIMIT_WINDOW_MS, 'ultra:rate:ip:');
   rateLimiter = new RedisRateLimiter(redisClient, PAIR_RATE_LIMIT, RATE_LIMIT_WINDOW_MS, 'ultra:rate:pair:');
-  const requiredManifest = process.env.ULTRA_HA_REQUIRED_MANIFEST_DIGEST;
-  if (HA_STATE_MODE === 'independent' && requiredManifest) {
-    independentStateReady = await assertIndependentStateReady(pool, {
-      clusterId: HA_CONFIG.clusterId,
-      commandId: process.env.ULTRA_HA_REQUIRED_COMMAND_ID,
-      sourceEpoch: Number(process.env.ULTRA_HA_REQUIRED_SOURCE_EPOCH),
-      manifestDigest: requiredManifest,
-    });
+  if (INDEPENDENT_CONFIG.expected) {
+    independentStateReady = await assertIndependentStateReady(pool, INDEPENDENT_CONFIG.expected);
   }
 } else {
   pairStore = new MemoryPairStore();

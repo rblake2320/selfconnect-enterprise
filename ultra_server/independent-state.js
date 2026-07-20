@@ -88,6 +88,37 @@ function requiredDigest(value, name) {
   return value;
 }
 
+export function loadIndependentStateRuntimeConfig(env, haConfig, runtimeMode) {
+  const mode = env.ULTRA_HA_STATE_MODE ?? 'shared';
+  if (!['shared', 'independent'].includes(mode)) {
+    throw new Error('ULTRA_HA_STATE_MODE must be shared or independent');
+  }
+  if (mode === 'shared') return Object.freeze({ mode, expected: null });
+  if (runtimeMode !== 'production' || !haConfig?.enabled) {
+    throw new Error('ULTRA_HA_STATE_MODE=independent requires production HA mode');
+  }
+  const raw = [
+    env.ULTRA_HA_REQUIRED_COMMAND_ID,
+    env.ULTRA_HA_REQUIRED_SOURCE_EPOCH,
+    env.ULTRA_HA_REQUIRED_MANIFEST_DIGEST,
+  ];
+  if (raw.every((value) => value === undefined || value === '')) {
+    return Object.freeze({ mode, expected: null });
+  }
+  if (raw.some((value) => value === undefined || value === '')) {
+    throw new Error('independent-state promotion pins must be configured together');
+  }
+  return Object.freeze({
+    mode,
+    expected: Object.freeze({
+      clusterId: requiredIdentifier(haConfig.clusterId, 'clusterId'),
+      commandId: requiredIdentifier(raw[0], 'ULTRA_HA_REQUIRED_COMMAND_ID'),
+      sourceEpoch: positiveSafeInteger(Number(raw[1]), 'ULTRA_HA_REQUIRED_SOURCE_EPOCH'),
+      manifestDigest: requiredDigest(raw[2], 'ULTRA_HA_REQUIRED_MANIFEST_DIGEST'),
+    }),
+  });
+}
+
 function requirePublicEd25519(key, name) {
   if (!key || key.type !== 'public' || key.asymmetricKeyType !== 'ed25519') {
     throw new Error(`${name} must be a public Ed25519 KeyObject`);

@@ -25,7 +25,7 @@
     "ha:command": "node ha-command.mjs",
     "ha:state": "node independent-state-command.mjs",
     "test:ha-live": "node ha-live-conformance.mjs",
-    "test": "node --test agent-auth.test.mjs ha-controller.test.mjs monitoring-config.test.mjs monitoring-security.test.mjs package-content.test.mjs recovery-token.test.mjs runtime-stores.test.mjs security-boundary.test.mjs",
+    "test": "node --test agent-auth.test.mjs ha-controller.test.mjs independent-state-config.test.mjs monitoring-config.test.mjs monitoring-security.test.mjs package-content.test.mjs recovery-token.test.mjs runtime-stores.test.mjs security-boundary.test.mjs",
     "test:independent-state": "node --test independent-state.test.mjs",
     "test:live": "node server.test.mjs"
   },
