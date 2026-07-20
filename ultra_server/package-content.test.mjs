@@ -17,6 +17,7 @@ const expectedRuntimeFiles = [
   'security-boundary.js',
   'server.js',
   'ultra-state-outbox.js',
+  'ultra-state-authority-config.js',
   'ultra-state-stream-command.mjs',
 ];
 

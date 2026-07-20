@@ -12,11 +12,10 @@ import {
   BPC_TRANSPORT_NONCE_SCHEMA,
   NodePostgresTransactor,
   PgReplayNonceStore,
-  adoptCurrentSchemaVersion,
+  provisionSchemaVersion,
 } from '@bpc/server';
 import {
   TSK_SOURCE_LEASE_SCHEMA,
-  assertSourceFenceReady,
   installLeaseGrant,
   signLeaseGrant,
 } from '@tsk/server';
@@ -24,8 +23,8 @@ import { Pool } from 'pg';
 
 import { ULTRA_INDEPENDENT_STATE_SCHEMA } from './independent-state.js';
 import { ULTRA_PG_SCHEMA, initializePgSchemas } from './runtime-stores.js';
+import { loadGovernedUltraStateAuthority } from './ultra-state-authority-config.js';
 import {
-  createGovernedUltraStateAuthority,
   createUltraStateHttpReceiver,
   signUltraStateAck,
 } from './ultra-state-outbox.js';
@@ -64,6 +63,7 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
   const nonceHash = createHash('sha256').update(nonceValue, 'utf8').digest('hex');
   let receiverProcess;
   let runtimeDirectory;
+  let files;
   try {
     await initializePgSchemas(
       a, HA_OUTBOX_PG_SCHEMA, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA,
@@ -75,8 +75,8 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
     );
     const dbA = new NodePostgresTransactor(a);
     const dbB = new NodePostgresTransactor(b);
-    const readyA = await adoptCurrentSchemaVersion(dbA, 'public');
-    const readyB = await adoptCurrentSchemaVersion(dbB, 'public');
+    await provisionSchemaVersion(dbA, 'public');
+    const readyB = await provisionSchemaVersion(dbB, 'public');
     await provisionStream(dbA, streamId, String(epoch), 1);
     await provisionStream(dbB, streamId, String(epoch), 1);
     const guardKeys = generateKeyPairSync('ed25519');
@@ -89,15 +89,19 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
       leaseExpiresAtMs: Date.now() + 300_000, leaseGrantSeq: 1, prevGrantDigest: null,
     });
     await dbA.transaction((exec) => installLeaseGrant(exec, sourceLeaseResolver, lease));
-    const sourceFenceReady = await assertSourceFenceReady(dbA, 'public', sourceLeaseResolver, {
-      streamId, holderNodeId: lease.holderNodeId, leaseId: lease.leaseId,
-      grantDigest: lease.grantDigest,
-    });
-    const authority = await createGovernedUltraStateAuthority({
-      pool: a, db: dbA, outboxReady: readyA, sourceFenceReady, sourceLeaseResolver,
-      schema: 'public', streamId, sourceEpoch: epoch, controlToASkewBoundMs: 5_000,
-      maxPendingRows: 100,
-    });
+    runtimeDirectory = await mkdtemp(join(tmpdir(), 'ultra-state-stream-'));
+    files = {
+      guardPublic: join(runtimeDirectory, 'source-guard-public.pem'),
+      authority: join(runtimeDirectory, 'source-authority.json'),
+    };
+    await writeFile(files.guardPublic, guardKeys.publicKey.export({ type: 'spki', format: 'pem' }));
+    await writeFile(files.authority, JSON.stringify({
+      streamId, sourceEpoch: epoch, holderNodeId: lease.holderNodeId,
+      leaseId: lease.leaseId, grantDigest: lease.grantDigest,
+      controlToASkewBoundMs: 5_000,
+      sourceLeasePublicKeyFiles: { 'source-guard-1': files.guardPublic },
+    }));
+    const authority = await loadGovernedUltraStateAuthority(a, files.authority);
     const { outbox, identityBinding: bindings, idempotencyStore: idempotency,
       nonceBackend: nonces } = authority;
 
@@ -169,15 +173,14 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
     await new Promise((resolve) => portProbe.listen(0, '127.0.0.1', resolve));
     const port = portProbe.address().port;
     await new Promise((resolve) => portProbe.close(resolve));
-    runtimeDirectory = await mkdtemp(join(tmpdir(), 'ultra-state-stream-'));
-    const files = {
+    Object.assign(files, {
       request: join(runtimeDirectory, 'request.secret'),
       response: join(runtimeDirectory, 'response.secret'),
       privateAck: join(runtimeDirectory, 'ack-private.pem'),
       publicAck: join(runtimeDirectory, 'ack-public.pem'),
       receiver: join(runtimeDirectory, 'receiver.json'),
       publisher: join(runtimeDirectory, 'publisher.json'),
-    };
+    });
     await Promise.all([
       writeFile(files.request, requestSecret),
       writeFile(files.response, responseSecret),

@@ -133,6 +133,15 @@ A revoke that races after application DML therefore causes the serializable
 transaction, including its outbox append, to roll back rather than committing a
 stale-site mutation.
 
+Set `ULTRA_STATE_AUTHORITY_CONFIG_FILE` on a promoted runtime to an exact JSON
+descriptor containing `streamId`, numeric `sourceEpoch`, `holderNodeId`,
+`leaseId`, signed `grantDigest`, `controlToASkewBoundMs`, and a map of guard
+key IDs to public Ed25519 key files. Private keys in that verifier map are
+rejected. When the independent-state promotion pins are configured, startup
+must attest the imported state and this source authority before constructing
+any writable Ultra-owned store. With no promotion pins, the node remains a
+read-only standby behind the readiness gate.
+
 This mechanism is not a government authorization or a claim about an untested
 cloud/site topology. Site-fault, restore/resync, failback, monitoring, and
 measured RPO/RTO evidence remain required before closing Enterprise issue #28.
