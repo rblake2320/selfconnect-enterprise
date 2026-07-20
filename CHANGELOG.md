@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### In-transaction Ultra source fencing
+
+- Composed TSK's signed source-lease capability directly into the BPC durable
+  outbox pre-commit boundary for Ultra identity, idempotency, and nonce state.
+- Added a real PostgreSQL race proving a lease revoked after DML but before
+  commit rolls back both the authority mutation and its outbox record.
+
 ### Authenticated stream process
 
 - Added a shipped receiver service and bounded publisher command for the Ultra

@@ -54,6 +54,33 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260720-010 - Fence Ultra mutations inside their source transaction
+
+**Timestamp (UTC):** 2026-07-20T22:12:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security implementation and verification
+**Base commit:** `f49cfb1da95dbb3a578a3944a113eb871330e1ce`
+**Change reference:** commit containing this entry
+**Why:** [WHY-20260720-010](WHY.md#why-20260720-010)
+**Parked records:** None
+
+**Changed:** Added `createGovernedUltraStateAuthority`, binding the BPC atomic
+outbox to TSK's signed, capability-scoped source lease and pre-commit check.
+
+**Reason:** HTTP writer admission and Redis checks alone cannot prevent a stale
+independent PostgreSQL authority from committing after its lease changes.
+
+**Full actions and links:** `ultra_server/ultra-state-outbox.js`, its real
+two-PostgreSQL drill, and the independent-state operations runbook.
+
+**Validation:** The drill installs and attests a real Ed25519-signed TSK lease,
+commits five governed records, revokes the lease between application DML and
+pre-commit validation, and proves the raced DML/outbox append rolled back.
+
+**Boundary:** BPC pair and TSK credential runtime stores still require their
+own completed-authority composition. Full site failover evidence remains in
+Enterprise issue 28.
+
 ## LOG-20260720-009 - Ship the authenticated stream process boundary
 
 **Timestamp (UTC):** 2026-07-20T22:05:00Z

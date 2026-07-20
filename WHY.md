@@ -51,6 +51,40 @@ related records.
 
 ## Register
 
+## WHY-20260720-010 - Recheck the source lease at the commit boundary
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T22:12:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-010](LOG.md#log-20260720-010)
+**Parked records:** None
+**Source state:** `selfconnect-enterprise`, `origin/master`,
+`f49cfb1da95dbb3a578a3944a113eb871330e1ce`
+
+**Decision:** Reuse TSK's signed source-lease capability as the BPC outbox
+pre-commit check for every replicated Ultra authority mutation.
+
+**Why:** A middleware or Redis-only precheck leaves a check-to-commit window.
+The source PostgreSQL lease row is the transaction-local authority: revoke
+conflicts with in-flight readers, and a revoke observed before commit forces the
+serializable mutation to fail closed.
+
+**Alternatives considered:** A new Enterprise lease format was rejected as
+duplicative and harder to audit. A pre-request check was rejected because it
+cannot govern the later database commit.
+
+**Consequences:** Independent Ultra writers must possess a real, database-bound
+TSK readiness capability and refresh it on a signed lease renewal. Revoked or
+changed grants roll back application DML and outbox state together.
+
+**Rollback conditions:** Replace this composition only if the replacement
+retains an unforgeable capability and an equal or stronger in-transaction,
+pre-commit stale-writer denial.
+
+**Evidence and links:** [LOG-20260720-010](LOG.md#log-20260720-010),
+`ultra_server/ultra-state-outbox.test.mjs`, and the pinned TSK source-fence
+contract.
+
 ## WHY-20260720-009 - Separate the stream process from the identity sidecar
 
 **Status:** Accepted

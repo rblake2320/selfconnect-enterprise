@@ -122,6 +122,17 @@ direct non-loopback receiver binds are refused; use an authenticated TLS/mTLS
 proxy between sites. Request, response-envelope, and receiver-signing keys are
 separate file-held custody boundaries.
 
+## Governed Ultra source authority
+
+`createGovernedUltraStateAuthority()` is the only composed constructor for
+independent-mode Ultra identity bindings, idempotency state, and nonce
+tombstones. It requires a real TSK `SourceFenceReadyToken` bound to the same
+PostgreSQL transactor, schema, stream, holder, lease, and signed grant digest.
+The BPC outbox invokes TSK's source-lease check again immediately before commit.
+A revoke that races after application DML therefore causes the serializable
+transaction, including its outbox append, to roll back rather than committing a
+stale-site mutation.
+
 This mechanism is not a government authorization or a claim about an untested
 cloud/site topology. Site-fault, restore/resync, failback, monitoring, and
 measured RPO/RTO evidence remain required before closing Enterprise issue #28.
