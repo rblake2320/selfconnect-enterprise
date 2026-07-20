@@ -91,6 +91,46 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260720-006 - Unattested independent-state catalog
+
+**Status:** Parked
+**Category:** security property
+**Former location:** `ultra_server/independent-state.js`, transaction entry
+**Source commit:** `4f6212a4328ed34c34a314411fde41d6f6f7a843`
+**Affected paths:** independent-state export, import, nonce authority,
+reprovision, readiness, tests, and operations runbook
+**Action log:** [LOG-20260720-006](LOG.md#log-20260720-006)
+**Why changed:** [WHY-20260720-006](WHY.md#why-20260720-006)
+**Parked by:** commit containing this record
+
+**Former wording:** Independent-state transactions trusted table names and row
+contracts without proving the live PostgreSQL catalog matched the reviewed DDL.
+
+**Recovery source:** The source commit and its signed Git history.
+
+**Reason parked:** A partial restore or DDL mutation could weaken authority
+semantics without changing signed row payloads.
+
+**Replacement:** Compiled full-catalog SHA-256 attestation plus transaction-held
+`ACCESS SHARE` locks over all governed relations.
+
+**Restore when:** Only in an isolated forensic reproduction with independent
+HA mode disabled.
+
+**Restore procedure:** Check out the source commit in a disposable worktree and
+use disposable databases. Do not connect the resulting server to production.
+
+**Validation after restore:** Demonstrate that an added catalog column is not
+rejected, then return to the compiled-pin implementation.
+
+**Recovery rehearsal:** Not rehearsed; restoration weakens the authority gate.
+
+**Restoration risks:** Schema drift, partial-restore acceptance, and authority
+semantics that differ from reviewed code.
+
+**Evidence and links:** [LOG-20260720-006](LOG.md#log-20260720-006) and
+Enterprise issue #28.
+
 ## PARK-20260720-005 - Manifest v1 credential omission
 
 **Status:** Parked

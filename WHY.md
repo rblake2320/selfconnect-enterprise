@@ -51,6 +51,40 @@ related records.
 
 ## Register
 
+## WHY-20260720-006 - Treat the live catalog as authority
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T21:37:43Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-006](LOG.md#log-20260720-006)
+**Parked records:** [PARK-20260720-006](PARKED.md#park-20260720-006)
+**Source state:** Enterprise master at `4f6212a4328ed34c34a314411fde41d6f6f7a843`
+
+**Decision:** Compare the live full catalog to a source-compiled manifest at
+the start of every independent-state transaction and retain relation locks
+through commit.
+
+**Why:** Data signatures and authority digests do not detect a missing CHECK,
+changed index, injected trigger, disabled RLS setting, or partial schema
+restore. Checking without holding a lock leaves a DDL time-of-check/time-of-use
+window.
+
+**Alternatives considered:** Startup-only attestation (rejected because drift
+after startup remains usable); trust-on-first-use or an environment override
+(rejected because it can bless attacker-modified DDL); migration-version only
+(rejected because a version stamp does not prove the catalog).
+
+**Consequences:** Authority operations pay several catalog reads and table
+locks. Intentional DDL is an explicit offline migration and reviewed re-pin.
+Application byte ordering makes the digest independent of database collation.
+
+**Rollback conditions:** Replace only with a stronger compiled schema
+capability that provides at least the same catalog coverage and transaction
+stability. Do not return to version-only or startup-only trust.
+
+**Evidence and links:** `ultra_server/independent-state.test.mjs`,
+[LOG-20260720-006](LOG.md#log-20260720-006), and Enterprise issue #28.
+
 ## WHY-20260720-005 - Regenerate TSK secrets at the promoted authority
 
 **Status:** Accepted

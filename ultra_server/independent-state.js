@@ -10,6 +10,23 @@ import { verifyBFinalizedReceipt, verifyLeaseGrant } from '@tsk/server';
 const IDENTIFIER = /^[A-Za-z0-9_.:-]{1,128}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
 const SECRET_FIELD = /(?:secret|token|password|private|credential|provisionpayload)/i;
+const INDEPENDENT_STATE_SCHEMA = 'public';
+const INDEPENDENT_STATE_SCHEMA_VERSION = 1;
+const INDEPENDENT_STATE_TABLES = Object.freeze([
+  'ultra_tumbler_maps',
+  'ultra_identity_bindings',
+  'ultra_idempotency',
+  'ultra_nonce_tombstones',
+  'ultra_ha_import_head',
+  'ultra_ha_tsk_reprovision',
+]);
+const INDEPENDENT_STATE_LOCK_LIST = INDEPENDENT_STATE_TABLES.join(', ');
+
+// Compiled from ULTRA_PG_SCHEMA + ULTRA_INDEPENDENT_STATE_SCHEMA on PostgreSQL 17.
+// There is deliberately no environment override: changing the authority schema requires a
+// reviewed source change and a new pin.
+export const ULTRA_INDEPENDENT_STATE_MANIFEST_DIGEST =
+  'c980e16b9369541f20f9e340f49c2cc701c1923c9fe1c9c77c22a26f76b23d3b';
 
 export const ULTRA_INDEPENDENT_STATE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS ultra_nonce_tombstones (
@@ -174,10 +191,11 @@ function verifyDigest(publicKey, value, signature, domain, keyId) {
   );
 }
 
-async function withSerializable(pool, callback) {
+async function withSerializable(pool, callback, { attest = true } = {}) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+    if (attest) await enterIndependentStateAuthority(client);
     const result = await callback(client);
     await client.query('COMMIT');
     return result;
@@ -301,6 +319,92 @@ async function readTargetAuthorityState(exec) {
     idempotency: idempotency.rows.map(targetIdempotencyRecord),
     tskCredentials,
   };
+}
+
+function byteSort(values) {
+  return values.sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+}
+
+async function independentStateCatalogManifest(exec) {
+  const tables = [...INDEPENDENT_STATE_TABLES];
+  const cols = (await exec.query(
+    `SELECT table_name, ordinal_position, column_name, data_type, is_nullable,
+            COALESCE(column_default, '') AS column_default
+       FROM information_schema.columns
+      WHERE table_schema=$1 AND table_name=ANY($2)`,
+    [INDEPENDENT_STATE_SCHEMA, tables],
+  )).rows;
+  const constraints = (await exec.query(
+    `SELECT rel.relname AS table_name, con.contype,
+            pg_catalog.pg_get_constraintdef(con.oid) AS definition
+       FROM pg_catalog.pg_constraint con
+       JOIN pg_catalog.pg_class rel ON rel.oid=con.conrelid
+       JOIN pg_catalog.pg_namespace ns ON ns.oid=rel.relnamespace
+      WHERE ns.nspname=$1 AND rel.relname=ANY($2)
+        AND con.contype IN ('p','c','u','f')`,
+    [INDEPENDENT_STATE_SCHEMA, tables],
+  )).rows;
+  const indexes = (await exec.query(
+    `SELECT tablename AS table_name, indexname, indexdef
+       FROM pg_catalog.pg_indexes
+      WHERE schemaname=$1 AND tablename=ANY($2)`,
+    [INDEPENDENT_STATE_SCHEMA, tables],
+  )).rows;
+  const triggers = (await exec.query(
+    `SELECT rel.relname AS table_name, trigger.tgname, trigger.tgenabled,
+            pg_catalog.pg_get_triggerdef(trigger.oid) AS definition
+       FROM pg_catalog.pg_trigger trigger
+       JOIN pg_catalog.pg_class rel ON rel.oid=trigger.tgrelid
+       JOIN pg_catalog.pg_namespace ns ON ns.oid=rel.relnamespace
+      WHERE ns.nspname=$1 AND rel.relname=ANY($2) AND NOT trigger.tgisinternal`,
+    [INDEPENDENT_STATE_SCHEMA, tables],
+  )).rows;
+  const relations = (await exec.query(
+    `SELECT rel.relname AS table_name, rel.relkind, rel.relpersistence,
+            rel.relrowsecurity, rel.relforcerowsecurity
+       FROM pg_catalog.pg_class rel
+       JOIN pg_catalog.pg_namespace ns ON ns.oid=rel.relnamespace
+      WHERE ns.nspname=$1 AND rel.relname=ANY($2)`,
+    [INDEPENDENT_STATE_SCHEMA, tables],
+  )).rows;
+  const policies = (await exec.query(
+    `SELECT tablename AS table_name, policyname, permissive, roles::text AS roles,
+            cmd, COALESCE(qual, '') AS qual, COALESCE(with_check, '') AS with_check
+       FROM pg_catalog.pg_policies
+      WHERE schemaname=$1 AND tablename=ANY($2)`,
+    [INDEPENDENT_STATE_SCHEMA, tables],
+  )).rows;
+  const lines = [
+    `V|${INDEPENDENT_STATE_SCHEMA_VERSION}|${INDEPENDENT_STATE_SCHEMA}`,
+    ...cols.map((row) => `C|${row.table_name}|${row.ordinal_position}|${row.column_name}|${row.data_type}|${row.is_nullable}|${row.column_default}`),
+    ...constraints.map((row) => `K|${row.table_name}|${row.contype}|${row.definition}`),
+    ...indexes.map((row) => `I|${row.table_name}|${row.indexname}|${row.indexdef}`),
+    ...triggers.map((row) => `T|${row.table_name}|${row.tgname}|${row.tgenabled}|${row.definition}`),
+    ...relations.map((row) => `R|${row.table_name}|${row.relkind}|${row.relpersistence}|${row.relrowsecurity}|${row.relforcerowsecurity}`),
+    ...policies.map((row) => `P|${row.table_name}|${row.policyname}|${row.permissive}|${row.roles}|${row.cmd}|${row.qual}|${row.with_check}`),
+  ];
+  return [lines[0], ...byteSort(lines.slice(1))].join('\n');
+}
+
+async function enterIndependentStateAuthority(exec) {
+  const isolation = String((await exec.query('SHOW transaction_isolation')).rows[0]?.transaction_isolation ?? '').toLowerCase();
+  if (isolation !== 'serializable') throw new Error(`independent-state authority requires SERIALIZABLE; got '${isolation}'`);
+  await exec.query('SELECT pg_catalog.set_config($1,$2,true)', ['search_path', `${INDEPENDENT_STATE_SCHEMA}, pg_temp`]);
+  const schema = (await exec.query('SELECT pg_catalog.current_schema() AS schema')).rows[0]?.schema;
+  if (schema !== INDEPENDENT_STATE_SCHEMA) throw new Error('independent-state schema context mismatch');
+  await exec.query(`LOCK TABLE ${INDEPENDENT_STATE_LOCK_LIST} IN ACCESS SHARE MODE`);
+  const manifest = await independentStateCatalogManifest(exec);
+  const liveDigest = createHash('sha256').update(manifest, 'utf8').digest('hex');
+  if (liveDigest !== ULTRA_INDEPENDENT_STATE_MANIFEST_DIGEST) {
+    throw new Error(
+      `independent-state schema attestation failed: live catalog digest ${liveDigest} != pinned ${ULTRA_INDEPENDENT_STATE_MANIFEST_DIGEST}`,
+    );
+  }
+  return liveDigest;
+}
+
+export async function attestIndependentStateSchema(pool) {
+  return withSerializable(pool, enterIndependentStateAuthority, { attest: false });
 }
 
 async function assertNoActiveUnboundCredentials(exec) {
@@ -814,19 +918,21 @@ export async function completeImportedTskReprovision(pool, input) {
 export async function readImportedTskReprovision(pool, input) {
   requiredIdentifier(input.clusterId, 'clusterId');
   requiredIdentifier(input.pairId, 'pairId');
-  const { rows } = await pool.query(
-    `SELECT agent_id, source_client_id, target_client_id, status, receipt_digest
-     FROM ultra_ha_tsk_reprovision WHERE cluster_id=$1 AND pair_id=$2`,
-    [input.clusterId, input.pairId],
-  );
-  if (!rows[0]) return null;
-  return Object.freeze({
-    agentId: rows[0].agent_id,
-    pairId: input.pairId,
-    receiptDigest: rows[0].receipt_digest,
-    sourceClientId: rows[0].source_client_id,
-    status: rows[0].status,
-    targetClientId: rows[0].target_client_id,
+  return withSerializable(pool, async (client) => {
+    const { rows } = await client.query(
+      `SELECT agent_id, source_client_id, target_client_id, status, receipt_digest
+       FROM ultra_ha_tsk_reprovision WHERE cluster_id=$1 AND pair_id=$2`,
+      [input.clusterId, input.pairId],
+    );
+    if (!rows[0]) return null;
+    return Object.freeze({
+      agentId: rows[0].agent_id,
+      pairId: input.pairId,
+      receiptDigest: rows[0].receipt_digest,
+      sourceClientId: rows[0].source_client_id,
+      status: rows[0].status,
+      targetClientId: rows[0].target_client_id,
+    });
   });
 }
 

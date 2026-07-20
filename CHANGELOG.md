@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Compiled independent-state schema authority
+
+- Every independent-state transaction now pins `public`, holds `ACCESS SHARE`
+  locks on all six governed tables, and verifies their full live PostgreSQL
+  catalog against a compiled SHA-256 manifest. Added/removed columns,
+  constraints, indexes, triggers, policies, RLS flags, or relation properties
+  fail closed before state access. Evidence: [LOG-20260720-006](LOG.md#log-20260720-006),
+  rationale: [WHY-20260720-006](WHY.md#why-20260720-006), recovery:
+  [PARK-20260720-006](PARKED.md#park-20260720-006).
+
 ### Independent-state writer admission
 
 - Production HA writer routes now fail closed with
