@@ -78,11 +78,14 @@ guard correctly made Ultra's former restart behavior fail.
 `ultra_server/independent-state-command.mjs`, the independent-state tests and
 runbook, draft PR #40, and Enterprise issue #28.
 
-**Validation:** Local Node suite passed 33/33 with two environment skips. The
-fail-not-skip independent-state drill passed against two digest-pinned
-PostgreSQL 17.5 containers with distinct `pg_control_system()` identifiers.
-The exact pinned BPC package started, stopped, and restarted over the same
-database after the schema fix. Hosted evidence is pending on this PR head.
+**Validation:** Local Node suite passed 35/35 with two named PostgreSQL
+environment skips. The fail-not-skip independent-state drill passed against
+two digest-pinned PostgreSQL 17.5 containers with distinct
+`pg_control_system()` identifiers. The exact pinned BPC package started,
+stopped, and restarted over the same database after the schema fix. Hosted CI
+run 29778730680 passed all four required jobs on PR head `741c05e`, including
+1,751 collected Python tests, the Windows live contract, and the production
+PostgreSQL/Redis durability job.
 
 **Notes:** Issue #28 remains open for full BPC/TSK runtime composition,
 site/Redis/host fault injection, restore/resync/failback, key ceremony,
