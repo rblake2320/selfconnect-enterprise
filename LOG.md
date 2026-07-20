@@ -54,6 +54,36 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260720-002 - Adopt completed BPC and TSK HA foundations
+
+**Timestamp (UTC):** 2026-07-20T20:40:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, dependency, test
+**Base commit:** `9e69c6eaff0b7ca522a808075daea6bf41b592ad`
+**Change reference:** commit containing this entry; Enterprise issue #28
+**Why:** [WHY-20260720-002](WHY.md#why-20260720-002)
+**Parked records:** [PARK-20260720-002](PARKED.md#park-20260720-002)
+
+**Changed:** Advanced `portfolio-lock.json` from BPC `772271e1` to
+`aedf67b8` and from TSK `9cff3e25` to `00e7457f`, retaining full immutable
+commit identities.
+
+**Reason:** The prior pins predated the merged production PostgreSQL
+transactors, durable application-level replication, authenticated transport,
+fenced promotion, receiver import, Sentinel/quorum, partition, and crash drills
+needed as reviewed foundations for Enterprise independent-state composition.
+
+**Full actions and links:** `portfolio-lock.json`, BPC master
+`aedf67b89574066e1df0575e68fdb58ea0dc9297`, TSK master
+`00e7457f4ca19435794b3e876a37bd7f90b99317`, and Enterprise issue #28.
+
+**Validation:** Portfolio conformance, both pinned protocol suites, Ultra unit
+and live contract suites, and the hosted PostgreSQL/Redis durability job attach
+to the resulting commit.
+
+**Notes:** A compatible pin is a prerequisite, not an Enterprise multi-site HA
+claim. Ultra composition and its own acceptance drill remain required.
+
 ## LOG-20260720-001 - Compose the verified TPM platform quote path
 
 **Timestamp (UTC):** 2026-07-20T20:20:00Z

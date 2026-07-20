@@ -10,14 +10,14 @@
     },
     "bpc-protocol": {
       "repository": "https://github.com/rblake2320/bpc-protocol.git",
-      "commit": "772271e174769f91a980cc3ee69a6eb9cc36bf39",
+      "commit": "aedf67b89574066e1df0575e68fdb58ea0dc9297",
       "package_name": "bpc-protocol",
       "package_version": "0.2.0",
       "manifest": "package.json"
     },
     "tsk-protocol": {
       "repository": "https://github.com/rblake2320/tsk-protocol.git",
-      "commit": "9cff3e25e2432797c454ad09b9dacbf7244e51af",
+      "commit": "00e7457f4ca19435794b3e876a37bd7f90b99317",
       "package_name": "tsk-protocol",
       "package_version": "0.1.0",
       "manifest": "package.json"

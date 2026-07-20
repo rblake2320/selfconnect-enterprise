@@ -51,6 +51,38 @@ related records.
 
 ## Register
 
+## WHY-20260720-002 - Compose reviewed protocol authorities instead of cloning them
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T20:40:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-002](LOG.md#log-20260720-002)
+**Parked records:** [PARK-20260720-002](PARKED.md#park-20260720-002)
+**Source state:** `selfconnect-enterprise` master at `9e69c6ea`
+
+**Decision:** Pin the completed BPC and TSK HA masters before implementing the
+Enterprise independent-state Ultra composition.
+
+**Why:** Both protocol repositories now own and test their authority-specific
+transaction, replication, import, fencing, and recovery invariants. Copying
+those mechanisms into Enterprise would create divergent security code and make
+the higher-level proof weaker.
+
+**Alternatives considered:** Keep the older pins and implement a parallel Ultra
+replication protocol; rejected as duplication. Treat protocol acceptance as
+automatic Enterprise acceptance; rejected because Ultra still owns composition,
+identity binding, runtime routing, and topology claims.
+
+**Consequences:** Enterprise can build on reviewed public APIs, but newer pins
+may expose compatibility regressions that must fail hosted CI before any
+composition proceeds.
+
+**Rollback conditions:** Restore the prior exact pins if a reproduced protocol
+compatibility defect cannot be corrected without weakening a verified contract.
+
+**Evidence and links:** [LOG-20260720-002](LOG.md#log-20260720-002),
+Enterprise issue #28, and the exact BPC/TSK commit identities above.
+
 ## WHY-20260720-001 - Reuse one verified TPM quote authority
 
 **Status:** Accepted

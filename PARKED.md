@@ -91,6 +91,47 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260720-002 - Pre-completion BPC and TSK protocol pins
+
+**Status:** Parked
+**Category:** dependency configuration
+**Source repository:** `selfconnect-enterprise`
+**Former location:** `portfolio-lock.json`, BPC and TSK component commit fields
+**Source commit:** `9e69c6eaff0b7ca522a808075daea6bf41b592ad`
+**Affected paths:** `portfolio-lock.json`
+**Action log:** [LOG-20260720-002](LOG.md#log-20260720-002)
+**Why changed:** [WHY-20260720-002](WHY.md#why-20260720-002)
+**Parked by:** commit containing this record
+
+**Former wording:** `"commit":
+"772271e174769f91a980cc3ee69a6eb9cc36bf39"` for BPC and `"commit":
+"9cff3e25e2432797c454ad09b9dacbf7244e51af"` for TSK.
+
+**Recovery source:** `portfolio-lock.json` at the source commit.
+
+**Reason parked:** Those pins predate the completed protocol HA foundations
+needed by Enterprise issue #28.
+
+**Replacement:** BPC `aedf67b89574066e1df0575e68fdb58ea0dc9297`
+and TSK `00e7457f4ca19435794b3e876a37bd7f90b99317`.
+
+**Restore when:** Only for a reproduced compatibility defect, with the HA
+composition kept disabled and the regression retained.
+
+**Restore procedure:** Revert the two commit fields, rerun portfolio
+conformance and the complete pinned protocol plus Ultra suites, and record a new
+decision.
+
+**Validation after restore:** The same hosted matrix required for the advance.
+
+**Recovery rehearsal:** Not rehearsed.
+
+**Restoration risks:** Removes the reviewed HA authorities required for the
+independent-state composition.
+
+**Evidence and links:** [LOG-20260720-002](LOG.md#log-20260720-002),
+[WHY-20260720-002](WHY.md#why-20260720-002), and Enterprise issue #28.
+
 ## PARK-20260720-001 - Legacy Enterprise TPM probe default
 
 **Status:** Parked
