@@ -51,6 +51,39 @@ related records.
 
 ## Register
 
+## WHY-20260720-011 - Forbid the legacy Ultra store fallback after promotion
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T22:18:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-011](LOG.md#log-20260720-011)
+**Parked records:** None
+**Source state:** `selfconnect-enterprise`, `origin/master`,
+`5b4f962cd4164e78209d9bf50bce838c83c0104c`
+
+**Decision:** A promoted independent runtime must load and attest the exact
+source-authority descriptor before it constructs writable Ultra-owned stores.
+
+**Why:** Selecting a legacy store after promotion bypasses transactional outbox
+replication and the source lease even when both mechanisms exist. Startup is the
+right fail-closed composition boundary.
+
+**Alternatives considered:** Optional feature flags were rejected because they
+permit accidental downgrade. Requiring source authority on an unpromoted
+standby was rejected because that node is intentionally non-writable and may
+not yet have a lease.
+
+**Consequences:** Promoted nodes require an operator-provisioned descriptor and
+public verification key files. Standbys can start without them but remain
+blocked from every writer route by the imported-state readiness gate.
+
+**Rollback conditions:** Restore legacy runtime selection only for shared-state
+mode or a demonstrably read-only standby; never for an attested promoted site.
+
+**Evidence and links:** [LOG-20260720-011](LOG.md#log-20260720-011),
+`ultra_server/ultra-state-authority-config.test.mjs`, the real outbox drill, and
+`docs/operations/ULTRA_INDEPENDENT_STATE_HA.md`.
+
 ## WHY-20260720-010 - Recheck the source lease at the commit boundary
 
 **Status:** Accepted

@@ -54,6 +54,33 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260720-011 - Select governed stores on promoted independent runtimes
+
+**Timestamp (UTC):** 2026-07-20T22:18:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** production runtime integration
+**Base commit:** `5b4f962cd4164e78209d9bf50bce838c83c0104c`
+**Change reference:** commit containing this entry
+**Why:** [WHY-20260720-011](WHY.md#why-20260720-011)
+**Parked records:** None
+
+**Changed:** Added a strict file-backed authority descriptor loader and made a
+promoted independent server select the governed replicated Ultra stores.
+
+**Reason:** A proven factory that production never selected left the legacy
+direct-DML path reachable in the exact topology the factory was built to guard.
+
+**Full actions and links:** `ultra_server/ultra-state-authority-config.js`,
+`ultra_server/server.js`, `.env.example`, tests, and the operations runbook.
+
+**Validation:** Unit tests reject descriptor drift and bounds violations. The
+real two-PostgreSQL drill loads the public key and descriptor from files, mints
+the database-bound capability, and exercises the governed adapters.
+
+**Boundary:** The BPC pair registry and TSK credential store remain separate
+authority-composition work. Multi-site fault and restore evidence remains
+tracked in Enterprise issue 28.
+
 ## LOG-20260720-010 - Fence Ultra mutations inside their source transaction
 
 **Timestamp (UTC):** 2026-07-20T22:12:00Z

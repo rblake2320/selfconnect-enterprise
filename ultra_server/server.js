@@ -53,6 +53,7 @@ import {
   ULTRA_PG_SCHEMA,
   initializePgSchemas,
 } from './runtime-stores.js';
+import { loadGovernedUltraStateAuthority } from './ultra-state-authority-config.js';
 
 // ── BPC imports ───────────────────────────────────────────────────────────────
 import {
@@ -208,7 +209,7 @@ if (RUNTIME_MODE === 'production') {
   pairStore = new PgPairStore(pool);
   anomalyStore = new RedisAnomalyStore(redisClient, 'ultra:anomaly:');
   nonceBackend = HA_STATE_MODE === 'independent'
-    ? new PgNonceTombstoneStore(pool)
+    ? null
     : new RedisNonceStore(redisClient, 'ultra:nonce:');
   const pgTskStore = new PgTumblerStore(pool);
   if (HA_CONFIG.enabled) {
@@ -227,14 +228,24 @@ if (RUNTIME_MODE === 'production') {
   } else {
     tskStore = pgTskStore;
   }
-  identityBinding = new PgIdentityBindingStore(pool);
-  idempotencyStore = new PgIdempotencyStore(pool);
-  nonceBackendType = HA_STATE_MODE === 'independent' ? 'postgresql-ha' : 'redis';
-  ipRateLimiter = new RedisRateLimiter(redisClient, IP_RATE_LIMIT, RATE_LIMIT_WINDOW_MS, 'ultra:rate:ip:');
-  rateLimiter = new RedisRateLimiter(redisClient, PAIR_RATE_LIMIT, RATE_LIMIT_WINDOW_MS, 'ultra:rate:pair:');
   if (INDEPENDENT_CONFIG.expected) {
     independentStateReady = await assertIndependentStateReady(pool, INDEPENDENT_CONFIG.expected);
   }
+  if (HA_STATE_MODE === 'independent' && INDEPENDENT_CONFIG.expected) {
+    const authority = await loadGovernedUltraStateAuthority(
+      pool, process.env.ULTRA_STATE_AUTHORITY_CONFIG_FILE,
+    );
+    identityBinding = authority.identityBinding;
+    idempotencyStore = authority.idempotencyStore;
+    nonceBackend = authority.nonceBackend;
+  } else {
+    identityBinding = new PgIdentityBindingStore(pool);
+    idempotencyStore = new PgIdempotencyStore(pool);
+    if (HA_STATE_MODE === 'independent') nonceBackend = new PgNonceTombstoneStore(pool);
+  }
+  nonceBackendType = HA_STATE_MODE === 'independent' ? 'postgresql-ha' : 'redis';
+  ipRateLimiter = new RedisRateLimiter(redisClient, IP_RATE_LIMIT, RATE_LIMIT_WINDOW_MS, 'ultra:rate:ip:');
+  rateLimiter = new RedisRateLimiter(redisClient, PAIR_RATE_LIMIT, RATE_LIMIT_WINDOW_MS, 'ultra:rate:pair:');
 } else {
   pairStore = new MemoryPairStore();
   anomalyStore = new MemoryAnomalyStore();

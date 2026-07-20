@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Independent runtime authority selection
+
+- Independent promoted nodes now require an exact file-backed source-authority
+  descriptor and select the governed replicated identity, idempotency, and nonce
+  adapters instead of their legacy direct-DML stores.
+- Unpromoted independent nodes remain read-only and cannot cross the existing
+  writer-readiness gate.
+
 ### In-transaction Ultra source fencing
 
 - Composed TSK's signed source-lease capability directly into the BPC durable
