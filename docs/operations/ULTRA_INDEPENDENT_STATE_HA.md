@@ -28,6 +28,17 @@ nonce hashes between independent PostgreSQL authorities.
 - `ULTRA_HA_STATE_MODE=independent` replaces Redis nonce storage with durable
   PostgreSQL nonce tombstones. Redis remains coordination/rate/anomaly state,
   not the replay authority.
+- Every owned independent-state transaction pins the `public` schema, locks all
+  six governed relations against concurrent DDL, and verifies columns,
+  constraints, indexes, triggers, relation/RLS properties, and policies against
+  the compiled catalog digest. A restore with missing or altered DDL is not an
+  authority and fails closed before data access.
+
+The production serving role must not hold `CREATE`, `ALTER`, or `DROP`
+privileges on the governed schema. Provisioning and intentional migrations use
+a separate offline identity. A reviewed DDL change requires regenerating and
+reviewing the compiled manifest pin; there is no runtime override or
+trust-on-first-use path.
 
 ## Custody-separated commands
 

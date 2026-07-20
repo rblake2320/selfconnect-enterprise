@@ -7,7 +7,9 @@ import { generateTumblerMap } from '@tsk/core';
 
 import {
   PgNonceTombstoneStore,
+  ULTRA_INDEPENDENT_STATE_MANIFEST_DIGEST,
   ULTRA_INDEPENDENT_STATE_SCHEMA,
+  attestIndependentStateSchema,
   assertIndependentStateReady,
   completeImportedTskReprovision,
   exportIndependentState,
@@ -22,6 +24,27 @@ const urlB = process.env.ULTRA_TEST_POSTGRES_URL_B;
 if (!urlA || !urlB) throw new Error(
   'ULTRA_TEST_POSTGRES_URL_A and ULTRA_TEST_POSTGRES_URL_B are required (this drill never skips)',
 );
+
+test('compiled catalog attestation rejects independent-state schema drift', async () => {
+  const a = new Pool({ connectionString: urlA });
+  const b = new Pool({ connectionString: urlB });
+  try {
+    await initializePgSchemas(a, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA);
+    await initializePgSchemas(b, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA);
+    assert.equal(await attestIndependentStateSchema(a), ULTRA_INDEPENDENT_STATE_MANIFEST_DIGEST);
+    assert.equal(await attestIndependentStateSchema(b), ULTRA_INDEPENDENT_STATE_MANIFEST_DIGEST);
+    await a.query('ALTER TABLE ultra_ha_import_head ADD COLUMN unauthorized_state TEXT');
+    await assert.rejects(attestIndependentStateSchema(a), /schema attestation failed/);
+    await assert.rejects(
+      new PgNonceTombstoneStore(a).checkAndConsume(`drift-${randomUUID()}`, 60_000),
+      /schema attestation failed/,
+    );
+  } finally {
+    await a.query('ALTER TABLE ultra_ha_import_head DROP COLUMN IF EXISTS unauthorized_state');
+    await a.end();
+    await b.end();
+  }
+});
 
 function frame(...parts) {
   const buffers = [];

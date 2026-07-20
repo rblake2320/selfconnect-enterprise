@@ -54,6 +54,36 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260720-006 - Pin the independent-state PostgreSQL catalog
+
+**Timestamp (UTC):** 2026-07-20T21:37:43Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security, implementation, test, documentation
+**Base commit:** `4f6212a4328ed34c34a314411fde41d6f6f7a843`
+**Change reference:** commit containing this entry; Enterprise issue #28
+**Why:** [WHY-20260720-006](WHY.md#why-20260720-006)
+**Parked records:** [PARK-20260720-006](PARKED.md#park-20260720-006)
+
+**Changed:** Added a compiled full-catalog manifest for all six Enterprise
+independent-state tables and made every owned state transaction attest it while
+holding catalog-stabilizing table locks.
+
+**Reason:** Signed row contents cannot establish authority if a restore omits,
+alters, or weakens the schema that enforces those rows.
+
+**Full actions and links:** `ultra_server/independent-state.js`,
+`ultra_server/independent-state.test.mjs`,
+`docs/operations/ULTRA_INDEPENDENT_STATE_HA.md`, and Enterprise issue #28.
+
+**Validation:** The Ultra unit suite passed 36/36 with two named PostgreSQL
+environment skips. The fail-not-skip two-authority PostgreSQL drill passed
+2/2, including exact-pin agreement on both systems, live `ALTER TABLE` drift
+rejection, and refusal by an ordinary nonce-authority operation under drift.
+
+**Notes:** The pin targets the repository's PostgreSQL 17 production image and
+`public` schema. Intentional schema migration requires an offline reviewed
+re-pin; the serving role must not hold DDL privileges.
+
 ## LOG-20260720-005 - Add target-only TSK reprovision ceremony
 
 **Timestamp (UTC):** 2026-07-20T21:25:00Z
