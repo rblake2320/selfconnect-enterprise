@@ -341,6 +341,17 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     await assert.rejects(assertIndependentStateReady(b, {
       clusterId, commandId, sourceEpoch: 1, manifestDigest: bundle.manifestDigest,
     }), /rolled back or tampered/);
+    await assert.rejects(completeImportedTskReprovision(b, {
+      advisoryLockKey: lockKey,
+      agentId: `agent-${suffix}`,
+      assertWritable: async () => ({ ok: true, fenceEpoch: 1 }),
+      clusterId,
+      commandId,
+      pairId,
+      sourceClientId: sourceMap.clientId,
+      sourceEpoch: 1,
+      targetMap,
+    }), /rolled back or tampered/);
     await b.query('UPDATE ultra_tumbler_maps SET map=$2::jsonb WHERE client_id=$1', [
       targetMap.clientId, JSON.stringify(targetMap),
     ]);

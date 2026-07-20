@@ -723,7 +723,7 @@ export async function completeImportedTskReprovision(pool, input) {
   return withSerializable(pool, async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [input.advisoryLockKey]);
     const head = (await client.query(
-      `SELECT command_id, source_epoch FROM ultra_ha_import_head
+      `SELECT command_id, source_epoch, authority_digest FROM ultra_ha_import_head
        WHERE cluster_id=$1 FOR UPDATE`, [input.clusterId],
     )).rows[0];
     if (!head || head.command_id !== input.commandId || Number(head.source_epoch) !== input.sourceEpoch) {
@@ -751,6 +751,13 @@ export async function completeImportedTskReprovision(pool, input) {
     if (pending.status === 'complete') {
       if (pending.target_client_id !== targetMap.clientId || pending.receipt_digest !== receiptDigest) {
         throw new Error('TSK reprovision retry conflicts with completed receipt');
+      }
+      const stored = (await client.query(
+        'SELECT map FROM ultra_tumbler_maps WHERE client_id=$1', [targetMap.clientId],
+      )).rows[0]?.map;
+      if (!stored || digest(stored) !== digest(targetMap) ||
+          digest(await readTargetAuthorityState(client)) !== head.authority_digest) {
+        throw new Error('completed TSK reprovision authority was rolled back or tampered');
       }
       const writable = await input.assertWritable();
       if (!writable?.ok || Number(writable.fenceEpoch) !== input.sourceEpoch) {
