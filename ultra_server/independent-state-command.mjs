@@ -25,7 +25,15 @@ async function privateKey(path) {
 }
 
 async function publicKey(path) {
-  return createPublicKey(await readFile(path));
+  const encoded = await readFile(path);
+  if (encoded.toString('ascii').includes('PRIVATE KEY')) {
+    throw new Error('verification key files must contain public keys only');
+  }
+  const key = createPublicKey(encoded);
+  if (key.type !== 'public' || key.asymmetricKeyType !== 'ed25519') {
+    throw new Error('verification key files must contain public Ed25519 keys');
+  }
+  return key;
 }
 
 async function resolverFromFiles(files, name) {

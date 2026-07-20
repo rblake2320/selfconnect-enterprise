@@ -181,6 +181,13 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       guardPrivateKey: guard.privateKey,
       ...resolvers,
     });
+    assert.throws(() => guardCountersignIndependentState(sourceBundle, {
+      expectedCommandId: commandId,
+      sourcePublicKey: source.publicKey,
+      guardKeyId: 'same-custody-key',
+      guardPrivateKey: source.privateKey,
+      ...resolvers,
+    }), /custody keys must be distinct/);
     assert.equal(verifyIndependentStateBundle(bundle, {
       sourcePublicKey: source.publicKey,
       guardPublicKey: guard.publicKey,

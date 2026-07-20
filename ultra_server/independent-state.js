@@ -1,5 +1,6 @@
 import {
   createHash,
+  createPublicKey,
   sign as cryptoSign,
   verify as cryptoVerify,
 } from 'node:crypto';
@@ -87,15 +88,39 @@ function requiredDigest(value, name) {
   return value;
 }
 
-function signDigest(privateKey, value) {
-  return cryptoSign(null, Buffer.from(value, 'hex'), privateKey).toString('base64url');
+function requirePublicEd25519(key, name) {
+  if (!key || key.type !== 'public' || key.asymmetricKeyType !== 'ed25519') {
+    throw new Error(`${name} must be a public Ed25519 KeyObject`);
+  }
+  return key;
 }
 
-function verifyDigest(publicKey, value, signature) {
+function requirePrivateEd25519(key, name) {
+  if (!key || key.type !== 'private' || key.asymmetricKeyType !== 'ed25519') {
+    throw new Error(`${name} must be a private Ed25519 KeyObject`);
+  }
+  return key;
+}
+
+function keyFingerprint(key) {
+  return createHash('sha256').update(key.export({ format: 'der', type: 'spki' })).digest('hex');
+}
+
+function signatureMessage(domain, keyId, value) {
+  return Buffer.from(canonicalJson({ domain, keyId, value }), 'utf8');
+}
+
+function signDigest(privateKey, value, domain, keyId) {
+  return cryptoSign(
+    null, signatureMessage(domain, keyId, value), requirePrivateEd25519(privateKey, 'signing key'),
+  ).toString('base64url');
+}
+
+function verifyDigest(publicKey, value, signature, domain, keyId) {
   return typeof signature === 'string' && cryptoVerify(
     null,
-    Buffer.from(value, 'hex'),
-    publicKey,
+    signatureMessage(domain, keyId, value),
+    requirePublicEd25519(publicKey, 'verification key'),
     Buffer.from(signature, 'base64url'),
   );
 }
@@ -231,6 +256,7 @@ export async function exportIndependentState(pool, input) {
   const tskActivationDigest = requiredDigest(
     protocolEvidence?.tskActivationLease?.grantDigest, 'tskActivationDigest',
   );
+  const sourceKeyId = requiredIdentifier(input.sourceKeyId, 'sourceKeyId');
   const maxItems = positiveSafeInteger(input.maxItems ?? 100_000, 'maxItems');
   const maxBytes = positiveSafeInteger(input.maxBytes ?? 64 * 1024 * 1024, 'maxBytes');
   return withSerializable(pool, async (client) => {
@@ -271,8 +297,10 @@ export async function exportIndependentState(pool, input) {
       manifest,
       manifestDigest,
       protocolEvidence,
-      sourceKeyId: requiredIdentifier(input.sourceKeyId, 'sourceKeyId'),
-      sourceSignature: signDigest(input.sourcePrivateKey, manifestDigest),
+      sourceKeyId,
+      sourceSignature: signDigest(
+        input.sourcePrivateKey, manifestDigest, 'selfconnect-ultra-independent-source-v1', sourceKeyId,
+      ),
     };
   });
 }
@@ -288,11 +316,19 @@ export function guardCountersignIndependentState(sourceBundle, input) {
     sourceKeyId: sourceBundle.sourceKeyId,
     sourceSignature: sourceBundle.sourceSignature,
   });
+  const guardKeyId = requiredIdentifier(input.guardKeyId, 'guardKeyId');
+  const guardPrivateKey = requirePrivateEd25519(input.guardPrivateKey, 'guard signing key');
+  const guardPublicKey = createPublicKey(guardPrivateKey);
+  if (keyFingerprint(guardPublicKey) === keyFingerprint(requirePublicEd25519(
+    input.sourcePublicKey, 'source verification key',
+  ))) throw new Error('source and guard custody keys must be distinct');
   return {
     ...structuredClone(sourceBundle),
     guardDigest,
-    guardKeyId: requiredIdentifier(input.guardKeyId, 'guardKeyId'),
-    guardSignature: signDigest(input.guardPrivateKey, guardDigest),
+    guardKeyId,
+    guardSignature: signDigest(
+      guardPrivateKey, guardDigest, 'selfconnect-ultra-independent-guard-v1', guardKeyId,
+    ),
   };
 }
 
@@ -303,7 +339,11 @@ function verifySourceBundle(bundle, sourcePublicKey) {
   if (digest(bundle.manifest) !== bundle.manifestDigest || !DIGEST.test(bundle.manifestDigest)) {
     throw new Error('source manifest digest mismatch');
   }
-  if (!verifyDigest(sourcePublicKey, bundle.manifestDigest, bundle.sourceSignature)) {
+  requiredIdentifier(bundle.sourceKeyId, 'sourceKeyId');
+  if (!verifyDigest(
+    sourcePublicKey, bundle.manifestDigest, bundle.sourceSignature,
+    'selfconnect-ultra-independent-source-v1', bundle.sourceKeyId,
+  )) {
     throw new Error('source signature invalid');
   }
   validateManifest(bundle.manifest);
@@ -322,6 +362,11 @@ export function verifyIndependentStateBundle(bundle, keys) {
     sourceKeyId: bundle.sourceKeyId,
     sourceSignature: bundle.sourceSignature,
   }, keys.sourcePublicKey);
+  requiredIdentifier(bundle.guardKeyId, 'guardKeyId');
+  if (keyFingerprint(requirePublicEd25519(keys.sourcePublicKey, 'source verification key')) ===
+      keyFingerprint(requirePublicEd25519(keys.guardPublicKey, 'guard verification key'))) {
+    throw new Error('source and guard custody keys must be distinct');
+  }
   verifyProtocolEvidence(bundle.protocolEvidence, bundle.manifest, keys);
   const expectedGuardDigest = digest({
     domain: 'selfconnect-ultra-independent-state-guard-v1',
@@ -331,6 +376,7 @@ export function verifyIndependentStateBundle(bundle, keys) {
   });
   if (bundle.guardDigest !== expectedGuardDigest || !verifyDigest(
     keys.guardPublicKey, bundle.guardDigest, bundle.guardSignature,
+    'selfconnect-ultra-independent-guard-v1', bundle.guardKeyId,
   )) throw new Error('guard signature invalid');
   return true;
 }
