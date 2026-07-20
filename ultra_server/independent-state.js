@@ -737,6 +737,10 @@ export async function completeImportedTskReprovision(pool, input) {
     if (!pending || pending.agent_id !== input.agentId || pending.source_client_id !== input.sourceClientId) {
       throw new Error('TSK reprovision binding mismatch');
     }
+    if (digest(await readTargetAuthorityState(client)) !== head.authority_digest) {
+      throw new Error('imported authority was rolled back or tampered before TSK reprovision');
+    }
+    await assertNoActiveUnboundCredentials(client);
     const receipt = {
       agentId: input.agentId,
       clusterId: input.clusterId,
@@ -755,8 +759,7 @@ export async function completeImportedTskReprovision(pool, input) {
       const stored = (await client.query(
         'SELECT map FROM ultra_tumbler_maps WHERE client_id=$1', [targetMap.clientId],
       )).rows[0]?.map;
-      if (!stored || digest(stored) !== digest(targetMap) ||
-          digest(await readTargetAuthorityState(client)) !== head.authority_digest) {
+      if (!stored || digest(stored) !== digest(targetMap)) {
         throw new Error('completed TSK reprovision authority was rolled back or tampered');
       }
       const writable = await input.assertWritable();
