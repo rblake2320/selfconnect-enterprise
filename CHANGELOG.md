@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Independent-state writer admission
+
+- Production HA writer routes now fail closed with
+  `ULTRA_INDEPENDENT_STATE_NOT_READY` until the exact imported-state authority
+  has passed startup attestation. A Redis writer lease alone cannot authorize
+  a site whose Enterprise state is absent or unverified. Evidence:
+  [LOG-20260720-004](LOG.md#log-20260720-004), rationale:
+  [WHY-20260720-004](WHY.md#why-20260720-004).
+
 ### Independent Ultra state handoff foundation
 
 - Added a custody-separated, dual-signed A-to-B handoff for Enterprise-owned

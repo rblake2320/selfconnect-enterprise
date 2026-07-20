@@ -32,6 +32,7 @@ import {
   PgNonceTombstoneStore,
   ULTRA_INDEPENDENT_STATE_SCHEMA,
   assertIndependentStateReady,
+  independentStateAllowsWrites,
   loadIndependentStateRuntimeConfig,
 } from './independent-state.js';
 import {
@@ -320,6 +321,12 @@ function haLockMiddleware({ lockMode, requireWriter }) {
       : idempotencyStore.withLock.bind(idempotencyStore);
     void withLock(HA_CONFIG.advisoryLockKey, async () => {
       if (requireWriter) {
+        if (!independentStateAllowsWrites(HA_STATE_MODE, independentStateReady)) {
+          return res.status(503).json({
+            ok: false,
+            error: 'ULTRA_INDEPENDENT_STATE_NOT_READY',
+          });
+        }
         const writable = await haController.assertWritable({
           minRemainingMs: HA_CONFIG.minLeaseRemainingMs,
         });

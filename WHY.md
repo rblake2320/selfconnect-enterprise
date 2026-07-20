@@ -51,6 +51,35 @@ related records.
 
 ## Register
 
+## WHY-20260720-004 - Imported authority is a writer prerequisite
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T21:14:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-004](LOG.md#log-20260720-004)
+**Parked records:** None
+**Source state:** Enterprise master at `e4cfbd635490b3dc6898ce71b2cbccaebef80bfd`
+
+**Decision:** Require a successful independent-state authority attestation in
+the common writer middleware before consulting the ordinary HA writer fence.
+
+**Why:** Readiness is not merely a monitoring signal. Allowing writes while it
+is false could create a fresh, incomplete authority after promotion and make a
+later import conflict with locally-created state.
+
+**Alternatives considered:** Rely on operators to wait for `/ready` (rejected
+as advisory rather than enforced); require the check on each route separately
+(rejected because a future route could omit it).
+
+**Consequences:** An independent-mode node without all promotion pins remains
+available for out-of-process import tooling but cannot serve mutations.
+
+**Rollback conditions:** Only if independent-state mode is removed entirely;
+never while its readiness contract remains supported.
+
+**Evidence and links:** `ultra_server/independent-state-config.test.mjs`,
+[LOG-20260720-004](LOG.md#log-20260720-004), and Enterprise issue #28.
+
 ## WHY-20260720-003 - Move replay authority and bounded Enterprise state together
 
 **Status:** Accepted

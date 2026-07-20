@@ -54,6 +54,33 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260720-004 - Fail closed before independent-state readiness
+
+**Timestamp (UTC):** 2026-07-20T21:14:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security, implementation, test
+**Base commit:** `e4cfbd635490b3dc6898ce71b2cbccaebef80bfd`
+**Change reference:** commit containing this entry; Enterprise issue #28
+**Why:** [WHY-20260720-004](WHY.md#why-20260720-004)
+**Parked records:** None
+
+**Changed:** Added independent-state readiness to the common HA writer
+middleware before the ordinary Redis fence check. All state-mutating routes
+therefore refuse admission until the exact imported authority is attested.
+
+**Reason:** `/ready` was fail-closed, but writer middleware could still admit a
+request in independent mode when no promotion pins had been loaded.
+
+**Full actions and links:** `ultra_server/server.js`,
+`ultra_server/independent-state-config.test.mjs`, and Enterprise issue #28.
+
+**Validation:** `npm test --prefix ultra_server` passed 36/36 with two named
+PostgreSQL environment skips. Hosted exact-head evidence is required before
+merge.
+
+**Notes:** This closes writer admission only. It does not close issue #28 or
+establish multi-site availability.
+
 ## LOG-20260720-003 - Add independent Ultra state handoff foundation
 
 **Timestamp (UTC):** 2026-07-20T20:51:24Z
