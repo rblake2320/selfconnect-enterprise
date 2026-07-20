@@ -51,6 +51,41 @@ related records.
 
 ## Register
 
+## WHY-20260720-007 - Reuse the reviewed durable-outbox contract
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T21:50:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-007](LOG.md#log-20260720-007)
+**Parked records:** [PARK-20260720-007](PARKED.md#park-20260720-007)
+**Source state:** Enterprise master at `0bafcfcb085315024470e942bbb9d2124f8fe869`
+
+**Decision:** Represent each Enterprise-owned mutation as a strict,
+secret-stripped record in the existing BPC PostgreSQL outbox and apply it with
+the existing independent receiver checkpoint.
+
+**Why:** BPC already proves transaction-bound append, sequence allocation,
+backpressure, fence equality, digest recomputation, ordered apply, durable
+duplicate classification, and rollback. A second Enterprise protocol would
+duplicate the highest-risk correctness machinery.
+
+**Alternatives considered:** Periodic snapshot only (rejected because it has an
+unbounded unreplicated tail between freezes); best-effort change events
+(rejected because commit and event can diverge); copy TSK secrets in mutations
+(rejected; promoted targets use the existing reprovision ceremony).
+
+**Consequences:** Identity, idempotency, and nonce mutations gain an ordered
+tail. Secret-bearing source responses are represented on the receiver by a
+stable `SECRET_REPROVISION_REQUIRED` result. Runtime composition must provision
+the stream and select these adapters explicitly.
+
+**Rollback conditions:** Replace only if the alternative preserves atomic
+source mutation+append, bounded admission, secret stripping, ordered atomic
+apply, and durable duplicate/fork detection.
+
+**Evidence and links:** `ultra_server/ultra-state-outbox.test.mjs`,
+[LOG-20260720-007](LOG.md#log-20260720-007), and Enterprise issue #28.
+
 ## WHY-20260720-006 - Treat the live catalog as authority
 
 **Status:** Accepted

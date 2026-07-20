@@ -91,6 +91,49 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260720-007 - Snapshot-only Ultra mutation tail
+
+**Status:** Parked
+**Category:** security property
+**Former location:** `ultra_server/runtime-stores.js`, production PostgreSQL
+stores
+**Source commit:** `0bafcfcb085315024470e942bbb9d2124f8fe869`
+**Affected paths:** Enterprise identity bindings, idempotency records, nonce
+tombstones, independent-state handoff, tests, and CI
+**Action log:** [LOG-20260720-007](LOG.md#log-20260720-007)
+**Why changed:** [WHY-20260720-007](WHY.md#why-20260720-007)
+**Parked by:** commit containing this record
+
+**Former wording:** Enterprise state changed only in its authority tables and
+was transferred at the next governed snapshot; no transaction-bound ordered
+tail existed for those mutations.
+
+**Recovery source:** The source commit and its signed Git history.
+
+**Reason parked:** A source loss between snapshots can leave committed state
+without a corresponding receiver record.
+
+**Replacement:** Strict Ultra mutation adapters using BPC's durable PostgreSQL
+outbox and receiver checkpoint.
+
+**Restore when:** Only for isolated shared-state compatibility testing with
+independent multi-site claims disabled.
+
+**Restore procedure:** Check out the source commit in a disposable worktree,
+use one shared PostgreSQL authority, and do not describe it as independent HA.
+
+**Validation after restore:** Confirm the legacy runtime-store suite, then
+return to the transactional outbox before independent deployment.
+
+**Recovery rehearsal:** Not rehearsed; restoration removes ordered tail
+replication.
+
+**Restoration risks:** Non-zero unreplicated mutation tail and inconsistent
+receiver state after source loss.
+
+**Evidence and links:** [LOG-20260720-007](LOG.md#log-20260720-007) and
+Enterprise issue #28.
+
 ## PARK-20260720-006 - Unattested independent-state catalog
 
 **Status:** Parked

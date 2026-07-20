@@ -40,6 +40,24 @@ a separate offline identity. A reviewed DDL change requires regenerating and
 reviewing the compiled manifest pin; there is no runtime override or
 trust-on-first-use path.
 
+## Ordered mutation tail
+
+`ultra-state-outbox.js` maps identity-binding changes, idempotency claims and
+completions, and replay-nonce tombstones onto the reviewed BPC durable-outbox
+contract. The source mutation, sequence allocation, sanitized record, and
+checkpoint advance share one serializable transaction. The independent
+receiver revalidates the record digest and fence, applies in strict order, and
+advances its own checkpoint in one transaction. A secret-bearing idempotency
+response is never placed in the record; the receiver stores a deterministic
+reprovision-required tombstone bound to the source response digest.
+
+The adapter module alone does not select a production stream or transport.
+Deployment must provision a stream at the signed promotion epoch, bind its
+current fence capability, run the authenticated publisher/receiver transport,
+and verify checkpoint convergence before declaring a target current. BPC pair
+authority and TSK HOTP/source authority continue to use their own pinned
+protocol implementations; this Ultra stream does not replace them.
+
 ## Custody-separated commands
 
 All JSON descriptors are non-secret. `DATABASE_URL` stays in the process

@@ -268,7 +268,9 @@ jobs:
         env:
           ULTRA_TEST_POSTGRES_URL_A: postgresql://postgres:postgres@127.0.0.1:5432/ultra
           ULTRA_TEST_POSTGRES_URL_B: postgresql://postgres:postgres@127.0.0.1:5433/ultra
-        run: npm run test:independent-state --prefix ultra_server
+        run: |
+          npm run test:independent-state --prefix ultra_server
+          npm run test:ultra-outbox --prefix ultra_server
 
       - name: Install Python contract dependencies
         run: |
