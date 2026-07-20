@@ -54,6 +54,37 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260720-008 - Compose authenticated Ultra outbox transport
+
+**Timestamp (UTC):** 2026-07-20T22:00:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security, implementation, test, documentation
+**Base commit:** `d036645a71bd84de482b60f625eb76ca4e56d27d`
+**Change reference:** commit containing this entry; Enterprise issue #28
+**Why:** [WHY-20260720-008](WHY.md#why-20260720-008)
+**Parked records:** None
+
+**Changed:** Added Ultra publisher/receiver factories over BPC's authenticated
+HTTP transport, durable PostgreSQL request-nonce authority, and receiver-bound
+Ed25519 decision receipts.
+
+**Reason:** A transactionally durable row is not replicated until an
+authenticated receiver applies it and the source verifies a decision-bound
+acknowledgement. An in-process receiver test does not establish that hop.
+
+**Full actions and links:** `ultra_server/ultra-state-outbox.js`, its real HTTP
+and two-PostgreSQL test, and Enterprise issue #28.
+
+**Validation:** The real drill opened a loopback TCP listener, authenticated
+and replay-protected each request, applied five records on the independent
+authority, verified receiver-bound Ed25519 acknowledgements, durably ACKed all
+five source rows, rejected a correctly-signed wrong-receiver receipt, and
+classified redelivery `duplicate-ok`.
+
+**Notes:** Loopback CI proves the protocol composition, not site network
+availability. Deployment topology, process operation, and site fault evidence
+remain tracked in issue 28.
+
 ## LOG-20260720-007 - Couple Ultra mutations to a durable outbox
 
 **Timestamp (UTC):** 2026-07-20T21:50:00Z

@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
+import { createServer } from 'node:http';
 import test from 'node:test';
 
 import {
   HA_OUTBOX_PG_SCHEMA,
+  BPC_TRANSPORT_NONCE_SCHEMA,
   NodePostgresTransactor,
   PgDurableOutbox,
-  PgReceiverCheckpoint,
+  PgReplayNonceStore,
   adoptCurrentSchemaVersion,
 } from '@bpc/server';
 import { Pool } from 'pg';
@@ -17,7 +19,9 @@ import {
   PgReplicatedIdempotencyStore,
   PgReplicatedIdentityBindingStore,
   PgReplicatedNonceTombstoneStore,
-  UltraStateMutationApplier,
+  createUltraStateHttpPublisher,
+  createUltraStateHttpReceiver,
+  signUltraStateAck,
   ultraStateMutationSanitizer,
 } from './ultra-state-outbox.js';
 
@@ -53,9 +57,13 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
   const idemKey = randomUUID();
   const nonceValue = `nonce-${randomUUID()}`;
   const nonceHash = createHash('sha256').update(nonceValue, 'utf8').digest('hex');
+  let httpServer;
   try {
     await initializePgSchemas(a, HA_OUTBOX_PG_SCHEMA, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA);
-    await initializePgSchemas(b, HA_OUTBOX_PG_SCHEMA, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA);
+    await initializePgSchemas(
+      b, HA_OUTBOX_PG_SCHEMA, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA,
+      BPC_TRANSPORT_NONCE_SCHEMA,
+    );
     const dbA = new NodePostgresTransactor(a);
     const dbB = new NodePostgresTransactor(b);
     const readyA = await adoptCurrentSchemaVersion(dbA, 'public');
@@ -112,11 +120,43 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
       'SELECT count(*) FROM ha_outbox_rows WHERE stream_id=$1', [streamId],
     )).rows[0].count), 5);
 
-    const receiver = new PgReceiverCheckpoint(
-      dbB, streamId, ultraStateMutationSanitizer, new UltraStateMutationApplier(), readyB,
+    const ackKeys = generateKeyPairSync('ed25519');
+    const resolveAckPublicKey = (keyId) => keyId === 'receiver-key-1' ? ackKeys.publicKey : null;
+    const nonceStore = await PgReplayNonceStore.open(dbB, 'public');
+    const requestSecret = randomBytes(32);
+    const responseSecret = randomBytes(32);
+    const receiverRuntime = createUltraStateHttpReceiver({
+      db: dbB, ready: readyB, streamId,
+      expectedPath: '/v1/ultra-state',
+      resolveRequestKey: (keyId) => keyId === 'transport-key-1' ? requestSecret : null,
+      responseKeyId: 'response-key-1', responseSecret, nonceStore,
+      receiverId: 'site-b', ackKeyId: 'receiver-key-1',
+      ackPrivateKey: ackKeys.privateKey, resolveAckPublicKey,
+    });
+    const wrongReceiver = signUltraStateAck(records[0], 'applied', {
+      receiverId: 'site-evil', keyId: 'receiver-key-1', privateKey: ackKeys.privateKey,
+    });
+    await assert.rejects(
+      receiverRuntime.ackVerifier.verify(wrongReceiver, records[0]),
+      /forged or not bound/,
     );
-    for (const record of records) assert.equal(await receiver.verifyAndApplyDelivered(record), 'applied');
-    assert.equal(await receiver.verifyAndApplyDelivered(records[4]), 'duplicate-ok');
+    httpServer = createServer(receiverRuntime.handler);
+    await new Promise((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
+    const port = httpServer.address().port;
+    const publisherRuntime = createUltraStateHttpPublisher({
+      db: dbA, ready: readyA, streamId, expectedReceiverId: 'site-b',
+      url: `http://127.0.0.1:${port}/v1/ultra-state`, fetch: globalThis.fetch,
+      requestKeyId: 'transport-key-1', requestSecret,
+      resolveResponseKey: (keyId) => keyId === 'response-key-1' ? responseSecret : null,
+      resolveAckPublicKey, leaseMs: 5_000,
+    });
+    assert.deepEqual(await publisherRuntime.publisher.drainOnce(), {
+      published: 5, acked: 5, quarantined: 0, retriable: false,
+    });
+    assert.equal(Number((await a.query(
+      'SELECT count(*) FROM ha_outbox_rows WHERE stream_id=$1 AND acked_at IS NOT NULL', [streamId],
+    )).rows[0].count), 5);
+    assert.equal(await receiverRuntime.checkpoint.verifyAndApplyDelivered(records[4]), 'duplicate-ok');
     const bindingB = (await b.query(
       'SELECT tsk_client_id,agent_id FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
     )).rows[0];
@@ -139,6 +179,7 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
       'SELECT count(*) FROM ha_outbox_rows WHERE stream_id=$1', [streamId],
     )).rows[0].count), 5);
   } finally {
+    if (httpServer) await new Promise((resolve) => httpServer.close(resolve));
     for (const pool of [a, b]) {
       try {
         await pool.query('DELETE FROM ultra_nonce_tombstones WHERE nonce_hash=$1', [nonceHash]);
