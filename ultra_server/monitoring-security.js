@@ -6,6 +6,7 @@ const ROUTE_LABELS = new Set([
   '/bpc/pairs/:pairId',
   '/confirm-recovery',
   '/ha/command',
+  '/ha/reprovision-tsk',
   '/ha/status',
   '/health',
   '/metrics',

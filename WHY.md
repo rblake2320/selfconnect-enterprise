@@ -51,6 +51,38 @@ related records.
 
 ## Register
 
+## WHY-20260720-005 - Regenerate TSK secrets at the promoted authority
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T21:25:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-005](LOG.md#log-20260720-005)
+**Parked records:** [PARK-20260720-005](PARKED.md#park-20260720-005)
+**Source state:** Enterprise master at `e27784fee6623844883a90e882830c991815d005`
+
+**Decision:** Bind non-secret credential ownership metadata into manifest v2,
+then require a fresh target-only TSK credential and atomic identity rebind
+before imported-state readiness can authorize writes.
+
+**Why:** Copying a TSK shared secret into a durable handoff violates the stated
+secret-stripping boundary. Omitting credential state without a readiness gate
+creates bindings that cannot authenticate and permits stale target credentials
+to survive a site transition.
+
+**Alternatives considered:** Copy encrypted or plaintext source secrets
+(rejected as retained secret transfer); treat missing maps as an operator note
+(rejected as unenforced); retain target maps (rejected as stale authority).
+
+**Consequences:** Promotion includes a bounded per-identity reprovision step.
+The endpoint returns the fresh secret only under both operator and agent auth,
+and signed/audit receipts contain only a public-map digest.
+
+**Rollback conditions:** Restore v1 only in shared-state mode after disabling
+independent promotion. Never treat a v1 head as credential-complete.
+
+**Evidence and links:** `ultra_server/independent-state.test.mjs`,
+[LOG-20260720-005](LOG.md#log-20260720-005), and Enterprise issue #28.
+
 ## WHY-20260720-004 - Imported authority is a writer prerequisite
 
 **Status:** Accepted

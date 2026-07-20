@@ -32,8 +32,10 @@ import {
   PgNonceTombstoneStore,
   ULTRA_INDEPENDENT_STATE_SCHEMA,
   assertIndependentStateReady,
+  completeImportedTskReprovision,
   independentStateAllowsWrites,
   loadIndependentStateRuntimeConfig,
+  readImportedTskReprovision,
 } from './independent-state.js';
 import {
   createMetricsAuthMiddleware,
@@ -99,7 +101,7 @@ import {
   RedisFencingStore,
   TSKProvisioner,
 } from '@tsk/server';
-import { toProvisionPayload } from '@tsk/core';
+import { generateTumblerMap, toProvisionPayload } from '@tsk/core';
 
 // ── Bridge import ─────────────────────────────────────────────────────────────
 import { verifyUltraRequest } from '@tsk/bpc-bridge';
@@ -143,6 +145,7 @@ let rateLimiter;
 let ipRateLimiter;
 let haController = null;
 let independentStateReady = null;
+let runtimePgPool = null;
 
 const RATE_LIMIT_WINDOW_MS = parseInt(process.env.BPC_RATE_LIMIT_WINDOW_MS ?? '60000', 10);
 const IP_RATE_LIMIT = parseInt(process.env.BPC_IP_RATE_LIMIT ?? '200', 10);
@@ -184,6 +187,7 @@ if (RUNTIME_MODE === 'production') {
   }
   const [{ Pool }, { default: Redis }] = await Promise.all([import('pg'), import('ioredis')]);
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  runtimePgPool = pool;
   await pool.query('SELECT 1');
   await initializePgSchemas(
     pool,
@@ -313,7 +317,7 @@ function waitForResponse(res, next) {
   });
 }
 
-function haLockMiddleware({ lockMode, requireWriter }) {
+function haLockMiddleware({ lockMode, requireWriter, requireIndependentReady = true }) {
   return function fencedHaBoundary(req, res, next) {
     if (!HA_CONFIG.enabled) return next();
     const withLock = lockMode === 'shared'
@@ -321,7 +325,7 @@ function haLockMiddleware({ lockMode, requireWriter }) {
       : idempotencyStore.withLock.bind(idempotencyStore);
     void withLock(HA_CONFIG.advisoryLockKey, async () => {
       if (requireWriter) {
-        if (!independentStateAllowsWrites(HA_STATE_MODE, independentStateReady)) {
+        if (requireIndependentReady && !independentStateAllowsWrites(HA_STATE_MODE, independentStateReady)) {
           return res.status(503).json({
             ok: false,
             error: 'ULTRA_INDEPENDENT_STATE_NOT_READY',
@@ -354,6 +358,9 @@ function haLockMiddleware({ lockMode, requireWriter }) {
 }
 
 const requireWriterLease = haLockMiddleware({ lockMode: 'shared', requireWriter: true });
+const requirePromotionWriterLease = haLockMiddleware({
+  lockMode: 'shared', requireWriter: true, requireIndependentReady: false,
+});
 const serializeHaTransition = haLockMiddleware({ lockMode: 'exclusive', requireWriter: false });
 
 async function claimIdempotency(req, res, operation) {
@@ -892,6 +899,77 @@ app.post('/ha/command', requireAdminAuth, serializeHaTransition, async (req, res
     result: outcome.result?.error ?? 'ok',
   }));
   return res.status(outcome.status).json(outcome.result);
+});
+
+// A promoted independent site cannot reuse source-held TSK shared secrets.
+// This separately operator+agent authorized ceremony creates a fresh target
+// credential in memory and atomically installs it with the imported binding.
+app.post('/ha/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromotionWriterLease, async (req, res) => {
+    try {
+      if (HA_STATE_MODE !== 'independent' || !runtimePgPool || !INDEPENDENT_CONFIG.expected) {
+        return res.status(409).json({ ok: false, error: 'ULTRA_INDEPENDENT_REPROVISION_DISABLED' });
+      }
+      const { clusterId, commandId, sourceEpoch, pairId, sourceClientId, agentId } = req.body ?? {};
+      const expected = INDEPENDENT_CONFIG.expected;
+      if (agentId !== req.scAgent.agentId || clusterId !== expected.clusterId ||
+          commandId !== expected.commandId || sourceEpoch !== expected.sourceEpoch ||
+          typeof pairId !== 'string' || typeof sourceClientId !== 'string') {
+        return res.status(400).json({ ok: false, error: 'INVALID_TSK_REPROVISION_REQUEST' });
+      }
+      const pending = await readImportedTskReprovision(runtimePgPool, { clusterId, pairId });
+      if (!pending || pending.agentId !== agentId || pending.sourceClientId !== sourceClientId) {
+        return res.status(409).json({ ok: false, error: 'TSK_REPROVISION_BINDING_MISMATCH' });
+      }
+      let targetMap = pending.targetClientId ? await tskStore.get(pending.targetClientId) : null;
+      if (!targetMap) {
+        targetMap = generateTumblerMap();
+        targetMap.label = `agent:${agentId}`;
+        targetMap.status = 'active';
+        targetMap.requestCount = 0;
+        targetMap.lastUsedAt = null;
+      }
+      const receipt = await completeImportedTskReprovision(runtimePgPool, {
+        advisoryLockKey: HA_CONFIG.advisoryLockKey,
+        agentId,
+        assertWritable: () => haController.assertWritable({
+          minRemainingMs: HA_CONFIG.minLeaseRemainingMs,
+        }),
+        clusterId,
+        commandId,
+        pairId,
+        sourceClientId,
+        sourceEpoch,
+        targetMap,
+      });
+      if (!receipt.idempotent) cTskProvisions.inc();
+      console.log(JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'INFO',
+        event: 'ha_tsk_reprovisioned',
+        agentId,
+        pairId,
+        sourceClientId,
+        targetClientId: targetMap.clientId,
+        receiptDigest: receipt.receiptDigest,
+        idempotent: receipt.idempotent,
+      }));
+      independentStateReady = await assertIndependentStateReady(runtimePgPool, expected).catch(() => null);
+      return res.json({
+        ok: true,
+        clientId: targetMap.clientId,
+        sharedSecret: targetMap.sharedSecret,
+        provisionPayload: toProvisionPayload(targetMap),
+        receipt,
+      });
+    } catch (error) {
+      console.error(JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'ERROR',
+        event: 'ha_tsk_reprovision_error',
+        error: String(error),
+      }));
+      return res.status(409).json({ ok: false, error: 'TSK_REPROVISION_FAILED' });
+    }
 });
 
 app.get('/ha/status', requireAdminAuth, async (_req, res) => {

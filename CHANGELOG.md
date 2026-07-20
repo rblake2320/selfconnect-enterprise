@@ -11,6 +11,18 @@
   [LOG-20260720-004](LOG.md#log-20260720-004), rationale:
   [WHY-20260720-004](WHY.md#why-20260720-004).
 
+### Target-only TSK credential reprovisioning
+
+- Independent-state manifest v2 now proves every imported identity had an
+  active owned TSK credential while transferring no TSK shared secret.
+- Import clears target credential state and creates durable reprovision
+  obligations. The node remains unwritable until an operator+agent authorized,
+  writer-fenced ceremony generates a fresh target-only credential and
+  atomically rebinds each identity. Evidence:
+  [LOG-20260720-005](LOG.md#log-20260720-005), rationale:
+  [WHY-20260720-005](WHY.md#why-20260720-005), recovery:
+  [PARK-20260720-005](PARKED.md#park-20260720-005).
+
 ### Independent Ultra state handoff foundation
 
 - Added a custody-separated, dual-signed A-to-B handoff for Enterprise-owned
