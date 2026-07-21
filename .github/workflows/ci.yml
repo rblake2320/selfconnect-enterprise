@@ -556,6 +556,8 @@ jobs:
       ULTRA_TEST_POSTGRES_URL_B: postgresql://tsk_test:tsk-test-only-password@127.0.0.1:5443/tsk_test
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
@@ -593,6 +595,7 @@ jobs:
         env:
           BPC_PROTOCOL_ROOT: ${{ github.workspace }}/../bpc-protocol
           TSK_PROTOCOL_ROOT: ${{ github.workspace }}/../tsk-protocol
+          ULTRA_FINAL_EXPECTED_ENTERPRISE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           ULTRA_FINAL_EVIDENCE_FILE: ${{ runner.temp }}/ultra-final-ha-evidence.json
         run: npm run test:final-ha --prefix ultra_server
       - name: Upload immutable non-secret acceptance evidence

@@ -33,7 +33,7 @@ export const ACCEPTANCE_STEPS = Object.freeze([
   Object.freeze({
     id: 'tsk-credential-authority', component: 'tsk-protocol',
     args: ['run', 'test:credential-authority'],
-    markers: ['"checks":48', '"duplicateEffects":0', '"staleWrites":0', '"replicaSecrets":0'],
+    markers: ['"checks":48', '"duplicateEffects":0', '"staleWritesAdmitted":0', '"secretBearingReplicaRecords":0'],
   }),
   Object.freeze({
     id: 'tsk-process-sigkill', component: 'tsk-protocol',
@@ -132,11 +132,25 @@ async function gitHead(root) {
     timeoutMs: 30_000 })).trim();
 }
 
+async function assertCleanReviewedCheckout(root, expected) {
+  if (!SHA.test(expected ?? '')) throw new Error('ULTRA_FINAL_EXPECTED_ENTERPRISE_SHA must be a full commit SHA');
+  const actual = await gitHead(root);
+  if (actual !== expected) throw new Error(`Enterprise checkout mismatch: expected ${expected}, got ${actual}`);
+  const status = await capture('git', ['status', '--porcelain'], {
+    cwd: root, env: process.env, timeoutMs: 30_000,
+  });
+  if (status.trim() !== '') throw new Error('Enterprise checkout must be clean for final acceptance');
+  return actual;
+}
+
 export async function runFinalAcceptance(options = {}) {
   for (const name of REQUIRED_ENV) {
     if (!process.env[name]) throw new Error(`${name} is required (final acceptance never skips)`);
   }
   const lock = JSON.parse(await readFile(resolve(REPO, 'portfolio-lock.json'), 'utf8'));
+  const enterpriseCommit = await assertCleanReviewedCheckout(
+    REPO, process.env.ULTRA_FINAL_EXPECTED_ENTERPRISE_SHA,
+  );
   const roots = {
     'bpc-protocol': requiredPath(options.bpcRoot ?? process.env.BPC_PROTOCOL_ROOT, 'BPC_PROTOCOL_ROOT'),
     'tsk-protocol': requiredPath(options.tskRoot ?? process.env.TSK_PROTOCOL_ROOT, 'TSK_PROTOCOL_ROOT'),
@@ -173,7 +187,7 @@ export async function runFinalAcceptance(options = {}) {
       tskAndUltraPostgresAuthorities: 3, postgresAuthoritiesTotal: 6,
       redisDataNodes: 3, redisSentinels: 3, ultraAuthorities: 2 }),
     commits: Object.freeze({
-      enterprise: await gitHead(REPO),
+      enterprise: enterpriseCommit,
       bpc: lock.components['bpc-protocol'].commit,
       tsk: lock.components['tsk-protocol'].commit,
     }),
