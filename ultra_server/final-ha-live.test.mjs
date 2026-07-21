@@ -11,7 +11,9 @@ import { writeLiveCompositionEvidence } from './live-composition-evidence.mjs';
 test('live composition requires exact command binding, independent systems, and stale denial', () => {
   const commandId = 'promote-live-1';
   const bpc = {
-    readinessAttestation: { commandId }, staleWriterDenied: true,
+    readinessAttestation: { commandId, targetEpoch: 2 }, staleWriterDenied: true,
+    failback: { targetSystemId: '1', targetEpoch: 3, staleBWriterDenied: true,
+      priorAuthoritiesReset: false, sourcePostgresSystemReused: true },
     systemIds: { sourceA: '1', promotedB: '2', control: '3' },
   };
   const tsk = {

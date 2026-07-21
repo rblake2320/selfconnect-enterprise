@@ -16,12 +16,15 @@ function liveEvidence() {
       enterprise: { source: '4', target: '5' },
     },
     artifacts: {
-      bpcPromotion: '1'.repeat(64), tskFinalized: '2'.repeat(64),
+      bpcPromotion: '1'.repeat(64), bpcFailback: '0'.repeat(64),
+      tskFinalized: '2'.repeat(64),
       tskActivation: '3'.repeat(64), enterpriseManifest: '4'.repeat(64),
       promotedCredentialProof: '5'.repeat(64), promotedCredentialReceipt: '6'.repeat(64),
     },
     outcomes: {
-      bpcStaleWriterDenied: true, tskStaleWriterDenied: true,
+      bpcStaleWriterDenied: true, bpcFailbackStaleWriterDenied: true,
+      bpcFailbackTargetEpoch: 3, bpcFailbackTargetSystem: '1',
+      tskStaleWriterDenied: true,
       tskStaleCredentialWriterDenied: true, promotedSourceNextSequence: 2,
       enterpriseTargetClientId: 'target', copiedTargetCredentialRows: 0,
       redactionPreserved: true, dataLossRpo: 0,

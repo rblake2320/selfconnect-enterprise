@@ -25,6 +25,7 @@ function publicEvidence(result) {
     },
     artifacts: {
       bpcPromotion: result.bpc.readinessAttestation.attestationDigest,
+      bpcFailback: result.bpc.failback.readinessAttestation.attestationDigest,
       tskFinalized: result.tsk.bFinalizedReceipt.receiptDigest,
       tskActivation: result.tsk.activationLeaseGrant.grantDigest,
       enterpriseManifest: result.enterprise.manifestDigest,
@@ -33,6 +34,9 @@ function publicEvidence(result) {
     },
     outcomes: {
       bpcStaleWriterDenied: result.bpc.staleWriterDenied,
+      bpcFailbackStaleWriterDenied: result.bpc.failback.staleBWriterDenied,
+      bpcFailbackTargetEpoch: result.bpc.failback.targetEpoch,
+      bpcFailbackTargetSystem: result.bpc.failback.targetSystemId,
       tskStaleWriterDenied: result.tsk.staleWriterDenied,
       tskStaleCredentialWriterDenied: result.tsk.staleCredentialWriterDenied,
       promotedSourceNextSequence: result.tsk.nextSequence,
@@ -60,6 +64,10 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
   assert.equal(evidence.systems.enterprise.target, evidence.systems.tsk.receiverB);
   assert.notEqual(evidence.systems.enterprise.source, evidence.systems.enterprise.target);
   assert.equal(evidence.outcomes.bpcStaleWriterDenied, true);
+  assert.equal(evidence.outcomes.bpcFailbackStaleWriterDenied, true);
+  assert.equal(evidence.outcomes.bpcFailbackTargetSystem, evidence.systems.bpc.sourceA);
+  assert.equal(Number.isSafeInteger(evidence.outcomes.bpcFailbackTargetEpoch) &&
+    evidence.outcomes.bpcFailbackTargetEpoch > 1, true);
   assert.equal(evidence.outcomes.tskStaleWriterDenied, true);
   assert.equal(evidence.outcomes.tskStaleCredentialWriterDenied, true);
   assert.equal(evidence.outcomes.copiedTargetCredentialRows, 0);

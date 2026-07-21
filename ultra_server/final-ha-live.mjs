@@ -87,6 +87,11 @@ export function validateLiveProtocolComposition(bpc, tsk, commandId) {
   assert.equal(tsk.bFinalizedReceipt.commandId, commandId);
   assert.equal(tsk.activationLeaseGrant.commandId, commandId);
   assert.equal(bpc.staleWriterDenied, true);
+  assert.equal(bpc.failback.targetSystemId, bpc.systemIds.sourceA);
+  assert.equal(bpc.failback.targetEpoch > bpc.readinessAttestation.targetEpoch, true);
+  assert.equal(bpc.failback.staleBWriterDenied, true);
+  assert.equal(bpc.failback.priorAuthoritiesReset, false);
+  assert.equal(bpc.failback.sourcePostgresSystemReused, true);
   assert.equal(tsk.staleWriterDenied, true);
   assert.equal(tsk.nextSequence, tsk.n + 1);
   assert.equal(tsk.publicCredential.status, 'active');
