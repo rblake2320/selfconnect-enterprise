@@ -46,6 +46,7 @@
 | 34 | Gemini real-agent auth blocker | Provider boundary evidence | `docs/ato/GEMINI_REAL_AGENT_AUTH_BLOCKER_2026-06-21.md` | Gemini CLI cannot join real-agent ladders without interactive login, `GEMINI_API_KEY`, or ADC; documents the non-SelfConnect provider-auth blocker | CA-2, SI-4 | 2026-06-21 |
 | 35 | MSI release artifact workflow proof | GitHub Actions evidence | `.github/workflows/release-msi.yml`, `docs/ato/MSI_RELEASE_AUTOMATION_2026-06-21.md` | Manual GitHub Actions run `27897466199` built and uploaded `selfconnect-enterprise-1.2.3.msi` with SHA-256 `9A1CD2F56B6A4CE3AEFC6CC8CF4C5FE09B07F406F6D0E3ED8E62D9591749CF4D`; code signing remains false until certificate secrets are configured | CM-7, CM-9, SI-7 | 2026-06-21 |
 | 36 | Live TPM platform attestation PASS | Live host evidence | `docs/ato/TPM_LIVE_PROBE_2026-07-20.md`, `docs/ato/TPM_LIVE_PROBE_2026-07-20.json`, `enterprise/tpm_attestation.py`, SelfConnect `sc_tpm_attestation.py` | The tested Windows TPM 2.0 host issued and locally verified a nonce-bound PCR 0-23 quote under an operator-pinned non-exportable PCP identity key, with durable replay rejection. Manufacturer/EK-chain trust, remote enrollment/revocation, and agent-signing-key binding remain outside this result | IA-5, IA-3, SC-28, CA-2 | 2026-07-20 |
+| 37 | Ultra HA standards and evidence matrix | Standards mapping + machine-checked status | `docs/operations/HA_TEST_STANDARDS_MATRIX.md`, `docs/assurance/ha_test_coverage.json`, `docs/operations/SPARK2_HOST_ACCEPTANCE.md` | Names each executed, partial, and open HA level; binds real process/database/Redis/cross-host evidence and prevents host/site/restore/failback gaps from being relabeled as passes without closure evidence | CP-4, CP-6, CP-7, CP-9, CP-10, SI-13 | 2026-07-21 |
 
 ---
 
@@ -61,6 +62,7 @@
 | CM | 1, 3, 9, 15, 20, 24, 27, 30, 35 | test_dependency_integrity.py, version_gate.py, governance profiles, installer/ |
 | CA | 7, 8, 9, 10, 17, 20, 31 | identity_gate.py (inline WRAITH references), WORM_LIVE_AWS_PROOF_2026-06-21.md |
 | IR | 8, 25 | identity_gate.py:emergency_bypass(), ledger.py |
+| CP | 37 | HA_TEST_STANDARDS_MATRIX.md, ha_test_coverage.json, SPARK2_HOST_ACCEPTANCE.md |
 
 ---
 

@@ -16,6 +16,7 @@ CATALOG_PATH = ROOT / "docs" / "assurance" / "control_catalog.json"
 PROVENANCE_ACCEPTANCE_PATH = (
     ROOT / "docs" / "operations" / "2026-07-16-provenance-service-acceptance.json"
 )
+HA_TEST_COVERAGE_PATH = ROOT / "docs" / "assurance" / "ha_test_coverage.json"
 
 LOG_ID_RE = re.compile(r"^## (LOG-\d{8}-\d{3})\b", re.MULTILINE)
 PARK_ID_RE = re.compile(r"^## (PARK-\d{8}-\d{3})\b", re.MULTILINE)
@@ -242,3 +243,145 @@ def test_provenance_service_acceptance_artifact_is_bounded_and_redacted() -> Non
     )
     for value in prohibited:
         assert value not in encoded
+
+
+def test_ha_test_coverage_never_hides_unexecuted_levels_as_passes() -> None:
+    import json
+    from urllib.parse import urlparse
+
+    from tools.ci_test_gate import ALLOWED_SKIPS
+
+    matrix = json.loads(_read(HA_TEST_COVERAGE_PATH))
+    assert matrix["schema_version"] == 2
+    assert matrix["authoritative_open_work"].endswith("/issues/28")
+    standards = matrix["standards"]
+    standard_ids = {entry["id"] for entry in standards}
+    assert len(standard_ids) == len(standards)
+    assert {urlparse(entry["url"]).hostname for entry in standards} <= {
+        "csrc.nist.gov",
+        "redis.io",
+        "www.postgresql.org",
+    }
+    skip_groups = matrix["skip_groups"]
+    assert {group["id"]: group["count"] for group in skip_groups} == {
+        "generic-windows-ultra-unavailable": 34,
+        "generic-windows-posix-semantics": 4,
+    }
+    assert sum("Ultra Server" in reason for reason in ALLOWED_SKIPS.values()) == 34
+    assert sum("Ultra Server" not in reason for reason in ALLOWED_SKIPS.values()) == 4
+    for group in skip_groups:
+        assert set(group) == {
+            "id",
+            "count",
+            "reason",
+            "substitute",
+            "non_equivalence",
+            "closure",
+        }
+        assert group["count"] > 0
+        assert all(
+            group[field]
+            for field in ("reason", "substitute", "non_equivalence", "closure")
+        )
+    ci_receipts = matrix["ci_receipts"]
+    assert {receipt["run_id"] for receipt in ci_receipts} == {
+        "29866460441",
+        "29866745029",
+    }
+    for receipt in ci_receipts:
+        assert set(receipt) == {"run_id", "head_sha", "conclusion", "scope"}
+        assert re.fullmatch(r"\d+", receipt["run_id"])
+        assert re.fullmatch(r"[0-9a-f]{40}", receipt["head_sha"])
+        assert receipt["conclusion"] == "success"
+        assert receipt["scope"]
+    receipt_by_run = {receipt["run_id"]: receipt for receipt in ci_receipts}
+
+    expected_status = {
+        "process-loss": "pass",
+        "database-process-loss": "pass",
+        "redis-functional-failover": "pass",
+        "redis-independent-failure-domains": "open",
+        "cross-host-handoff": "pass",
+        "cross-host-service-network-partition": "partial",
+        "whole-host-loss": "open",
+        "alternate-site": "open",
+        "authoritative-state-composition": "partial",
+        "secret-reprovisioning": "partial",
+        "replica-integrity-promotion-denial": "pass",
+        "old-writer-fencing": "partial",
+        "recovered-site-resync-before-write": "partial",
+        "full-recovery-reconstitution": "partial",
+        "backup-restore": "open",
+        "enterprise-failback": "partial",
+        "repeated-same-principal-failover": "partial",
+        "monitoring-alerting": "partial",
+        "immutable-evidence-deployment": "partial",
+        "key-custody": "partial",
+        "independent-security-review": "partial",
+        "rpo-rto-objectives": "partial",
+        "cp4-related-plan-coordination": "open",
+        "cp4-automated-testing": "partial",
+        "cp4-self-challenge": "partial",
+        "integration-test-skips": "pass",
+    }
+    levels = matrix["levels"]
+    ids = [level["id"] for level in levels]
+    _assert_unique(ids, "HA test level")
+    required = {"id", "status", "requirement", "evidence", "limitations", "closure"}
+    assert {level["status"] for level in levels} <= {"pass", "partial", "open"}
+    assert "skip" not in {level["status"] for level in levels}
+    for level in levels:
+        assert set(level) == required
+        assert level["requirement"] and level["limitations"]
+        assert isinstance(level["evidence"], list) and level["evidence"]
+        evidence_kinds = set()
+        for evidence in level["evidence"]:
+            kind, separator, reference = evidence.partition(":")
+            assert separator and reference, f"malformed evidence: {evidence}"
+            assert kind in {
+                "artifact",
+                "ci",
+                "drill",
+                "issue",
+                "repo",
+                "review",
+                "standard",
+            }
+            evidence_kinds.add(kind)
+            if kind in {"artifact", "repo"}:
+                path = reference.split("#", 1)[0]
+                assert not Path(path).is_absolute()
+                assert (ROOT / path).is_file(), f"missing evidence path: {path}"
+            elif kind == "ci":
+                parsed = urlparse(reference)
+                assert parsed.scheme == "https" and parsed.hostname == "github.com"
+                assert re.fullmatch(
+                    r"/rblake2320/selfconnect-enterprise/actions/runs/\d+",
+                    parsed.path,
+                )
+                run_id = parsed.path.rsplit("/", 1)[1]
+                assert receipt_by_run[run_id]["conclusion"] == "success"
+            elif kind == "issue":
+                assert reference == matrix["authoritative_open_work"]
+            elif kind == "review":
+                parsed = urlparse(reference)
+                assert parsed.scheme == "https" and parsed.hostname == "github.com"
+                assert re.fullmatch(
+                    r"/rblake2320/selfconnect-enterprise/pull/\d+",
+                    parsed.path,
+                )
+                assert re.fullmatch(r"issuecomment-\d+", parsed.fragment)
+            elif kind == "standard":
+                assert reference in standard_ids
+            elif kind == "drill":
+                assert re.fullmatch(r"sha256:[0-9a-f]{64}", reference)
+        if level["status"] in {"partial", "open"}:
+            assert level["closure"], f"{level['id']} has no closure condition"
+        else:
+            assert level["closure"] == ""
+            assert evidence_kinds & {"artifact", "ci", "drill"}, (
+                f"{level['id']} PASS lacks machine evidence"
+            )
+
+    status = {level["id"]: level["status"] for level in levels}
+    assert status == expected_status

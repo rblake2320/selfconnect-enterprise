@@ -5,6 +5,9 @@
 availability outside the recorded topology. The hosted topology is one runner.
 The Spark-2 supplement in `SPARK2_HOST_ACCEPTANCE.md` establishes a
 two-physical-host same-LAN TSK handoff, but not an independent site domain.
+`HA_TEST_STANDARDS_MATRIX.md` is the machine-checked PASS/PARTIAL/OPEN ledger
+for required fault and recovery levels; an omitted or substitute test is not a
+pass.
 
 ## Topology
 
@@ -48,8 +51,8 @@ failback evidence is a failure.
 | Network/split brain | Live Redis master isolation; old master refuses writes, surviving quorum promotes, healed node converges |
 | Redis loss | Abrupt master loss with Sentinel quorum and enforced replica acknowledgement |
 | Database recovery | Exact promoted PostgreSQL `SIGKILL`/restart plus destructive Enterprise-table rebuild from signed state |
-| Protocol failback | Governed BPC A -> B -> A and TSK A -> B -> A return-authority drills; TSK also passed across Spark-1/Spark-2; Enterprise-owned state is currently A -> B only |
-| Same principal | Pair and agent identity remain unchanged across the recorded protocol failover/failback and Enterprise A -> B handoff |
+| Protocol failback | Governed BPC A -> B -> A and TSK A -> B -> A return-authority drills; TSK also passed across Spark-1/Spark-2; a real-PostgreSQL Enterprise A -> B -> A mechanism test passes with synthetic signed protocol inputs, while exact completed-authority composition remains open |
+| Same principal | Pair and agent identity remain unchanged across the protocol failover/failback and the real-PostgreSQL Enterprise A -> B -> A mechanism test |
 | Old writer fencing | BPC and TSK pre-commit authority checks deny the prior authority after promotion/restart/heal |
 | Tamper/gap/replay/rollback | Component and Enterprise drills reject each class before readiness or mutation |
 | Secret custody | State transport strips TSK and idempotency secrets; each target requires fresh governed reprovisioning |
@@ -67,14 +70,18 @@ still requires the separately governed WORM deployment control.
 ## Recovery and Failback
 
 Failback is a new higher-epoch handoff, never a reversal of history. The BPC
-and TSK protocol authorities exercise that return path directly. The current
-Enterprise-owned state drill imports A into B, restores B after process and
-database faults, and does not claim an Enterprise B -> A return handoff.
+and TSK protocol authorities exercise that return path directly. The
+Enterprise-owned state test performs a real-PostgreSQL A -> B -> A return: it
+exports, independently countersigns, imports, reprovisions a fresh target
+credential, verifies readiness, preserves the principal, and reports data-loss
+RPO zero. That mechanism test uses synthetic signed protocol evidence and a
+callback writable assertion. It therefore does not establish exact completed
+BPC/TSK Enterprise failback composition, stale-B fencing, or repeated cycles.
 Previously redacted idempotency results remain redacted; they are not re-hashed
 as ordinary responses. Readiness is granted only after the new credential
 binding and authority digest agree. Separate-host execution is evidenced by the
-Spark-1/Spark-2 supplement. Whole-host loss, separate-site operation, and the
-Enterprise return handoff remain issue #28 acceptance gates.
+Spark-1/Spark-2 supplement. Whole-host loss, separate-site operation, and exact
+completed-authority Enterprise return remain issue #28 acceptance gates.
 
 ## Operations
 
