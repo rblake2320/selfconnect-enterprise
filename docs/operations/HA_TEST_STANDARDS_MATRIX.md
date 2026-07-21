@@ -37,8 +37,21 @@ authorized, certified, or compliant.
 | Alternate site | OPEN | No independent geography/power/network exists in this lab |
 | Full recovery/reconstitution | PARTIAL | Signed logical rebuild and DB restart, not full alternate-site restore |
 | Backup restore | OPEN | Runbook exists; complete isolated restore artifact does not |
-| Enterprise B -> A failback | OPEN | BPC/TSK return; Enterprise-owned state does not yet return |
+| Authority composition | PARTIAL | Fenced BPC outbox and Ultra adapters pass; completed BPC/TSK Enterprise return composition remains |
+| Secret reprovisioning | PARTIAL | Redacted real-PG transfer + fresh target credential pass; production custody ceremony remains |
+| Replica integrity denial | PASS | Stale/replay/tamper/gap/rollback denied in the named tested formats/topology |
+| Old-writer fencing | PARTIAL | BPC/TSK pass; exact Enterprise completed-authority failback fence remains |
+| Recovered-site resync | PARTIAL | Readiness gates pass; no recovered physical site has been returned to service |
+| Enterprise B -> A failback | PARTIAL | Real-PG A -> B -> A mechanism passes; exact BPC/TSK artifacts, stale-B fence, repeats remain |
+| Repeated same-principal cycles | PARTIAL | One Enterprise A -> B -> A cycle passes; repeated production cycles remain |
+| Monitoring and alerting | PARTIAL | Config/security tests pass; deployed fault-to-alert drill remains |
+| Immutable evidence | OPEN | Hashes/retention exist; WORM or equivalent deployment is unverified |
+| Key custody | PARTIAL | Role separation passes; production HSM/TPM custody ceremony remains |
+| Independent topology review | PARTIAL | Exact two-host TSK slice reviewed; complete topology review remains |
 | Approved RPO/RTO objectives | PARTIAL | Measurements exist; owner-approved business targets do not |
+| CP-4 related-plan coordination | OPEN | No retained cross-plan organizational exercise |
+| CP-4 automated testing | PARTIAL | CI/cross-host handoff automated; several destructive/operator tests are not |
+| CP-4 self-challenge | PARTIAL | Technical adversarial faults pass; full operational assumptions remain unchallenged |
 | Database integration skips | PASS | Exact master production CI ran 65/65 Ultra tests with zero skips |
 
 `OPEN` and `PARTIAL` are deliberate failures to claim completion, not waived
@@ -76,5 +89,18 @@ PostgreSQL and reported:
 - Ultra outbox suite: `1` test, `0` skipped.
 
 Where a test cannot run, the JSON matrix requires a limitation and closure
-condition. Changing an `open` or `partial` result to `pass` requires reviewed
-evidence, not only a prose edit.
+condition. Its schema uses typed evidence references (`ci`, `artifact`, `repo`,
+`drill`, `standard`, and `issue`); a `PASS` requires machine evidence. CI pins
+the exact required level IDs and their status, checks repository evidence paths,
+and rejects malformed or missing references. Changing an `open` or `partial`
+result to `pass` therefore requires a reviewed code change and machine evidence,
+not only a prose edit.
+
+The generic Windows suite's `38` skips are also grouped in the JSON ledger:
+
+- `34` require a live Ultra Server. They run in separate exact-commit live
+  contract jobs; the generic-job skip is not used as evidence.
+- `4` exercise POSIX-only owner/mode/symlink/replacement semantics. The exact
+  four node IDs run in a dedicated Ubuntu job. Windows DACL, reparse-point, and
+  handle-retarget tests remain separate and are not treated as substitutes for
+  POSIX behavior.

@@ -249,8 +249,10 @@ def test_ha_test_coverage_never_hides_unexecuted_levels_as_passes() -> None:
     import json
     from urllib.parse import urlparse
 
+    from tools.ci_test_gate import ALLOWED_SKIPS
+
     matrix = json.loads(_read(HA_TEST_COVERAGE_PATH))
-    assert matrix["schema_version"] == 1
+    assert matrix["schema_version"] == 2
     assert matrix["authoritative_open_work"].endswith("/issues/28")
     standards = matrix["standards"]
     standard_ids = {entry["id"] for entry in standards}
@@ -260,7 +262,56 @@ def test_ha_test_coverage_never_hides_unexecuted_levels_as_passes() -> None:
         "redis.io",
         "www.postgresql.org",
     }
+    skip_groups = matrix["skip_groups"]
+    assert {group["id"]: group["count"] for group in skip_groups} == {
+        "generic-windows-ultra-unavailable": 34,
+        "generic-windows-posix-semantics": 4,
+    }
+    assert sum("Ultra Server" in reason for reason in ALLOWED_SKIPS.values()) == 34
+    assert sum("Ultra Server" not in reason for reason in ALLOWED_SKIPS.values()) == 4
+    for group in skip_groups:
+        assert set(group) == {
+            "id",
+            "count",
+            "reason",
+            "substitute",
+            "non_equivalence",
+            "closure",
+        }
+        assert group["count"] > 0
+        assert all(
+            group[field]
+            for field in ("reason", "substitute", "non_equivalence", "closure")
+        )
 
+    expected_status = {
+        "process-loss": "pass",
+        "database-process-loss": "pass",
+        "redis-functional-failover": "pass",
+        "redis-independent-failure-domains": "open",
+        "cross-host-handoff": "pass",
+        "cross-host-service-network-partition": "partial",
+        "whole-host-loss": "open",
+        "alternate-site": "open",
+        "authoritative-state-composition": "partial",
+        "secret-reprovisioning": "partial",
+        "replica-integrity-promotion-denial": "pass",
+        "old-writer-fencing": "partial",
+        "recovered-site-resync-before-write": "partial",
+        "full-recovery-reconstitution": "partial",
+        "backup-restore": "open",
+        "enterprise-failback": "partial",
+        "repeated-same-principal-failover": "partial",
+        "monitoring-alerting": "partial",
+        "immutable-evidence-deployment": "open",
+        "key-custody": "partial",
+        "independent-security-review": "partial",
+        "rpo-rto-objectives": "partial",
+        "cp4-related-plan-coordination": "open",
+        "cp4-automated-testing": "partial",
+        "cp4-self-challenge": "partial",
+        "integration-test-skips": "pass",
+    }
     levels = matrix["levels"]
     ids = [level["id"] for level in levels]
     _assert_unique(ids, "HA test level")
@@ -271,15 +322,36 @@ def test_ha_test_coverage_never_hides_unexecuted_levels_as_passes() -> None:
         assert set(level) == required
         assert level["requirement"] and level["limitations"]
         assert isinstance(level["evidence"], list) and level["evidence"]
+        evidence_kinds = set()
+        for evidence in level["evidence"]:
+            kind, separator, reference = evidence.partition(":")
+            assert separator and reference, f"malformed evidence: {evidence}"
+            assert kind in {"artifact", "ci", "drill", "issue", "repo", "standard"}
+            evidence_kinds.add(kind)
+            if kind in {"artifact", "repo"}:
+                path = reference.split("#", 1)[0]
+                assert not Path(path).is_absolute()
+                assert (ROOT / path).is_file(), f"missing evidence path: {path}"
+            elif kind == "ci":
+                parsed = urlparse(reference)
+                assert parsed.scheme == "https" and parsed.hostname == "github.com"
+                assert re.fullmatch(
+                    r"/rblake2320/selfconnect-enterprise/actions/runs/\d+",
+                    parsed.path,
+                )
+            elif kind == "issue":
+                assert reference == matrix["authoritative_open_work"]
+            elif kind == "standard":
+                assert reference in standard_ids
+            elif kind == "drill":
+                assert re.fullmatch(r"sha256:[0-9a-f]{64}", reference)
         if level["status"] in {"partial", "open"}:
             assert level["closure"], f"{level['id']} has no closure condition"
         else:
             assert level["closure"] == ""
+            assert evidence_kinds & {"artifact", "ci", "drill"}, (
+                f"{level['id']} PASS lacks machine evidence"
+            )
 
     status = {level["id"]: level["status"] for level in levels}
-    assert status["whole-host-loss"] == "open"
-    assert status["alternate-site"] == "open"
-    assert status["backup-restore"] == "open"
-    assert status["enterprise-failback"] == "open"
-    assert status["redis-independent-failure-domains"] == "open"
-    assert status["cross-host-service-network-partition"] == "partial"
+    assert status == expected_status
