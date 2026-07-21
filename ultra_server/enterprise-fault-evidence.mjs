@@ -6,6 +6,7 @@ const DIGEST = /^[0-9a-f]{64}$/;
 const ALLOWED_FAULTS = Object.freeze({
   childProcessSigkill: 'sigkill-enterprise-importer-before-commit',
   destructiveRestore: 'drop-and-rebuild-enterprise-authority-on-promoted-b',
+  databaseSigkill: 'sigkill-exact-promoted-enterprise-postgres',
 });
 
 function sha256(value) {
@@ -43,6 +44,8 @@ export function validateEnterpriseFaultEvidence(evidence, expected = {}) {
   assert.equal(evidence.faults.childProcessSigkill.tornAuthorityRows, 0);
   assert.equal(evidence.faults.destructiveRestore.sameTargetSystemId, true);
   assert.equal(evidence.faults.destructiveRestore.sameCredentialReceipt, true);
+  assert.equal(evidence.faults.databaseSigkill.sameTargetSystemId, true);
+  assert.equal(evidence.faults.databaseSigkill.sameCredentialReceipt, true);
   return evidence;
 }
 

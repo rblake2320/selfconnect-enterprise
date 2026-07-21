@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { fork } from 'node:child_process';
+import { execFileSync, fork } from 'node:child_process';
 import { createPublicKey, generateKeyPairSync, randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -19,6 +19,16 @@ import { createPromotedTskAuthorityCapability } from './promoted-tsk-authority.j
 import { ULTRA_PG_SCHEMA, initializePgSchemas } from './runtime-stores.js';
 
 const { Pool } = pg;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitForPostgres(pool, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last;
+  while (Date.now() < deadline) {
+    try { return await pool.query('SELECT 1'); } catch (error) { last = error; await sleep(250); }
+  }
+  throw new Error(`promoted PostgreSQL did not recover: ${String(last?.message ?? last)}`);
+}
 
 async function resetUltra(pool) {
   await pool.query(`DROP TABLE IF EXISTS
@@ -87,7 +97,7 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
   const bUrl = env.ULTRA_TEST_POSTGRES_URL_B;
   if (!aUrl || !bUrl || aUrl === bUrl) throw new Error('two distinct Ultra PostgreSQL URLs are required');
   const a = new Pool({ connectionString: aUrl, max: 4 });
-  const b = new Pool({ connectionString: bUrl, max: 4 });
+  let b = new Pool({ connectionString: bUrl, max: 4 });
   const sourceSigning = generateKeyPairSync('ed25519');
   const guardSigning = generateKeyPairSync('ed25519');
   const clusterId = 'enterprise28-live-cluster';
@@ -265,6 +275,39 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       [pairId],
     )).rows[0];
     assert.deepEqual(restoredBinding, binding);
+    let databaseSigkill;
+    const bContainer = env.ULTRA_TEST_POSTGRES_B_CONTAINER;
+    if (bContainer) {
+      if (!/^[a-f0-9]{12,64}$/.test(bContainer)) {
+        throw new Error('ULTRA_TEST_POSTGRES_B_CONTAINER must be a Docker container id');
+      }
+      const databaseStartedAt = Date.now();
+      await b.end();
+      execFileSync('docker', ['kill', '-s', 'KILL', bContainer], {
+        stdio: 'ignore', windowsHide: true,
+      });
+      execFileSync('docker', ['start', bContainer], { stdio: 'ignore', windowsHide: true });
+      b = new Pool({ connectionString: bUrl, max: 4 });
+      await waitForPostgres(b);
+      const afterRestartReady = await assertIndependentStateReady(b, {
+        clusterId,
+        commandId: composition.commandId,
+        manifestDigest: bundle.manifestDigest,
+        sourceEpoch,
+      });
+      const afterRestartProof = (await b.query(
+        `SELECT receipt_digest,target_client_id FROM ultra_ha_tsk_reprovision
+         WHERE cluster_id=$1 AND command_id=$2`, [clusterId, composition.commandId],
+      )).rows[0];
+      assert.equal(afterRestartReady.targetSystemId, ready.targetSystemId);
+      assert.equal(afterRestartProof.receipt_digest, reprovisioned.receiptDigest);
+      assert.equal(afterRestartProof.target_client_id, reprovisioned.targetClientId);
+      databaseSigkill = Object.freeze({
+        fault: 'sigkill-exact-promoted-enterprise-postgres', resumed: true,
+        sameTargetSystemId: true, sameCredentialReceipt: true, rpo: 0,
+        rtoMs: Date.now() - databaseStartedAt,
+      });
+    }
     return Object.freeze({
       clusterId,
       manifestDigest: bundle.manifestDigest,
@@ -293,6 +336,7 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
           rpo: 0,
           rtoMs: Date.now() - restoreStartedAt,
         }),
+        ...(databaseSigkill ? { databaseSigkill } : {}),
       }),
     });
   } finally {

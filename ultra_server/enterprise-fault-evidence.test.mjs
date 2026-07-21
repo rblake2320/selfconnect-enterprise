@@ -24,6 +24,10 @@ function result() {
           fault: 'drop-and-rebuild-enterprise-authority-on-promoted-b', resumed: true,
           sameTargetSystemId: true, sameCredentialReceipt: true, rpo: 0, rtoMs: 23,
         },
+        databaseSigkill: {
+          fault: 'sigkill-exact-promoted-enterprise-postgres', resumed: true,
+          sameTargetSystemId: true, sameCredentialReceipt: true, rpo: 0, rtoMs: 31,
+        },
       },
     },
   };
