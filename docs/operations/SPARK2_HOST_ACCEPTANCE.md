@@ -105,7 +105,11 @@ databases and creates evidence with write-once file semantics.
 - the focused evidence validator passed `2/2`;
 - the full Ultra unit suite passed `61`, skipped `2` integration-only tests,
   and failed `0` on Spark-1;
-- the live cross-host lifecycle completed and produced the receipt above.
+- the live cross-host lifecycle completed and produced the receipt above;
+- negative control: with only the isolated Spark-2 PostgreSQL target stopped,
+  the live command exited nonzero and produced no evidence file;
+- after restart, Spark-2 returned with the same PostgreSQL system identifier
+  `7664860268000567330`.
 
 ## Boundary
 
