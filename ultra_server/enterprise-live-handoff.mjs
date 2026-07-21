@@ -342,6 +342,7 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
           sourceSecretDigest,
         },
         proof: composition.tsk.targetCredentialProof,
+        terminalRevocation: composition.tsk.targetCredentialRevocation,
       }],
     });
     const returnResolvers = Object.freeze({

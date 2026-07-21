@@ -13,7 +13,7 @@ function liveEvidence() {
     systems: {
       bpc: { sourceA: '1', promotedB: '2', control: '3' },
       tsk: { sourceA: '4', receiverB: '5', control: '6' },
-      enterprise: { source: '4', target: '5', failbackTarget: '4' },
+      enterprise: { source: '4', target: '5', failbackSource: '5', failbackTarget: '4' },
     },
     artifacts: {
       bpcPromotion: '1'.repeat(64), bpcFailback: '0'.repeat(64),
@@ -39,6 +39,7 @@ function liveEvidence() {
       enterpriseTargetClientId: 'target', copiedTargetCredentialRows: 0,
       redactionPreserved: true, dataLossRpo: 0,
       enterpriseFailbackCommandId: 'return-1', enterpriseFailbackSourceEpoch: 2,
+      enterpriseFailbackSourceClientId: 'target',
       enterpriseFailbackTargetClientId: 'return-target',
       enterpriseFailbackIdempotentRetry: true,
       enterpriseFailbackStaleBCompletionDenied: true,

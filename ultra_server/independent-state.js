@@ -7,6 +7,7 @@ import {
 import { verifyPromotionReadinessAttestation } from '@bpc/server';
 import { verifyBFinalizedReceipt, verifyLeaseGrant } from '@tsk/server';
 import {
+  verifyPromotedTskCredentialRevocation,
   verifyPromotedTskCredentialProof,
   verifySourceTskCredentialProof,
 } from './promoted-tsk-authority.js';
@@ -140,6 +141,21 @@ function strictKeys(value, allowed, name) {
 function requiredDigest(value, name) {
   if (typeof value !== 'string' || !DIGEST.test(value)) throw new Error(`${name} must be a SHA-256 digest`);
   return value;
+}
+
+function sourceLeaseRowMatches(row, lease) {
+  if (!row) return false;
+  return Number(row.lease_epoch) === lease.leaseEpoch &&
+    row.lease_status === lease.leaseStatus &&
+    row.holder_node_id === lease.holderNodeId &&
+    row.lease_id === lease.leaseId &&
+    row.command_id === lease.commandId &&
+    Number(row.lease_expires_at_ms) === lease.leaseExpiresAtMs &&
+    Number(row.lease_grant_seq) === lease.leaseGrantSeq &&
+    (row.prev_grant_digest ?? null) === (lease.prevGrantDigest ?? null) &&
+    row.grant_digest === lease.grantDigest &&
+    row.guard_key_id === lease.guardKeyId &&
+    row.guard_signature === lease.guardSignature;
 }
 
 export function loadIndependentStateRuntimeConfig(env, haConfig, runtimeMode) {
@@ -588,6 +604,8 @@ export async function exportIndependentState(pool, input) {
     protocolEvidence?.tskActivationLease?.grantDigest, 'tskActivationDigest',
   );
   const sourceKeyId = requiredIdentifier(input.sourceKeyId, 'sourceKeyId');
+  const advisoryLockKey = requiredIdentifier(input.advisoryLockKey, 'advisoryLockKey');
+  const sourcePrivateKey = requirePrivateEd25519(input.sourcePrivateKey, 'source signing key');
   const maxItems = positiveSafeInteger(input.maxItems ?? 100_000, 'maxItems');
   const maxBytes = positiveSafeInteger(input.maxBytes ?? 64 * 1024 * 1024, 'maxBytes');
   if (!Array.isArray(input.sourceCredentialProofs)) {
@@ -613,7 +631,7 @@ export async function exportIndependentState(pool, input) {
       ? 'source'
       : entry.proofKind;
     if (keys !== 'authorityCapability,expected,proof' &&
-        keys !== 'authorityCapability,expected,proof,proofKind') {
+        keys !== 'authorityCapability,expected,proof,proofKind,terminalRevocation') {
       throw new Error(`sourceCredentialProofs[${index}] has an invalid shape`);
     }
     if (proofKind !== 'source' && proofKind !== 'promoted') {
@@ -627,6 +645,11 @@ export async function exportIndependentState(pool, input) {
     }
     const proof = snapshotPlainData(entry.proof);
     const expected = snapshotPlainData(entry.expected);
+    const terminalRevocation = proofKind === 'promoted'
+      ? verifyPromotedTskCredentialRevocation(
+        entry.authorityCapability, entry.terminalRevocation, commandId,
+      )
+      : null;
     const verification = proofKind === 'source'
       ? verifySourceTskCredentialProof(entry.authorityCapability, proof, expected)
       : verifyPromotedTskCredentialProof(entry.authorityCapability, proof, expected);
@@ -635,6 +658,7 @@ export async function exportIndependentState(pool, input) {
       proof,
       proofKind,
       provenance: expected,
+      terminalRevocation,
       sourceClientId: proofKind === 'source'
         ? verified.sourceClientId : verified.targetClientId,
     }));
@@ -648,7 +672,7 @@ export async function exportIndependentState(pool, input) {
     verifiedSourceCredentialByPair.set(verified.pairId, verified);
   }
   return withSerializable(pool, async (client) => {
-    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [input.advisoryLockKey]);
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [advisoryLockKey]);
     const processing = await client.query("SELECT COUNT(*)::int AS count FROM ultra_idempotency WHERE state='processing'");
     if (processing.rows[0].count !== 0) throw new Error('cannot export while idempotency work is processing');
     await client.query('DELETE FROM ultra_nonce_tombstones WHERE expires_at <= clock_timestamp()');
@@ -683,6 +707,26 @@ export async function exportIndependentState(pool, input) {
             !DIGEST.test(lineage.receipt_digest ?? '') ||
             canonicalJson(lineage.target_proof) !== canonicalJson(verified.proof)) {
           throw new Error('promoted source TSK credential lacks completed Enterprise lineage');
+        }
+        const revocation = verified.terminalRevocation.revocation;
+        const leaseColumns = `lease_epoch,lease_status,holder_node_id,lease_id,command_id,
+          lease_expires_at_ms,lease_grant_seq,prev_grant_digest,grant_digest,guard_key_id,guard_signature`;
+        const currentLease = (await client.query(
+          `SELECT ${leaseColumns} FROM tsk_source_lease
+            WHERE stream_id=$1 FOR SHARE`,
+          [revocation.streamId],
+        )).rows[0];
+        const history = (await client.query(
+          `SELECT ${leaseColumns} FROM tsk_source_lease_history
+            WHERE stream_id=$1 AND lease_grant_seq IN ($2,$3)
+            ORDER BY lease_grant_seq ASC`,
+          [revocation.streamId, revocation.leaseGrantSeq - 1, revocation.leaseGrantSeq],
+        )).rows;
+        if (!currentLease || history.length !== 2 ||
+            !sourceLeaseRowMatches(history[0], verified.proof.activationLease) ||
+            !sourceLeaseRowMatches(history[1], revocation) ||
+            !sourceLeaseRowMatches(currentLease, revocation)) {
+          throw new Error('promoted source TSK credential lacks exact terminal revocation');
         }
       }
       credentialBindings.push({
@@ -752,7 +796,7 @@ export async function exportIndependentState(pool, input) {
       protocolEvidence,
       sourceKeyId,
       sourceSignature: signDigest(
-        input.sourcePrivateKey, manifestDigest, 'selfconnect-ultra-independent-source-v1', sourceKeyId,
+        sourcePrivateKey, manifestDigest, 'selfconnect-ultra-independent-source-v1', sourceKeyId,
       ),
     };
   });

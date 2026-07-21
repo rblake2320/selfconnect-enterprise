@@ -158,6 +158,45 @@ export function createPromotedTskAuthorityCapability(configuration) {
   return capability;
 }
 
+/**
+ * Verify the exact terminal lease transition that freezes a promoted
+ * credential authority for read-only export. The revocation must be the next
+ * signed state after the configured active grant and must preserve the
+ * stream/epoch/holder/lease identity while binding the failback command.
+ */
+export function verifyPromotedTskCredentialRevocation(
+  capability, candidate, expectedCommandId,
+) {
+  const authority = requireCapability(capability);
+  const revocation = snapshot(candidate, 'credential terminal revocation');
+  assertLeaseShape(revocation, 'credential terminal revocation');
+  identifier(expectedCommandId, 'expected revocation commandId');
+  verifyLeaseGrant(authority.leaseResolver, revocation);
+  const active = authority.activationLease;
+  if (revocation.leaseStatus !== 'revoked' ||
+      revocation.commandId !== expectedCommandId ||
+      revocation.streamId !== active.streamId ||
+      revocation.leaseEpoch !== active.leaseEpoch ||
+      revocation.holderNodeId !== active.holderNodeId ||
+      revocation.leaseId !== active.leaseId ||
+      revocation.leaseExpiresAtMs !== active.leaseExpiresAtMs ||
+      revocation.leaseGrantSeq !== active.leaseGrantSeq + 1 ||
+      revocation.prevGrantDigest !== active.grantDigest) {
+    throw new Error('credential terminal revocation does not continue the active authority');
+  }
+  return Object.freeze({
+    activeGrantDigest: active.grantDigest,
+    commandId: revocation.commandId,
+    grantDigest: revocation.grantDigest,
+    holderNodeId: revocation.holderNodeId,
+    leaseEpoch: revocation.leaseEpoch,
+    leaseGrantSeq: revocation.leaseGrantSeq,
+    leaseId: revocation.leaseId,
+    revocation,
+    streamId: revocation.streamId,
+  });
+}
+
 function requireCapability(capability) {
   const state = CAPABILITIES.get(capability);
   if (!state) throw new Error('invalid promoted TSK authority capability');

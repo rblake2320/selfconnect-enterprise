@@ -22,6 +22,7 @@ function publicEvidence(result) {
       enterprise: {
         source: result.enterprise.sourceSystemId,
         target: result.enterprise.targetSystemId,
+        failbackSource: result.enterprise.failback.sourceSystemId,
         failbackTarget: result.enterprise.failback.targetSystemId,
       },
     },
@@ -60,6 +61,7 @@ function publicEvidence(result) {
       dataLossRpo: result.enterprise.rpo,
       enterpriseFailbackCommandId: result.enterprise.failback.commandId,
       enterpriseFailbackSourceEpoch: result.enterprise.failback.sourceEpoch,
+      enterpriseFailbackSourceClientId: result.enterprise.failback.sourceClientId,
       enterpriseFailbackTargetClientId: result.enterprise.failback.targetClientId,
       enterpriseFailbackIdempotentRetry: result.enterprise.failback.idempotentRetry,
       enterpriseFailbackStaleBCompletionDenied:
@@ -101,6 +103,8 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
   assert.equal(new Set(Object.values(evidence.systems.bpc)).size, 3);
   assert.equal(new Set(Object.values(evidence.systems.tsk)).size, 3);
   assert.equal(evidence.systems.enterprise.target, evidence.systems.tsk.receiverB);
+  assert.equal(evidence.systems.enterprise.failbackSource,
+    evidence.systems.enterprise.target);
   assert.equal(evidence.systems.enterprise.failbackTarget,
     evidence.systems.enterprise.source);
   assert.notEqual(evidence.systems.enterprise.source, evidence.systems.enterprise.target);
@@ -131,6 +135,10 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
     evidence.outcomes.tskReturnCommandId);
   assert.equal(evidence.outcomes.enterpriseFailbackSourceEpoch,
     evidence.tskReturnAuthority.targetEpoch);
+  assert.equal(evidence.outcomes.enterpriseFailbackSourceClientId,
+    evidence.outcomes.enterpriseTargetClientId);
+  assert.notEqual(evidence.outcomes.enterpriseFailbackTargetClientId,
+    evidence.outcomes.enterpriseFailbackSourceClientId);
   assert.equal(evidence.outcomes.enterpriseFailbackIdempotentRetry, true);
   assert.equal(evidence.outcomes.enterpriseFailbackStaleBCompletionDenied, true);
   assert.equal(evidence.outcomes.enterpriseFailbackStaleBProtocolWriterDenied, true);
