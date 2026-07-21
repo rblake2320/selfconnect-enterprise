@@ -52,7 +52,7 @@ export const ACCEPTANCE_STEPS = Object.freeze([
   }),
   Object.freeze({
     id: 'enterprise-authenticated-outbox', component: 'selfconnect-enterprise',
-    cwd: HERE, args: ['run', 'test:ultra-outbox'], markers: ['# fail 0'],
+    cwd: HERE, args: ['run', 'test:ultra-outbox'], markers: ['fail 0'],
   }),
   Object.freeze({
     id: 'tsk-redis-sentinel-crash', component: 'tsk-protocol',
