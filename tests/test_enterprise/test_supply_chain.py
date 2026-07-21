@@ -268,25 +268,41 @@ class TestDependencyAudit:
 
     # Direct dependencies declared in pyproject.toml
     DIRECT_DEPS = {"cryptography", "selfconnect"}
+    PIP_AUDIT_TIMEOUT_SECONDS = 120
+    _pip_audit_cache: tuple[int, list] | None = None
 
     def _run_pip_audit(self) -> tuple[int, list]:
-        """Run pip-audit --local and return (returncode, dependencies_list)."""
-        result = subprocess.run(
-            [sys.executable, "-m", "pip_audit", "--local", "--format", "json"],
-            capture_output=True,
-            text=True,
-        )
+        """Run one bounded pip-audit and share its result across both checks."""
+        cached = type(self)._pip_audit_cache
+        if cached is not None:
+            return cached
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pip_audit", "--local", "--format", "json"],
+                capture_output=True,
+                text=True,
+                timeout=self.PIP_AUDIT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            outcome = (124, [])
+            type(self)._pip_audit_cache = outcome
+            return outcome
         if result.returncode not in (0, 1):
-            return result.returncode, []
+            outcome = (result.returncode, [])
+            type(self)._pip_audit_cache = outcome
+            return outcome
         import json as _json
         try:
             data = _json.loads(result.stdout)
             dependencies = data.get("dependencies")
             if not isinstance(dependencies, list):
-                return 2, []
-            return result.returncode, dependencies
+                outcome = (2, [])
+            else:
+                outcome = (result.returncode, dependencies)
         except (_json.JSONDecodeError, AttributeError):
-            return 2, []
+            outcome = (2, [])
+        type(self)._pip_audit_cache = outcome
+        return outcome
 
     def test_direct_deps_no_known_cves(self):
         """HARD GATE: direct dependencies (cryptography, selfconnect) must have
@@ -300,7 +316,8 @@ class TestDependencyAudit:
         if returncode not in (0, 1):
             pytest.fail(
                 "pip-audit hard gate did not produce a valid audit result; "
-                "install pip-audit and correct the scanner failure"
+                f"install pip-audit and correct the scanner failure (exit={returncode}, "
+                f"timeout={self.PIP_AUDIT_TIMEOUT_SECONDS}s)"
             )
 
         findings = [
@@ -355,3 +372,23 @@ class TestDependencyAudit:
         assert "PIP-AUDIT" in captured.out, (
             "Informational audit produced no output — reporting code did not execute"
         )
+
+
+class TestDependencyAuditRunner:
+    def test_timeout_fails_closed_and_result_is_cached(self, monkeypatch):
+        calls = 0
+
+        def timeout(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+        monkeypatch.setattr(subprocess, "run", timeout)
+        TestDependencyAudit._pip_audit_cache = None
+        try:
+            runner = TestDependencyAudit()
+            assert runner._run_pip_audit() == (124, [])
+            assert runner._run_pip_audit() == (124, [])
+            assert calls == 1
+        finally:
+            TestDependencyAudit._pip_audit_cache = None
