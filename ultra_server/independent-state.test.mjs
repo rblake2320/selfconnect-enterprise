@@ -147,6 +147,7 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
   const pairId = `pair-${suffix}`;
   const safeKey = randomUUID();
   const secretKey = randomUUID();
+  const forgedRedactionKey = randomUUID();
   const processingKey = randomUUID();
   const lockKey = `ultra-ha:${clusterId}:transition`;
   const nonceHash = createHash('sha256').update(`nonce-${suffix}`, 'utf8').digest('hex');
@@ -193,9 +194,13 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     );
     await a.query(
       `INSERT INTO ultra_idempotency (idempotency_key, operation, agent_id, state, response)
-       VALUES ($1,'safe-op',$3,'complete',$2::jsonb),($4,'secret-op',$3,'complete',$5::jsonb)`,
+       VALUES ($1,'safe-op',$3,'complete',$2::jsonb),
+              ($4,'secret-op',$3,'complete',$5::jsonb),
+              ($6,'forged-redaction-op',$3,'complete',$7::jsonb)`,
       [safeKey, JSON.stringify({ ok: true, pairId }), `agent-${suffix}`, secretKey,
-       JSON.stringify({ ok: true, sharedSecret: 'must-not-cross-sites' })],
+       JSON.stringify({ ok: true, sharedSecret: 'must-not-cross-sites' }), forgedRedactionKey,
+       JSON.stringify({ ok: false, error: 'SECRET_REPROVISION_REQUIRED',
+         originalResponseDigest: 'a'.repeat(64) })],
     );
     const nonceA = new PgNonceTombstoneStore(a);
     assert.equal(await nonceA.checkAndConsume(`nonce-${suffix}`, 120_000), false);
@@ -227,6 +232,11 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     assert.equal(sourceBundle.manifest.state.idempotency.find(
       (item) => item.idempotencyKey === secretKey,
     ).secretReprovisionRequired, true);
+    const forgedRedaction = sourceBundle.manifest.state.idempotency.find(
+      (item) => item.idempotencyKey === forgedRedactionKey,
+    );
+    assert.equal(forgedRedaction.secretReprovisionRequired, false);
+    assert.equal(forgedRedaction.redactionProvenance, null);
     const bundle = guardCountersignIndependentState(sourceBundle, {
       expectedCommandId: commandId,
       sourcePublicKey: source.publicKey,
@@ -519,8 +529,8 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
         [sourceMap?.clientId ?? '', targetMap?.clientId ?? '', failbackMap?.clientId ?? ''],
       ).catch(() => {});
       await pool.query(
-        'DELETE FROM ultra_idempotency WHERE idempotency_key IN ($1,$2,$3)',
-        [safeKey, secretKey, processingKey],
+        'DELETE FROM ultra_idempotency WHERE idempotency_key IN ($1,$2,$3,$4)',
+        [safeKey, secretKey, processingKey, forgedRedactionKey],
       ).catch(() => {});
       await pool.query('DELETE FROM ultra_nonce_tombstones WHERE nonce_hash=$1', [nonceHash]).catch(() => {});
       await pool.end();

@@ -16,6 +16,7 @@ const INDEPENDENT_STATE_TABLES = Object.freeze([
   'ultra_tumbler_maps',
   'ultra_identity_bindings',
   'ultra_idempotency',
+  'ultra_idempotency_redaction',
   'ultra_nonce_tombstones',
   'ultra_ha_import_head',
   'ultra_ha_tsk_reprovision',
@@ -26,7 +27,7 @@ const INDEPENDENT_STATE_LOCK_LIST = INDEPENDENT_STATE_TABLES.join(', ');
 // There is deliberately no environment override: changing the authority schema requires a
 // reviewed source change and a new pin.
 export const ULTRA_INDEPENDENT_STATE_MANIFEST_DIGEST =
-  'c980e16b9369541f20f9e340f49c2cc701c1923c9fe1c9c77c22a26f76b23d3b';
+  '0e96069d68fea5e6a92b5cc381f8cc273b8f6324ebf7da56b4be5367652ae72f';
 
 export const ULTRA_INDEPENDENT_STATE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS ultra_nonce_tombstones (
@@ -35,6 +36,17 @@ CREATE TABLE IF NOT EXISTS ultra_nonce_tombstones (
 );
 CREATE INDEX IF NOT EXISTS ultra_nonce_tombstones_expiry_idx
   ON ultra_nonce_tombstones (expires_at);
+
+CREATE TABLE IF NOT EXISTS ultra_idempotency_redaction (
+  idempotency_key UUID PRIMARY KEY REFERENCES ultra_idempotency(idempotency_key) ON DELETE CASCADE,
+  original_response_digest TEXT NOT NULL CHECK (original_response_digest ~ '^[0-9a-f]{64}$'),
+  source_manifest_digest TEXT NOT NULL CHECK (source_manifest_digest ~ '^[0-9a-f]{64}$'),
+  source_system_id TEXT NOT NULL,
+  command_id TEXT NOT NULL,
+  source_epoch BIGINT NOT NULL CHECK (source_epoch >= 1),
+  source_signature_digest TEXT NOT NULL CHECK (source_signature_digest ~ '^[0-9a-f]{64}$'),
+  guard_signature_digest TEXT NOT NULL CHECK (guard_signature_digest ~ '^[0-9a-f]{64}$')
+);
 
 CREATE TABLE IF NOT EXISTS ultra_ha_import_head (
   cluster_id TEXT PRIMARY KEY,
@@ -241,19 +253,50 @@ export class PgNonceTombstoneStore {
   }
 }
 
+function redactionProvenance(row) {
+  if (row.original_response_digest === null || row.original_response_digest === undefined) return null;
+  return {
+    commandId: row.redaction_command_id,
+    guardSignatureDigest: row.guard_signature_digest,
+    sourceEpoch: Number(row.redaction_source_epoch),
+    sourceManifestDigest: row.source_manifest_digest,
+    sourceSignatureDigest: row.source_signature_digest,
+    sourceSystemId: row.redaction_source_system_id,
+  };
+}
+
+function isRedactionPlaceholder(response, responseDigest) {
+  const keys = response && typeof response === 'object' && !Array.isArray(response)
+    ? Object.keys(response).sort() : [];
+  return keys.join(',') === 'error,ok,originalResponseDigest' &&
+    response.ok === false && response.error === 'SECRET_REPROVISION_REQUIRED' &&
+    response.originalResponseDigest === responseDigest;
+}
+
 function snapshotFromRows({ bindings, idempotency, nonces }) {
   const safeIdempotency = idempotency.map((row) => {
-    // A previously imported secret placeholder must remain the same redacted
-    // authority record when that site later becomes the source for failback.
-    // Re-hashing the placeholder itself would fork the authority digest.
-    const priorRedaction = targetIdempotencyRecord(row);
-    if (priorRedaction.secretReprovisionRequired) return priorRedaction;
     const response = typeof row.response === 'string' ? JSON.parse(row.response) : row.response;
+    const provenance = redactionProvenance(row);
+    if (provenance) {
+      if (!isRedactionPlaceholder(response, row.original_response_digest)) {
+        throw new Error('redaction placeholder does not match durable import provenance');
+      }
+      return {
+        agentId: row.agent_id,
+        idempotencyKey: row.idempotency_key,
+        operation: row.operation,
+        redactionProvenance: provenance,
+        response: null,
+        responseDigest: row.original_response_digest,
+        secretReprovisionRequired: true,
+      };
+    }
     const sensitive = containsSecret(response);
     return {
       agentId: row.agent_id,
       idempotencyKey: row.idempotency_key,
       operation: row.operation,
+      redactionProvenance: null,
       response: sensitive ? null : response,
       responseDigest: digest(response),
       secretReprovisionRequired: sensitive,
@@ -275,17 +318,18 @@ function snapshotFromRows({ bindings, idempotency, nonces }) {
 
 function targetIdempotencyRecord(row) {
   const response = typeof row.response === 'string' ? JSON.parse(row.response) : row.response;
-  const keys = response && typeof response === 'object' && !Array.isArray(response)
-    ? Object.keys(response).sort() : [];
-  if (keys.join(',') === 'error,ok,originalResponseDigest' &&
-      response.ok === false && response.error === 'SECRET_REPROVISION_REQUIRED' &&
-      DIGEST.test(response.originalResponseDigest)) {
+  const provenance = redactionProvenance(row);
+  if (provenance) {
+    if (!isRedactionPlaceholder(response, row.original_response_digest)) {
+      throw new Error('redaction placeholder does not match durable import provenance');
+    }
     return {
       agentId: row.agent_id,
       idempotencyKey: row.idempotency_key,
       operation: row.operation,
+      redactionProvenance: provenance,
       response: null,
-      responseDigest: response.originalResponseDigest,
+      responseDigest: row.original_response_digest,
       secretReprovisionRequired: true,
     };
   }
@@ -293,6 +337,7 @@ function targetIdempotencyRecord(row) {
     agentId: row.agent_id,
     idempotencyKey: row.idempotency_key,
     operation: row.operation,
+    redactionProvenance: null,
     response,
     responseDigest: digest(response),
     secretReprovisionRequired: false,
@@ -304,7 +349,15 @@ async function readTargetAuthorityState(exec) {
     'SELECT pair_id, tsk_client_id, agent_id FROM ultra_identity_bindings ORDER BY pair_id COLLATE "C"',
   );
   const idempotency = await exec.query(
-    "SELECT idempotency_key::text, operation, agent_id, response FROM ultra_idempotency WHERE state='complete' ORDER BY idempotency_key::text COLLATE \"C\"",
+    `SELECT i.idempotency_key::text, i.operation, i.agent_id, i.response,
+            r.original_response_digest, r.source_manifest_digest,
+            r.source_system_id AS redaction_source_system_id,
+            r.command_id AS redaction_command_id, r.source_epoch AS redaction_source_epoch,
+            r.source_signature_digest, r.guard_signature_digest
+       FROM ultra_idempotency i
+       LEFT JOIN ultra_idempotency_redaction r USING (idempotency_key)
+      WHERE i.state='complete'
+      ORDER BY i.idempotency_key::text COLLATE "C"`,
   );
   const identityBindings = bindings.rows.map((row) => ({
       agentId: row.agent_id, pairId: row.pair_id, tskClientId: row.tsk_client_id,
@@ -486,7 +539,15 @@ export async function exportIndependentState(pool, input) {
       });
     }
     const idempotency = await client.query(
-      "SELECT idempotency_key::text, operation, agent_id, response FROM ultra_idempotency WHERE state='complete' ORDER BY idempotency_key::text COLLATE \"C\"",
+      `SELECT i.idempotency_key::text, i.operation, i.agent_id, i.response,
+              r.original_response_digest, r.source_manifest_digest,
+              r.source_system_id AS redaction_source_system_id,
+              r.command_id AS redaction_command_id, r.source_epoch AS redaction_source_epoch,
+              r.source_signature_digest, r.guard_signature_digest
+         FROM ultra_idempotency i
+         LEFT JOIN ultra_idempotency_redaction r USING (idempotency_key)
+        WHERE i.state='complete'
+        ORDER BY i.idempotency_key::text COLLATE "C"`,
     );
     const nonces = await client.query(
       'SELECT nonce_hash, expires_at FROM ultra_nonce_tombstones ORDER BY nonce_hash COLLATE "C"',
@@ -644,7 +705,7 @@ function validateState(state) {
   for (const item of state.idempotency) {
     strictKeys(item, new Set([
       'agentId', 'idempotencyKey', 'operation', 'response', 'responseDigest',
-      'secretReprovisionRequired',
+      'redactionProvenance', 'secretReprovisionRequired',
     ]), 'idempotency record');
     requiredIdentifier(item.agentId, 'idempotency.agentId');
     requiredIdentifier(item.idempotencyKey, 'idempotency.idempotencyKey');
@@ -654,6 +715,19 @@ function validateState(state) {
     }
     if (item.secretReprovisionRequired ? item.response !== null : digest(item.response) !== item.responseDigest) {
       throw new Error('idempotency response digest mismatch');
+    }
+    if (item.redactionProvenance !== null) {
+      strictKeys(item.redactionProvenance, new Set([
+        'commandId', 'guardSignatureDigest', 'sourceEpoch', 'sourceManifestDigest',
+        'sourceSignatureDigest', 'sourceSystemId',
+      ]), 'redaction provenance');
+      requiredIdentifier(item.redactionProvenance.commandId, 'redactionProvenance.commandId');
+      requiredIdentifier(item.redactionProvenance.sourceSystemId, 'redactionProvenance.sourceSystemId');
+      positiveSafeInteger(item.redactionProvenance.sourceEpoch, 'redactionProvenance.sourceEpoch');
+      requiredDigest(item.redactionProvenance.sourceManifestDigest, 'redactionProvenance.sourceManifestDigest');
+      requiredDigest(item.redactionProvenance.sourceSignatureDigest, 'redactionProvenance.sourceSignatureDigest');
+      requiredDigest(item.redactionProvenance.guardSignatureDigest, 'redactionProvenance.guardSignatureDigest');
+      if (!item.secretReprovisionRequired) throw new Error('redaction provenance requires a redacted record');
     }
   }
   for (const nonce of state.nonceTombstones) {
@@ -792,6 +866,19 @@ export async function importIndependentState(pool, bundle, input) {
          VALUES ($1,$2,$3,'complete',$4::jsonb)`,
         [item.idempotencyKey, item.operation, item.agentId, JSON.stringify(response)],
       );
+      if (item.secretReprovisionRequired) {
+        await client.query(
+          `INSERT INTO ultra_idempotency_redaction
+             (idempotency_key, original_response_digest, source_manifest_digest,
+              source_system_id, command_id, source_epoch,
+              source_signature_digest, guard_signature_digest)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [item.idempotencyKey, item.responseDigest, bundle.manifestDigest,
+           manifest.sourceSystemId, manifest.commandId, manifest.sourceEpoch,
+           createHash('sha256').update(bundle.sourceSignature, 'utf8').digest('hex'),
+           createHash('sha256').update(bundle.guardSignature, 'utf8').digest('hex')],
+        );
+      }
     }
     for (const item of manifest.state.nonceTombstones) {
       await client.query(
@@ -821,6 +908,11 @@ export async function importIndependentState(pool, bundle, input) {
         [manifest.clusterId, item.pairId, item.agentId, item.sourceClientId],
       );
     }
+    const importedAuthorityDigest = digest(await readTargetAuthorityState(client));
+    await client.query(
+      'UPDATE ultra_ha_import_head SET authority_digest=$2 WHERE cluster_id=$1',
+      [manifest.clusterId, importedAuthorityDigest],
+    );
     return { idempotent: false, manifestDigest: bundle.manifestDigest, targetSystemId };
   });
 }
