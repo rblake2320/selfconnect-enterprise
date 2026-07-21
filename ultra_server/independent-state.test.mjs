@@ -25,6 +25,13 @@ if (!urlA || !urlB) throw new Error(
   'ULTRA_TEST_POSTGRES_URL_A and ULTRA_TEST_POSTGRES_URL_B are required (this drill never skips)',
 );
 
+async function resetUltraAuthority(pool) {
+  await pool.query(`DROP TABLE IF EXISTS
+    ultra_idempotency_redaction,ultra_ha_tsk_reprovision,ultra_ha_import_head,
+    ultra_nonce_tombstones,ultra_idempotency,ultra_identity_bindings,
+    ultra_tumbler_maps CASCADE`);
+}
+
 test('compiled catalog attestation rejects independent-state schema drift', async () => {
   const a = new Pool({ connectionString: urlA });
   const b = new Pool({ connectionString: urlB });
@@ -156,6 +163,7 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
   let targetMap;
   let failbackMap;
   try {
+    await Promise.all([resetUltraAuthority(a), resetUltraAuthority(b)]);
     await initializePgSchemas(a, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA);
     await initializePgSchemas(b, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA);
     const [systemA, systemB] = await Promise.all([
