@@ -13,6 +13,7 @@ const { Pool } = pg;
 const DEFAULT_STREAM_ID = 'bpc:enterprise:live/v1';
 const SOURCE_EPOCH_A = 'bpc-enterprise-epoch-1';
 const SOURCE_EPOCH_B = 'bpc-enterprise-epoch-2';
+const SOURCE_EPOCH_A_FAILBACK = 'bpc-enterprise-epoch-3';
 const RUNTIME_ROLE = 'bpc_runtime_enterprise28';
 const KEY_IDS = Object.freeze({
   guard: 'guard-enterprise-v1',
@@ -99,6 +100,28 @@ function runtimeUrl(base, password) {
   value.username = RUNTIME_ROLE;
   value.password = password;
   return value.toString();
+}
+
+function databaseUrl(base, database) {
+  const value = new URL(base);
+  value.pathname = `/${database}`;
+  return value.toString();
+}
+
+async function createIsolatedDatabase(pool, database) {
+  if (!/^[a-z][a-z0-9_]{0,62}$/.test(database)) {
+    throw new TypeError('isolated database name is invalid');
+  }
+  await pool.query(`CREATE DATABASE "${database}" TEMPLATE template0`);
+}
+
+async function dropIsolatedDatabase(pool, database) {
+  if (!/^[a-z][a-z0-9_]{0,62}$/.test(database)) return;
+  await pool.query(
+    'SELECT pg_catalog.pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity WHERE datname=$1 AND pid<>pg_catalog.pg_backend_pid()',
+    [database],
+  );
+  await pool.query(`DROP DATABASE IF EXISTS "${database}"`);
 }
 
 async function recreateRuntimeRole(pool, password) {
@@ -190,6 +213,8 @@ export async function runBpcLiveComposition(options) {
     return client;
   });
   const runtimePools = [];
+  const isolatedPools = [];
+  const failbackDatabase = `bpc_failback_${randomBytes(8).toString('hex')}`;
   const sealKey = randomBytes(32);
   const mutationSecret = randomBytes(32);
   const runtimePassword = randomBytes(24).toString('hex');
@@ -440,12 +465,27 @@ export async function runBpcLiveComposition(options) {
       holderNodeId: 'node-b',
       leaseId: 'lease-b',
       commandId: 'grant-b',
-      expiresAtMs: Date.now() + 60_000,
+      expiresAtMs: Date.now() + 6_000,
       maxTransactionDurationMs: dbRuntimeB.maxTransactionDurationMs,
       grantSeq: 1,
       prevDigest: null,
     });
-    await dbB.transaction((exec) => bpc.installSourceLeaseGrant(exec, resolver, grantB));
+    const grantBControl = bpc.signSourceLeaseGrant(KEY_IDS.guard, guardPrivate, {
+      streamId: grantB.streamId,
+      epoch: grantB.epoch,
+      status: grantB.status,
+      holderNodeId: grantB.holderNodeId,
+      leaseId: grantB.leaseId,
+      commandId: grantB.commandId,
+      expiresAtMs: grantB.expiresAtMs,
+      maxTransactionDurationMs: grantB.maxTransactionDurationMs,
+      grantSeq: 3,
+      prevDigest: revokedA.grantDigest,
+    });
+    await Promise.all([
+      dbB.transaction((exec) => bpc.installSourceLeaseGrant(exec, resolver, grantB)),
+      dbControl.transaction((exec) => bpc.installSourceLeaseGrant(exec, resolver, grantBControl)),
+    ]);
     await bpc.promoteReceiverToSource(
       dbB, resolver, snapshot, bpc.bpcPairMutationSanitizer,
       2, SOURCE_EPOCH_B, resolver, fenced,
@@ -484,12 +524,17 @@ export async function runBpcLiveComposition(options) {
       { streamId, fenceToken: 2n, keyring, maxPendingRows: 100 },
       sourceFenceB,
     );
+    // The promoted epoch must carry a complete replayable state transition for
+    // a later failback. Delete the inherited epoch-1 state, then originate the
+    // epoch-2 state; replaying this epoch from an empty receiver reconstructs
+    // the exact authoritative state rather than relying on an implicit base.
+    await storeB.delete('enterprise-pair-1');
     await storeB.set(pair(2));
     const promotedEpochSequence = Number((await poolB.query(
       'SELECT sequence FROM ha_outbox_source_checkpoint WHERE stream_id=$1',
       [streamId],
     )).rows[0]?.sequence);
-    assert.equal(promotedEpochSequence, 1, 'promoted B did not originate its first mutation');
+    assert.equal(promotedEpochSequence, 2, 'promoted B did not originate its complete epoch state');
 
     let staleWriterDenied = false;
     try {
@@ -502,6 +547,204 @@ export async function runBpcLiveComposition(options) {
       "SELECT count(*)::int AS value FROM bpc_pairs WHERE id='enterprise-pair-3'",
     )).rows[0]?.value), 0, 'stale source mutation reached A');
 
+    // Governed B -> A failback. B is frozen and its signed epoch-2 history is
+    // replayed into a fresh isolated database on the same A PostgreSQL system.
+    // Neither the old A database nor the live B authority is reset.
+    const revokedB = bpc.signSourceLeaseGrant(KEY_IDS.guard, guardPrivate, {
+      streamId,
+      epoch: 2,
+      status: 'revoked',
+      holderNodeId: 'node-b',
+      leaseId: 'lease-b',
+      commandId: 'revoke-b-for-failback',
+      expiresAtMs: grantB.expiresAtMs,
+      maxTransactionDurationMs: grantB.maxTransactionDurationMs,
+      grantSeq: 2,
+      prevDigest: grantB.grantDigest,
+    });
+    const revokedBControl = bpc.signSourceLeaseGrant(KEY_IDS.guard, guardPrivate, {
+      streamId,
+      epoch: 2,
+      status: 'revoked',
+      holderNodeId: 'node-b',
+      leaseId: 'lease-b',
+      commandId: 'revoke-b-for-failback',
+      expiresAtMs: grantBControl.expiresAtMs,
+      maxTransactionDurationMs: grantBControl.maxTransactionDurationMs,
+      grantSeq: 4,
+      prevDigest: grantBControl.grantDigest,
+    });
+    await Promise.all([
+      dbB.transaction((exec) => bpc.installSourceLeaseGrant(exec, resolver, revokedB)),
+      dbControl.transaction((exec) => bpc.installSourceLeaseGrant(exec, resolver, revokedBControl)),
+    ]);
+    const snapshotB = await bpc.buildPairSnapshotBundle(
+      dbB, streamId, promotedEpochSequence, KEY_IDS.source, sourcePrivate,
+    );
+
+    await createIsolatedDatabase(poolA, failbackDatabase);
+    const failbackOwnerPool = makePool(databaseUrl(postgresUrls[0], failbackDatabase));
+    isolatedPools.push(failbackOwnerPool);
+    await resetAuthority(failbackOwnerPool, bpc);
+    const dbFailbackOwner = new bpc.NodePostgresTransactor(failbackOwnerPool);
+    await Promise.all([
+      bpc.provisionSchemaVersion(dbFailbackOwner, 'public'),
+      bpc.provisionBpcHaSchema(dbFailbackOwner),
+    ]);
+    await failbackOwnerPool.query(
+      'INSERT INTO bpc_ha.mutation_ticket_key(key_id,secret) VALUES($1,$2)',
+      [KEY_IDS.mutation, mutationSecret],
+    );
+    await bpc.provisionBpcRuntimeMutationBoundary(
+      dbFailbackOwner, RUNTIME_ROLE, KEY_IDS.mutation, mutationSecret,
+    );
+    const failbackRuntimePool = makePool(runtimeUrl(
+      databaseUrl(postgresUrls[0], failbackDatabase), runtimePassword,
+    ));
+    runtimePools.push(failbackRuntimePool);
+    const dbFailbackRuntime = new bpc.NodePostgresTransactor(failbackRuntimePool, {
+      statementTimeoutMs: 350,
+      transactionTimeoutMs: 500,
+    });
+    const [readyFailbackRuntime, haReadyFailbackRuntime] = await Promise.all([
+      bpc.assertSchemaReady(dbFailbackRuntime, 'public'),
+      bpc.assertBpcHaSchemaReady(dbFailbackRuntime),
+    ]);
+    assert.equal(await systemId(failbackOwnerPool), idA, 'failback authority left the A PostgreSQL system');
+    await Promise.all([
+      failbackOwnerPool.query(
+        'INSERT INTO ha_outbox_fence(stream_id,fence_token) VALUES($1,1)', [streamId],
+      ),
+      failbackOwnerPool.query(
+        'INSERT INTO ha_outbox_receiver_checkpoint(stream_id,source_epoch,sequence) VALUES($1,$2,0)',
+        [streamId, SOURCE_EPOCH_B],
+      ),
+    ]);
+    const failbackApplier = new bpc.PgPairMutationApplier(streamId, keyring);
+    await bpc.importPairSnapshotBundle(
+      dbFailbackOwner, resolver, snapshotB, bpc.bpcPairMutationSanitizer, failbackApplier,
+    );
+
+    const failbackCommandId = `${commandId}-failback`;
+    const redisA3 = bpc.signRedisFenceRecord(KEY_IDS.guard, guardPrivate, {
+      streamId,
+      epoch: 3,
+      nodeId: 'node-a',
+      authoritySystemId: idA,
+      nodeCredentialKeyId: KEY_IDS.nodeA,
+      commandId: failbackCommandId,
+      claimedAtMs: Date.now(),
+    });
+    await controller.begin({
+      streamId,
+      commandId: failbackCommandId,
+      previousEpoch: 2,
+      targetEpoch: 3,
+      targetNodeId: 'node-a',
+      targetSourceEpoch: SOURCE_EPOCH_A_FAILBACK,
+      manifestDigest: bpc.pairSnapshotManifestDigest(snapshotB.manifest),
+      finalSourceSequence: snapshotB.manifest.finalSequence,
+      stateDigest: snapshotB.manifest.stateDigest,
+      redisClaimDigest: bpc.redisFenceRecordDigest(redisA3),
+      oldLeaseDigest: revokedBControl.grantDigest,
+      oldLeaseExpiresAtMs: revokedBControl.expiresAtMs,
+      sourceTransactionWindowMs: revokedBControl.maxTransactionDurationMs,
+    });
+    assert.equal(await fenceStore.claim(redisA3), true, 'BPC epoch-3 failback quorum claim failed');
+    const failbackFenceReadyAt = revokedBControl.expiresAtMs + 25
+      + revokedBControl.maxTransactionDurationMs;
+    if (Date.now() <= failbackFenceReadyAt) {
+      await new Promise((resolve) => setTimeout(resolve, failbackFenceReadyAt - Date.now() + 20));
+    }
+    const failbackFenced = await controller.markFenced(failbackCommandId, fenceStore);
+    const grantA3 = bpc.signSourceLeaseGrant(KEY_IDS.guard, guardPrivate, {
+      streamId,
+      epoch: 3,
+      status: 'active',
+      holderNodeId: 'node-a',
+      leaseId: 'lease-a-epoch-3',
+      commandId: failbackCommandId,
+      expiresAtMs: Date.now() + 60_000,
+      maxTransactionDurationMs: dbFailbackRuntime.maxTransactionDurationMs,
+      grantSeq: 1,
+      prevDigest: null,
+    });
+    const grantA3Control = bpc.signSourceLeaseGrant(KEY_IDS.guard, guardPrivate, {
+      streamId: grantA3.streamId,
+      epoch: grantA3.epoch,
+      status: grantA3.status,
+      holderNodeId: grantA3.holderNodeId,
+      leaseId: grantA3.leaseId,
+      commandId: grantA3.commandId,
+      expiresAtMs: grantA3.expiresAtMs,
+      maxTransactionDurationMs: grantA3.maxTransactionDurationMs,
+      grantSeq: 5,
+      prevDigest: revokedBControl.grantDigest,
+    });
+    await Promise.all([
+      dbFailbackOwner.transaction((exec) => bpc.installSourceLeaseGrant(exec, resolver, grantA3)),
+      dbControl.transaction((exec) => bpc.installSourceLeaseGrant(exec, resolver, grantA3Control)),
+    ]);
+    await bpc.promoteReceiverToSource(
+      dbFailbackOwner, resolver, snapshotB, bpc.bpcPairMutationSanitizer,
+      3, SOURCE_EPOCH_A_FAILBACK, resolver, failbackFenced,
+    );
+    const failbackReadinessAttestation = await bpc.buildPromotionReadinessAttestation(
+      dbFailbackOwner, failbackFenced, snapshotB.manifest.keyId, KEY_IDS.source, sourcePrivate,
+    );
+    bpc.verifyPromotionReadinessAttestation(resolver, failbackReadinessAttestation);
+    const failbackActiveCutoverReceipt = await controller.markActive(
+      failbackCommandId, failbackReadinessAttestation, resolver,
+    );
+    await bpc.installActiveCutoverReceipt(
+      dbFailbackOwner, resolver, failbackActiveCutoverReceipt, failbackReadinessAttestation,
+    );
+    const sourceFenceA3 = await bpc.PgSourceLeaseFence.open(
+      dbFailbackRuntime,
+      haReadyFailbackRuntime,
+      resolver,
+      {
+        streamId,
+        epoch: 3,
+        holderNodeId: 'node-a',
+        authoritySystemId: idA,
+        nodeCredentialKeyId: KEY_IDS.nodeA,
+        leaseId: grantA3.leaseId,
+        grantDigest: grantA3.grantDigest,
+        redisClaimDigest: bpc.redisFenceRecordDigest(redisA3),
+        maxClockSkewMs: 25,
+        maxTransactionDurationMs: dbFailbackRuntime.maxTransactionDurationMs,
+        activationDigest: failbackActiveCutoverReceipt.stateDigestSigned,
+      },
+      fenceStore,
+      nodeAIdentity,
+      ticketSigner,
+    );
+    const failbackStoreA = bpc.createHaPairAuthority(
+      dbFailbackRuntime,
+      readyFailbackRuntime,
+      { streamId, fenceToken: 3n, keyring, maxPendingRows: 100 },
+      sourceFenceA3,
+    );
+    await failbackStoreA.set(pair(3));
+    const failbackEpochSequence = Number((await failbackOwnerPool.query(
+      'SELECT sequence FROM ha_outbox_source_checkpoint WHERE stream_id=$1', [streamId],
+    )).rows[0]?.sequence);
+    assert.equal(failbackEpochSequence, 1, 'failback A did not originate its first epoch-3 mutation');
+    assert.equal(Number((await failbackOwnerPool.query(
+      "SELECT count(*)::int AS value FROM bpc_pairs WHERE id IN ('enterprise-pair-2','enterprise-pair-3')",
+    )).rows[0]?.value), 2, 'failback A did not preserve and extend B state');
+    let staleBWriterDenied = false;
+    try {
+      await storeB.set(pair(4));
+    } catch {
+      staleBWriterDenied = true;
+    }
+    assert.equal(staleBWriterDenied, true, 'revoked source B remained writable after failback');
+    assert.equal(Number((await poolB.query(
+      "SELECT count(*)::int AS value FROM bpc_pairs WHERE id='enterprise-pair-4'",
+    )).rows[0]?.value), 0, 'stale B mutation committed after failback');
+
     return deepFreeze({
       protocolCommit: actualCommit,
       streamId,
@@ -511,6 +754,21 @@ export async function runBpcLiveComposition(options) {
       promotedSourceEpoch: SOURCE_EPOCH_B,
       promotedEpochSequence,
       staleWriterDenied,
+      failback: {
+        commandId: failbackCommandId,
+        targetEpoch: 3,
+        targetSourceEpoch: SOURCE_EPOCH_A_FAILBACK,
+        targetSystemId: idA,
+        sourceDatabaseReused: false,
+        sourcePostgresSystemReused: true,
+        priorAuthoritiesReset: false,
+        importedSequence: snapshotB.manifest.finalSequence,
+        originatedSequence: failbackEpochSequence,
+        staleBWriterDenied,
+        readinessAttestation: structuredClone(failbackReadinessAttestation),
+        activeCutoverReceipt: structuredClone(failbackActiveCutoverReceipt),
+        snapshotManifest: structuredClone(snapshotB.manifest),
+      },
       readinessAttestation: structuredClone(readinessAttestation),
       activeCutoverReceipt: structuredClone(activeCutoverReceipt),
       snapshotManifest: structuredClone(snapshot.manifest),
@@ -521,6 +779,8 @@ export async function runBpcLiveComposition(options) {
     });
   } finally {
     await Promise.allSettled(runtimePools.map((pool) => pool.end()));
+    await Promise.allSettled(isolatedPools.map((pool) => pool.end()));
+    await dropIsolatedDatabase(poolA, failbackDatabase).catch(() => {});
     await Promise.allSettled(pools.map((pool) => pool.end()));
     for (const client of redisMembers) client.disconnect();
     sealKey.fill(0);
