@@ -9,6 +9,7 @@ import { verifyBFinalizedReceipt, verifyLeaseGrant } from '@tsk/server';
 import { verifyPromotedTskCredentialProof } from './promoted-tsk-authority.js';
 
 const IDENTIFIER = /^[A-Za-z0-9_.:-]{1,128}$/;
+const STREAM_IDENTIFIER = /^[A-Za-z0-9_.:/-]{1,128}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
 const SECRET_FIELD = /(?:secret|token|password|private|credential|provisionpayload)/i;
 const INDEPENDENT_STATE_SCHEMA = 'public';
@@ -268,6 +269,13 @@ function redactionProvenance(row) {
     sourceSignatureDigest: row.source_signature_digest,
     sourceSystemId: row.redaction_source_system_id,
   };
+}
+
+function requiredStreamIdentifier(value, name) {
+  if (typeof value !== 'string' || !STREAM_IDENTIFIER.test(value)) {
+    throw new Error(`${name} must match ${STREAM_IDENTIFIER}`);
+  }
+  return value;
 }
 
 function isRedactionPlaceholder(response, responseDigest) {
@@ -586,7 +594,7 @@ export async function exportIndependentState(pool, input) {
         tskCredentials: [],
       }),
       bpcPromotionDigest,
-      bpcStreamId: requiredIdentifier(
+      bpcStreamId: requiredStreamIdentifier(
         protocolEvidence.bpcPromotionAttestation.streamId, 'bpcStreamId',
       ),
       bpcTargetEpoch: positiveSafeInteger(
@@ -602,7 +610,7 @@ export async function exportIndependentState(pool, input) {
       stateBytes,
       stateDigest: digest(state),
       tskActivationDigest,
-      tskStreamId: requiredIdentifier(
+      tskStreamId: requiredStreamIdentifier(
         protocolEvidence.tskFinalizedReceipt.streamId, 'tskStreamId',
       ),
       tskTargetEpoch: positiveSafeInteger(
@@ -784,11 +792,11 @@ function validateManifest(manifest) {
   requiredIdentifier(manifest.commandId, 'manifest.commandId');
   positiveSafeInteger(manifest.sourceEpoch, 'manifest.sourceEpoch');
   requiredDigest(manifest.bpcPromotionDigest, 'manifest.bpcPromotionDigest');
-  requiredIdentifier(manifest.bpcStreamId, 'manifest.bpcStreamId');
+  requiredStreamIdentifier(manifest.bpcStreamId, 'manifest.bpcStreamId');
   positiveSafeInteger(manifest.bpcTargetEpoch, 'manifest.bpcTargetEpoch');
   requiredDigest(manifest.authorityDigest, 'manifest.authorityDigest');
   requiredDigest(manifest.tskActivationDigest, 'manifest.tskActivationDigest');
-  requiredIdentifier(manifest.tskStreamId, 'manifest.tskStreamId');
+  requiredStreamIdentifier(manifest.tskStreamId, 'manifest.tskStreamId');
   positiveSafeInteger(manifest.tskTargetEpoch, 'manifest.tskTargetEpoch');
   requiredDigest(manifest.tskFinalizedDigest, 'manifest.tskFinalizedDigest');
   requiredDigest(manifest.stateDigest, 'manifest.stateDigest');
