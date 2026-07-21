@@ -1035,6 +1035,13 @@ export async function runTskLiveComposition(rawOptions) {
         claimExpiresAtMs: returnClaimExpiresAtMs,
       },
     );
+    assert.deepEqual(await fenceStore.current(), {
+      nodeId: aNodeId,
+      fenceEpoch: returnTargetEpoch,
+      expiresAt: returnClaimExpiresAtMs,
+      commandId: returnCommandId,
+      active: true,
+    }, 'return Redis authority must byte-bind the ratified A identity');
     await control.markImporting(
       options.streamId, returnCommandId, returnTargetEpoch,
     );

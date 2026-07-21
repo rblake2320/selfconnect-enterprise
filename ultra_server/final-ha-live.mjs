@@ -139,17 +139,34 @@ export function validateLiveProtocolComposition(bpc, tsk, commandId) {
   assert.equal(bpc.failback.sourcePostgresSystemReused, true);
   assert.equal(tsk.staleWriterDenied, true);
   assert.equal(tsk.staleTargetWriterDenied, true);
+  for (const value of [tsk.n, tsk.nextSequence, tsk.returnSequence,
+    tsk.returnSourceActivation.n]) {
+    assert.equal(Number.isSafeInteger(value) && value > 0, true);
+  }
   assert.equal(tsk.nextSequence, tsk.n + 1);
   assert.equal(tsk.returnSequence, tsk.n + 2);
   assert.equal(tsk.returnFrozenReceipt.n, tsk.n + 1);
   assert.equal(tsk.returnFinalizedReceipt.n, tsk.n + 1);
   assert.equal(tsk.returnFinalizedReceipt.bSystemId, tsk.systemIds.sourceA);
   assert.equal(tsk.returnFinalizedReceipt.commandId, tsk.returnCommandId);
-  assert.equal(tsk.returnActivationLeaseGrant.leaseEpoch, 2);
+  assert.equal(Number.isSafeInteger(tsk.returnFinalizedReceipt.epoch) &&
+    tsk.returnFinalizedReceipt.epoch >= 0, true);
+  assert.equal(Number.isSafeInteger(tsk.returnActivationLeaseGrant.leaseEpoch) &&
+    tsk.returnActivationLeaseGrant.leaseEpoch >= 1, true);
+  assert.equal(tsk.returnActivationLeaseGrant.leaseEpoch,
+    tsk.returnFinalizedReceipt.epoch + 1);
   assert.equal(tsk.returnActivationLeaseGrant.commandId, tsk.returnCommandId);
+  assert.equal(tsk.returnActivationLeaseGrant.holderNodeId,
+    tsk.returnFinalizedReceipt.bKeyId);
   assert.equal(tsk.returnSourceActivation.n, tsk.n + 1);
   assert.equal(tsk.returnSourceActivation.activationGrantDigest,
     tsk.returnActivationLeaseGrant.grantDigest);
+  assert.equal(tsk.redisAuthority.record.commandId, tsk.returnCommandId);
+  assert.equal(tsk.redisAuthority.record.fenceEpoch,
+    tsk.returnActivationLeaseGrant.leaseEpoch);
+  assert.equal(tsk.redisAuthority.record.nodeId,
+    tsk.returnActivationLeaseGrant.holderNodeId);
+  assert.equal(tsk.redisAuthority.record.active, true);
   assert.equal(tsk.publicCredential.status, 'active');
   assert.match(tsk.publicCredential.publicMapDigest, DIGEST);
   assert.equal(tsk.staleCredentialWriterDenied, true);

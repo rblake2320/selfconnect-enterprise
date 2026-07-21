@@ -38,14 +38,15 @@ function liveEvidence() {
       commandId: 'return-1',
       finalizedReceiptDigest: '7'.repeat(64),
       activationGrantDigest: '8'.repeat(64),
-      targetSystemId: '4', sourceEpoch: 1, targetEpoch: 2,
+      targetHolderId: 'return-a', targetSystemId: '4', sourceEpoch: 1, targetEpoch: 2,
       importedSequence: 2, nextSequence: 3,
+      redisFenceEpoch: 2, redisNodeId: 'return-a',
     },
     tskRedisFaults: {
       schemaVersion: 1, kind: 'tsk-same-redis-authority-faults', commandId: 'return-1',
       streamId: 'enterprise28:tsk-live/v1', systemIds: { sourceA: '4', receiverB: '5', control: '6' },
       redisAuthorityKeyDigest: '7'.repeat(64), redisAuthorityTupleDigest: '8'.repeat(64),
-      fenceEpoch: 1,
+      fenceEpoch: 2, authorityNodeId: 'return-a',
       faults: {
         livePartition: { rpo: 0, rtoMs: 10, oldMasterRefusedWrites: true,
           exactTuplePreserved: true, promotedMasterAddressDigest: '9'.repeat(64) },
@@ -129,5 +130,49 @@ test('direct handoff evidence is exact, secret-free authority output', () => {
     ...evidence,
     tskReturnAuthority: { ...evidence.tskReturnAuthority,
       targetSystemId: evidence.systems.tsk.receiverB },
+  }));
+  for (const promotedSourceNextSequence of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => validateLiveCompositionEvidence({
+      ...evidence,
+      outcomes: { ...evidence.outcomes, promotedSourceNextSequence },
+    }));
+  }
+  for (const returnedSourceNextSequence of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => validateLiveCompositionEvidence({
+      ...evidence,
+      outcomes: { ...evidence.outcomes, returnedSourceNextSequence },
+    }));
+  }
+  for (const key of ['importedSequence', 'nextSequence']) {
+    for (const value of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      assert.throws(() => validateLiveCompositionEvidence({
+        ...evidence,
+        tskReturnAuthority: { ...evidence.tskReturnAuthority, [key]: value },
+      }));
+    }
+  }
+  for (const sourceEpoch of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => validateLiveCompositionEvidence({
+      ...evidence,
+      tskReturnAuthority: { ...evidence.tskReturnAuthority, sourceEpoch },
+    }));
+  }
+  for (const targetEpoch of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => validateLiveCompositionEvidence({
+      ...evidence,
+      tskReturnAuthority: { ...evidence.tskReturnAuthority, targetEpoch },
+    }));
+  }
+  assert.throws(() => validateLiveCompositionEvidence({
+    ...evidence,
+    tskRedisFaults: { ...evidence.tskRedisFaults, fenceEpoch: 3 },
+  }));
+  assert.throws(() => validateLiveCompositionEvidence({
+    ...evidence,
+    tskRedisFaults: { ...evidence.tskRedisFaults, authorityNodeId: 'wrong-node' },
+  }));
+  assert.throws(() => validateLiveCompositionEvidence({
+    ...evidence,
+    tskReturnAuthority: { ...evidence.tskReturnAuthority, redisNodeId: 'wrong-node' },
   }));
 });

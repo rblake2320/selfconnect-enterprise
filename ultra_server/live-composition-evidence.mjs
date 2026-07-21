@@ -55,11 +55,14 @@ function publicEvidence(result) {
       commandId: result.tsk.returnCommandId,
       finalizedReceiptDigest: result.tsk.returnFinalizedReceipt.receiptDigest,
       activationGrantDigest: result.tsk.returnActivationLeaseGrant.grantDigest,
+      targetHolderId: result.tsk.returnActivationLeaseGrant.holderNodeId,
       targetSystemId: result.tsk.returnFinalizedReceipt.bSystemId,
       sourceEpoch: result.tsk.returnFinalizedReceipt.epoch,
       targetEpoch: result.tsk.returnActivationLeaseGrant.leaseEpoch,
       importedSequence: result.tsk.returnSourceActivation.n,
       nextSequence: result.tsk.returnSequence,
+      redisFenceEpoch: result.tsk.redisAuthority.record.fenceEpoch,
+      redisNodeId: result.tsk.redisAuthority.record.nodeId,
     },
     tskRedisFaults: result.tskRedisFaults,
     ultraRedisFaults: result.ultraRedisFaults,
@@ -90,6 +93,12 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
   assert.equal(evidence.outcomes.tskReturnStaleWriterDenied, true);
   assert.match(evidence.outcomes.tskReturnCommandId, COMMAND_ID);
   assert.notEqual(evidence.outcomes.tskReturnCommandId, evidence.commandId);
+  for (const value of [evidence.outcomes.promotedSourceNextSequence,
+    evidence.outcomes.returnedSourceNextSequence,
+    evidence.tskReturnAuthority?.importedSequence,
+    evidence.tskReturnAuthority?.nextSequence]) {
+    assert.equal(Number.isSafeInteger(value) && value > 0, true);
+  }
   assert.equal(evidence.outcomes.returnedSourceNextSequence,
     evidence.outcomes.promotedSourceNextSequence + 1);
   assert.equal(evidence.systems.tsk.sourceA !== evidence.systems.tsk.receiverB, true);
@@ -105,17 +114,28 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
     evidence.artifacts.tskReturnActivation);
   assert.equal(evidence.tskReturnAuthority?.targetSystemId,
     evidence.systems.tsk.sourceA);
-  assert.equal(Number.isSafeInteger(evidence.tskReturnAuthority?.sourceEpoch), true);
-  assert.equal(Number.isSafeInteger(evidence.tskReturnAuthority?.targetEpoch), true);
+  assert.equal(Number.isSafeInteger(evidence.tskReturnAuthority?.sourceEpoch) &&
+    evidence.tskReturnAuthority.sourceEpoch >= 0, true);
+  assert.equal(Number.isSafeInteger(evidence.tskReturnAuthority?.targetEpoch) &&
+    evidence.tskReturnAuthority.targetEpoch >= 1, true);
   assert.equal(evidence.tskReturnAuthority.targetEpoch,
     evidence.tskReturnAuthority.sourceEpoch + 1);
   assert.equal(evidence.tskReturnAuthority.importedSequence,
     evidence.outcomes.promotedSourceNextSequence);
   assert.equal(evidence.tskReturnAuthority.nextSequence,
     evidence.outcomes.returnedSourceNextSequence);
+  assert.match(evidence.tskReturnAuthority?.targetHolderId, COMMAND_ID);
+  assert.equal(evidence.tskReturnAuthority.redisFenceEpoch,
+    evidence.tskReturnAuthority.targetEpoch);
+  assert.equal(evidence.tskReturnAuthority.redisNodeId,
+    evidence.tskReturnAuthority.targetHolderId);
   assert.equal(evidence.tskRedisFaults?.kind, 'tsk-same-redis-authority-faults');
   assert.equal(evidence.tskRedisFaults?.commandId,
     evidence.outcomes.tskReturnCommandId);
+  assert.equal(evidence.tskRedisFaults?.fenceEpoch,
+    evidence.tskReturnAuthority.targetEpoch);
+  assert.equal(evidence.tskRedisFaults?.authorityNodeId,
+    evidence.tskReturnAuthority.targetHolderId);
   assert.deepEqual(evidence.tskRedisFaults?.systemIds, evidence.systems.tsk);
   assert.equal(evidence.tskRedisFaults?.faults?.livePartition?.rpo, 0);
   assert.equal(evidence.tskRedisFaults?.faults?.livePartition?.oldMasterRefusedWrites, true);

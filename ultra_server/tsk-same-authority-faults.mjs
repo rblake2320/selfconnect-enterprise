@@ -155,6 +155,7 @@ export async function runSameRedisAuthorityFaults(options) {
       redisAuthorityKeyDigest: digest(authority.key),
       redisAuthorityTupleDigest: digest(authority.record),
       fenceEpoch: authority.record.fenceEpoch,
+      authorityNodeId: authority.record.nodeId,
       faults: Object.freeze({
         livePartition: Object.freeze({ rpo: 0, rtoMs: partitionRtoMs,
           oldMasterRefusedWrites: true, exactTuplePreserved: true,
