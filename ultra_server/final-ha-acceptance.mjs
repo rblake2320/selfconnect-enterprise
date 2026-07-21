@@ -214,7 +214,7 @@ export async function runFinalAcceptance(options = {}) {
     options.evidenceFile ?? process.env.ULTRA_FINAL_EVIDENCE_FILE, 'ULTRA_FINAL_EVIDENCE_FILE',
   );
   await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
-  process.stdout.write(`# final Ultra HA acceptance: ${results.length}/${ACCEPTANCE_STEPS.length} steps; evidence=${evidencePath}\n`);
+  process.stdout.write(`# final Ultra HA acceptance: ${results.length}/${ACCEPTANCE_STEPS.length + 1} steps; evidence=${evidencePath}\n`);
   return evidence;
 }
 
