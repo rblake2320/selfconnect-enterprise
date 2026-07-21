@@ -494,7 +494,8 @@ export async function runTskLiveComposition(rawOptions) {
     await sourceCredentialStore.set(sourceCredentialMap.clientId, sourceCredentialMap);
     const sourceCredentialProof = await readPublicCredentialProof(
       aPool, credentialStreamId, sourceCredentialMap.clientId, 1, sourceCredentialGrant,
-      { agentId: credentialAgentId, pairId: credentialPairId, commandId },
+      { agentId: credentialAgentId, pairId: credentialPairId,
+        commandId: sourceCredentialGrant.commandId },
     );
     const publicCredentialSource = publicCredentialSummary(sourceCredentialProof);
     assert.equal(

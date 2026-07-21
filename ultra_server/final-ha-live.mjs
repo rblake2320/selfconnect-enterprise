@@ -5,10 +5,12 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { runBpcLiveComposition } from './bpc-live-composition.mjs';
+import { runEnterpriseLiveHandoff } from './enterprise-live-handoff.mjs';
 import { assertCleanReviewedCheckout } from './final-ha-acceptance.mjs';
 import {
   createPromotedTskAuthorityCapability,
   verifyPromotedTskCredentialProof,
+  verifySourceTskCredentialProof,
 } from './promoted-tsk-authority.js';
 import { runTskLiveComposition } from './tsk-live-composition.mjs';
 
@@ -130,6 +132,23 @@ export async function runLiveProtocolComposition(env = process.env) {
       sourceSecretDigest: tsk.publicCredentialSource.secretDigest,
     },
   );
+  const sourceCredentialHeadResolver = { resolve: (keyId, alg) =>
+    keyId === tsk.sourceCredentialProof.head.keyId && alg === 'ed25519'
+      ? createPublicKey(tsk.publicKeys.sourceCredentialHead) : null };
+  const sourceCredentialAuthority = createPromotedTskAuthorityCapability({
+    activationLease: tsk.credentialSourceLeaseGrant,
+    leaseResolver: credentialGuardResolver,
+    headKeyResolver: sourceCredentialHeadResolver,
+  });
+  const verifiedSourceCredential = await verifySourceTskCredentialProof(
+    sourceCredentialAuthority,
+    tsk.sourceCredentialProof,
+    {
+      agentId: tsk.sourceCredentialProof.agentId,
+      pairId: tsk.sourceCredentialProof.pairId,
+      sourceClientId: tsk.publicCredentialSource.clientId,
+    },
+  );
   validateLiveProtocolComposition(bpc, tsk, commandId);
 
   return Object.freeze({
@@ -137,6 +156,7 @@ export async function runLiveProtocolComposition(env = process.env) {
     commits: Object.freeze({ enterprise: enterpriseSha, bpc: bpcCommit, tsk: tskCommit }),
     bpc,
     tsk,
+    verifiedSourceCredential,
     verifiedTargetCredential,
     resolvers: Object.freeze({ bpcResolver, tskBResolver, tskGuardResolver }),
     publicKeyFingerprints: Object.freeze({
@@ -147,4 +167,10 @@ export async function runLiveProtocolComposition(env = process.env) {
       tskTargetCredentialHead: fingerprint(tsk.publicKeys.credentialHead),
     }),
   });
+}
+
+export async function runLiveEnterpriseAcceptance(env = process.env) {
+  const protocols = await runLiveProtocolComposition(env);
+  const enterprise = await runEnterpriseLiveHandoff(protocols, env);
+  return Object.freeze({ ...protocols, enterprise });
 }

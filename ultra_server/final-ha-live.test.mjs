@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { runLiveProtocolComposition, validateLiveProtocolComposition } from './final-ha-live.mjs';
+import {
+  runLiveEnterpriseAcceptance,
+  validateLiveProtocolComposition,
+} from './final-ha-live.mjs';
 
 test('live composition requires exact command binding, independent systems, and stale denial', () => {
   const commandId = 'promote-live-1';
@@ -37,10 +40,13 @@ test('directly composes exact reviewed live BPC and TSK artifacts', {
   skip: process.env.LIVE_COMPOSITION_COMBINED !== '1',
   timeout: 180_000,
 }, async () => {
-  const result = await runLiveProtocolComposition();
+  const result = await runLiveEnterpriseAcceptance();
   assert.equal(result.bpc.readinessAttestation.commandId, result.commandId);
   assert.equal(result.tsk.bFinalizedReceipt.commandId, result.commandId);
   assert.equal(result.tsk.activationLeaseGrant.commandId, result.commandId);
   assert.equal(result.bpc.staleWriterDenied, true);
   assert.equal(result.tsk.staleWriterDenied, true);
+  assert.equal(result.enterprise.rpo, 0);
+  assert.equal(result.enterprise.copiedTargetCredentialRows, 0);
+  assert.equal(result.enterprise.targetClientId, result.tsk.publicCredentialTarget.clientId);
 });

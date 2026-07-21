@@ -248,4 +248,72 @@ export async function verifyPromotedTskCredentialProof(capability, candidate, ex
   });
 }
 
+/** Verify the signed active source credential that an Enterprise export names. */
+export async function verifySourceTskCredentialProof(capability, candidate, expectedCandidate) {
+  const authority = requireCapability(capability);
+  const proof = snapshot(candidate, 'source credential proof');
+  const expected = snapshot(expectedCandidate, 'source expected binding');
+  exact(expected, ['agentId', 'pairId', 'sourceClientId'], 'source expected binding');
+  identifier(expected.agentId, 'source expected.agentId');
+  identifier(expected.pairId, 'source expected.pairId');
+  identifier(expected.sourceClientId, 'source expected.sourceClientId');
+  assertProofShape(proof);
+  if (proof.format !== FORMAT || proof.agentId !== expected.agentId ||
+      proof.pairId !== expected.pairId) {
+    throw new Error('source credential proof principal/format mismatch');
+  }
+  verifyLeaseGrant(authority.leaseResolver, proof.activationLease);
+  if (canonicalize(proof.activationLease) !== canonicalize(authority.activationLease)) {
+    throw new Error('source credential proof does not carry the configured activation lease');
+  }
+  const lease = proof.activationLease;
+  if (lease.leaseStatus !== 'active' || proof.commandId !== lease.commandId ||
+      proof.record.streamId !== lease.streamId ||
+      proof.record.fenceToken !== String(lease.leaseEpoch)) {
+    throw new Error('source credential proof is not bound to its active lease');
+  }
+  assertHeaderConformant(proof.record);
+  credentialMutationSanitizer.assertSanitized(proof.record.mutation);
+  const mutation = proof.record.mutation;
+  if (mutation.kind !== 'tsk.credential.snapshot.v1' || mutation.counter < 1 ||
+      mutation.clientId !== mutation.tumblerId || mutation.clientId !== expected.sourceClientId ||
+      mutation.publicMap.clientId !== mutation.clientId || mutation.publicMap.status !== 'active' ||
+      mutation.publicMap.label !== `agent:${proof.agentId}`) {
+    throw new Error('source credential proof does not bind the active source credential');
+  }
+  if (canonicalOpDigest({
+    streamId: proof.record.streamId,
+    sourceEpoch: proof.record.sourceEpoch,
+    sequence: proof.record.sequence,
+    fenceToken: proof.record.fenceToken,
+    mutation,
+  }) !== proof.record.opDigest) throw new Error('source credential proof operation digest mismatch');
+  assertStreamHeadBinds(proof.record, proof.head);
+  if (proof.head.alg !== 'ed25519' || !B64URL.test(proof.head.signature)) {
+    throw new Error('source credential proof head signature encoding or algorithm is unsupported');
+  }
+  const key = publicEd25519(
+    authority.headKeyResolver.resolve(proof.head.keyId, proof.head.alg),
+    'source headKeyResolver',
+  );
+  if (!cryptoVerify(null, Buffer.from(proof.head.headDigest, 'hex'), key,
+    Buffer.from(proof.head.signature, 'base64url'))) {
+    throw new Error('source credential proof head signature is invalid');
+  }
+  return Object.freeze({
+    activationGrantDigest: lease.grantDigest,
+    agentId: proof.agentId,
+    commandId: proof.commandId,
+    headDigest: proof.head.headDigest,
+    operationDigest: proof.record.opDigest,
+    pairId: proof.pairId,
+    publicMapDigest: mutation.publicMapDigest,
+    secretDigest: mutation.secretDigest,
+    sequence: proof.record.sequence,
+    sourceEpoch: lease.leaseEpoch,
+    streamId: lease.streamId,
+    sourceClientId: mutation.clientId,
+  });
+}
+
 export const PROMOTED_TSK_CREDENTIAL_PROOF_FORMAT = FORMAT;
