@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, sign as edSign } from 'node:crypto';
-import { access } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import pg from 'pg';
 import { Redis } from 'ioredis';
 
 import { promotedTskCredentialLabel } from './promoted-tsk-authority.js';
+import { loadPromotedTskCredentialRuntime } from './promoted-tsk-runtime.js';
 
 const HOUR_MS = 3_600_000;
 const ID = /^[A-Za-z0-9_.:/-]{1,128}$/;
@@ -347,6 +349,7 @@ export async function runTskLiveComposition(rawOptions) {
   const bRuntimePassword = randomBytes(24).toString('hex');
   let aRuntimePool;
   let bRuntimePool;
+  let protectedRuntimeDir;
 
   try {
     const sourceDrop = 'DROP TABLE IF EXISTS tsk_outbox_rows, tsk_outbox_applied, ' +
@@ -667,6 +670,44 @@ export async function runTskLiveComposition(rawOptions) {
     await provisionCredentialRuntimeMutationBoundary(
       bDb, 'public', runtimeRole, mutationTicketSigner.keyId, mutationSecret,
     );
+    protectedRuntimeDir = await mkdtemp(join(tmpdir(), 'enterprise28-tsk-runtime-'));
+    const mutationSecretFile = join(protectedRuntimeDir, 'mutation.bin');
+    const headPrivateFile = join(protectedRuntimeDir, 'credential-head.pk8.pem');
+    const headPublicFile = join(protectedRuntimeDir, 'credential-head.spki.pem');
+    const guardPublicFile = join(protectedRuntimeDir, 'guard.spki.pem');
+    const descriptorFile = join(protectedRuntimeDir, 'runtime.json');
+    await Promise.all([
+      writeFile(mutationSecretFile, mutationSecret, { flag: 'wx', mode: 0o600 }),
+      writeFile(headPrivateFile, material.credentialHead.privateKey.export({
+        type: 'pkcs8', format: 'pem',
+      }), { flag: 'wx', mode: 0o600 }),
+      writeFile(headPublicFile, material.credentialHead.publicKey.export({
+        type: 'spki', format: 'pem',
+      }), { flag: 'wx', mode: 0o600 }),
+      writeFile(guardPublicFile, material.guard.publicKey.export({
+        type: 'spki', format: 'pem',
+      }), { flag: 'wx', mode: 0o600 }),
+    ]);
+    await writeFile(descriptorFile, JSON.stringify({
+      activationLease: credentialActivationLeaseGrant,
+      controlToASkewBoundMs: 0,
+      grantDigest: credentialActivationLeaseGrant.grantDigest,
+      holderNodeId: credentialActivationLeaseGrant.holderNodeId,
+      leaseId: credentialActivationLeaseGrant.leaseId,
+      maxPendingRows: 100_000,
+      mutationKeyId: mutationTicketSigner.keyId,
+      mutationSecretFile,
+      runtimeDatabaseUrl: runtimePostgresUrl(
+        options.bPostgresUrl, runtimeRole, bRuntimePassword,
+      ),
+      schema: 'public',
+      sourceEpoch: targetEpoch,
+      sourceLeasePublicKeyFiles: { [keyIds.guard]: guardPublicFile },
+      streamHeadKeyId: keyIds.credentialHead,
+      streamHeadPrivateKeyFile: headPrivateFile,
+      streamHeadPublicKeyFiles: { [keyIds.credentialHead]: headPublicFile },
+      streamId: credentialStreamId,
+    }), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
     mutationSecret.fill(0);
     bRuntimePool = new pg.Pool({
       connectionString: runtimePostgresUrl(
@@ -737,6 +778,22 @@ export async function runTskLiveComposition(rawOptions) {
     assert.equal(
       JSON.stringify(publicCredentialTarget).includes(credentialMap.sharedSecret), false,
     );
+    const loadedPromotedRuntime = await loadPromotedTskCredentialRuntime(descriptorFile);
+    try {
+      const resumedCredential = await loadedPromotedRuntime.provision({
+        agentId: credentialAgentId,
+        pairId: credentialPairId,
+        commandId,
+        sourceClientId: publicCredentialSource.clientId,
+        sourceSecretDigest: publicCredentialSource.secretDigest,
+      });
+      assert.equal(resumedCredential.created, false);
+      assert.equal(resumedCredential.targetClientId, publicCredentialTarget.clientId);
+      assert.equal(resumedCredential.targetProof.head.headDigest,
+        targetCredentialProof.head.headDigest);
+    } finally {
+      await loadedPromotedRuntime.close();
+    }
 
     let staleCredentialWriterDenied = false;
     try {
@@ -814,5 +871,8 @@ export async function runTskLiveComposition(rawOptions) {
       aRuntimePool?.end(),
       bRuntimePool?.end(),
     ]);
+    if (protectedRuntimeDir) {
+      await rm(protectedRuntimeDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
