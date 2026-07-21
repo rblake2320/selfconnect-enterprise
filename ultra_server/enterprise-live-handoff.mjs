@@ -48,7 +48,9 @@ function backendInterruptedPool(pool, interrupter, sqlPattern) {
           }
           return result;
         },
-        release() { client.release(); },
+        release() {
+          client.release(interrupted ? new Error('discard interrupted import connection') : undefined);
+        },
       };
     },
   };
