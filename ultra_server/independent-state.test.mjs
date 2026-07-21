@@ -15,6 +15,7 @@ import {
   exportIndependentState,
   guardCountersignIndependentState,
   importIndependentState,
+  readImportedTskReprovision,
   verifyIndependentStateBundle,
 } from './independent-state.js';
 import { ULTRA_PG_SCHEMA, initializePgSchemas } from './runtime-stores.js';
@@ -487,6 +488,11 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       keys: protocolKeys,
       targetEpoch: 2,
     });
+    const pendingCredential = await readImportedTskReprovision(b, {
+      clusterId, pairId,
+    });
+    assert.equal(pendingCredential.sourceSecretDigest,
+      createHash('sha256').update(sourceMap.sharedSecret, 'utf8').digest('hex'));
     const failbackSource = await exportIndependentState(b, {
       advisoryLockKey: lockKey,
       clusterId,

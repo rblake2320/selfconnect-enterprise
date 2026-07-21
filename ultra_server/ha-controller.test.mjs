@@ -229,4 +229,16 @@ test('every state-mutating HTTP route declares the HA writer boundary', async ()
     /idempotencyStore\.withLock\(bpcActivityLock\(req\.params\.pairId\)/,
     'BPC lifecycle updates must share the per-pair activity lock',
   );
+  assert.match(source,
+    /promotedTskRuntime = await loadPromotedTskCredentialRuntime\(\s*process\.env\.ULTRA_TSK_AUTHORITY_CONFIG_FILE/,
+    'independent production must load the real promoted TSK authority or fail startup',
+  );
+  assert.match(source, /tskStore = promotedTskRuntime\.credentialStore/,
+    'all independent production TSK routes must use the promoted fenced authority');
+  assert.match(source, /completeImportedPromotedTskCredential\(/,
+    'reprovision must complete from a signed public authority proof');
+  assert.doesNotMatch(source, /completeImportedTskReprovision\(/,
+    'the legacy callback and secret-copy completion path must be unreachable');
+  assert.doesNotMatch(source, /targetMap = generateTumblerMap\(/,
+    'the Enterprise HTTP route must not mint its own TSK credential');
 });

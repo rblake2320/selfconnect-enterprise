@@ -84,7 +84,7 @@ test('promoted label is stable per command and principal', () => {
   }));
 });
 
-test('runtime creates one real secret-bearing credential but returns only a signed public proof', async () => {
+test('runtime creates one real credential and binds its payload to a signed public proof', async () => {
   const guard = generateKeyPairSync('ed25519');
   const head = generateKeyPairSync('ed25519');
   const activationLease = signLeaseGrant('guard-1', guard.privateKey, {
@@ -150,6 +150,8 @@ test('runtime creates one real secret-bearing credential but returns only a sign
   assert.equal(second.created, false);
   assert.equal(first.targetClientId, second.targetClientId);
   assert.equal(maps.size, 1);
+  assert.equal(runtime.credentialStore, credentialStore,
+    'independent server routes must share the same fenced authority store');
   assert.equal(JSON.stringify(first.targetProof).includes('sharedSecret'), false);
   assert.equal(first.targetProof.record.mutation.publicMap.label,
     promotedTskCredentialLabel(binding));

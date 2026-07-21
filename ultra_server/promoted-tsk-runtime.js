@@ -224,6 +224,7 @@ export function createPromotedTskCredentialRuntime({
   const capturedLease = structuredClone(activationLease);
   return Object.freeze({
     authorityCapability,
+    credentialStore,
     async provision(rawBinding) {
       const binding = requiredBinding(rawBinding);
       if (binding.commandId !== capturedLease.commandId) {

@@ -1167,7 +1167,8 @@ export async function readImportedTskReprovision(pool, input) {
   requiredIdentifier(input.pairId, 'pairId');
   return withSerializable(pool, async (client) => {
     const { rows } = await client.query(
-      `SELECT agent_id, source_client_id, target_client_id, status, receipt_digest
+      `SELECT agent_id, source_client_id, source_secret_digest, target_client_id,
+              status, receipt_digest, target_proof_digest, activation_grant_digest
        FROM ultra_ha_tsk_reprovision WHERE cluster_id=$1 AND pair_id=$2`,
       [input.clusterId, input.pairId],
     );
