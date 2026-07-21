@@ -99,6 +99,7 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
   const a = new Pool({ connectionString: aUrl, max: 4 });
   let b = new Pool({ connectionString: bUrl, max: 4 });
   const sourceSigning = generateKeyPairSync('ed25519');
+  const promotedSourceSigning = generateKeyPairSync('ed25519');
   const guardSigning = generateKeyPairSync('ed25519');
   const clusterId = 'enterprise28-live-cluster';
   const pairId = composition.tsk.targetCredentialProof.pairId;
@@ -308,6 +309,116 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
         rtoMs: Date.now() - databaseStartedAt,
       });
     }
+
+    // Exact Enterprise B -> A failback. The current B credential is accepted
+    // as export authority only through its completed, persisted A -> B
+    // reprovision lineage. The return bundle then carries the reviewed BPC and
+    // TSK failback artifacts for one shared command and reprovisions a fresh A
+    // credential from TSK's public signed return proof.
+    const returnCommandId = composition.tsk.returnCommandId;
+    assert.equal(composition.bpc.failback.commandId, returnCommandId,
+      'BPC and TSK failback must attest one command');
+    const returnSourceEpoch = composition.tsk.returnCredentialActivationLeaseGrant.leaseEpoch;
+    const returnProtocolEvidence = {
+      bpcPromotionAttestation: composition.bpc.failback.readinessAttestation,
+      tskActivationLease: composition.tsk.returnActivationLeaseGrant,
+      tskFinalizedReceipt: composition.tsk.returnFinalizedReceipt,
+    };
+    const returnSourceBundle = await exportIndependentState(b, {
+      advisoryLockKey,
+      clusterId,
+      commandId: returnCommandId,
+      protocolEvidence: returnProtocolEvidence,
+      sourceEpoch: returnSourceEpoch,
+      sourceKeyId: 'enterprise28-source-key-b-1',
+      sourcePrivateKey: promotedSourceSigning.privateKey,
+      sourceCredentialProofs: [{
+        authorityCapability: authority,
+        proofKind: 'promoted',
+        expected: {
+          agentId,
+          pairId,
+          sourceClientId,
+          sourceSecretDigest,
+        },
+        proof: composition.tsk.targetCredentialProof,
+      }],
+    });
+    const returnResolvers = Object.freeze({
+      bpcResolver: composition.resolvers.bpcResolver,
+      tskBResolver: composition.resolvers.tskReturnResolver,
+      tskGuardResolver: composition.resolvers.tskGuardResolver,
+    });
+    const returnBundle = guardCountersignIndependentState(returnSourceBundle, {
+      expectedCommandId: returnCommandId,
+      guardKeyId: 'enterprise28-guard-key-1',
+      guardPrivateKey: guardSigning.privateKey,
+      sourcePublicKey: promotedSourceSigning.publicKey,
+      ...returnResolvers,
+    });
+    const failbackStartedAt = Date.now();
+    const returnImported = await importIndependentState(a, returnBundle, {
+      advisoryLockKey,
+      clusterId,
+      commandId: returnCommandId,
+      sourceEpoch: returnSourceEpoch,
+      bpcPromotionDigest:
+        composition.bpc.failback.readinessAttestation.attestationDigest,
+      tskActivationDigest: composition.tsk.returnActivationLeaseGrant.grantDigest,
+      tskFinalizedDigest: composition.tsk.returnFinalizedReceipt.receiptDigest,
+      sourcePublicKey: promotedSourceSigning.publicKey,
+      guardPublicKey: guardSigning.publicKey,
+      ...returnResolvers,
+    });
+    assert.equal(returnImported.targetSystemId, bundle.manifest.sourceSystemId,
+      'Enterprise failback did not return to the original A authority');
+    const returnProof = await completeImportedPromotedTskCredential(
+      a, composition.returnCredentialAuthority, {
+        advisoryLockKey,
+        agentId,
+        clusterId,
+        commandId: returnCommandId,
+        pairId,
+        sourceClientId: reprovisioned.targetClientId,
+        sourceEpoch: returnSourceEpoch,
+        sourceSecretDigest: composition.verifiedTargetCredential.secretDigest,
+        targetProof: composition.tsk.returnCredentialProof,
+      },
+    );
+    const returnReady = await assertIndependentStateReady(a, {
+      clusterId,
+      commandId: returnCommandId,
+      manifestDigest: returnBundle.manifestDigest,
+      sourceEpoch: returnSourceEpoch,
+    });
+    const returnRetry = await completeImportedPromotedTskCredential(
+      a, composition.returnCredentialAuthority, {
+        advisoryLockKey,
+        agentId,
+        clusterId,
+        commandId: returnCommandId,
+        pairId,
+        sourceClientId: reprovisioned.targetClientId,
+        sourceEpoch: returnSourceEpoch,
+        sourceSecretDigest: composition.verifiedTargetCredential.secretDigest,
+        targetProof: composition.tsk.returnCredentialProof,
+      },
+    );
+    assert.equal(returnRetry.idempotent, true);
+    assert.equal(returnRetry.receiptDigest, returnProof.receiptDigest);
+    await assert.rejects(() => completeImportedPromotedTskCredential(
+      b, composition.returnCredentialAuthority, {
+        advisoryLockKey,
+        agentId,
+        clusterId,
+        commandId: returnCommandId,
+        pairId,
+        sourceClientId: reprovisioned.targetClientId,
+        sourceEpoch: returnSourceEpoch,
+        sourceSecretDigest: composition.verifiedTargetCredential.secretDigest,
+        targetProof: composition.tsk.returnCredentialProof,
+      },
+    ), /does not match the imported promotion|binding mismatch/);
     return Object.freeze({
       clusterId,
       manifestDigest: bundle.manifestDigest,
@@ -320,6 +431,22 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       copiedTargetCredentialRows: copiedTarget,
       redactionPreserved: true,
       rpo: 0,
+      failback: Object.freeze({
+        commandId: returnCommandId,
+        manifestDigest: returnBundle.manifestDigest,
+        sourceEpoch: returnSourceEpoch,
+        sourceSystemId: returnBundle.manifest.sourceSystemId,
+        targetSystemId: returnReady.targetSystemId,
+        sourceClientId: reprovisioned.targetClientId,
+        targetClientId: returnProof.targetClientId,
+        receiptDigest: returnProof.receiptDigest,
+        idempotentRetry: returnRetry.idempotent,
+        staleBCompletionDenied: true,
+        staleBProtocolWriterDenied:
+          composition.tsk.staleReturnedCredentialWriterDenied,
+        rpo: 0,
+        rtoMs: Date.now() - failbackStartedAt,
+      }),
       faults: Object.freeze({
         childProcessSigkill: Object.freeze({
           fault: 'sigkill-enterprise-importer-before-commit',

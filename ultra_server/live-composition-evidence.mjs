@@ -12,7 +12,7 @@ function sha256(value) {
 
 function publicEvidence(result) {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     kind: 'enterprise-live-authority-handoff',
     commandId: result.commandId,
     commits: result.commits,
@@ -22,6 +22,7 @@ function publicEvidence(result) {
       enterprise: {
         source: result.enterprise.sourceSystemId,
         target: result.enterprise.targetSystemId,
+        failbackTarget: result.enterprise.failback.targetSystemId,
       },
     },
     artifacts: {
@@ -34,6 +35,11 @@ function publicEvidence(result) {
       enterpriseManifest: result.enterprise.manifestDigest,
       promotedCredentialProof: result.enterprise.targetProofDigest,
       promotedCredentialReceipt: result.enterprise.receiptDigest,
+      returnedCredentialProof: result.tsk.returnCredentialProof.head.headDigest,
+      returnedCredentialActivation:
+        result.tsk.returnCredentialActivationLeaseGrant.grantDigest,
+      enterpriseFailbackManifest: result.enterprise.failback.manifestDigest,
+      enterpriseFailbackCredentialReceipt: result.enterprise.failback.receiptDigest,
     },
     outcomes: {
       bpcStaleWriterDenied: result.bpc.staleWriterDenied,
@@ -43,6 +49,8 @@ function publicEvidence(result) {
       tskStaleWriterDenied: result.tsk.staleWriterDenied,
       tskReturnStaleWriterDenied: result.tsk.staleTargetWriterDenied,
       tskStaleCredentialWriterDenied: result.tsk.staleCredentialWriterDenied,
+      tskReturnStaleCredentialWriterDenied:
+        result.tsk.staleReturnedCredentialWriterDenied,
       promotedSourceNextSequence: result.tsk.nextSequence,
       returnedSourceNextSequence: result.tsk.returnSequence,
       tskReturnCommandId: result.tsk.returnCommandId,
@@ -50,6 +58,16 @@ function publicEvidence(result) {
       copiedTargetCredentialRows: result.enterprise.copiedTargetCredentialRows,
       redactionPreserved: result.enterprise.redactionPreserved,
       dataLossRpo: result.enterprise.rpo,
+      enterpriseFailbackCommandId: result.enterprise.failback.commandId,
+      enterpriseFailbackSourceEpoch: result.enterprise.failback.sourceEpoch,
+      enterpriseFailbackTargetClientId: result.enterprise.failback.targetClientId,
+      enterpriseFailbackIdempotentRetry: result.enterprise.failback.idempotentRetry,
+      enterpriseFailbackStaleBCompletionDenied:
+        result.enterprise.failback.staleBCompletionDenied,
+      enterpriseFailbackStaleBProtocolWriterDenied:
+        result.enterprise.failback.staleBProtocolWriterDenied,
+      enterpriseFailbackRpo: result.enterprise.failback.rpo,
+      enterpriseFailbackRtoMs: result.enterprise.failback.rtoMs,
     },
     tskReturnAuthority: {
       commandId: result.tsk.returnCommandId,
@@ -70,7 +88,7 @@ function publicEvidence(result) {
 }
 
 export function validateLiveCompositionEvidence(evidence, expected = {}) {
-  assert.equal(evidence?.schemaVersion, 4);
+  assert.equal(evidence?.schemaVersion, 5);
   assert.equal(evidence?.kind, 'enterprise-live-authority-handoff');
   assert.equal(evidence?.commandId, expected.commandId ?? evidence.commandId);
   assert.match(evidence?.commandId, COMMAND_ID);
@@ -83,6 +101,8 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
   assert.equal(new Set(Object.values(evidence.systems.bpc)).size, 3);
   assert.equal(new Set(Object.values(evidence.systems.tsk)).size, 3);
   assert.equal(evidence.systems.enterprise.target, evidence.systems.tsk.receiverB);
+  assert.equal(evidence.systems.enterprise.failbackTarget,
+    evidence.systems.enterprise.source);
   assert.notEqual(evidence.systems.enterprise.source, evidence.systems.enterprise.target);
   assert.equal(evidence.outcomes.bpcStaleWriterDenied, true);
   assert.equal(evidence.outcomes.bpcFailbackStaleWriterDenied, true);
@@ -103,9 +123,21 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
     evidence.outcomes.promotedSourceNextSequence + 1);
   assert.equal(evidence.systems.tsk.sourceA !== evidence.systems.tsk.receiverB, true);
   assert.equal(evidence.outcomes.tskStaleCredentialWriterDenied, true);
+  assert.equal(evidence.outcomes.tskReturnStaleCredentialWriterDenied, true);
   assert.equal(evidence.outcomes.copiedTargetCredentialRows, 0);
   assert.equal(evidence.outcomes.redactionPreserved, true);
   assert.equal(evidence.outcomes.dataLossRpo, 0);
+  assert.equal(evidence.outcomes.enterpriseFailbackCommandId,
+    evidence.outcomes.tskReturnCommandId);
+  assert.equal(evidence.outcomes.enterpriseFailbackSourceEpoch,
+    evidence.tskReturnAuthority.targetEpoch);
+  assert.equal(evidence.outcomes.enterpriseFailbackIdempotentRetry, true);
+  assert.equal(evidence.outcomes.enterpriseFailbackStaleBCompletionDenied, true);
+  assert.equal(evidence.outcomes.enterpriseFailbackStaleBProtocolWriterDenied, true);
+  assert.equal(evidence.outcomes.enterpriseFailbackRpo, 0);
+  assert.equal(Number.isSafeInteger(evidence.outcomes.enterpriseFailbackRtoMs) &&
+    evidence.outcomes.enterpriseFailbackRtoMs >= 0, true);
+  assert.match(evidence.outcomes.enterpriseFailbackTargetClientId, COMMAND_ID);
   assert.equal(evidence.tskReturnAuthority?.commandId,
     evidence.outcomes.tskReturnCommandId);
   assert.equal(evidence.tskReturnAuthority?.finalizedReceiptDigest,

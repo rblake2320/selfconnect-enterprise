@@ -605,19 +605,39 @@ export async function exportIndependentState(pool, input) {
   const verifiedSourceCredentialPromise = Promise.all(input.sourceCredentialProofs.map((entry, index) => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
         Object.getPrototypeOf(entry) !== Object.prototype ||
-        Object.getOwnPropertySymbols(entry).length !== 0 ||
-        Object.keys(entry).sort().join(',') !== 'authorityCapability,expected,proof') {
+        Object.getOwnPropertySymbols(entry).length !== 0) {
       throw new Error(`sourceCredentialProofs[${index}] has an invalid shape`);
     }
-    for (const key of ['authorityCapability', 'expected', 'proof']) {
+    const keys = Object.keys(entry).sort().join(',');
+    const proofKind = keys === 'authorityCapability,expected,proof'
+      ? 'source'
+      : entry.proofKind;
+    if (keys !== 'authorityCapability,expected,proof' &&
+        keys !== 'authorityCapability,expected,proof,proofKind') {
+      throw new Error(`sourceCredentialProofs[${index}] has an invalid shape`);
+    }
+    if (proofKind !== 'source' && proofKind !== 'promoted') {
+      throw new Error(`sourceCredentialProofs[${index}].proofKind is invalid`);
+    }
+    for (const key of Object.keys(entry)) {
       const descriptor = Object.getOwnPropertyDescriptor(entry, key);
       if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) {
         throw new Error(`sourceCredentialProofs[${index}].${key} must be an enumerable data property`);
       }
     }
-    return verifySourceTskCredentialProof(
-      entry.authorityCapability, entry.proof, entry.expected,
-    );
+    const proof = snapshotPlainData(entry.proof);
+    const expected = snapshotPlainData(entry.expected);
+    const verification = proofKind === 'source'
+      ? verifySourceTskCredentialProof(entry.authorityCapability, proof, expected)
+      : verifyPromotedTskCredentialProof(entry.authorityCapability, proof, expected);
+    return verification.then((verified) => Object.freeze({
+      ...verified,
+      proof,
+      proofKind,
+      provenance: expected,
+      sourceClientId: proofKind === 'source'
+        ? verified.sourceClientId : verified.targetClientId,
+    }));
   }));
   const verifiedSourceCredentials = await verifiedSourceCredentialPromise;
   const verifiedSourceCredentialByPair = new Map();
@@ -645,6 +665,25 @@ export async function exportIndependentState(pool, input) {
           verified.pairId !== binding.pair_id ||
           verified.sourceClientId !== binding.tsk_client_id) {
         throw new Error('signed source TSK credential does not match identity binding');
+      }
+      if (verified.proofKind === 'promoted') {
+        const lineage = (await client.query(
+          `SELECT source_client_id,source_secret_digest,target_client_id,status,
+                  target_proof,target_proof_digest,activation_grant_digest,receipt_digest
+             FROM ultra_ha_tsk_reprovision
+            WHERE cluster_id=$1 AND pair_id=$2 FOR SHARE`,
+          [clusterId, binding.pair_id],
+        )).rows[0];
+        if (!lineage || lineage.status !== 'complete' ||
+            lineage.source_client_id !== verified.provenance.sourceClientId ||
+            lineage.source_secret_digest !== verified.provenance.sourceSecretDigest ||
+            lineage.target_client_id !== verified.targetClientId ||
+            lineage.target_proof_digest !== digest(verified.proof) ||
+            lineage.activation_grant_digest !== verified.activationGrantDigest ||
+            !DIGEST.test(lineage.receipt_digest ?? '') ||
+            canonicalJson(lineage.target_proof) !== canonicalJson(verified.proof)) {
+          throw new Error('promoted source TSK credential lacks completed Enterprise lineage');
+        }
       }
       credentialBindings.push({
         agentId: binding.agent_id,

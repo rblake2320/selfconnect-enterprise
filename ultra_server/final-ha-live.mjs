@@ -170,6 +170,7 @@ export function validateLiveProtocolComposition(bpc, tsk, commandId) {
   assert.equal(tsk.publicCredential.status, 'active');
   assert.match(tsk.publicCredential.publicMapDigest, DIGEST);
   assert.equal(tsk.staleCredentialWriterDenied, true);
+  assert.equal(tsk.staleReturnedCredentialWriterDenied, true);
   assert.notEqual(tsk.publicCredentialSource.clientId, tsk.publicCredentialTarget.clientId);
   assert.notEqual(tsk.publicCredentialSource.publicMapDigest,
     tsk.publicCredentialTarget.publicMapDigest);
@@ -178,6 +179,17 @@ export function validateLiveProtocolComposition(bpc, tsk, commandId) {
     tsk.publicCredentialTarget.clientId);
   assert.equal(tsk.credentialSourceRevocation.commandId, commandId);
   assert.equal(tsk.credentialActivationLeaseGrant.commandId, commandId);
+  assert.equal(tsk.targetCredentialRevocation.commandId, tsk.returnCommandId);
+  assert.equal(tsk.targetCredentialRevocation.leaseStatus, 'revoked');
+  assert.equal(tsk.returnCredentialActivationLeaseGrant.commandId, tsk.returnCommandId);
+  assert.equal(tsk.returnCredentialActivationLeaseGrant.leaseEpoch,
+    tsk.returnActivationLeaseGrant.leaseEpoch);
+  assert.equal(tsk.returnCredentialProof.commandId, tsk.returnCommandId);
+  assert.equal(tsk.returnCredentialProof.record.mutation.clientId,
+    tsk.publicCredentialReturn.clientId);
+  assert.notEqual(tsk.publicCredentialReturn.clientId, tsk.publicCredentialTarget.clientId);
+  assert.notEqual(tsk.publicCredentialReturn.secretDigest,
+    tsk.publicCredentialTarget.secretDigest);
   assert.equal(new Set(Object.values(bpc.systemIds)).size, 3);
   assert.equal(new Set(Object.values(tsk.systemIds)).size, 3);
   assert.notEqual(bpc.systemIds.promotedB, tsk.systemIds.receiverB);
@@ -236,6 +248,9 @@ export async function runLiveProtocolComposition(env = process.env) {
     ? createPublicKey(tsk.publicKeys.bReceipt) : null };
   const tskGuardResolver = { resolve: (keyId) => keyId === tsk.activationLeaseGrant.guardKeyId
     ? createPublicKey(tsk.publicKeys.guard) : null };
+  const tskReturnResolver = { resolve: (keyId) =>
+    keyId === tsk.returnFinalizedReceipt.bKeyId
+      ? createPublicKey(tsk.publicKeys.aReceipt) : null };
   bpcApi.verifyPromotionReadinessAttestation(bpcResolver, bpc.readinessAttestation);
   tskApi.verifyBFinalizedReceipt(tskBResolver, tsk.bFinalizedReceipt);
   tskApi.verifyLeaseGrant(tskGuardResolver, tsk.activationLeaseGrant);
@@ -277,6 +292,27 @@ export async function runLiveProtocolComposition(env = process.env) {
       sourceClientId: tsk.publicCredentialSource.clientId,
     },
   );
+  const returnCredentialGuardResolver = { resolve: (keyId) =>
+    keyId === tsk.returnCredentialActivationLeaseGrant.guardKeyId
+      ? createPublicKey(tsk.publicKeys.guard) : null };
+  const returnCredentialHeadResolver = { resolve: (keyId, alg) =>
+    keyId === tsk.returnCredentialProof.head.keyId && alg === 'ed25519'
+      ? createPublicKey(tsk.publicKeys.returnCredentialHead) : null };
+  const returnCredentialAuthority = createPromotedTskAuthorityCapability({
+    activationLease: tsk.returnCredentialActivationLeaseGrant,
+    leaseResolver: returnCredentialGuardResolver,
+    headKeyResolver: returnCredentialHeadResolver,
+  });
+  const verifiedReturnCredential = await verifyPromotedTskCredentialProof(
+    returnCredentialAuthority,
+    tsk.returnCredentialProof,
+    {
+      agentId: tsk.returnCredentialProof.agentId,
+      pairId: tsk.returnCredentialProof.pairId,
+      sourceClientId: tsk.publicCredentialTarget.clientId,
+      sourceSecretDigest: tsk.publicCredentialTarget.secretDigest,
+    },
+  );
   validateLiveProtocolComposition(bpc, tsk, commandId);
 
   return Object.freeze({
@@ -288,13 +324,17 @@ export async function runLiveProtocolComposition(env = process.env) {
     sourceCredentialAuthority,
     verifiedSourceCredential,
     verifiedTargetCredential,
-    resolvers: Object.freeze({ bpcResolver, tskBResolver, tskGuardResolver }),
+    returnCredentialAuthority,
+    verifiedReturnCredential,
+    resolvers: Object.freeze({ bpcResolver, tskBResolver, tskGuardResolver,
+      tskReturnResolver }),
     publicKeyFingerprints: Object.freeze({
       bpcSource: fingerprint(bpc.publicKeys.source),
       tskB: fingerprint(tsk.publicKeys.bReceipt),
     tskGuard: fingerprint(tsk.publicKeys.guard),
       tskSourceCredentialHead: fingerprint(tsk.publicKeys.sourceCredentialHead),
       tskTargetCredentialHead: fingerprint(tsk.publicKeys.credentialHead),
+      tskReturnCredentialHead: fingerprint(tsk.publicKeys.returnCredentialHead),
     }),
   });
 }

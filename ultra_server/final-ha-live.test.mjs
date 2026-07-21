@@ -30,15 +30,24 @@ test('live composition requires exact command binding, independent systems, and 
     redisAuthority: { record: { commandId: 'return-promote-live-1', fenceEpoch: 2,
       nodeId: 'return-a', active: true } },
     staleCredentialWriterDenied: true,
+    staleReturnedCredentialWriterDenied: true,
     publicCredential: { status: 'active', publicMapDigest: 'a'.repeat(64) },
     publicCredentialSource: { clientId: 'source-client', publicMapDigest: 'b'.repeat(64) },
     publicCredentialTarget: { clientId: 'target-client', publicMapDigest: 'a'.repeat(64) },
+    publicCredentialReturn: { clientId: 'return-client', publicMapDigest: 'd'.repeat(64),
+      secretDigest: 'e'.repeat(64) },
     targetCredentialProof: {
       commandId,
       record: { mutation: { clientId: 'target-client' } },
     },
     credentialSourceRevocation: { commandId },
     credentialActivationLeaseGrant: { commandId },
+    targetCredentialRevocation: { commandId: 'return-promote-live-1',
+      leaseStatus: 'revoked' },
+    returnCredentialActivationLeaseGrant: { commandId: 'return-promote-live-1',
+      leaseEpoch: 2 },
+    returnCredentialProof: { commandId: 'return-promote-live-1',
+      record: { mutation: { clientId: 'return-client' } } },
     systemIds: { sourceA: '4', receiverB: '5', control: '6' },
   };
   assert.equal(validateLiveProtocolComposition(bpc, tsk, commandId), true);
@@ -65,6 +74,9 @@ test('directly composes exact reviewed live BPC and TSK artifacts', {
   assert.equal(result.enterprise.rpo, 0);
   assert.equal(result.enterprise.copiedTargetCredentialRows, 0);
   assert.equal(result.enterprise.targetClientId, result.tsk.publicCredentialTarget.clientId);
+  assert.equal(result.enterprise.failback.targetClientId,
+    result.tsk.publicCredentialReturn.clientId);
+  assert.equal(result.enterprise.failback.staleBProtocolWriterDenied, true);
   if (process.env.ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE) {
     await writeLiveCompositionEvidence(process.env.ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE, result);
   }
