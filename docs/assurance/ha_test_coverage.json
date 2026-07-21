@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-07-21",
+  "scope": "SelfConnect Enterprise Ultra named controlled-deployment topology",
+  "authoritative_open_work": "https://github.com/rblake2320/selfconnect-enterprise/issues/28",
+  "standards": [
+    {
+      "id": "NIST-SP-800-53-5.1-CP-4",
+      "title": "Contingency Plan Testing",
+      "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+    },
+    {
+      "id": "NIST-SP-800-34r1",
+      "title": "Contingency Planning Guide for Federal Information Systems",
+      "url": "https://csrc.nist.gov/pubs/sp/800/34/r1/upd1/final"
+    },
+    {
+      "id": "REDIS-SENTINEL",
+      "title": "High availability with Redis Sentinel",
+      "url": "https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/"
+    },
+    {
+      "id": "POSTGRESQL-HA",
+      "title": "PostgreSQL High Availability, Load Balancing, and Replication",
+      "url": "https://www.postgresql.org/docs/current/high-availability.html"
+    }
+  ],
+  "levels": [
+    {
+      "id": "process-loss",
+      "status": "pass",
+      "requirement": "Interrupt live cutover processes before and after durable boundaries and resume without torn or duplicate state.",
+      "evidence": ["docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#acceptance-matrix", "master CI 29866745029: Ultra final HA acceptance"],
+      "limitations": "Pass applies to the named child-process and database-process faults, not loss of an operating-system host.",
+      "closure": ""
+    },
+    {
+      "id": "database-process-loss",
+      "status": "pass",
+      "requirement": "Lose and restart the promoted PostgreSQL process and verify identity, readiness, and committed authority state.",
+      "evidence": ["docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#acceptance-matrix", "docs/operations/SPARK2_HOST_ACCEPTANCE.md#verification-performed"],
+      "limitations": "This is PostgreSQL process/container loss and restart, not destruction of the host or storage volume.",
+      "closure": ""
+    },
+    {
+      "id": "redis-functional-failover",
+      "status": "pass",
+      "requirement": "Crash and isolate the active Redis master; require quorum promotion, monotonic fencing, old-master denial, and convergence after heal.",
+      "evidence": ["docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#acceptance-matrix", "master CI 29866745029: Ultra final HA acceptance"],
+      "limitations": "All three Redis data nodes and Sentinels ran on one hosted runner, so this proves failover semantics but not independent infrastructure failure domains.",
+      "closure": ""
+    },
+    {
+      "id": "redis-independent-failure-domains",
+      "status": "open",
+      "requirement": "Place at least three Sentinel instances on computers or virtual machines expected to fail independently.",
+      "evidence": ["REDIS-SENTINEL official deployment requirement"],
+      "limitations": "The hosted quorum uses separate containers on one runner; Spark-1/Spark-2 currently provide only two physical hosts and the Spark-2 Redis target is not a quorum member.",
+      "closure": "Provision a third independent host or VM failure domain, distribute Redis/Sentinel members, then repeat crash, partition, heal, rollback, and monotonic-epoch drills."
+    },
+    {
+      "id": "cross-host-handoff",
+      "status": "pass",
+      "requirement": "Execute the governed TSK A-to-B-to-A lifecycle on distinct admitted physical hosts with independent PostgreSQL state authorities.",
+      "evidence": ["docs/operations/SPARK2_HOST_ACCEPTANCE.md", "docs/verification/spark2-host-evidence-03add3e.json", "PR 50 independent CLEAN review"],
+      "limitations": "Spark-1 and Spark-2 are on the same LAN. Source and control PostgreSQL authorities share Spark-1.",
+      "closure": ""
+    },
+    {
+      "id": "cross-host-service-network-partition",
+      "status": "partial",
+      "requirement": "Disrupt the live inter-host target service path, prove fail-closed behavior with no evidence artifact, heal, and reconverge.",
+      "evidence": ["2026-07-21 controlled Docker-network disconnect on Spark-2", "post-heal receipt SHA-256 0bcb4038a5dc4d2fd3627c01fc92e11e6b7052913be9abfdf0f2e261620af8aa"],
+      "limitations": "The real service path was disconnected and refused the run; heal reached PostgreSQL in 557 ms and the full handoff completed in 33942 ms. The fault transcript is operator-observed rather than a committed machine-produced fault receipt, and this is not loss of the host network or LAN.",
+      "closure": "Automate the disconnect/refusal/no-receipt/heal sequence with write-once secret-free evidence and independent review; separately execute a network-domain/site isolation test on suitable infrastructure."
+    },
+    {
+      "id": "whole-host-loss",
+      "status": "open",
+      "requirement": "Interrupt an entire admitted authority host and recover or fail over without relying on processes that remain alive on that host.",
+      "evidence": ["docs/operations/SPARK2_HOST_ACCEPTANCE.md#boundary"],
+      "limitations": "Spark-2 hosts unrelated owner workloads. Stopping its acceptance PostgreSQL or network does not equal power loss or chassis loss, and those substitutes are not presented as equivalent.",
+      "closure": "Move the acceptance target to a dedicated host or obtain an approved maintenance window, then power off or hard-reset that host and retain measured recovery evidence."
+    },
+    {
+      "id": "alternate-site",
+      "status": "open",
+      "requirement": "Test recovery and operations at an alternate processing site separated from the primary site hazards.",
+      "evidence": ["NIST-SP-800-53-5.1-CP-4 enhancement 2", "NIST-SP-800-34r1 alternate-site guidance"],
+      "limitations": "Both Sparks are on the same LAN and no independent geography, power, or network provider is admitted. Containers, VMs, and port blocks on this LAN cannot prove a site boundary.",
+      "closure": "Provision an actual alternate site or cloud region with independent power/network, admit its identities, and run full interruption, recovery, failback, and accessibility exercises there."
+    },
+    {
+      "id": "full-recovery-reconstitution",
+      "status": "partial",
+      "requirement": "Recover the system to a known state, validate integrity, and resume governed operations.",
+      "evidence": ["docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#acceptance-matrix", "docs/operations/ULTRA_DISASTER_RECOVERY.md"],
+      "limitations": "The drill performs signed Enterprise-state rebuild and exact PostgreSQL restart on the promoted authority. It does not restore a full deployment from independent backups at an alternate site.",
+      "closure": "Restore PostgreSQL, Redis policy state, identity recovery material, and provenance evidence into an isolated independent deployment; validate all authority identities and record recovery point/time."
+    },
+    {
+      "id": "backup-restore",
+      "status": "open",
+      "requirement": "Restore protected backups into an isolated environment and verify application, identity, transaction, and evidence continuity.",
+      "evidence": ["docs/operations/ULTRA_DISASTER_RECOVERY.md#isolated-restore-drill"],
+      "limitations": "A reviewed runbook exists, but no retained artifact proves the complete isolated backup restore procedure has run end to end.",
+      "closure": "Run the documented isolated restore using real backup media and separate recovery identities; retain secret-free hashes, RPO/RTO, integrity results, and destruction evidence."
+    },
+    {
+      "id": "enterprise-failback",
+      "status": "open",
+      "requirement": "Return Enterprise-owned identity, idempotency, nonce, and credential-binding authority from B to A under a new epoch while the old B writer remains fenced.",
+      "evidence": ["BPC and TSK A-to-B-to-A pass in docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md"],
+      "limitations": "The Enterprise-owned state drill is A-to-B only. Protocol failback is necessary but is not a substitute for Enterprise state failback.",
+      "closure": "Implement and run the Enterprise B-to-A export, independent countersign, import, target credential reprovision, readiness, first mutation, stale-B denial, and repeated failover/failback."
+    },
+    {
+      "id": "rpo-rto-objectives",
+      "status": "partial",
+      "requirement": "Measure recovery outcomes and compare them with approved recovery point and recovery time objectives.",
+      "evidence": ["component fault measurements in docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md", "Spark handoff elapsed measurements in docs/operations/SPARK2_HOST_ACCEPTANCE.md"],
+      "limitations": "The tests measure RPO/RTO or elapsed time for named faults, but no owner-approved business impact analysis or production SLO defines the required targets. Asynchronous or catastrophic source-storage loss is not claimed as RPO zero.",
+      "closure": "Approve workload-specific RPO/RTO targets, encode technical acceptance thresholds, and demonstrate them across process, database, Redis, host, network, restore, and alternate-site exercises."
+    },
+    {
+      "id": "integration-test-skips",
+      "status": "pass",
+      "requirement": "Execute database-dependent Ultra integration tests with real PostgreSQL rather than treating local skips as passing evidence.",
+      "evidence": ["master CI 29866745029 Ultra production durability: Ultra suite 65 tests, 0 skipped", "independent-state suite 2 tests, 0 skipped", "Ultra outbox suite 1 test, 0 skipped"],
+      "limitations": "An ad-hoc Spark shell run without DATABASE_URL reported two explicit integration skips; it is supporting evidence only and is not the authoritative full-suite receipt.",
+      "closure": ""
+    }
+  ]
+}

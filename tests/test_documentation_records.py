@@ -16,6 +16,7 @@ CATALOG_PATH = ROOT / "docs" / "assurance" / "control_catalog.json"
 PROVENANCE_ACCEPTANCE_PATH = (
     ROOT / "docs" / "operations" / "2026-07-16-provenance-service-acceptance.json"
 )
+HA_TEST_COVERAGE_PATH = ROOT / "docs" / "assurance" / "ha_test_coverage.json"
 
 LOG_ID_RE = re.compile(r"^## (LOG-\d{8}-\d{3})\b", re.MULTILINE)
 PARK_ID_RE = re.compile(r"^## (PARK-\d{8}-\d{3})\b", re.MULTILINE)
@@ -242,3 +243,43 @@ def test_provenance_service_acceptance_artifact_is_bounded_and_redacted() -> Non
     )
     for value in prohibited:
         assert value not in encoded
+
+
+def test_ha_test_coverage_never_hides_unexecuted_levels_as_passes() -> None:
+    import json
+    from urllib.parse import urlparse
+
+    matrix = json.loads(_read(HA_TEST_COVERAGE_PATH))
+    assert matrix["schema_version"] == 1
+    assert matrix["authoritative_open_work"].endswith("/issues/28")
+    standards = matrix["standards"]
+    standard_ids = {entry["id"] for entry in standards}
+    assert len(standard_ids) == len(standards)
+    assert {urlparse(entry["url"]).hostname for entry in standards} <= {
+        "csrc.nist.gov",
+        "redis.io",
+        "www.postgresql.org",
+    }
+
+    levels = matrix["levels"]
+    ids = [level["id"] for level in levels]
+    _assert_unique(ids, "HA test level")
+    required = {"id", "status", "requirement", "evidence", "limitations", "closure"}
+    assert {level["status"] for level in levels} <= {"pass", "partial", "open"}
+    assert "skip" not in {level["status"] for level in levels}
+    for level in levels:
+        assert set(level) == required
+        assert level["requirement"] and level["limitations"]
+        assert isinstance(level["evidence"], list) and level["evidence"]
+        if level["status"] in {"partial", "open"}:
+            assert level["closure"], f"{level['id']} has no closure condition"
+        else:
+            assert level["closure"] == ""
+
+    status = {level["id"]: level["status"] for level in levels}
+    assert status["whole-host-loss"] == "open"
+    assert status["alternate-site"] == "open"
+    assert status["backup-restore"] == "open"
+    assert status["enterprise-failback"] == "open"
+    assert status["redis-independent-failure-domains"] == "open"
+    assert status["cross-host-service-network-partition"] == "partial"

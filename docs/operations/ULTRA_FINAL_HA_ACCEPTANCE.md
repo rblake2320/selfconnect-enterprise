@@ -5,6 +5,9 @@
 availability outside the recorded topology. The hosted topology is one runner.
 The Spark-2 supplement in `SPARK2_HOST_ACCEPTANCE.md` establishes a
 two-physical-host same-LAN TSK handoff, but not an independent site domain.
+`HA_TEST_STANDARDS_MATRIX.md` is the machine-checked PASS/PARTIAL/OPEN ledger
+for required fault and recovery levels; an omitted or substitute test is not a
+pass.
 
 ## Topology
 
