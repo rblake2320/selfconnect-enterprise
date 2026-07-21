@@ -297,7 +297,7 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       });
       const afterRestartProof = (await b.query(
         `SELECT receipt_digest,target_client_id FROM ultra_ha_tsk_reprovision
-         WHERE cluster_id=$1 AND command_id=$2`, [clusterId, composition.commandId],
+         WHERE cluster_id=$1 AND pair_id=$2`, [clusterId, pairId],
       )).rows[0];
       assert.equal(afterRestartReady.targetSystemId, ready.targetSystemId);
       assert.equal(afterRestartProof.receipt_digest, reprovisioned.receiptDigest);

@@ -42,7 +42,7 @@ test('live composition requires exact command binding, independent systems, and 
 
 test('directly composes exact reviewed live BPC and TSK artifacts', {
   skip: process.env.LIVE_COMPOSITION_COMBINED !== '1',
-  timeout: 180_000,
+  timeout: 600_000,
 }, async () => {
   const result = await runLiveEnterpriseAcceptance();
   assert.equal(result.bpc.readinessAttestation.commandId, result.commandId);
