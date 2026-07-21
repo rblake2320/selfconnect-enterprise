@@ -147,7 +147,7 @@ function signedProtocolEvidence({ commandId, sourceSystemId, targetSystemId, key
 
 function signedSourceCredentialBinding({ agentId, map, pairId, protocolEvidence, guardPublicKey }) {
   const headKeys = generateKeyPairSync('ed25519');
-  const publicMap = structuredClone(map);
+  const publicMap = JSON.parse(JSON.stringify(map));
   delete publicMap.sharedSecret;
   const lease = protocolEvidence.tskActivationLease;
   const mutation = {

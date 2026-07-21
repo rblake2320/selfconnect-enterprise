@@ -585,8 +585,8 @@ export async function exportIndependentState(pool, input) {
     const credentialBindings = [];
     for (const binding of bindings.rows) {
       const verified = verifiedSourceCredentialByPair.get(binding.pair_id);
-      if (!verified || verified.commandId !== commandId ||
-          verified.agentId !== binding.agent_id || verified.pairId !== binding.pair_id ||
+      if (!verified || verified.agentId !== binding.agent_id ||
+          verified.pairId !== binding.pair_id ||
           verified.sourceClientId !== binding.tsk_client_id) {
         throw new Error('signed source TSK credential does not match identity binding');
       }
