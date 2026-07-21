@@ -590,6 +590,23 @@ jobs:
             client.disconnect();
           }
           NODE
+      - name: Run direct reviewed BPC and TSK protocol composition
+        shell: bash
+        env:
+          BPC_LIVE_COMPOSITION_A_URL: ${{ env.BPC_TEST_POSTGRES_URL }}
+          BPC_LIVE_COMPOSITION_B_URL: ${{ env.BPC_TEST_POSTGRES_B_URL }}
+          BPC_LIVE_COMPOSITION_CONTROL_URL: ${{ env.BPC_TEST_POSTGRES_CONTROL_URL }}
+          BPC_LIVE_COMPOSITION_REDIS_URLS: ${{ env.BPC_TEST_REDIS_URLS }}
+          TSK_LIVE_COMPOSITION_A_URL: ${{ env.TSK_TEST_SOURCE_PG_URL_A }}
+          TSK_LIVE_COMPOSITION_B_URL: ${{ env.TSK_TEST_RECEIVER_PG_URL_B }}
+          TSK_LIVE_COMPOSITION_CONTROL_URL: ${{ env.TSK_TEST_CONTROL_PG_URL }}
+          TSK_LIVE_COMPOSITION_REDIS_URL: redis://127.0.0.1:6381/1
+          LIVE_COMPOSITION_COMBINED: "1"
+          ULTRA_FINAL_COMMAND_ID: enterprise28-promote-1
+          ULTRA_FINAL_EXPECTED_ENTERPRISE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BPC_PROTOCOL_ROOT: ${{ github.workspace }}/../bpc-protocol
+          TSK_PROTOCOL_ROOT: ${{ github.workspace }}/../tsk-protocol
+        run: npm run test:protocol-composition --prefix ultra_server
       - name: Run pinned final acceptance and create secret-free evidence
         shell: bash
         env:

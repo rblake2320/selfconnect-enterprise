@@ -33,6 +33,7 @@
     "test:independent-state": "node --test independent-state.test.mjs",
     "test:ultra-outbox": "node --test ultra-state-outbox.test.mjs",
     "test:final-ha-unit": "node --test final-ha-acceptance.test.mjs",
+    "test:protocol-composition": "node --test --test-concurrency=1 bpc-live-composition.test.mjs tsk-live-composition.test.mjs final-ha-live.test.mjs",
     "test:final-ha": "node final-ha-acceptance.mjs",
     "test:live": "node server.test.mjs"
   },

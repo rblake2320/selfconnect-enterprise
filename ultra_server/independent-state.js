@@ -567,6 +567,9 @@ export async function exportIndependentState(pool, input) {
         tskCredentials: [],
       }),
       bpcPromotionDigest,
+      bpcTargetEpoch: positiveSafeInteger(
+        protocolEvidence.bpcPromotionAttestation.targetEpoch, 'bpcTargetEpoch',
+      ),
       clusterId,
       commandId,
       format: 'selfconnect-ultra-independent-state-v2',
@@ -577,6 +580,9 @@ export async function exportIndependentState(pool, input) {
       stateBytes,
       stateDigest: digest(state),
       tskActivationDigest,
+      tskTargetEpoch: positiveSafeInteger(
+        protocolEvidence.tskActivationLease.leaseEpoch, 'tskTargetEpoch',
+      ),
       tskFinalizedDigest,
     };
     const manifestDigest = digest(manifest);
@@ -741,17 +747,19 @@ function validateState(state) {
 
 function validateManifest(manifest) {
   strictKeys(manifest, new Set([
-    'authorityDigest', 'bpcPromotionDigest', 'clusterId', 'commandId', 'format', 'itemCount', 'sourceEpoch',
+    'authorityDigest', 'bpcPromotionDigest', 'bpcTargetEpoch', 'clusterId', 'commandId', 'format', 'itemCount', 'sourceEpoch',
     'sourceSystemId', 'state', 'stateBytes', 'stateDigest', 'tskActivationDigest',
-    'tskFinalizedDigest',
+    'tskFinalizedDigest', 'tskTargetEpoch',
   ]), 'independent state manifest');
   if (manifest.format !== 'selfconnect-ultra-independent-state-v2') throw new Error('manifest format invalid');
   requiredIdentifier(manifest.clusterId, 'manifest.clusterId');
   requiredIdentifier(manifest.commandId, 'manifest.commandId');
   positiveSafeInteger(manifest.sourceEpoch, 'manifest.sourceEpoch');
   requiredDigest(manifest.bpcPromotionDigest, 'manifest.bpcPromotionDigest');
+  positiveSafeInteger(manifest.bpcTargetEpoch, 'manifest.bpcTargetEpoch');
   requiredDigest(manifest.authorityDigest, 'manifest.authorityDigest');
   requiredDigest(manifest.tskActivationDigest, 'manifest.tskActivationDigest');
+  positiveSafeInteger(manifest.tskTargetEpoch, 'manifest.tskTargetEpoch');
   requiredDigest(manifest.tskFinalizedDigest, 'manifest.tskFinalizedDigest');
   requiredDigest(manifest.stateDigest, 'manifest.stateDigest');
   validateState(manifest.state);
@@ -786,10 +794,10 @@ function verifyProtocolEvidence(evidence, manifest, resolvers) {
     throw new Error('protocol evidence digest mismatch');
   }
   if (bpc.commandId !== manifest.commandId || finalized.commandId !== manifest.commandId ||
-      lease.commandId !== manifest.commandId || bpc.targetEpoch !== manifest.sourceEpoch ||
-      lease.leaseEpoch !== manifest.sourceEpoch || finalized.epoch !== manifest.sourceEpoch - 1 ||
+      lease.commandId !== manifest.commandId || bpc.targetEpoch !== manifest.bpcTargetEpoch ||
+      lease.leaseEpoch !== manifest.tskTargetEpoch || finalized.epoch !== manifest.tskTargetEpoch - 1 ||
       lease.leaseStatus !== 'active' || lease.holderNodeId !== finalized.bKeyId ||
-      bpc.targetSystemId !== finalized.bSystemId || finalized.sourceSystemId !== manifest.sourceSystemId ||
+      bpc.targetSystemId === finalized.bSystemId || finalized.sourceSystemId !== manifest.sourceSystemId ||
       bpc.streamId !== finalized.streamId || finalized.streamId !== lease.streamId) {
     throw new Error('protocol evidence promotion binding mismatch');
   }
@@ -808,8 +816,7 @@ export async function importIndependentState(pool, bundle, input) {
     await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [input.advisoryLockKey]);
     const targetSystemId = await systemIdentifier(client);
     if (targetSystemId === manifest.sourceSystemId) throw new Error('source and target PostgreSQL authorities are not independent');
-    if (targetSystemId !== bundle.protocolEvidence.bpcPromotionAttestation.targetSystemId ||
-        targetSystemId !== bundle.protocolEvidence.tskFinalizedReceipt.bSystemId) {
+    if (targetSystemId !== bundle.protocolEvidence.tskFinalizedReceipt.bSystemId) {
       throw new Error('protocol evidence belongs to a different target PostgreSQL authority');
     }
     const current = await client.query('SELECT * FROM ultra_ha_import_head WHERE cluster_id=$1 FOR UPDATE', [manifest.clusterId]);

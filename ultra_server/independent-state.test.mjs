@@ -63,7 +63,8 @@ function signedProtocolEvidence({ commandId, sourceSystemId, targetSystemId, key
   const guardKeyId = 'tsk-guard-key-1';
   const bpcBare = {
     streamId: 'ultra-stream', commandId, targetEpoch, targetSourceEpoch: `epoch-${targetEpoch}`,
-    targetSystemId, snapshotKeyId: bpcKeyId, manifestDigest: '1'.repeat(64),
+    targetSystemId: (BigInt(targetSystemId) + 1n).toString(),
+    snapshotKeyId: bpcKeyId, manifestDigest: '1'.repeat(64),
     appliedSequence: 0, stateDigest: '2'.repeat(64), fencedDigest: '3'.repeat(64),
   };
   const bpcMessage = (digest) => frame(
