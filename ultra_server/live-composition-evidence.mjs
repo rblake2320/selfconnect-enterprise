@@ -4,6 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 
 const SHA = /^[0-9a-f]{40}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
+const COMMAND_ID = /^[A-Za-z0-9_.:/-]{1,128}$/;
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
@@ -50,6 +51,16 @@ function publicEvidence(result) {
       redactionPreserved: result.enterprise.redactionPreserved,
       dataLossRpo: result.enterprise.rpo,
     },
+    tskReturnAuthority: {
+      commandId: result.tsk.returnCommandId,
+      finalizedReceiptDigest: result.tsk.returnFinalizedReceipt.receiptDigest,
+      activationGrantDigest: result.tsk.returnActivationLeaseGrant.grantDigest,
+      targetSystemId: result.tsk.returnFinalizedReceipt.bSystemId,
+      sourceEpoch: result.tsk.returnFinalizedReceipt.epoch,
+      targetEpoch: result.tsk.returnActivationLeaseGrant.leaseEpoch,
+      importedSequence: result.tsk.returnSourceActivation.n,
+      nextSequence: result.tsk.returnSequence,
+    },
     tskRedisFaults: result.tskRedisFaults,
     ultraRedisFaults: result.ultraRedisFaults,
   };
@@ -59,6 +70,7 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
   assert.equal(evidence?.schemaVersion, 4);
   assert.equal(evidence?.kind, 'enterprise-live-authority-handoff');
   assert.equal(evidence?.commandId, expected.commandId ?? evidence.commandId);
+  assert.match(evidence?.commandId, COMMAND_ID);
   for (const [name, value] of Object.entries(evidence?.commits ?? {})) {
     assert.match(value, SHA, `${name} commit must be a full SHA`);
     if (expected.commits?.[name]) assert.equal(value, expected.commits[name]);
@@ -76,6 +88,8 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
     evidence.outcomes.bpcFailbackTargetEpoch > 1, true);
   assert.equal(evidence.outcomes.tskStaleWriterDenied, true);
   assert.equal(evidence.outcomes.tskReturnStaleWriterDenied, true);
+  assert.match(evidence.outcomes.tskReturnCommandId, COMMAND_ID);
+  assert.notEqual(evidence.outcomes.tskReturnCommandId, evidence.commandId);
   assert.equal(evidence.outcomes.returnedSourceNextSequence,
     evidence.outcomes.promotedSourceNextSequence + 1);
   assert.equal(evidence.systems.tsk.sourceA !== evidence.systems.tsk.receiverB, true);
@@ -83,6 +97,22 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
   assert.equal(evidence.outcomes.copiedTargetCredentialRows, 0);
   assert.equal(evidence.outcomes.redactionPreserved, true);
   assert.equal(evidence.outcomes.dataLossRpo, 0);
+  assert.equal(evidence.tskReturnAuthority?.commandId,
+    evidence.outcomes.tskReturnCommandId);
+  assert.equal(evidence.tskReturnAuthority?.finalizedReceiptDigest,
+    evidence.artifacts.tskReturnFinalized);
+  assert.equal(evidence.tskReturnAuthority?.activationGrantDigest,
+    evidence.artifacts.tskReturnActivation);
+  assert.equal(evidence.tskReturnAuthority?.targetSystemId,
+    evidence.systems.tsk.sourceA);
+  assert.equal(Number.isSafeInteger(evidence.tskReturnAuthority?.sourceEpoch), true);
+  assert.equal(Number.isSafeInteger(evidence.tskReturnAuthority?.targetEpoch), true);
+  assert.equal(evidence.tskReturnAuthority.targetEpoch,
+    evidence.tskReturnAuthority.sourceEpoch + 1);
+  assert.equal(evidence.tskReturnAuthority.importedSequence,
+    evidence.outcomes.promotedSourceNextSequence);
+  assert.equal(evidence.tskReturnAuthority.nextSequence,
+    evidence.outcomes.returnedSourceNextSequence);
   assert.equal(evidence.tskRedisFaults?.kind, 'tsk-same-redis-authority-faults');
   assert.equal(evidence.tskRedisFaults?.commandId,
     evidence.outcomes.tskReturnCommandId);

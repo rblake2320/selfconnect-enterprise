@@ -13,6 +13,7 @@ import { promotedTskCredentialLabel } from './promoted-tsk-authority.js';
 import { loadPromotedTskCredentialRuntime } from './promoted-tsk-runtime.js';
 
 const HOUR_MS = 3_600_000;
+const ACCEPTANCE_SOURCE_LEASE_MS = 15_000;
 const ID = /^[A-Za-z0-9_.:/-]{1,128}$/;
 
 function requiredString(value, name) {
@@ -133,6 +134,20 @@ async function dbClockMs(pool) {
     'SELECT (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint AS value',
   );
   return Number(result.rows[0].value);
+}
+
+async function awaitControlLeaseExpiry(pool, leaseExpiresAtMs) {
+  const deadline = Date.now() + ACCEPTANCE_SOURCE_LEASE_MS + 10_000;
+  for (;;) {
+    const now = await dbClockMs(pool);
+    if (now >= leaseExpiresAtMs) return now;
+    if (Date.now() >= deadline) {
+      throw new Error('control clock did not reach the signed source-lease expiry');
+    }
+    await new Promise((resolve) => setTimeout(
+      resolve, Math.max(1, Math.min(100, leaseExpiresAtMs - now)),
+    ));
+  }
 }
 
 function runtimePostgresUrl(base, username, password) {
@@ -439,7 +454,7 @@ export async function runTskLiveComposition(rawOptions) {
     const aGrant = signLeaseGrant(keyIds.guard, material.guard.privateKey, {
       streamId: options.streamId, leaseEpoch: 0, leaseStatus: 'active',
       holderNodeId: aNodeId, leaseId, commandId: 'enterprise28-grant-1',
-      leaseExpiresAtMs: await dbClockMs(aPool) + HOUR_MS,
+      leaseExpiresAtMs: await dbClockMs(aPool) + ACCEPTANCE_SOURCE_LEASE_MS,
       leaseGrantSeq: 1, prevGrantDigest: null,
     });
     await aDb.transaction((exec) => installLeaseGrant(exec, resolver, aGrant));
@@ -563,6 +578,12 @@ export async function runTskLiveComposition(rawOptions) {
       exec, resolver, sourceCredentialRevocation,
     ));
 
+    assert.equal(
+      await dbClockMs(aPool) < aGrant.leaseExpiresAtMs,
+      true,
+      'A source operations must finish before the signed source lease expires',
+    );
+
     const revokedGrant = signLeaseGrant(keyIds.guard, material.guard.privateKey, {
       streamId: options.streamId, leaseEpoch: 0, leaseStatus: 'revoked',
       holderNodeId: aNodeId, leaseId, commandId,
@@ -616,7 +637,7 @@ export async function runTskLiveComposition(rawOptions) {
         sourceGuard: {
           keyId: keyIds.guard,
           privateKey: material.guard.privateKey,
-          activationTtlMs: HOUR_MS,
+          activationTtlMs: ACCEPTANCE_SOURCE_LEASE_MS,
         },
       },
     );
@@ -624,7 +645,7 @@ export async function runTskLiveComposition(rawOptions) {
     await control.provision(options.streamId, 'enterprise28-genesis');
     await control.writeLease({
       streamId: options.streamId, leaseId, holderNodeId: aNodeId, epoch: 0,
-      status: 'active', grantedMaxExpiryMs: await controlNow() - 5_000,
+      status: 'active', grantedMaxExpiryMs: aGrant.leaseExpiresAtMs,
       grantCommandId: 'enterprise28-control-grant-1',
     });
     await control.beginPromotionIntent(options.streamId, commandId, targetEpoch);
@@ -633,15 +654,29 @@ export async function runTskLiveComposition(rawOptions) {
     );
     await control.writeLease({
       streamId: options.streamId, leaseId, holderNodeId: aNodeId, epoch: 0,
-      status: 'revoked', grantedMaxExpiryMs: await controlNow() - 5_000,
+      status: 'revoked', grantedMaxExpiryMs: aGrant.leaseExpiresAtMs,
       grantCommandId: 'enterprise28-control-revoke-1',
     });
     const fenceStore = new RedisFencingStore(redis, redisKey,
       options.redis.kind === 'sentinel' ? { waitReplicas: 1, waitTimeoutMs: 3_000 } : undefined);
-    await control.advanceEpoch(options.streamId, commandId, targetEpoch, 'Bnode', fenceStore, {
+    const firstClaimExpiresAtMs = await controlNow() + HOUR_MS;
+    await assert.rejects(() => control.advanceEpoch(
+      options.streamId, commandId, targetEpoch, bNodeId, fenceStore, {
+        safetyMarginMs: 0, claimExpiresAtMs: firstClaimExpiresAtMs,
+      },
+    ), /not expired|safety margin/i);
+    await awaitControlLeaseExpiry(controlPool, aGrant.leaseExpiresAtMs);
+    await control.advanceEpoch(options.streamId, commandId, targetEpoch, bNodeId, fenceStore, {
       safetyMarginMs: 0,
-      claimExpiresAtMs: await controlNow() + HOUR_MS,
+      claimExpiresAtMs: firstClaimExpiresAtMs,
     });
+    assert.deepEqual(await fenceStore.current(), {
+      nodeId: bNodeId,
+      fenceEpoch: targetEpoch,
+      expiresAt: firstClaimExpiresAtMs,
+      commandId,
+      active: true,
+    }, 'epoch-1 Redis authority must byte-bind the ratified B identity');
     await control.markImporting(options.streamId, commandId, targetEpoch);
     await control.markReady(
       options.streamId, commandId, targetEpoch, bFinalizedReceipt, resolver,
@@ -881,6 +916,11 @@ export async function runTskLiveComposition(rawOptions) {
     // complete signed ledger onto A, then ratify A as source at epoch 2.
     const returnCommandId = derivedId('return', commandId);
     const returnTargetEpoch = targetEpoch + 1;
+    assert.equal(
+      await dbClockMs(bPool) < activationLeaseGrant.leaseExpiresAtMs,
+      true,
+      'B source operations must finish before the signed activation lease expires',
+    );
     const bRevokedGrant = signLeaseGrant(keyIds.guard, material.guard.privateKey, {
       streamId: options.streamId,
       leaseEpoch: targetEpoch,
@@ -958,7 +998,7 @@ export async function runTskLiveComposition(rawOptions) {
       holderNodeId: activationLeaseGrant.holderNodeId,
       epoch: targetEpoch,
       status: 'active',
-      grantedMaxExpiryMs: await controlNow() - 5_000,
+      grantedMaxExpiryMs: activationLeaseGrant.leaseExpiresAtMs,
       grantCommandId: derivedId('control-return-active', commandId),
     });
     await control.beginPromotionIntent(
@@ -974,14 +1014,25 @@ export async function runTskLiveComposition(rawOptions) {
       holderNodeId: activationLeaseGrant.holderNodeId,
       epoch: targetEpoch,
       status: 'revoked',
-      grantedMaxExpiryMs: await controlNow() - 5_000,
+      grantedMaxExpiryMs: activationLeaseGrant.leaseExpiresAtMs,
       grantCommandId: derivedId('control-return-revoke', commandId),
     });
+    const returnClaimExpiresAtMs = await controlNow() + HOUR_MS;
+    await assert.rejects(() => control.advanceEpoch(
+      options.streamId, returnCommandId, returnTargetEpoch, aNodeId,
+      fenceStore, {
+        safetyMarginMs: 0,
+        claimExpiresAtMs: returnClaimExpiresAtMs,
+      },
+    ), /not expired|safety margin/i);
+    await awaitControlLeaseExpiry(
+      controlPool, activationLeaseGrant.leaseExpiresAtMs,
+    );
     await control.advanceEpoch(
       options.streamId, returnCommandId, returnTargetEpoch, aNodeId,
       fenceStore, {
         safetyMarginMs: 0,
-        claimExpiresAtMs: await controlNow() + HOUR_MS,
+        claimExpiresAtMs: returnClaimExpiresAtMs,
       },
     );
     await control.markImporting(

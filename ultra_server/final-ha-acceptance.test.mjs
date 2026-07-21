@@ -34,6 +34,13 @@ function liveEvidence() {
       enterpriseTargetClientId: 'target', copiedTargetCredentialRows: 0,
       redactionPreserved: true, dataLossRpo: 0,
     },
+    tskReturnAuthority: {
+      commandId: 'return-1',
+      finalizedReceiptDigest: '7'.repeat(64),
+      activationGrantDigest: '8'.repeat(64),
+      targetSystemId: '4', sourceEpoch: 1, targetEpoch: 2,
+      importedSequence: 2, nextSequence: 3,
+    },
     tskRedisFaults: {
       schemaVersion: 1, kind: 'tsk-same-redis-authority-faults', commandId: 'return-1',
       streamId: 'enterprise28:tsk-live/v1', systemIds: { sourceA: '4', receiverB: '5', control: '6' },
@@ -104,5 +111,23 @@ test('direct handoff evidence is exact, secret-free authority output', () => {
   assert.throws(() => validateLiveCompositionEvidence({
     ...evidence, systems: { ...evidence.systems,
       enterprise: { source: '4', target: 'wrong' } },
+  }));
+  for (const tskReturnCommandId of ['', evidence.commandId, 'contains space']) {
+    assert.throws(() => validateLiveCompositionEvidence({
+      ...evidence,
+      outcomes: { ...evidence.outcomes, tskReturnCommandId },
+      tskReturnAuthority: { ...evidence.tskReturnAuthority,
+        commandId: tskReturnCommandId },
+    }));
+  }
+  assert.throws(() => validateLiveCompositionEvidence({
+    ...evidence,
+    tskReturnAuthority: { ...evidence.tskReturnAuthority,
+      finalizedReceiptDigest: 'f'.repeat(64) },
+  }));
+  assert.throws(() => validateLiveCompositionEvidence({
+    ...evidence,
+    tskReturnAuthority: { ...evidence.tskReturnAuthority,
+      targetSystemId: evidence.systems.tsk.receiverB },
   }));
 });
