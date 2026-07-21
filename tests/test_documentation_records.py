@@ -287,6 +287,7 @@ def test_ha_test_coverage_never_hides_unexecuted_levels_as_passes() -> None:
     assert {receipt["run_id"] for receipt in ci_receipts} == {
         "29866460441",
         "29866745029",
+        "29873592691",
     }
     for receipt in ci_receipts:
         assert set(receipt) == {"run_id", "head_sha", "conclusion", "scope"}
@@ -305,14 +306,14 @@ def test_ha_test_coverage_never_hides_unexecuted_levels_as_passes() -> None:
         "cross-host-service-network-partition": "partial",
         "whole-host-loss": "open",
         "alternate-site": "open",
-        "authoritative-state-composition": "partial",
+        "authoritative-state-composition": "pass",
         "secret-reprovisioning": "partial",
         "replica-integrity-promotion-denial": "pass",
         "old-writer-fencing": "partial",
         "recovered-site-resync-before-write": "partial",
         "full-recovery-reconstitution": "partial",
         "backup-restore": "open",
-        "enterprise-failback": "partial",
+        "enterprise-failback": "pass",
         "repeated-same-principal-failover": "partial",
         "monitoring-alerting": "partial",
         "immutable-evidence-deployment": "partial",

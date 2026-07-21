@@ -37,12 +37,12 @@ authorized, certified, or compliant.
 | Alternate site | OPEN | No independent geography/power/network exists in this lab |
 | Full recovery/reconstitution | PARTIAL | Signed logical rebuild and DB restart, not full alternate-site restore |
 | Backup restore | OPEN | Runbook exists; complete isolated restore artifact does not |
-| Authority composition | PARTIAL | Fenced BPC outbox and Ultra adapters pass; completed BPC/TSK Enterprise return composition remains |
+| Authority composition | PASS | Exact completed BPC/TSK and Enterprise return composition; signed snapshot-after-fence saga, not cross-database atomic commit |
 | Secret reprovisioning | PARTIAL | Redacted real-PG transfer + fresh target credential pass; production custody ceremony remains |
 | Replica integrity denial | PASS | Stale/replay/tamper/gap/rollback denied in the named tested formats/topology |
 | Old-writer fencing | PARTIAL | BPC/TSK pass; exact Enterprise completed-authority failback fence remains |
 | Recovered-site resync | PARTIAL | Readiness gates pass; no recovered physical site has been returned to service |
-| Enterprise B -> A failback | PARTIAL | Real-PG A -> B -> A mechanism passes; exact BPC/TSK artifacts, stale-B fence, repeats remain |
+| Enterprise B -> A failback | PASS | Exact BPC/TSK artifacts, terminal source fence, stale-B denial, fresh reprovisioning, and idempotent retry pass for one cycle |
 | Repeated same-principal cycles | PARTIAL | One Enterprise A -> B -> A cycle passes; repeated production cycles remain |
 | Monitoring and alerting | PARTIAL | Config/security tests pass; deployed fault-to-alert drill remains |
 | Immutable evidence | PARTIAL | Live S3 Object Lock proof exists; exact HA artifacts are not wired into it |
@@ -81,7 +81,7 @@ automated write-once fault receipt and the independent-domain tests exist.
 
 A skipped integration test can support diagnosis but cannot support a release
 claim. The Spark shell run omitted `DATABASE_URL`, so two PostgreSQL tests
-reported explicit skips. Exact master CI `29866745029` supplied real
+reported explicit skips. Exact master CI `29873592691` supplied real
 PostgreSQL and reported:
 
 - Ultra suite: `65` tests, `0` skipped;
