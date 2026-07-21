@@ -390,6 +390,12 @@ jobs:
             sleep 1
           done
           [ "${replicas:-0}" -ge 2 ]
+          for _ in $(seq 1 30); do
+            replicated="$(docker exec ultra-ha-sentinel-redis-master-1 redis-cli WAIT 1 1000 2>/dev/null | tr -d '\r' || echo 0)"
+            [ "${replicated:-0}" -ge 1 ] && break
+            sleep 1
+          done
+          [ "${replicated:-0}" -ge 1 ]
           export ULTRA_HA_REDIS_SENTINELS='127.0.0.1:26379,127.0.0.1:26380,127.0.0.1:26381'
           export ULTRA_HA_REDIS_MASTER_NAME='tskmaster'
           export ULTRA_HA_REDIS_NATMAP='172.28.7.10:6379=127.0.0.1:6390,172.28.7.11:6379=127.0.0.1:6391,172.28.7.12:6379=127.0.0.1:6392'
@@ -440,7 +446,7 @@ jobs:
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             "$ULTRA_PRIMARY_URL/ready")" = '503'
 
-          redis_container="$(docker ps --filter publish=6379 --format '{{.ID}}' | head -n 1)"
+          redis_container='ultra-ha-sentinel-redis-master-1'
           test -n "$redis_container"
           docker pause "$redis_container" >/dev/null
           ready_code="$(curl --max-time 5 --silent --output /dev/null --write-out '%{http_code}' \
@@ -464,13 +470,14 @@ jobs:
           cat "$RUNNER_TEMP/ultra.stdout.log" 2>/dev/null || true
           cat "$RUNNER_TEMP/ultra.stderr.log" 2>/dev/null || true
           test ! -f "$RUNNER_TEMP/ultra.pid" || kill "$(cat "$RUNNER_TEMP/ultra.pid")" 2>/dev/null || true
-          redis_container="$(docker ps --filter publish=6379 --format '{{.ID}}' | head -n 1 || true)"
-          test -z "$redis_container" || docker unpause "$redis_container" >/dev/null 2>&1 || true
+          docker unpause ultra-ha-sentinel-redis-master-1 >/dev/null 2>&1 || true
           cat "$RUNNER_TEMP/ultra-primary.log" 2>/dev/null || true
           cat "$RUNNER_TEMP/ultra-replica.log" 2>/dev/null || true
           test ! -f "$RUNNER_TEMP/ultra-primary.pid" || kill "$(cat "$RUNNER_TEMP/ultra-primary.pid")" 2>/dev/null || true
           test ! -f "$RUNNER_TEMP/ultra-replica.pid" || kill "$(cat "$RUNNER_TEMP/ultra-replica.pid")" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/ultra-ha-state.json"
+          sentinel_dir="$(dirname "$GITHUB_WORKSPACE")/tsk-protocol/ci/redis-sentinel"
+          docker compose -f "$sentinel_dir/docker-compose.yml" -p ultra-ha-sentinel down -v --remove-orphans || true
 
   ultra-final-ha-acceptance:
     name: Ultra final HA acceptance (6 PG + Redis quorum/Sentinel)
