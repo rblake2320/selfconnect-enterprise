@@ -1,7 +1,9 @@
 import { writeFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { buildSpark2Evidence, validateSpark2Result } from './spark2-host-evidence.js';
+import {
+  buildSpark2Evidence, validateSpark2Result, validateSpark2Topology,
+} from './spark2-host-evidence.js';
 import { assertCleanReviewedCheckout } from './final-ha-acceptance.mjs';
 import { runTskLiveComposition } from './tsk-live-composition.mjs';
 
@@ -28,16 +30,23 @@ export async function runSpark2HostDrill(env = process.env) {
   await assertCleanReviewedCheckout(fileURLToPath(new URL('..', import.meta.url)),
     expectedEnterpriseCommit);
   const commandId = required(env, 'SPARK_HA_COMMAND_ID');
+  const urls = Object.freeze({
+    source: required(env, 'SPARK_HA_SOURCE_PG_URL'),
+    control: required(env, 'SPARK_HA_CONTROL_PG_URL'),
+    target: required(env, 'SPARK_HA_TARGET_PG_URL'),
+    redis: required(env, 'SPARK_HA_REDIS_URL'),
+  });
+  validateSpark2Topology(urls);
   const started = Date.now();
   const result = await runTskLiveComposition({
     tskRoot: required(env, 'SPARK_HA_TSK_ROOT'),
     expectedTskCommit,
     commandId,
     streamId: required(env, 'SPARK_HA_STREAM_ID'),
-    aPostgresUrl: required(env, 'SPARK_HA_SOURCE_PG_URL'),
-    bPostgresUrl: required(env, 'SPARK_HA_TARGET_PG_URL'),
-    controlPostgresUrl: required(env, 'SPARK_HA_CONTROL_PG_URL'),
-    redis: Object.freeze({ kind: 'url', url: required(env, 'SPARK_HA_REDIS_URL') }),
+    aPostgresUrl: urls.source,
+    bPostgresUrl: urls.target,
+    controlPostgresUrl: urls.control,
+    redis: Object.freeze({ kind: 'url', url: urls.redis }),
     preserveRedisAuthority: false,
     destructiveReset: true,
   });

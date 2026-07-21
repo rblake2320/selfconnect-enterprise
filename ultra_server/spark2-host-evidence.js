@@ -3,6 +3,31 @@ import { createHash } from 'node:crypto';
 
 const SYSTEM_ID = /^[0-9]{10,24}$/;
 
+function exactEndpoint(value, expected, name) {
+  let url;
+  try { url = new URL(value); } catch { throw new Error(`${name} is invalid`); }
+  if (url.protocol !== expected.protocol || url.hostname !== expected.hostname ||
+      url.port !== String(expected.port) || (expected.username && !url.username) || !url.password ||
+      url.search || url.hash) {
+    throw new Error(`${name} does not name the admitted private endpoint`);
+  }
+}
+
+export function validateSpark2Topology({ source, control, target, redis }) {
+  exactEndpoint(source, { protocol: 'postgresql:', hostname: '192.168.12.132', port: 5541,
+    username: true },
+    'SPARK_HA_SOURCE_PG_URL');
+  exactEndpoint(control, { protocol: 'postgresql:', hostname: '192.168.12.132', port: 5542,
+    username: true },
+    'SPARK_HA_CONTROL_PG_URL');
+  exactEndpoint(target, { protocol: 'postgresql:', hostname: '10.0.0.2', port: 5543,
+    username: true },
+    'SPARK_HA_TARGET_PG_URL');
+  exactEndpoint(redis, { protocol: 'redis:', hostname: '192.168.12.132', port: 6391 },
+    'SPARK_HA_REDIS_URL');
+  return true;
+}
+
 function digest(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
