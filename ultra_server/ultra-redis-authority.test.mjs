@@ -28,6 +28,9 @@ test('Ultra HA Redis config requires a distinct three-Sentinel durable authority
     ULTRA_HA_REDIS_SENTINELS: 'a:1,b:2,c:3', ULTRA_HA_REDIS_MASTER_NAME: 'm',
     ULTRA_HA_REDIS_WAIT_REPLICAS: '0',
   }, { haEnabled: true }), /WAIT_REPLICAS/);
+  assert.throws(() => loadUltraRedisAuthorityConfig({
+    REDIS_URL: 'redis://127.0.0.1:6379/0',
+  }, { haEnabled: true }), /requires ULTRA_HA_REDIS_SENTINELS/);
 });
 
 test('Redis client construction binds Sentinel master discovery and disables offline queuing', () => {

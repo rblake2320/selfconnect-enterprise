@@ -84,6 +84,8 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
   assert.equal(evidence.tskRedisFaults?.faults?.masterSigkill?.exactTuplePreserved, true);
   assert.equal(evidence.ultraRedisFaults?.kind, 'ultra-same-redis-authority-faults');
   assert.equal(evidence.ultraRedisFaults?.commandId, evidence.commandId);
+  assert.equal(evidence.ultraRedisFaults?.systemIds?.sourceA, evidence.systems.enterprise.source);
+  assert.equal(evidence.ultraRedisFaults?.systemIds?.promotedB, evidence.systems.enterprise.target);
   assert.equal(evidence.ultraRedisFaults?.faults?.livePartition?.rpo, 0);
   assert.equal(evidence.ultraRedisFaults?.faults?.livePartition?.oldMasterRefusedWrites, true);
   assert.equal(evidence.ultraRedisFaults?.faults?.livePartition?.exactTuplePreserved, true);

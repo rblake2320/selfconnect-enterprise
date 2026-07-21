@@ -276,10 +276,14 @@ function redactionProvenance(row) {
   };
 }
 
-function snapshotPlainData(value, state = { nodes: 0 }, depth = 0) {
+function snapshotPlainData(value, state = { nodes: 0 }, depth = 0, allowUndefined = false) {
   state.nodes += 1;
   if (state.nodes > MAX_SNAPSHOT_NODES || depth > MAX_SNAPSHOT_DEPTH) {
     throw new Error('independent state snapshot exceeds structural bounds');
+  }
+  if (value === undefined) {
+    if (allowUndefined) return value;
+    throw new Error('independent state snapshot must contain JSON data only');
   }
   if (value === null || typeof value === 'string' || typeof value === 'boolean' ||
       typeof value === 'number') return value;
@@ -301,7 +305,7 @@ function snapshotPlainData(value, state = { nodes: 0 }, depth = 0) {
       if (!descriptor || !('value' in descriptor)) {
         throw new Error('independent state snapshot arrays must be dense data');
       }
-      result.push(snapshotPlainData(descriptor.value, state, depth + 1));
+      result.push(snapshotPlainData(descriptor.value, state, depth + 1, allowUndefined));
     }
     return Object.freeze(result);
   }
@@ -314,9 +318,16 @@ function snapshotPlainData(value, state = { nodes: 0 }, depth = 0) {
     if (!('value' in descriptor)) {
       throw new Error('independent state snapshot accessors are forbidden');
     }
-    result[key] = snapshotPlainData(descriptor.value, state, depth + 1);
+    result[key] = snapshotPlainData(descriptor.value, state, depth + 1, allowUndefined);
   }
   return Object.freeze(result);
+}
+
+function snapshotJsonData(value) {
+  // Capture descriptors without invoking accessors, then apply JSON's exact
+  // persisted representation (undefined object fields omitted; array holes become null).
+  const captured = snapshotPlainData(value, { nodes: 0 }, 0, true);
+  return snapshotPlainData(JSON.parse(JSON.stringify(captured)));
 }
 
 function requiredStreamIdentifier(value, name) {
@@ -1063,7 +1074,7 @@ export async function importIndependentState(pool, bundle, input) {
 }
 
 export async function completeImportedTskReprovision(pool, input) {
-  const targetMap = snapshotPlainData(input.targetMap);
+  const targetMap = snapshotJsonData(input.targetMap);
   const expected = Object.freeze({
     advisoryLockKey: input.advisoryLockKey,
     agentId: input.agentId,

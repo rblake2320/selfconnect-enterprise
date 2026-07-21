@@ -314,3 +314,61 @@ test('close cannot overtake an operation admitted before its first await', async
   await close;
   assert.deepEqual(events, ['op-enter', 'op-exit', 'close:1']);
 });
+
+test('close waits for an admitted reload and closes the installed runtime once', async () => {
+  const events = [];
+  let releaseLoad;
+  let loadEntered;
+  const loadEnteredPromise = new Promise((resolve) => { loadEntered = resolve; });
+  const queue = [fakeRuntime(1, { events })];
+  const manager = await loadReloadablePromotedTskRuntime('descriptor.json', {
+    now: () => 1_000,
+    loader: async () => {
+      if (queue.length !== 0) return queue.shift();
+      events.push('load:2');
+      loadEntered();
+      await new Promise((resolve) => { releaseLoad = resolve; });
+      return fakeRuntime(2, { events });
+    },
+  });
+
+  const reload = manager.reload();
+  await loadEnteredPromise;
+  const close = manager.close();
+  let closeSettled = false;
+  close.finally(() => { closeSettled = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(closeSettled, false, 'close must wait for the admitted reload');
+
+  releaseLoad();
+  assert.equal((await reload).grantSeq, 2);
+  await close;
+  assert.deepEqual(events, ['load:2', 'close:1', 'close:2']);
+});
+
+test('concurrent close calls share one shutdown and close the runtime once', async () => {
+  const events = [];
+  let releaseOperation;
+  let operationEntered;
+  const entered = new Promise((resolve) => { operationEntered = resolve; });
+  const runtime = fakeRuntime(1, { events });
+  runtime.provision = async () => {
+    operationEntered();
+    await new Promise((resolve) => { releaseOperation = resolve; });
+    return { ok: true };
+  };
+  const manager = await loadReloadablePromotedTskRuntime('descriptor.json', {
+    now: () => 1_000,
+    loader: async () => runtime,
+  });
+
+  const operation = manager.provision({ commandId: 'promote-2' });
+  await entered;
+  const firstClose = manager.close();
+  const secondClose = manager.close();
+  assert.equal(firstClose, secondClose, 'concurrent callers must share one close promise');
+  releaseOperation();
+  await operation;
+  await Promise.all([firstClose, secondClose]);
+  assert.deepEqual(events, ['close:1']);
+});

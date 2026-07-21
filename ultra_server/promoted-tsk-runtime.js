@@ -475,10 +475,12 @@ export async function loadReloadablePromotedTskRuntime(
   }
   let active = 0;
   let blocked = false;
+  let closing = false;
   let closed = false;
   let unblock = [];
   let drained = [];
   let reloadTail = Promise.resolve();
+  let closePromise = null;
 
   const wakeUnblocked = () => {
     const waiters = unblock;
@@ -493,7 +495,7 @@ export async function loadReloadablePromotedTskRuntime(
   };
   const acquireRuntime = async () => {
     for (;;) {
-      if (closed) throw new Error('promoted TSK runtime manager is closed');
+      if (closing || closed) throw new Error('promoted TSK runtime manager is closed');
       if (blocked) {
         await new Promise((resolve) => unblock.push(resolve));
         continue;
@@ -539,8 +541,8 @@ export async function loadReloadablePromotedTskRuntime(
       });
     } finally {
       await candidate?.close?.().catch(() => {});
-      blocked = false;
-      wakeUnblocked();
+      blocked = closing || closed;
+      if (!blocked) wakeUnblocked();
     }
   };
 
@@ -554,17 +556,25 @@ export async function loadReloadablePromotedTskRuntime(
     withRuntime,
     provision: (binding) => withRuntime((captured) => captured.provision(binding)),
     reload() {
+      if (closing || closed) return Promise.reject(new Error('promoted TSK runtime manager is closed'));
       const next = reloadTail.then(reloadOnce, reloadOnce);
       reloadTail = next.catch(() => {});
       return next;
     },
-    async close() {
-      if (closed) return;
+    close() {
+      if (closePromise) return closePromise;
+      closing = true;
       blocked = true;
-      if (active !== 0) await new Promise((resolve) => drained.push(resolve));
-      closed = true;
-      wakeUnblocked();
-      await runtime.close();
+      closePromise = (async () => {
+        // A reload already admitted before close owns the lifecycle transition.
+        // Let it finish swapping/disposing, then close exactly the installed runtime.
+        await reloadTail;
+        if (active !== 0) await new Promise((resolve) => drained.push(resolve));
+        closed = true;
+        wakeUnblocked();
+        await runtime.close();
+      })();
+      return closePromise;
     },
   });
 }

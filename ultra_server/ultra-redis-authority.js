@@ -66,6 +66,9 @@ export function loadUltraRedisAuthorityConfig(env, { haEnabled = false } = {}) {
       }),
     });
   }
+  if (haEnabled) {
+    throw new Error('Ultra HA requires ULTRA_HA_REDIS_SENTINELS and WAIT durability');
+  }
   if (typeof env.REDIS_URL !== 'string' || env.REDIS_URL.length < 1 ||
       env.REDIS_URL.length > 8192 || env.REDIS_URL.includes('\0')) {
     throw new Error('REDIS_URL is required when Redis Sentinel is not configured');

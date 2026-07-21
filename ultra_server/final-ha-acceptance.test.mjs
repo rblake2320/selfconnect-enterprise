@@ -43,7 +43,7 @@ function liveEvidence() {
     ultraRedisFaults: {
       schemaVersion: 1, kind: 'ultra-same-redis-authority-faults', commandId: 'promote-1',
       streamId: 'enterprise28:ultra-writer-fence/v1',
-      systemIds: { sourceA: '4', receiverB: '5', control: '6' },
+      systemIds: { sourceA: '4', promotedB: '5', control: '6' },
       redisAuthorityKeyDigest: 'a'.repeat(64), redisAuthorityTupleDigest: 'b'.repeat(64),
       fenceEpoch: 1,
       faults: {

@@ -381,7 +381,20 @@ jobs:
           )
 
           export DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/ultra_ha'
-          export REDIS_URL='redis://127.0.0.1:6379/1'
+          sentinel_dir="$(dirname "$GITHUB_WORKSPACE")/tsk-protocol/ci/redis-sentinel"
+          docker compose -f "$sentinel_dir/docker-compose.yml" -p ultra-ha-sentinel down -v --remove-orphans || true
+          docker compose -f "$sentinel_dir/docker-compose.yml" -p ultra-ha-sentinel up -d
+          for _ in $(seq 1 60); do
+            replicas="$(docker exec ultra-ha-sentinel-sentinel-1-1 redis-cli -p 26379 sentinel master tskmaster 2>/dev/null | awk '/num-slaves/{getline; print}' | tr -d '\r' || echo 0)"
+            [ "${replicas:-0}" -ge 2 ] && break
+            sleep 1
+          done
+          [ "${replicas:-0}" -ge 2 ]
+          export ULTRA_HA_REDIS_SENTINELS='127.0.0.1:26379,127.0.0.1:26380,127.0.0.1:26381'
+          export ULTRA_HA_REDIS_MASTER_NAME='tskmaster'
+          export ULTRA_HA_REDIS_NATMAP='172.28.7.10:6379=127.0.0.1:6390,172.28.7.11:6379=127.0.0.1:6391,172.28.7.12:6379=127.0.0.1:6392'
+          export ULTRA_HA_REDIS_WAIT_REPLICAS='1'
+          export ULTRA_HA_REDIS_WAIT_TIMEOUT_MS='3000'
           export ULTRA_HA_ENABLED='true'
           export ULTRA_HA_MAX_COMMAND_AGE_MS='60000'
           export ULTRA_HA_MAX_LEASE_MS='300000'
