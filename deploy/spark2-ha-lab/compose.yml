@@ -1,0 +1,50 @@
+services:
+  postgres-target:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${SPARK2_POSTGRES_DB}
+      POSTGRES_PASSWORD: ${SPARK2_POSTGRES_PASSWORD}
+      POSTGRES_USER: ${SPARK2_POSTGRES_USER}
+    ports:
+      - "${SPARK2_BIND_ADDRESS:-10.0.0.2}:${SPARK2_POSTGRES_PORT:-5543}:5432"
+    volumes:
+      - spark2_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  redis-target:
+    image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - always
+      - --requirepass
+      - ${SPARK2_REDIS_PASSWORD}
+    ports:
+      - "${SPARK2_BIND_ADDRESS:-10.0.0.2}:${SPARK2_REDIS_PORT:-6395}:6379"
+    volumes:
+      - spark2_redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$SPARK2_REDIS_PASSWORD --no-auth-warning ping | grep -qx PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    environment:
+      SPARK2_REDIS_PASSWORD: ${SPARK2_REDIS_PASSWORD}
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  spark2_postgres_data:
+  spark2_redis_data:
