@@ -13,6 +13,7 @@ const expectedRuntimeFiles = [
   'independent-state.js',
   'monitoring-security.js',
   'promoted-tsk-authority.js',
+  'promoted-tsk-runtime.js',
   'recovery-token.js',
   'runtime-stores.js',
   'security-boundary.js',

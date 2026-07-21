@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readEnterpriseFaultEvidence } from './enterprise-fault-evidence.mjs';
 import { readLiveCompositionEvidence } from './live-composition-evidence.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -45,11 +46,6 @@ export const ACCEPTANCE_STEPS = Object.freeze([
     id: 'tsk-source-activation', component: 'tsk-protocol',
     args: ['run', 'test:b-activation'],
     markers: ['B originates N+1', 'B-source-activation checks passed'],
-  }),
-  Object.freeze({
-    id: 'enterprise-independent-failover-failback', component: 'selfconnect-enterprise',
-    cwd: HERE, args: ['run', 'test:independent-state'],
-    markers: ['same-principal failback A -> B -> A completed', 'fail 0'],
   }),
   Object.freeze({
     id: 'enterprise-authenticated-outbox', component: 'selfconnect-enterprise',
@@ -172,6 +168,17 @@ export async function runFinalAcceptance(options = {}) {
       bpc: lock.components['bpc-protocol'].commit,
       tsk: lock.components['tsk-protocol'].commit } },
   );
+  const faultReceipt = await readEnterpriseFaultEvidence(
+    requiredPath(process.env.ULTRA_LIVE_FAULT_EVIDENCE_FILE,
+      'ULTRA_LIVE_FAULT_EVIDENCE_FILE'),
+    { commandId: liveReceipt.evidence.commandId },
+  );
+  if (faultReceipt.evidence.enterpriseManifestDigest !==
+      liveReceipt.evidence.artifacts.enterpriseManifest ||
+      faultReceipt.evidence.sourceSystemId !== liveReceipt.evidence.systems.enterprise.source ||
+      faultReceipt.evidence.targetSystemId !== liveReceipt.evidence.systems.enterprise.target) {
+    throw new Error('Enterprise fault evidence does not bind the direct authority handoff');
+  }
   const results = [Object.freeze({
     id: 'direct-enterprise-authority-handoff',
     durationMs: 0,
@@ -181,6 +188,14 @@ export async function runFinalAcceptance(options = {}) {
       `enterprise-rpo=${liveReceipt.evidence.outcomes.dataLossRpo}`,
       `promoted-sequence=${liveReceipt.evidence.outcomes.promotedSourceNextSequence}`,
     ]),
+  }), Object.freeze({
+    id: 'same-enterprise-authority-fault-restore',
+    durationMs: Object.values(faultReceipt.evidence.faults)
+      .reduce((sum, fault) => sum + fault.rtoMs, 0),
+    outputSha256: faultReceipt.evidenceSha256,
+    evidence: Object.freeze(Object.entries(faultReceipt.evidence.faults).map(
+      ([name, fault]) => `${name}:RPO=${fault.rpo}:RTO=${fault.rtoMs}ms`,
+    )),
   })];
   for (const step of ACCEPTANCE_STEPS) {
     const start = Date.now();
@@ -194,7 +209,7 @@ export async function runFinalAcceptance(options = {}) {
     process.stdout.write(`ok - ${step.id} (${results.at(-1).durationMs}ms)\n`);
   }
   const evidence = Object.freeze({
-    schemaVersion: 2,
+    schemaVersion: 3,
     claim: 'named controlled-deployment Ultra HA topology accepted',
     exclusions: Object.freeze([
       'government authorization', 'compliance certification', 'legal admissibility',
@@ -214,7 +229,7 @@ export async function runFinalAcceptance(options = {}) {
     options.evidenceFile ?? process.env.ULTRA_FINAL_EVIDENCE_FILE, 'ULTRA_FINAL_EVIDENCE_FILE',
   );
   await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
-  process.stdout.write(`# final Ultra HA acceptance: ${results.length}/${ACCEPTANCE_STEPS.length + 1} steps; evidence=${evidencePath}\n`);
+  process.stdout.write(`# final Ultra HA acceptance: ${results.length} structured results; evidence=${evidencePath}\n`);
   return evidence;
 }
 

@@ -32,8 +32,7 @@ function liveEvidence() {
 test('final plan covers direct authorities, process/network faults, and Enterprise handoff', () => {
   assert.deepEqual(ACCEPTANCE_STEPS.map((step) => step.id), [
     'bpc-authority-ha', 'tsk-credential-authority', 'tsk-process-sigkill',
-    'tsk-source-activation', 'enterprise-independent-failover-failback',
-    'enterprise-authenticated-outbox', 'tsk-redis-sentinel-crash',
+    'tsk-source-activation', 'enterprise-authenticated-outbox', 'tsk-redis-sentinel-crash',
     'tsk-live-redis-partition',
   ]);
   assert.equal(new Set(ACCEPTANCE_STEPS.map((step) => step.id)).size, ACCEPTANCE_STEPS.length);
