@@ -57,12 +57,12 @@ function frame(...parts) {
   return Buffer.concat(buffers);
 }
 
-function signedProtocolEvidence({ commandId, sourceSystemId, targetSystemId, keys }) {
+function signedProtocolEvidence({ commandId, sourceSystemId, targetSystemId, keys, targetEpoch = 1 }) {
   const bpcKeyId = 'bpc-snapshot-key-1';
   const bKeyId = 'b-key-1';
   const guardKeyId = 'tsk-guard-key-1';
   const bpcBare = {
-    streamId: 'ultra-stream', commandId, targetEpoch: 1, targetSourceEpoch: 'epoch-1',
+    streamId: 'ultra-stream', commandId, targetEpoch, targetSourceEpoch: `epoch-${targetEpoch}`,
     targetSystemId, snapshotKeyId: bpcKeyId, manifestDigest: '1'.repeat(64),
     appliedSequence: 0, stateDigest: '2'.repeat(64), fencedDigest: '3'.repeat(64),
   };
@@ -83,7 +83,8 @@ function signedProtocolEvidence({ commandId, sourceSystemId, targetSystemId, key
   };
 
   const bBare = {
-    streamId: 'ultra-stream', commandId, epoch: 0, sourceEpoch: 'epoch-0', n: 0,
+    streamId: 'ultra-stream', commandId, epoch: targetEpoch - 1,
+    sourceEpoch: `epoch-${targetEpoch - 1}`, n: 0,
     generationId: 'generation-1', frozenReceiptDigest: '4'.repeat(64),
     manifestDigest: '5'.repeat(64), manifestRoot: '6'.repeat(64), sourceSystemId,
     sourceKeyId: 'source-key', sourceSignature: 'source-signature',
@@ -108,7 +109,7 @@ function signedProtocolEvidence({ commandId, sourceSystemId, targetSystemId, key
   };
 
   const leaseBare = {
-    streamId: 'ultra-stream', leaseEpoch: 1, leaseStatus: 'active', holderNodeId: bKeyId,
+    streamId: 'ultra-stream', leaseEpoch: targetEpoch, leaseStatus: 'active', holderNodeId: bKeyId,
     leaseId: 'lease-1', commandId, leaseExpiresAtMs: Date.now() + 300_000,
     leaseGrantSeq: 1, prevGrantDigest: null,
   };
@@ -151,6 +152,7 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
   const nonceHash = createHash('sha256').update(`nonce-${suffix}`, 'utf8').digest('hex');
   let sourceMap;
   let targetMap;
+  let failbackMap;
   try {
     await initializePgSchemas(a, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA);
     await initializePgSchemas(b, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA);
@@ -426,13 +428,95 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       guardPublicKey: guard.publicKey,
       tskActivationDigest,
     }), /digest mismatch/);
+
+    // A complete failback is a new, higher-epoch handoff. It preserves the bound
+    // principal while secrets are reprovisioned again on the recovered authority.
+    const failbackCommandId = `failback-${suffix}`;
+    const failbackEvidence = signedProtocolEvidence({
+      commandId: failbackCommandId,
+      sourceSystemId: systemB.rows[0].id,
+      targetSystemId: systemA.rows[0].id,
+      keys: protocolKeys,
+      targetEpoch: 2,
+    });
+    const failbackSource = await exportIndependentState(b, {
+      advisoryLockKey: lockKey,
+      clusterId,
+      commandId: failbackCommandId,
+      sourceEpoch: 2,
+      sourceKeyId: 'source-key-1',
+      sourcePrivateKey: source.privateKey,
+      protocolEvidence: failbackEvidence,
+    });
+    const failbackBundle = guardCountersignIndependentState(failbackSource, {
+      expectedCommandId: failbackCommandId,
+      sourcePublicKey: source.publicKey,
+      guardKeyId: 'guard-key-1',
+      guardPrivateKey: guard.privateKey,
+      ...resolvers,
+    });
+
+    // Model an isolated recovered A authority: schema remains attested, while
+    // authoritative application state is restored only from the signed bundle.
+    await a.query('DELETE FROM ultra_identity_bindings WHERE pair_id=$1', [pairId]);
+    await a.query('DELETE FROM ultra_tumbler_maps WHERE client_id IN ($1,$2)', [
+      sourceMap.clientId, targetMap.clientId,
+    ]);
+    await a.query('DELETE FROM ultra_idempotency WHERE idempotency_key IN ($1,$2)', [safeKey, secretKey]);
+    await a.query('DELETE FROM ultra_nonce_tombstones WHERE nonce_hash=$1', [nonceHash]);
+    await a.query('DELETE FROM ultra_ha_import_head WHERE cluster_id=$1', [clusterId]);
+
+    const failbackImported = await importIndependentState(a, failbackBundle, {
+      advisoryLockKey: lockKey,
+      bpcPromotionDigest: failbackEvidence.bpcPromotionAttestation.attestationDigest,
+      clusterId,
+      commandId: failbackCommandId,
+      sourceEpoch: 2,
+      sourcePublicKey: source.publicKey,
+      guardPublicKey: guard.publicKey,
+      ...resolvers,
+      tskActivationDigest: failbackEvidence.tskActivationLease.grantDigest,
+      tskFinalizedDigest: failbackEvidence.tskFinalizedReceipt.receiptDigest,
+    });
+    assert.equal(failbackImported.targetSystemId, systemA.rows[0].id);
+    await assert.rejects(assertIndependentStateReady(a, {
+      clusterId,
+      commandId: failbackCommandId,
+      sourceEpoch: 2,
+      manifestDigest: failbackBundle.manifestDigest,
+    }), /requires TSK credential reprovisioning/);
+    failbackMap = generateTumblerMap();
+    failbackMap.label = `agent:agent-${suffix}`;
+    failbackMap.status = 'active';
+    await completeImportedTskReprovision(a, {
+      advisoryLockKey: lockKey,
+      agentId: `agent-${suffix}`,
+      assertWritable: async () => ({ ok: true, fenceEpoch: 2 }),
+      clusterId,
+      commandId: failbackCommandId,
+      pairId,
+      sourceClientId: targetMap.clientId,
+      sourceEpoch: 2,
+      targetMap: failbackMap,
+    });
+    const failbackReady = await assertIndependentStateReady(a, {
+      clusterId,
+      commandId: failbackCommandId,
+      sourceEpoch: 2,
+      manifestDigest: failbackBundle.manifestDigest,
+    });
+    assert.equal(failbackReady.targetSystemId, systemA.rows[0].id);
+    assert.deepEqual((await a.query(
+      'SELECT tsk_client_id, agent_id FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
+    )).rows[0], { tsk_client_id: failbackMap.clientId, agent_id: `agent-${suffix}` });
+    console.log('same-principal failback A -> B -> A completed; data-loss-RPO=0');
   } finally {
     for (const pool of [a, b]) {
       await pool.query('DELETE FROM ultra_ha_import_head WHERE cluster_id=$1', [clusterId]).catch(() => {});
       await pool.query('DELETE FROM ultra_identity_bindings WHERE pair_id=$1', [pairId]).catch(() => {});
       await pool.query(
-        'DELETE FROM ultra_tumbler_maps WHERE client_id IN ($1,$2)',
-        [sourceMap?.clientId ?? '', targetMap?.clientId ?? ''],
+        'DELETE FROM ultra_tumbler_maps WHERE client_id IN ($1,$2,$3)',
+        [sourceMap?.clientId ?? '', targetMap?.clientId ?? '', failbackMap?.clientId ?? ''],
       ).catch(() => {});
       await pool.query(
         'DELETE FROM ultra_idempotency WHERE idempotency_key IN ($1,$2,$3)',

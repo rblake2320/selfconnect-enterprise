@@ -29,9 +29,11 @@
     "ha:state": "node independent-state-command.mjs",
     "ha:stream": "node ultra-state-stream-command.mjs",
     "test:ha-live": "node ha-live-conformance.mjs",
-    "test": "node --test agent-auth.test.mjs ha-controller.test.mjs independent-state-config.test.mjs monitoring-config.test.mjs monitoring-security.test.mjs package-content.test.mjs recovery-token.test.mjs runtime-stores.test.mjs security-boundary.test.mjs ultra-state-authority-config.test.mjs ultra-state-stream-config.test.mjs",
+    "test": "node --test agent-auth.test.mjs final-ha-acceptance.test.mjs ha-controller.test.mjs independent-state-config.test.mjs monitoring-config.test.mjs monitoring-security.test.mjs package-content.test.mjs recovery-token.test.mjs runtime-stores.test.mjs security-boundary.test.mjs ultra-state-authority-config.test.mjs ultra-state-stream-config.test.mjs",
     "test:independent-state": "node --test independent-state.test.mjs",
     "test:ultra-outbox": "node --test ultra-state-outbox.test.mjs",
+    "test:final-ha-unit": "node --test final-ha-acceptance.test.mjs",
+    "test:final-ha": "node final-ha-acceptance.mjs",
     "test:live": "node server.test.mjs"
   },
   "dependencies": {

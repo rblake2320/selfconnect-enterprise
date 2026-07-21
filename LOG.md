@@ -54,6 +54,39 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260720-012 - Compose final multi-authority Ultra HA acceptance
+
+**Timestamp (UTC):** 2026-07-21T03:30:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** production acceptance implementation and evidence
+**Base commit:** `f7bd914c3c6fd7ab5c0cee34c75574e609aac47a`
+**Change reference:** commit containing this entry; Enterprise issue #28
+**Why:** [WHY-20260720-012](WHY.md#why-20260720-012)
+**Parked records:** None
+
+**Changed:** Pinned the completed TSK credential authority, added a bounded
+final-acceptance orchestrator, added a same-principal A -> B -> A failback, and
+added a dedicated three-PostgreSQL/Redis-quorum/Sentinel hosted job with a
+secret-free evidence artifact.
+
+**Reason:** Component success and one-way handoff were insufficient evidence
+for the named Enterprise topology. Completion requires the exact authorities,
+faults, recovery, reprovisioning, and failback to pass as one fail-closed gate.
+
+**Full actions and links:** `ultra_server/final-ha-acceptance.mjs`, its unit
+test, `ultra_server/independent-state.test.mjs`, the final HA runbook, the
+control catalog, `portfolio-lock.json`, hosted CI, and Enterprise issue #28.
+
+**Validation:** Unit tests validate the immutable step plan, exact pins, and
+semantic evidence markers. Real acceptance runs BPC and TSK completed
+authorities, process SIGKILL, source activation, Enterprise authenticated
+delivery and failback, Redis Sentinel master loss, and a live split-brain
+partition. Hosted evidence records full output hashes and bounded RPO/RTO lines.
+
+**Notes:** Acceptance is limited to the exact recorded topology and commits.
+External authorization, certification, legal, and provider-retention claims
+remain outside this engineering result.
+
 ## LOG-20260720-011 - Select governed stores on promoted independent runtimes
 
 **Timestamp (UTC):** 2026-07-20T22:18:00Z

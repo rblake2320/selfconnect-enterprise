@@ -458,3 +458,147 @@ jobs:
           test ! -f "$RUNNER_TEMP/ultra-primary.pid" || kill "$(cat "$RUNNER_TEMP/ultra-primary.pid")" 2>/dev/null || true
           test ! -f "$RUNNER_TEMP/ultra-replica.pid" || kill "$(cat "$RUNNER_TEMP/ultra-replica.pid")" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/ultra-ha-state.json"
+
+  ultra-final-ha-acceptance:
+    name: Ultra final HA acceptance (6 PG + Redis quorum/Sentinel)
+    runs-on: ubuntu-latest
+    services:
+      postgres_a:
+        image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+        env:
+          POSTGRES_USER: bpc_test
+          POSTGRES_PASSWORD: bpc-test-only-password
+          POSTGRES_DB: bpc_test
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U bpc_test -d bpc_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      postgres_b:
+        image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+        env:
+          POSTGRES_USER: bpc_test
+          POSTGRES_PASSWORD: bpc-test-only-password
+          POSTGRES_DB: bpc_test
+        ports: [5433:5432]
+        options: >-
+          --health-cmd "pg_isready -U bpc_test -d bpc_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      postgres_control:
+        image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+        env:
+          POSTGRES_USER: bpc_test
+          POSTGRES_PASSWORD: bpc-test-only-password
+          POSTGRES_DB: bpc_test
+        ports: [5434:5432]
+        options: >-
+          --health-cmd "pg_isready -U bpc_test -d bpc_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      tsk_postgres_a:
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_USER: tsk_test
+          POSTGRES_PASSWORD: tsk-test-only-password
+          POSTGRES_DB: tsk_test
+        ports: [5442:5432]
+        options: >-
+          --health-cmd "pg_isready -U tsk_test -d tsk_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      tsk_postgres_b:
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_USER: tsk_test
+          POSTGRES_PASSWORD: tsk-test-only-password
+          POSTGRES_DB: tsk_test
+        ports: [5443:5432]
+        options: >-
+          --health-cmd "pg_isready -U tsk_test -d tsk_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      tsk_postgres_control:
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_USER: tsk_test
+          POSTGRES_PASSWORD: tsk-test-only-password
+          POSTGRES_DB: tsk_test
+        ports: [5444:5432]
+        options: >-
+          --health-cmd "pg_isready -U tsk_test -d tsk_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis_a:
+        image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+        ports: [6381:6379]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+      redis_b:
+        image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+        ports: [6382:6379]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+      redis_c:
+        image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+        ports: [6383:6379]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      BPC_TEST_POSTGRES_URL: postgresql://bpc_test:bpc-test-only-password@127.0.0.1:5432/bpc_test
+      BPC_TEST_POSTGRES_B_URL: postgresql://bpc_test:bpc-test-only-password@127.0.0.1:5433/bpc_test
+      BPC_TEST_POSTGRES_CONTROL_URL: postgresql://bpc_test:bpc-test-only-password@127.0.0.1:5434/bpc_test
+      BPC_TEST_REDIS_URLS: redis://127.0.0.1:6381/0,redis://127.0.0.1:6382/0,redis://127.0.0.1:6383/0
+      TSK_TEST_POSTGRES_URL_A: postgresql://tsk_test:tsk-test-only-password@127.0.0.1:5442/tsk_test
+      TSK_TEST_POSTGRES_URL_B: postgresql://tsk_test:tsk-test-only-password@127.0.0.1:5443/tsk_test
+      TSK_TEST_SOURCE_PG_URL_A: postgresql://tsk_test:tsk-test-only-password@127.0.0.1:5442/tsk_test
+      TSK_TEST_RECEIVER_PG_URL_B: postgresql://tsk_test:tsk-test-only-password@127.0.0.1:5443/tsk_test
+      TSK_TEST_CONTROL_PG_URL: postgresql://tsk_test:tsk-test-only-password@127.0.0.1:5444/tsk_test
+      TSK_TEST_REDIS_URL: redis://127.0.0.1:6381/1
+      ULTRA_TEST_POSTGRES_URL_A: postgresql://tsk_test:tsk-test-only-password@127.0.0.1:5442/tsk_test
+      ULTRA_TEST_POSTGRES_URL_B: postgresql://tsk_test:tsk-test-only-password@127.0.0.1:5443/tsk_test
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - name: Checkout exact reviewed protocol authorities
+        shell: bash
+        run: |
+          set -euo pipefail
+          deps_root="$(dirname "$GITHUB_WORKSPACE")"
+          bpc_commit="$(node -e 'const p=require("./portfolio-lock.json"); process.stdout.write(p.components["bpc-protocol"].commit)')"
+          tsk_commit="$(node -e 'const p=require("./portfolio-lock.json"); process.stdout.write(p.components["tsk-protocol"].commit)')"
+          git clone https://github.com/rblake2320/bpc-protocol.git "$deps_root/bpc-protocol"
+          git -C "$deps_root/bpc-protocol" checkout --detach "$bpc_commit"
+          git clone https://github.com/rblake2320/tsk-protocol.git "$deps_root/tsk-protocol"
+          git -C "$deps_root/tsk-protocol" checkout --detach "$tsk_commit"
+          npm ci --prefix "$deps_root/bpc-protocol"
+          npm run build --prefix "$deps_root/bpc-protocol"
+          npm ci --prefix "$deps_root/tsk-protocol"
+          npm run build --prefix "$deps_root/tsk-protocol"
+          npm ci --prefix ultra_server
+      - name: Configure durable BPC Redis quorum
+        shell: bash
+        run: |
+          cd "$(dirname "$GITHUB_WORKSPACE")/bpc-protocol"
+          node --input-type=module - <<'NODE'
+          import Redis from 'ioredis';
+          for (const port of [6381, 6382, 6383]) {
+            const client = new Redis(port, '127.0.0.1');
+            await client.config('SET', 'appendonly', 'yes');
+            await client.config('SET', 'appendfsync', 'always');
+            client.disconnect();
+          }
+          NODE
+      - name: Run pinned final acceptance and create secret-free evidence
+        shell: bash
+        env:
+          BPC_PROTOCOL_ROOT: ${{ github.workspace }}/../bpc-protocol
+          TSK_PROTOCOL_ROOT: ${{ github.workspace }}/../tsk-protocol
+          ULTRA_FINAL_EVIDENCE_FILE: ${{ runner.temp }}/ultra-final-ha-evidence.json
+        run: npm run test:final-ha --prefix ultra_server
+      - name: Upload immutable non-secret acceptance evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ultra-final-ha-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/ultra-final-ha-evidence.json
+          if-no-files-found: error
+          retention-days: 90

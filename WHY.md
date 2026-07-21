@@ -51,6 +51,45 @@ related records.
 
 ## Register
 
+## WHY-20260720-012 - Make the portfolio-locked fault matrix the completion gate
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-21T03:30:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-012](LOG.md#log-20260720-012)
+**Parked records:** None
+**Source state:** `selfconnect-enterprise`, `feat/28-final-acceptance`, based on
+`f7bd914c3c6fd7ab5c0cee34c75574e609aac47a`
+
+**Decision:** Close the engineering acceptance only when one fail-closed
+orchestrator verifies the exact Enterprise, BPC, and TSK commits and the full
+named fault/failback matrix emits its expected evidence.
+
+**Why:** Running strong component suites independently can conceal a stale
+portfolio pin, omitted fault, or one-way recovery path. The final gate must
+bind exact code identities and require semantic results, not merely exit zero.
+
+**Alternatives considered:** Treating prior green component CI as completion
+was rejected because it did not prove same-principal failback. Reimplementing
+BPC or TSK fault logic in Enterprise was rejected because it would duplicate
+reviewed security authorities. A generic plugin surface was rejected because
+it could accept an unreviewed substitute.
+
+**Consequences:** Final acceptance takes longer and requires Docker plus three
+PostgreSQL authorities. In return, a pin mismatch, missing marker, process
+failure, timeout, output overflow, stale writer, secret leak, or topology fault
+fails the gate. Repeated failback also exposed and fixed redaction-marker drift
+that one-way handoff could not detect.
+
+**Rollback conditions:** Replace the orchestrator only with an equal or
+stronger gate that retains exact pins, direct completed authorities,
+same-principal failover/failback, real process/network/Redis faults, bounded
+secret-free evidence, and the explicit claim exclusions.
+
+**Evidence and links:** [LOG-20260720-012](LOG.md#log-20260720-012),
+`docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md`, the control catalog, hosted CI,
+and Enterprise issue #28.
+
 ## WHY-20260720-011 - Forbid the legacy Ultra store fallback after promotion
 
 **Status:** Accepted

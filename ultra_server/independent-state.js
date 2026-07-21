@@ -243,6 +243,11 @@ export class PgNonceTombstoneStore {
 
 function snapshotFromRows({ bindings, idempotency, nonces }) {
   const safeIdempotency = idempotency.map((row) => {
+    // A previously imported secret placeholder must remain the same redacted
+    // authority record when that site later becomes the source for failback.
+    // Re-hashing the placeholder itself would fork the authority digest.
+    const priorRedaction = targetIdempotencyRecord(row);
+    if (priorRedaction.secretReprovisionRequired) return priorRedaction;
     const response = typeof row.response === 'string' ? JSON.parse(row.response) : row.response;
     const sensitive = containsSecret(response);
     return {
