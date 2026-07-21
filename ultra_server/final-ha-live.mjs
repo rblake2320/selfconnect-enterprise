@@ -97,7 +97,7 @@ export async function runLiveProtocolComposition(env = process.env) {
     ? createPublicKey(bpc.publicKeys.source) : null };
   const tskBResolver = { resolve: (keyId) => keyId === tsk.bFinalizedReceipt.bKeyId
     ? createPublicKey(tsk.publicKeys.bReceipt) : null };
-  const tskGuardResolver = { resolve: (keyId) => keyId === tsk.activationLeaseGrant.keyId
+  const tskGuardResolver = { resolve: (keyId) => keyId === tsk.activationLeaseGrant.guardKeyId
     ? createPublicKey(tsk.publicKeys.guard) : null };
   bpcApi.verifyPromotionReadinessAttestation(bpcResolver, bpc.readinessAttestation);
   tskApi.verifyBFinalizedReceipt(tskBResolver, tsk.bFinalizedReceipt);
