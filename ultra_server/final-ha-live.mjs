@@ -138,7 +138,18 @@ export function validateLiveProtocolComposition(bpc, tsk, commandId) {
   assert.equal(bpc.failback.priorAuthoritiesReset, false);
   assert.equal(bpc.failback.sourcePostgresSystemReused, true);
   assert.equal(tsk.staleWriterDenied, true);
+  assert.equal(tsk.staleTargetWriterDenied, true);
   assert.equal(tsk.nextSequence, tsk.n + 1);
+  assert.equal(tsk.returnSequence, tsk.n + 2);
+  assert.equal(tsk.returnFrozenReceipt.n, tsk.n + 1);
+  assert.equal(tsk.returnFinalizedReceipt.n, tsk.n + 1);
+  assert.equal(tsk.returnFinalizedReceipt.bSystemId, tsk.systemIds.sourceA);
+  assert.equal(tsk.returnFinalizedReceipt.commandId, tsk.returnCommandId);
+  assert.equal(tsk.returnActivationLeaseGrant.leaseEpoch, 2);
+  assert.equal(tsk.returnActivationLeaseGrant.commandId, tsk.returnCommandId);
+  assert.equal(tsk.returnSourceActivation.n, tsk.n + 1);
+  assert.equal(tsk.returnSourceActivation.activationGrantDigest,
+    tsk.returnActivationLeaseGrant.grantDigest);
   assert.equal(tsk.publicCredential.status, 'active');
   assert.match(tsk.publicCredential.publicMapDigest, DIGEST);
   assert.equal(tsk.staleCredentialWriterDenied, true);
@@ -194,7 +205,8 @@ export async function runLiveProtocolComposition(env = process.env) {
   });
   const tskRedisFaults = sameAuthorityFaults
     ? await runSameTskRedisAuthorityFaults({ authority: tsk.redisAuthority,
-      commandId, redis, streamId: 'enterprise28:tsk-live/v1', systemIds: tsk.systemIds,
+      commandId: tsk.returnCommandId, redis,
+      streamId: 'enterprise28:tsk-live/v1', systemIds: tsk.systemIds,
       topology: sameAuthorityTopology(env) })
     : null;
 

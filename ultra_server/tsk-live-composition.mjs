@@ -214,8 +214,10 @@ function createMaterial() {
     guard: generateKeyPairSync('ed25519'),
     source: generateKeyPairSync('ed25519'),
     aHead: generateKeyPairSync('ed25519'),
+    aReceipt: generateKeyPairSync('ed25519'),
     sourceCredentialHead: generateKeyPairSync('ed25519'),
     bHead: generateKeyPairSync('ed25519'),
+    bSource: generateKeyPairSync('ed25519'),
     credentialHead: generateKeyPairSync('ed25519'),
     bReceipt: generateKeyPairSync('ed25519'),
     controlSecret: Buffer.alloc(32, 0x5d),
@@ -282,7 +284,7 @@ function createRedisClient(config) {
 }
 
 /**
- * Execute the pinned TSK public API's complete A -> B activation lifecycle.
+ * Execute the pinned TSK public API's complete A -> B -> A activation lifecycle.
  *
  * The three PostgreSQL URLs must name dedicated, independent databases. This
  * function resets the governed TSK tables in them and deliberately refuses to
@@ -303,6 +305,7 @@ export async function runTskLiveComposition(rawOptions) {
     installLeaseGrant, assertSourceFenceReady, emitSourceFrozenReceipt,
     buildSourceExportManifest, guardCountersignSourceExport, assertReceiverReady,
     stageAndFinalizeReceiverGeneration, verifyBFinalizedReceipt,
+    activateFinalizedReceiverAsSource,
     provisionControlSchema, HaControlFencing, GuardSigner, RedisFencingStore,
     verifyLeaseGrant, TSK_CREDENTIAL_AUTHORITY_SCHEMA, PgHaTumblerMapStore,
     HmacCredentialMutationTicketSigner, assertCredentialAuthorityReady,
@@ -313,7 +316,8 @@ export async function runTskLiveComposition(rawOptions) {
   for (const [name, value] of Object.entries({
     PgTskDurableOutbox, NodePostgresTransactor, provisionSchemaVersion,
     emitSourceFrozenReceipt, buildSourceExportManifest,
-    stageAndFinalizeReceiverGeneration, HaControlFencing,
+    stageAndFinalizeReceiverGeneration, activateFinalizedReceiverAsSource,
+    HaControlFencing,
     PgHaTumblerMapStore, HmacCredentialMutationTicketSigner,
     provisionCredentialRuntimeMutationBoundary, assertCredentialRuntimeMutationBoundary,
     generateTumblerMap,
@@ -324,6 +328,7 @@ export async function runTskLiveComposition(rawOptions) {
   const material = createMaterial();
   const keyIds = Object.freeze({
     guard: 'guard-live-1', source: 'source-live-1', aHead: 'head-a-live-1',
+    aReceipt: 'receipt-a-live-1', bSource: 'source-b-live-1',
     sourceCredentialHead: 'credential-head-a-live-1',
     bHead: 'head-b-live-1', credentialHead: 'credential-head-b-live-1',
     bReceipt: 'receipt-b-live-1', control: 'control-live-1',
@@ -332,8 +337,10 @@ export async function runTskLiveComposition(rawOptions) {
     [keyIds.guard, material.guard.publicKey],
     [keyIds.source, material.source.publicKey],
     [keyIds.aHead, material.aHead.publicKey],
+    [keyIds.aReceipt, material.aReceipt.publicKey],
     [keyIds.sourceCredentialHead, material.sourceCredentialHead.publicKey],
     [keyIds.bHead, material.bHead.publicKey],
+    [keyIds.bSource, material.bSource.publicKey],
     [keyIds.credentialHead, material.credentialHead.publicKey],
     [keyIds.bReceipt, material.bReceipt.publicKey],
   ]);
@@ -371,7 +378,9 @@ export async function runTskLiveComposition(rawOptions) {
   const sourceEpoch = 'e1';
   const commandId = options.commandId;
   const targetEpoch = 1;
-  const aNodeId = 'A';
+  // The source holder is a verifiable signing identity so the same physical
+  // authority can later be ratified as the return target.
+  const aNodeId = keyIds.aReceipt;
   const leaseId = 'enterprise28-source-lease-1';
   const bNodeId = keyIds.bReceipt;
   const credentialStreamId = derivedId('tsk:credential', options.streamId);
@@ -400,6 +409,7 @@ export async function runTskLiveComposition(rawOptions) {
       await executeSchema(pool, TSK_SOURCE_LEASE_SCHEMA);
       await executeSchema(pool, TSK_SOURCE_WITNESS_SCHEMA);
     };
+    await aPool.query(`DROP TABLE IF EXISTS ${TSK_RECEIVER_TABLES.join(', ')} CASCADE`);
     await installSource(aPool);
     await aPool.query(TSK_CREDENTIAL_AUTHORITY_SCHEMA);
     await bPool.query(`DROP TABLE IF EXISTS ${TSK_RECEIVER_TABLES.join(', ')} CASCADE`);
@@ -582,8 +592,9 @@ export async function runTskLiveComposition(rawOptions) {
       frozenResolver: resolver, frozenReceipt: sourceFrozenReceipt,
       expectedCommandId: commandId,
     });
+    const bReceiverReady = await assertReceiverReady(bDb, 'public');
     const bFinalizedReceipt = await stageAndFinalizeReceiverGeneration(
-      bDb, 'public', await assertReceiverReady(bDb, 'public'),
+      bDb, 'public', bReceiverReady,
       'enterprise28-generation-1', exported.bundle, countersigned,
       {
         sanitizer, sourceResolver: resolver, guardResolver: resolver,
@@ -637,28 +648,34 @@ export async function runTskLiveComposition(rawOptions) {
     );
     await control.activate(options.streamId, commandId, targetEpoch);
     const activationLeaseGrant = await control.activateSource(
-      options.streamId, commandId, targetEpoch, bFinalizedReceipt, resolver,
+      options.streamId, commandId, targetEpoch, bFinalizedReceipt, resolver, resolver,
     );
     verifyLeaseGrant(resolver, activationLeaseGrant);
     assert.equal(activationLeaseGrant.holderNodeId, bNodeId);
 
-    await bPool.query(
-      'INSERT INTO tsk_outbox_fence (stream_id, fence_token) VALUES ($1, $2)',
-      [options.streamId, targetEpoch],
+    const bSchemaReady = await provisionSchemaVersion(bDb, 'public');
+    const bSourceActivation = await activateFinalizedReceiverAsSource(
+      bDb, bSchemaReady, bReceiverReady, options.streamId,
+      'enterprise28-generation-1', {
+        sanitizer, sourceResolver: resolver, guardResolver: resolver,
+        headResolver: resolver, frozenResolver: resolver,
+        bReceiptResolver: resolver, leaseResolver: resolver,
+        frozenReceipt: sourceFrozenReceipt,
+        finalizedReceipt: bFinalizedReceipt,
+        activationLease: activationLeaseGrant,
+        targetEpoch,
+      },
     );
-    await bPool.query(
-      'INSERT INTO tsk_outbox_source_checkpoint ' +
-      '(stream_id, source_epoch, sequence, head_digest) VALUES ($1, $2, $3, $4)',
-      [options.streamId, sourceEpoch, n, bFinalizedReceipt.signedHeadDigestAtN],
-    );
-    await bDb.transaction((exec) => installLeaseGrant(exec, resolver, activationLeaseGrant));
+    assert.equal(bSourceActivation.n, n);
+    assert.equal(bSourceActivation.headDigest, bFinalizedReceipt.signedHeadDigestAtN);
+    assert.equal(bSourceActivation.targetEpoch, targetEpoch);
+    assert.equal(bSourceActivation.activationGrantDigest, activationLeaseGrant.grantDigest);
     const bFenceReady = await assertSourceFenceReady(bDb, 'public', resolver, {
       streamId: options.streamId,
       holderNodeId: activationLeaseGrant.holderNodeId,
       leaseId: activationLeaseGrant.leaseId,
       grantDigest: activationLeaseGrant.grantDigest,
     });
-    const bSchemaReady = await provisionSchemaVersion(bDb, 'public');
     const bOutbox = new PgTskDurableOutbox(bDb, bSchemaReady, {
       streamId: options.streamId, sanitizer, signer: bSigner,
       maxPendingRows: 100_000, backpressure: 'fail-authoritative-mutation',
@@ -860,6 +877,228 @@ export async function runTskLiveComposition(rawOptions) {
     )).rows[0].value);
     assert.equal(aMaximum, n, 'old A wrote nothing after the frozen sequence');
 
+    // Governed same-stream return: freeze B after N+1, independently replay the
+    // complete signed ledger onto A, then ratify A as source at epoch 2.
+    const returnCommandId = derivedId('return', commandId);
+    const returnTargetEpoch = targetEpoch + 1;
+    const bRevokedGrant = signLeaseGrant(keyIds.guard, material.guard.privateKey, {
+      streamId: options.streamId,
+      leaseEpoch: targetEpoch,
+      leaseStatus: 'revoked',
+      holderNodeId: activationLeaseGrant.holderNodeId,
+      leaseId: activationLeaseGrant.leaseId,
+      commandId: returnCommandId,
+      leaseExpiresAtMs: activationLeaseGrant.leaseExpiresAtMs,
+      leaseGrantSeq: activationLeaseGrant.leaseGrantSeq + 1,
+      prevGrantDigest: activationLeaseGrant.grantDigest,
+    });
+    await bDb.transaction((exec) => installLeaseGrant(exec, resolver, bRevokedGrant));
+
+    const returnFrozenReceipt = await emitSourceFrozenReceipt(bDb, 'public', {
+      sourceKeyId: keyIds.bSource,
+      sourcePrivateKey: material.bSource.privateKey,
+      leaseResolver: resolver,
+      headResolver: resolver,
+    }, {
+      streamId: options.streamId,
+      commandId: returnCommandId,
+      epoch: targetEpoch,
+      sourceNodeId: bNodeId,
+    });
+    assert.equal(returnFrozenReceipt.n, n + 1);
+    const returnExport = await buildSourceExportManifest(bDb, 'public', {
+      streamId: options.streamId,
+      epoch: targetEpoch,
+      commandId: returnCommandId,
+      sourceNodeId: bNodeId,
+    }, {
+      sourceKeyId: keyIds.bSource,
+      sourcePrivateKey: material.bSource.privateKey,
+      sanitizer,
+      leaseResolver: resolver,
+      headResolver: resolver,
+      frozenReceipt: returnFrozenReceipt,
+      maxChunkItems: 4,
+    });
+    const returnCountersigned = guardCountersignSourceExport(
+      returnExport.bundle, returnExport.manifest, {
+        guardKeyId: keyIds.guard,
+        guardPrivateKey: material.guard.privateKey,
+        sanitizer,
+        sourceManifestResolver: resolver,
+        headResolver: resolver,
+        frozenResolver: resolver,
+        frozenReceipt: returnFrozenReceipt,
+        expectedCommandId: returnCommandId,
+      },
+    );
+    await executeSchema(aPool, TSK_RECEIVER_SCHEMA);
+    const aReceiverReady = await assertReceiverReady(aDb, 'public');
+    const returnFinalizedReceipt = await stageAndFinalizeReceiverGeneration(
+      aDb, 'public', aReceiverReady, 'enterprise28-return-generation-2',
+      returnExport.bundle, returnCountersigned, {
+        sanitizer,
+        sourceResolver: resolver,
+        guardResolver: resolver,
+        headResolver: resolver,
+        frozenResolver: resolver,
+        bVerifyResolver: resolver,
+        frozenReceipt: returnFrozenReceipt,
+        expectedCommandId: returnCommandId,
+        bKeyId: keyIds.aReceipt,
+        bPrivateKey: material.aReceipt.privateKey,
+      },
+    );
+    verifyBFinalizedReceipt(resolver, returnFinalizedReceipt);
+    assert.equal(returnFinalizedReceipt.n, n + 1);
+
+    await control.writeLease({
+      streamId: options.streamId,
+      leaseId: activationLeaseGrant.leaseId,
+      holderNodeId: activationLeaseGrant.holderNodeId,
+      epoch: targetEpoch,
+      status: 'active',
+      grantedMaxExpiryMs: await controlNow() - 5_000,
+      grantCommandId: derivedId('control-return-active', commandId),
+    });
+    await control.beginPromotionIntent(
+      options.streamId, returnCommandId, returnTargetEpoch,
+    );
+    await control.bindSourceFenced(
+      options.streamId, returnCommandId, returnTargetEpoch,
+      returnFrozenReceipt, resolver,
+    );
+    await control.writeLease({
+      streamId: options.streamId,
+      leaseId: activationLeaseGrant.leaseId,
+      holderNodeId: activationLeaseGrant.holderNodeId,
+      epoch: targetEpoch,
+      status: 'revoked',
+      grantedMaxExpiryMs: await controlNow() - 5_000,
+      grantCommandId: derivedId('control-return-revoke', commandId),
+    });
+    await control.advanceEpoch(
+      options.streamId, returnCommandId, returnTargetEpoch, aNodeId,
+      fenceStore, {
+        safetyMarginMs: 0,
+        claimExpiresAtMs: await controlNow() + HOUR_MS,
+      },
+    );
+    await control.markImporting(
+      options.streamId, returnCommandId, returnTargetEpoch,
+    );
+    await control.markReady(
+      options.streamId, returnCommandId, returnTargetEpoch,
+      returnFinalizedReceipt, resolver,
+    );
+    await control.activate(
+      options.streamId, returnCommandId, returnTargetEpoch,
+    );
+    const returnActivationLeaseGrant = await control.activateSource(
+      options.streamId, returnCommandId, returnTargetEpoch,
+      returnFinalizedReceipt, resolver, resolver, [aGrant, revokedGrant],
+    );
+    verifyLeaseGrant(resolver, returnActivationLeaseGrant);
+    assert.equal(returnActivationLeaseGrant.holderNodeId, aNodeId);
+    assert.equal(returnActivationLeaseGrant.leaseEpoch, returnTargetEpoch);
+    assert.equal(returnActivationLeaseGrant.leaseGrantSeq, 3);
+    assert.equal(returnActivationLeaseGrant.prevGrantDigest, revokedGrant.grantDigest);
+
+    const returnSourceActivation = await activateFinalizedReceiverAsSource(
+      aDb, aSchemaReady, aReceiverReady, options.streamId,
+      'enterprise28-return-generation-2', {
+        sanitizer,
+        sourceResolver: resolver,
+        guardResolver: resolver,
+        headResolver: resolver,
+        frozenResolver: resolver,
+        bReceiptResolver: resolver,
+        leaseResolver: resolver,
+        frozenReceipt: returnFrozenReceipt,
+        finalizedReceipt: returnFinalizedReceipt,
+        activationLease: returnActivationLeaseGrant,
+        targetEpoch: returnTargetEpoch,
+      },
+    );
+    assert.equal(returnSourceActivation.n, n + 1);
+    assert.equal(
+      returnSourceActivation.headDigest,
+      returnFinalizedReceipt.signedHeadDigestAtN,
+    );
+    assert.equal(
+      returnSourceActivation.activationGrantDigest,
+      returnActivationLeaseGrant.grantDigest,
+    );
+    assert.deepEqual(
+      await control.activateSource(
+        options.streamId, returnCommandId, returnTargetEpoch,
+        returnFinalizedReceipt, resolver, resolver, [aGrant, revokedGrant],
+      ),
+      returnActivationLeaseGrant,
+    );
+    assert.deepEqual(
+      await activateFinalizedReceiverAsSource(
+        aDb, aSchemaReady, aReceiverReady, options.streamId,
+        'enterprise28-return-generation-2', {
+          sanitizer,
+          sourceResolver: resolver,
+          guardResolver: resolver,
+          headResolver: resolver,
+          frozenResolver: resolver,
+          bReceiptResolver: resolver,
+          leaseResolver: resolver,
+          frozenReceipt: returnFrozenReceipt,
+          finalizedReceipt: returnFinalizedReceipt,
+          activationLease: returnActivationLeaseGrant,
+          targetEpoch: returnTargetEpoch,
+        },
+      ),
+      returnSourceActivation,
+    );
+
+    const returnFenceReady = await assertSourceFenceReady(
+      aDb, 'public', resolver, {
+        streamId: options.streamId,
+        holderNodeId: returnActivationLeaseGrant.holderNodeId,
+        leaseId: returnActivationLeaseGrant.leaseId,
+        grantDigest: returnActivationLeaseGrant.grantDigest,
+      },
+    );
+    const returnedAOutbox = new PgTskDurableOutbox(aDb, aSchemaReady, {
+      streamId: options.streamId,
+      sanitizer,
+      signer: aSigner,
+      maxPendingRows: 100_000,
+      backpressure: 'fail-authoritative-mutation',
+    }, { resolver, controlToASkewBoundMs: 0, ready: returnFenceReady });
+    const returnAppend = await returnedAOutbox.withOutboxTx(
+      (tx) => returnedAOutbox.appendInTx(tx, {
+        streamId: options.streamId,
+        rawMutation: { tumblerId: 'T10', counter: 2 },
+        fenceToken: BigInt(returnTargetEpoch),
+      }),
+    );
+    assert.equal(returnAppend.head.sequence, n + 2);
+    assert.equal(
+      returnAppend.head.prevHeadDigest,
+      returnFinalizedReceipt.signedHeadDigestAtN,
+    );
+
+    let staleTargetWriterDenied = false;
+    try {
+      await bOutbox.withOutboxTx((tx) => bOutbox.appendInTx(tx, {
+        streamId: options.streamId,
+        rawMutation: { tumblerId: 'T9', counter: 2 },
+        fenceToken: BigInt(targetEpoch),
+      }));
+    } catch (error) {
+      if (!/revoked|not writable|lease|fence/i.test(
+        String(error?.message ?? error),
+      )) throw error;
+      staleTargetWriterDenied = true;
+    }
+    assert.equal(staleTargetWriterDenied, true, 'old B writer must be denied after return');
+
     const redisRecord = await redis.get(redisKey);
     if (redisRecord === null) throw new Error('TSK Redis authority record disappeared');
     const redisAuthority = Object.freeze({ key: redisKey,
@@ -868,11 +1107,20 @@ export async function runTskLiveComposition(rawOptions) {
       sourceFrozenReceipt,
       bFinalizedReceipt,
       activationLeaseGrant,
+      bSourceActivation,
+      returnFrozenReceipt,
+      returnFinalizedReceipt,
+      returnActivationLeaseGrant,
+      returnSourceActivation,
+      returnCommandId,
       systemIds,
       n,
       nextSequence: bAppend.head.sequence,
       nextHeadDigest: bAppend.head.streamHeadDigest,
+      returnSequence: returnAppend.head.sequence,
+      returnHeadDigest: returnAppend.head.streamHeadDigest,
       staleWriterDenied,
+      staleTargetWriterDenied,
       staleCredentialWriterDenied,
       credentialStreamId,
       credentialSourceLeaseGrant: sourceCredentialGrant,
@@ -890,8 +1138,10 @@ export async function runTskLiveComposition(rawOptions) {
         guard: material.guard.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
         source: material.source.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
         aHead: material.aHead.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+        aReceipt: material.aReceipt.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
         sourceCredentialHead: material.sourceCredentialHead.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
         bHead: material.bHead.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+        bSource: material.bSource.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
         credentialHead: material.credentialHead.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
         bReceipt: material.bReceipt.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
       }),

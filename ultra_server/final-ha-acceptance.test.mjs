@@ -8,7 +8,7 @@ import { validateLiveCompositionEvidence } from './live-composition-evidence.mjs
 
 function liveEvidence() {
   return {
-    schemaVersion: 3, kind: 'enterprise-live-authority-handoff', commandId: 'promote-1',
+    schemaVersion: 4, kind: 'enterprise-live-authority-handoff', commandId: 'promote-1',
     commits: { enterprise: 'a'.repeat(40), bpc: 'b'.repeat(40), tsk: 'c'.repeat(40) },
     systems: {
       bpc: { sourceA: '1', promotedB: '2', control: '3' },
@@ -18,19 +18,24 @@ function liveEvidence() {
     artifacts: {
       bpcPromotion: '1'.repeat(64), bpcFailback: '0'.repeat(64),
       tskFinalized: '2'.repeat(64),
-      tskActivation: '3'.repeat(64), enterpriseManifest: '4'.repeat(64),
+      tskActivation: '3'.repeat(64),
+      tskReturnFinalized: '7'.repeat(64), tskReturnActivation: '8'.repeat(64),
+      enterpriseManifest: '4'.repeat(64),
       promotedCredentialProof: '5'.repeat(64), promotedCredentialReceipt: '6'.repeat(64),
     },
     outcomes: {
       bpcStaleWriterDenied: true, bpcFailbackStaleWriterDenied: true,
       bpcFailbackTargetEpoch: 3, bpcFailbackTargetSystem: '1',
       tskStaleWriterDenied: true,
+      tskReturnStaleWriterDenied: true,
       tskStaleCredentialWriterDenied: true, promotedSourceNextSequence: 2,
+      returnedSourceNextSequence: 3,
+      tskReturnCommandId: 'return-1',
       enterpriseTargetClientId: 'target', copiedTargetCredentialRows: 0,
       redactionPreserved: true, dataLossRpo: 0,
     },
     tskRedisFaults: {
-      schemaVersion: 1, kind: 'tsk-same-redis-authority-faults', commandId: 'promote-1',
+      schemaVersion: 1, kind: 'tsk-same-redis-authority-faults', commandId: 'return-1',
       streamId: 'enterprise28:tsk-live/v1', systemIds: { sourceA: '4', receiverB: '5', control: '6' },
       redisAuthorityKeyDigest: '7'.repeat(64), redisAuthorityTupleDigest: '8'.repeat(64),
       fenceEpoch: 1,

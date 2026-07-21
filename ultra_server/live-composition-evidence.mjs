@@ -11,7 +11,7 @@ function sha256(value) {
 
 function publicEvidence(result) {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     kind: 'enterprise-live-authority-handoff',
     commandId: result.commandId,
     commits: result.commits,
@@ -28,6 +28,8 @@ function publicEvidence(result) {
       bpcFailback: result.bpc.failback.readinessAttestation.attestationDigest,
       tskFinalized: result.tsk.bFinalizedReceipt.receiptDigest,
       tskActivation: result.tsk.activationLeaseGrant.grantDigest,
+      tskReturnFinalized: result.tsk.returnFinalizedReceipt.receiptDigest,
+      tskReturnActivation: result.tsk.returnActivationLeaseGrant.grantDigest,
       enterpriseManifest: result.enterprise.manifestDigest,
       promotedCredentialProof: result.enterprise.targetProofDigest,
       promotedCredentialReceipt: result.enterprise.receiptDigest,
@@ -38,8 +40,11 @@ function publicEvidence(result) {
       bpcFailbackTargetEpoch: result.bpc.failback.targetEpoch,
       bpcFailbackTargetSystem: result.bpc.failback.targetSystemId,
       tskStaleWriterDenied: result.tsk.staleWriterDenied,
+      tskReturnStaleWriterDenied: result.tsk.staleTargetWriterDenied,
       tskStaleCredentialWriterDenied: result.tsk.staleCredentialWriterDenied,
       promotedSourceNextSequence: result.tsk.nextSequence,
+      returnedSourceNextSequence: result.tsk.returnSequence,
+      tskReturnCommandId: result.tsk.returnCommandId,
       enterpriseTargetClientId: result.enterprise.targetClientId,
       copiedTargetCredentialRows: result.enterprise.copiedTargetCredentialRows,
       redactionPreserved: result.enterprise.redactionPreserved,
@@ -51,7 +56,7 @@ function publicEvidence(result) {
 }
 
 export function validateLiveCompositionEvidence(evidence, expected = {}) {
-  assert.equal(evidence?.schemaVersion, 3);
+  assert.equal(evidence?.schemaVersion, 4);
   assert.equal(evidence?.kind, 'enterprise-live-authority-handoff');
   assert.equal(evidence?.commandId, expected.commandId ?? evidence.commandId);
   for (const [name, value] of Object.entries(evidence?.commits ?? {})) {
@@ -70,12 +75,17 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
   assert.equal(Number.isSafeInteger(evidence.outcomes.bpcFailbackTargetEpoch) &&
     evidence.outcomes.bpcFailbackTargetEpoch > 1, true);
   assert.equal(evidence.outcomes.tskStaleWriterDenied, true);
+  assert.equal(evidence.outcomes.tskReturnStaleWriterDenied, true);
+  assert.equal(evidence.outcomes.returnedSourceNextSequence,
+    evidence.outcomes.promotedSourceNextSequence + 1);
+  assert.equal(evidence.systems.tsk.sourceA !== evidence.systems.tsk.receiverB, true);
   assert.equal(evidence.outcomes.tskStaleCredentialWriterDenied, true);
   assert.equal(evidence.outcomes.copiedTargetCredentialRows, 0);
   assert.equal(evidence.outcomes.redactionPreserved, true);
   assert.equal(evidence.outcomes.dataLossRpo, 0);
   assert.equal(evidence.tskRedisFaults?.kind, 'tsk-same-redis-authority-faults');
-  assert.equal(evidence.tskRedisFaults?.commandId, evidence.commandId);
+  assert.equal(evidence.tskRedisFaults?.commandId,
+    evidence.outcomes.tskReturnCommandId);
   assert.deepEqual(evidence.tskRedisFaults?.systemIds, evidence.systems.tsk);
   assert.equal(evidence.tskRedisFaults?.faults?.livePartition?.rpo, 0);
   assert.equal(evidence.tskRedisFaults?.faults?.livePartition?.oldMasterRefusedWrites, true);

@@ -19,6 +19,13 @@ test('live composition requires exact command binding, independent systems, and 
   const tsk = {
     bFinalizedReceipt: { commandId }, activationLeaseGrant: { commandId },
     staleWriterDenied: true, n: 4, nextSequence: 5,
+    staleTargetWriterDenied: true, returnSequence: 6,
+    returnFrozenReceipt: { n: 5 },
+    returnCommandId: 'return-promote-live-1',
+    returnFinalizedReceipt: { n: 5, bSystemId: '4', commandId: 'return-promote-live-1' },
+    returnActivationLeaseGrant: { leaseEpoch: 2, commandId: 'return-promote-live-1',
+      grantDigest: 'c'.repeat(64) },
+    returnSourceActivation: { n: 5, activationGrantDigest: 'c'.repeat(64) },
     staleCredentialWriterDenied: true,
     publicCredential: { status: 'active', publicMapDigest: 'a'.repeat(64) },
     publicCredentialSource: { clientId: 'source-client', publicMapDigest: 'b'.repeat(64) },
@@ -50,6 +57,8 @@ test('directly composes exact reviewed live BPC and TSK artifacts', {
   assert.equal(result.tsk.activationLeaseGrant.commandId, result.commandId);
   assert.equal(result.bpc.staleWriterDenied, true);
   assert.equal(result.tsk.staleWriterDenied, true);
+  assert.equal(result.tsk.staleTargetWriterDenied, true);
+  assert.equal(result.tsk.returnSequence, result.tsk.n + 2);
   assert.equal(result.enterprise.rpo, 0);
   assert.equal(result.enterprise.copiedTargetCredentialRows, 0);
   assert.equal(result.enterprise.targetClientId, result.tsk.publicCredentialTarget.clientId);

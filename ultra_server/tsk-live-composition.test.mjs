@@ -7,13 +7,14 @@ import { loadPinnedTskModule, runTskLiveComposition } from './tsk-live-compositi
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TSK_ROOT = resolve(HERE, '..', '..', 'tsk-protocol');
-const TSK_COMMIT = 'abcd7cb5aaf71dc8400891dc7a3efafcb028758b';
+const TSK_COMMIT = '20bf099e0b4f7479b93cf1d5e245b3f7c87e1675';
 
 test('loads the reviewed TSK distribution by explicit root', async () => {
   const tsk = await loadPinnedTskModule(TSK_ROOT);
   assert.equal(typeof tsk.HaControlFencing, 'function');
   assert.equal(typeof tsk.PgTskDurableOutbox, 'function');
   assert.equal(typeof tsk.stageAndFinalizeReceiverGeneration, 'function');
+  assert.equal(typeof tsk.activateFinalizedReceiverAsSource, 'function');
 });
 
 test('refuses to reset databases without the explicit destructive acceptance guard', async () => {
@@ -62,11 +63,28 @@ test('executes the full live lifecycle when dedicated acceptance authorities are
     destructiveReset: true,
   });
   assert.equal(result.staleWriterDenied, true);
+  assert.equal(result.staleTargetWriterDenied, true);
   assert.equal(result.nextSequence, result.n + 1);
+  assert.equal(result.returnSequence, result.n + 2);
   assert.equal(new Set(Object.values(result.systemIds)).size, 3);
   assert.equal(result.sourceFrozenReceipt.n, result.n);
   assert.equal(result.bFinalizedReceipt.n, result.n);
   assert.equal(result.activationLeaseGrant.leaseEpoch, 1);
+  assert.equal(result.bSourceActivation.n, result.n);
+  assert.equal(result.bSourceActivation.headDigest,
+    result.bFinalizedReceipt.signedHeadDigestAtN);
+  assert.equal(result.bSourceActivation.activationGrantDigest,
+    result.activationLeaseGrant.grantDigest);
+  assert.equal(result.returnFrozenReceipt.n, result.n + 1);
+  assert.equal(result.returnFinalizedReceipt.n, result.n + 1);
+  assert.equal(result.returnActivationLeaseGrant.leaseEpoch, 2);
+  assert.equal(result.returnActivationLeaseGrant.commandId, result.returnCommandId);
+  assert.equal(result.returnActivationLeaseGrant.leaseGrantSeq, 3);
+  assert.equal(result.returnSourceActivation.n, result.n + 1);
+  assert.equal(result.returnSourceActivation.headDigest,
+    result.returnFinalizedReceipt.signedHeadDigestAtN);
+  assert.equal(result.returnSourceActivation.activationGrantDigest,
+    result.returnActivationLeaseGrant.grantDigest);
   assert.equal(result.tskCommit, TSK_COMMIT);
   assert.equal(result.publicCredentialSource.status, 'active');
   assert.equal(result.publicCredentialTarget.status, 'active');
