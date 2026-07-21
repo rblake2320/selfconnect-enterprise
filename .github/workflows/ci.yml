@@ -604,6 +604,7 @@ jobs:
           LIVE_COMPOSITION_COMBINED: "1"
           ULTRA_FINAL_COMMAND_ID: enterprise28-promote-1
           ULTRA_FINAL_EXPECTED_ENTERPRISE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE: ${{ runner.temp }}/ultra-live-composition-evidence.json
           BPC_PROTOCOL_ROOT: ${{ github.workspace }}/../bpc-protocol
           TSK_PROTOCOL_ROOT: ${{ github.workspace }}/../tsk-protocol
         run: npm run test:protocol-composition --prefix ultra_server
@@ -613,6 +614,7 @@ jobs:
           BPC_PROTOCOL_ROOT: ${{ github.workspace }}/../bpc-protocol
           TSK_PROTOCOL_ROOT: ${{ github.workspace }}/../tsk-protocol
           ULTRA_FINAL_EXPECTED_ENTERPRISE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE: ${{ runner.temp }}/ultra-live-composition-evidence.json
           ULTRA_FINAL_EVIDENCE_FILE: ${{ runner.temp }}/ultra-final-ha-evidence.json
         run: npm run test:final-ha --prefix ultra_server
       - name: Upload immutable non-secret acceptance evidence

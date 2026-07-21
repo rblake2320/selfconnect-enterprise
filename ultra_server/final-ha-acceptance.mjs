@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readLiveCompositionEvidence } from './live-composition-evidence.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..');
@@ -164,7 +165,23 @@ export async function runFinalAcceptance(options = {}) {
   }
 
   const startedAt = new Date().toISOString();
-  const results = [];
+  const liveReceipt = await readLiveCompositionEvidence(
+    requiredPath(process.env.ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE,
+      'ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE'),
+    { commits: { enterprise: enterpriseCommit,
+      bpc: lock.components['bpc-protocol'].commit,
+      tsk: lock.components['tsk-protocol'].commit } },
+  );
+  const results = [Object.freeze({
+    id: 'direct-enterprise-authority-handoff',
+    durationMs: 0,
+    outputSha256: liveReceipt.evidenceSha256,
+    evidence: Object.freeze([
+      `command=${liveReceipt.evidence.commandId}`,
+      `enterprise-rpo=${liveReceipt.evidence.outcomes.dataLossRpo}`,
+      `promoted-sequence=${liveReceipt.evidence.outcomes.promotedSourceNextSequence}`,
+    ]),
+  })];
   for (const step of ACCEPTANCE_STEPS) {
     const start = Date.now();
     const output = await capture(npm, step.args, {
@@ -177,7 +194,7 @@ export async function runFinalAcceptance(options = {}) {
     process.stdout.write(`ok - ${step.id} (${results.at(-1).durationMs}ms)\n`);
   }
   const evidence = Object.freeze({
-    schemaVersion: 1,
+    schemaVersion: 2,
     claim: 'named controlled-deployment Ultra HA topology accepted',
     exclusions: Object.freeze([
       'government authorization', 'compliance certification', 'legal admissibility',

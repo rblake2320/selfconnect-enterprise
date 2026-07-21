@@ -5,6 +5,7 @@ import {
   runLiveEnterpriseAcceptance,
   validateLiveProtocolComposition,
 } from './final-ha-live.mjs';
+import { writeLiveCompositionEvidence } from './live-composition-evidence.mjs';
 
 test('live composition requires exact command binding, independent systems, and stale denial', () => {
   const commandId = 'promote-live-1';
@@ -49,4 +50,7 @@ test('directly composes exact reviewed live BPC and TSK artifacts', {
   assert.equal(result.enterprise.rpo, 0);
   assert.equal(result.enterprise.copiedTargetCredentialRows, 0);
   assert.equal(result.enterprise.targetClientId, result.tsk.publicCredentialTarget.clientId);
+  if (process.env.ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE) {
+    await writeLiveCompositionEvidence(process.env.ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE, result);
+  }
 });
