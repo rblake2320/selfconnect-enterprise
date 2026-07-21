@@ -587,10 +587,8 @@ export async function runBpcLiveComposition(options) {
     isolatedPools.push(failbackOwnerPool);
     await resetAuthority(failbackOwnerPool, bpc);
     const dbFailbackOwner = new bpc.NodePostgresTransactor(failbackOwnerPool);
-    await Promise.all([
-      bpc.provisionSchemaVersion(dbFailbackOwner, 'public'),
-      bpc.provisionBpcHaSchema(dbFailbackOwner),
-    ]);
+    await bpc.provisionSchemaVersion(dbFailbackOwner, 'public');
+    await bpc.provisionBpcHaSchema(dbFailbackOwner);
     await failbackOwnerPool.query(
       'INSERT INTO bpc_ha.mutation_ticket_key(key_id,secret) VALUES($1,$2)',
       [KEY_IDS.mutation, mutationSecret],
