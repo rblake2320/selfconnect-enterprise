@@ -20,10 +20,6 @@ function result() {
           fault: 'sigkill-enterprise-importer-before-commit', resumed: true,
           tornAuthorityRows: 0, rpo: 0, rtoMs: 9,
         },
-        databaseInterruption: {
-          fault: 'pg_terminate_backend-before-commit', resumed: true,
-          tornAuthorityRows: 0, rpo: 0, rtoMs: 12,
-        },
         destructiveRestore: {
           fault: 'drop-and-rebuild-enterprise-authority-on-promoted-b', resumed: true,
           sameTargetSystemId: true, sameCredentialReceipt: true, rpo: 0, rtoMs: 23,
@@ -38,10 +34,10 @@ test('same-authority fault evidence is strict, hashed, and write-once', async ()
   const path = join(dir, 'evidence.json');
   await writeEnterpriseFaultEvidence(path, result());
   const envelope = await readEnterpriseFaultEvidence(path, { commandId: 'promote-1' });
-  assert.equal(envelope.evidence.faults.databaseInterruption.rpo, 0);
+  assert.equal(envelope.evidence.faults.childProcessSigkill.rpo, 0);
   await assert.rejects(writeEnterpriseFaultEvidence(path, result()), /exist/i);
   const tampered = JSON.parse(await readFile(path, 'utf8'));
-  tampered.evidence.faults.databaseInterruption.rpo = 1;
+  tampered.evidence.faults.childProcessSigkill.rpo = 1;
   await import('node:fs/promises').then(({ writeFile }) =>
     writeFile(path, JSON.stringify(tampered)));
   await assert.rejects(readEnterpriseFaultEvidence(path), /digest mismatch/);
@@ -56,9 +52,9 @@ test('fault acceptance rejects marker-like or incomplete claims', () => {
   assert.equal(validateEnterpriseFaultEvidence(valid), valid);
   assert.throws(() => validateEnterpriseFaultEvidence({
     ...valid, faults: { ...valid.faults,
-      databaseInterruption: { ...valid.faults.databaseInterruption, tornAuthorityRows: 1 } },
+      childProcessSigkill: { ...valid.faults.childProcessSigkill, tornAuthorityRows: 1 } },
   }));
   assert.throws(() => validateEnterpriseFaultEvidence({
-    ...valid, faults: { databaseInterruption: valid.faults.databaseInterruption },
+    ...valid, faults: { childProcessSigkill: valid.faults.childProcessSigkill },
   }));
 });

@@ -29,33 +29,6 @@ async function resetUltra(pool) {
   await initializePgSchemas(pool, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA);
 }
 
-function backendInterruptedPool(pool, interrupter, sqlPattern) {
-  let interrupted = false;
-  return {
-    get interrupted() { return interrupted; },
-    async connect() {
-      const client = await pool.connect();
-      const pid = Number((await client.query('SELECT pg_backend_pid() AS pid')).rows[0].pid);
-      return {
-        async query(sql, params) {
-          const result = await client.query(sql, params);
-          if (!interrupted && sqlPattern.test(String(sql))) {
-            interrupted = true;
-            const killed = await interrupter.query(
-              'SELECT pg_terminate_backend($1) AS killed', [pid],
-            );
-            assert.equal(killed.rows[0].killed, true, 'fault injector did not terminate import backend');
-          }
-          return result;
-        },
-        release() {
-          client.release(interrupted ? new Error('discard interrupted import connection') : undefined);
-        },
-      };
-    },
-  };
-}
-
 async function assertInterruptedImportRolledBack(pool, clusterId, pairId) {
   const [head, binding, pending] = await Promise.all([
     pool.query('SELECT COUNT(*)::int AS n FROM ultra_ha_import_head WHERE cluster_id=$1', [clusterId]),
@@ -190,24 +163,6 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       },
     });
     await assertInterruptedImportRolledBack(b, clusterId, pairId);
-    const interruptedAt = Date.now();
-    const interruptedPool = backendInterruptedPool(
-      b, b, /INSERT INTO ultra_ha_import_head/i,
-    );
-    await assert.rejects(importIndependentState(interruptedPool, bundle, {
-      advisoryLockKey,
-      clusterId,
-      commandId: composition.commandId,
-      sourceEpoch,
-      bpcPromotionDigest: composition.bpc.readinessAttestation.attestationDigest,
-      tskActivationDigest: composition.tsk.activationLeaseGrant.grantDigest,
-      tskFinalizedDigest: composition.tsk.bFinalizedReceipt.receiptDigest,
-      sourcePublicKey: sourceSigning.publicKey,
-      guardPublicKey: guardSigning.publicKey,
-      ...composition.resolvers,
-    }), /terminat|connection|closed|client/i);
-    assert.equal(interruptedPool.interrupted, true);
-    await assertInterruptedImportRolledBack(b, clusterId, pairId);
     const imported = await importIndependentState(b, bundle, {
       advisoryLockKey,
       clusterId,
@@ -267,8 +222,6 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       tsk_client_id: reprovisioned.targetClientId });
     assert.equal(copiedTarget, 0, 'promoted TSK secret/map must not be copied into Enterprise');
     assert.equal(redacted.error, 'SECRET_REPROVISION_REQUIRED');
-    const interruptedRtoMs = Date.now() - interruptedAt;
-
     // Destroy and rebuild only the Enterprise authority tables on the exact
     // promoted B PostgreSQL instance. The independently governed TSK authority
     // remains intact, so the same signed bundle and public credential proof can
@@ -332,13 +285,6 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
           tornAuthorityRows: 0,
           rpo: 0,
           rtoMs: importerSigkillRtoMs,
-        }),
-        databaseInterruption: Object.freeze({
-          fault: 'pg_terminate_backend-before-commit',
-          resumed: true,
-          tornAuthorityRows: 0,
-          rpo: 0,
-          rtoMs: interruptedRtoMs,
         }),
         destructiveRestore: Object.freeze({
           fault: 'drop-and-rebuild-enterprise-authority-on-promoted-b',

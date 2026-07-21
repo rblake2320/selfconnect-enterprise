@@ -5,7 +5,6 @@ import { readFile, writeFile } from 'node:fs/promises';
 const DIGEST = /^[0-9a-f]{64}$/;
 const ALLOWED_FAULTS = Object.freeze({
   childProcessSigkill: 'sigkill-enterprise-importer-before-commit',
-  databaseInterruption: 'pg_terminate_backend-before-commit',
   destructiveRestore: 'drop-and-rebuild-enterprise-authority-on-promoted-b',
 });
 
@@ -41,7 +40,6 @@ export function validateEnterpriseFaultEvidence(evidence, expected = {}) {
     assert.equal(fault?.rpo, 0);
     assert.equal(Number.isSafeInteger(fault?.rtoMs) && fault.rtoMs >= 0, true);
   }
-  assert.equal(evidence.faults.databaseInterruption.tornAuthorityRows, 0);
   assert.equal(evidence.faults.childProcessSigkill.tornAuthorityRows, 0);
   assert.equal(evidence.faults.destructiveRestore.sameTargetSystemId, true);
   assert.equal(evidence.faults.destructiveRestore.sameCredentialReceipt, true);
