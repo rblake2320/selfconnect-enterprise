@@ -9,6 +9,7 @@ import {
   guardCountersignIndependentState,
   importIndependentState,
 } from './independent-state.js';
+import { createPromotedTskAuthorityCapability } from './promoted-tsk-authority.js';
 
 function usage() {
   throw new Error(
@@ -59,6 +60,30 @@ async function atomicJson(path, value) {
   await rename(temporary, path);
 }
 
+async function sourceCredentialProofs(input) {
+  if (!Array.isArray(input.sourceCredentialProofBindings)) {
+    throw new Error('sourceCredentialProofBindings is required for export');
+  }
+  return Promise.all(input.sourceCredentialProofBindings.map(async (binding) => {
+    const proof = await jsonFile(binding.proofFile);
+    const leaseResolver = await resolverFromFiles(
+      binding.leasePublicKeyFiles, 'source TSK lease',
+    );
+    const headKeyResolver = await resolverFromFiles(
+      binding.headPublicKeyFiles, 'source TSK head',
+    );
+    return {
+      authorityCapability: createPromotedTskAuthorityCapability({
+        activationLease: proof.activationLease,
+        leaseResolver,
+        headKeyResolver,
+      }),
+      expected: binding.expected,
+      proof,
+    };
+  }));
+}
+
 const [command, inputPath, outputPath] = process.argv.slice(2);
 if (!command || !inputPath) usage();
 const input = await jsonFile(inputPath);
@@ -87,6 +112,7 @@ try {
     const result = await exportIndependentState(pool, {
       ...input,
       sourcePrivateKey: await privateKey(input.sourcePrivateKeyFile),
+      sourceCredentialProofs: await sourceCredentialProofs(input),
     });
     await atomicJson(outputPath, result);
     process.stdout.write(`${JSON.stringify({ ok: true, manifestDigest: result.manifestDigest })}\n`);

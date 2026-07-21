@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import { Pool } from 'pg';
 import { generateTumblerMap } from '@tsk/core';
+import { canonicalOpDigest, canonicalize, streamHeadDigest } from '@tsk/server';
 
 import {
   PgNonceTombstoneStore,
@@ -18,6 +19,10 @@ import {
   readImportedTskReprovision,
   verifyIndependentStateBundle,
 } from './independent-state.js';
+import {
+  PROMOTED_TSK_CREDENTIAL_PROOF_FORMAT,
+  createPromotedTskAuthorityCapability,
+} from './promoted-tsk-authority.js';
 import { ULTRA_PG_SCHEMA, initializePgSchemas } from './runtime-stores.js';
 
 const urlA = process.env.ULTRA_TEST_POSTGRES_URL_A;
@@ -140,6 +145,69 @@ function signedProtocolEvidence({ commandId, sourceSystemId, targetSystemId, key
   return { bpcPromotionAttestation, tskActivationLease, tskFinalizedReceipt };
 }
 
+function signedSourceCredentialBinding({ agentId, map, pairId, protocolEvidence, guardPublicKey }) {
+  const headKeys = generateKeyPairSync('ed25519');
+  const publicMap = structuredClone(map);
+  delete publicMap.sharedSecret;
+  const lease = protocolEvidence.tskActivationLease;
+  const mutation = {
+    kind: 'tsk.credential.snapshot.v1',
+    tumblerId: map.clientId,
+    clientId: map.clientId,
+    counter: 1,
+    publicMap,
+    publicMapDigest: createHash('sha256').update(canonicalize(publicMap), 'utf8').digest('hex'),
+    secretDigest: createHash('sha256').update(map.sharedSecret, 'utf8').digest('hex'),
+  };
+  const record = {
+    contractVersion: '1',
+    streamId: lease.streamId,
+    sourceEpoch: String(lease.leaseEpoch),
+    sequence: 1,
+    fenceToken: String(lease.leaseEpoch),
+    opDigest: canonicalOpDigest({
+      streamId: lease.streamId,
+      sourceEpoch: String(lease.leaseEpoch),
+      sequence: 1,
+      fenceToken: String(lease.leaseEpoch),
+      mutation,
+    }),
+    mutation,
+  };
+  const unsignedHead = {
+    streamId: lease.streamId,
+    sequence: 1,
+    prevHeadDigest: '0'.repeat(64),
+    opDigest: record.opDigest,
+    keyId: 'source-credential-head-1',
+    alg: 'ed25519',
+  };
+  const headDigest = streamHeadDigest(unsignedHead);
+  const proof = {
+    format: PROMOTED_TSK_CREDENTIAL_PROOF_FORMAT,
+    agentId,
+    pairId,
+    commandId: lease.commandId,
+    activationLease: lease,
+    record,
+    head: {
+      ...unsignedHead,
+      headDigest,
+      signature: edSign(null, Buffer.from(headDigest, 'hex'), headKeys.privateKey).toString('base64url'),
+    },
+  };
+  return {
+    authorityCapability: createPromotedTskAuthorityCapability({
+      activationLease: lease,
+      leaseResolver: { resolve: (keyId) => keyId === lease.guardKeyId ? guardPublicKey : null },
+      headKeyResolver: { resolve: (keyId, alg) =>
+        keyId === unsignedHead.keyId && alg === 'ed25519' ? headKeys.publicKey : null },
+    }),
+    expected: { agentId, pairId, sourceClientId: map.clientId },
+    proof,
+  };
+}
+
 test('signed independent-state handoff is atomic, redacted, replay-safe, and rollback-safe', async () => {
   const a = new Pool({ connectionString: urlA });
   const b = new Pool({ connectionString: urlB });
@@ -224,6 +292,13 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       sourceKeyId: 'source-key-1',
       sourcePrivateKey: source.privateKey,
       protocolEvidence,
+      sourceCredentialProofs: [signedSourceCredentialBinding({
+        agentId: `agent-${suffix}`,
+        map: sourceMap,
+        pairId,
+        protocolEvidence,
+        guardPublicKey: protocolKeys.guard.publicKey,
+      })],
     };
     const unboundMap = generateTumblerMap();
     unboundMap.label = `agent:agent-${suffix}`;
@@ -232,7 +307,9 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       'INSERT INTO ultra_tumbler_maps (client_id, map) VALUES ($1,$2::jsonb)',
       [unboundMap.clientId, JSON.stringify(unboundMap)],
     );
-    await assert.rejects(exportIndependentState(a, exportInput), /active unbound TSK credential/);
+    await assert.rejects(exportIndependentState(a, {
+      ...exportInput, sourceCredentialProofs: [],
+    }), /credential inventory/);
     await a.query('DELETE FROM ultra_tumbler_maps WHERE client_id=$1', [unboundMap.clientId]);
 
     const sourceBundle = await exportIndependentState(a, exportInput);
@@ -501,6 +578,13 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       sourceKeyId: 'source-key-1',
       sourcePrivateKey: source.privateKey,
       protocolEvidence: failbackEvidence,
+      sourceCredentialProofs: [signedSourceCredentialBinding({
+        agentId: `agent-${suffix}`,
+        map: targetMap,
+        pairId,
+        protocolEvidence: failbackEvidence,
+        guardPublicKey: protocolKeys.guard.publicKey,
+      })],
     });
     const failbackBundle = guardCountersignIndependentState(failbackSource, {
       expectedCommandId: failbackCommandId,

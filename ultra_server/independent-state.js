@@ -6,7 +6,10 @@ import {
 } from 'node:crypto';
 import { verifyPromotionReadinessAttestation } from '@bpc/server';
 import { verifyBFinalizedReceipt, verifyLeaseGrant } from '@tsk/server';
-import { verifyPromotedTskCredentialProof } from './promoted-tsk-authority.js';
+import {
+  verifyPromotedTskCredentialProof,
+  verifySourceTskCredentialProof,
+} from './promoted-tsk-authority.js';
 
 const IDENTIFIER = /^[A-Za-z0-9_.:-]{1,128}$/;
 const STREAM_IDENTIFIER = /^[A-Za-z0-9_.:/-]{1,128}$/;
@@ -531,6 +534,37 @@ export async function exportIndependentState(pool, input) {
   const sourceKeyId = requiredIdentifier(input.sourceKeyId, 'sourceKeyId');
   const maxItems = positiveSafeInteger(input.maxItems ?? 100_000, 'maxItems');
   const maxBytes = positiveSafeInteger(input.maxBytes ?? 64 * 1024 * 1024, 'maxBytes');
+  if (!Array.isArray(input.sourceCredentialProofs)) {
+    throw new Error('sourceCredentialProofs must be an array');
+  }
+  // Start every proof snapshot/verification synchronously, before the first
+  // database await. Each entry carries an opaque authority capability plus the
+  // exact principal the signed source credential is expected to bind.
+  const verifiedSourceCredentialPromise = Promise.all(input.sourceCredentialProofs.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
+        Object.getPrototypeOf(entry) !== Object.prototype ||
+        Object.getOwnPropertySymbols(entry).length !== 0 ||
+        Object.keys(entry).sort().join(',') !== 'authorityCapability,expected,proof') {
+      throw new Error(`sourceCredentialProofs[${index}] has an invalid shape`);
+    }
+    for (const key of ['authorityCapability', 'expected', 'proof']) {
+      const descriptor = Object.getOwnPropertyDescriptor(entry, key);
+      if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) {
+        throw new Error(`sourceCredentialProofs[${index}].${key} must be an enumerable data property`);
+      }
+    }
+    return verifySourceTskCredentialProof(
+      entry.authorityCapability, entry.proof, entry.expected,
+    );
+  }));
+  const verifiedSourceCredentials = await verifiedSourceCredentialPromise;
+  const verifiedSourceCredentialByPair = new Map();
+  for (const verified of verifiedSourceCredentials) {
+    if (verifiedSourceCredentialByPair.has(verified.pairId)) {
+      throw new Error('signed source TSK credential inventory contains duplicate pairs');
+    }
+    verifiedSourceCredentialByPair.set(verified.pairId, verified);
+  }
   return withSerializable(pool, async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [input.advisoryLockKey]);
     const processing = await client.query("SELECT COUNT(*)::int AS count FROM ultra_idempotency WHERE state='processing'");
@@ -539,30 +573,21 @@ export async function exportIndependentState(pool, input) {
     const bindings = await client.query(
       'SELECT pair_id, tsk_client_id, agent_id FROM ultra_identity_bindings ORDER BY pair_id COLLATE "C"',
     );
-    const credentialBindings = [];
-    const boundClientIds = new Set(bindings.rows.map((binding) => binding.tsk_client_id));
-    const allMaps = await client.query('SELECT client_id, map FROM ultra_tumbler_maps ORDER BY client_id COLLATE "C"');
-    for (const row of allMaps.rows) {
-      const map = row.map;
-      if (!boundClientIds.has(row.client_id) && ['active', 'expiring'].includes(map?.status)) {
-        throw new Error('cannot export with an active unbound TSK credential');
-      }
+    if (verifiedSourceCredentials.length !== bindings.rows.length) {
+      throw new Error('signed source TSK credential inventory does not match identity bindings');
     }
+    const credentialBindings = [];
     for (const binding of bindings.rows) {
-      const maps = await client.query(
-        'SELECT map FROM ultra_tumbler_maps WHERE client_id=$1', [binding.tsk_client_id],
-      );
-      const map = maps.rows[0]?.map;
-      const ownedLabel = map?.label === `agent:${binding.agent_id}` ||
-        map?.label?.startsWith(`rotation:${binding.agent_id}:${binding.pair_id}:`);
-      if (!map || map.clientId !== binding.tsk_client_id || !ownedLabel || map.status !== 'active') {
-        throw new Error('identity binding does not reference an active owned TSK credential');
+      const verified = verifiedSourceCredentialByPair.get(binding.pair_id);
+      if (!verified || verified.agentId !== binding.agent_id || verified.pairId !== binding.pair_id ||
+          verified.sourceClientId !== binding.tsk_client_id) {
+        throw new Error('signed source TSK credential does not match identity binding');
       }
       credentialBindings.push({
         agentId: binding.agent_id,
         pairId: binding.pair_id,
         sourceClientId: binding.tsk_client_id,
-        sourceSecretDigest: createHash('sha256').update(map.sharedSecret, 'utf8').digest('hex'),
+        sourceSecretDigest: verified.secretDigest,
       });
     }
     const idempotency = await client.query(

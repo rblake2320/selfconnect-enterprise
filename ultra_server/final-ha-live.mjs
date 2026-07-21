@@ -156,6 +156,7 @@ export async function runLiveProtocolComposition(env = process.env) {
     commits: Object.freeze({ enterprise: enterpriseSha, bpc: bpcCommit, tsk: tskCommit }),
     bpc,
     tsk,
+    sourceCredentialAuthority,
     verifiedSourceCredential,
     verifiedTargetCredential,
     resolvers: Object.freeze({ bpcResolver, tskBResolver, tskGuardResolver }),

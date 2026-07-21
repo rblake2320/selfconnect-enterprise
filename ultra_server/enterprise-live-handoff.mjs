@@ -5,7 +5,6 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { generateTumblerMap } from '@tsk/core';
 import pg from 'pg';
 
 import {
@@ -99,14 +98,6 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
   const advisoryLockKey = `enterprise28:${clusterId}:independent-state`;
   try {
     await Promise.all([resetUltra(a), resetUltra(b)]);
-    const sourceMap = generateTumblerMap({ keyLength: 64, minTumblers: 2, maxTumblers: 2 });
-    sourceMap.clientId = sourceClientId;
-    sourceMap.label = `agent:${agentId}`;
-    sourceMap.status = 'active';
-    await a.query(
-      'INSERT INTO ultra_tumbler_maps(client_id,map) VALUES($1,$2::jsonb)',
-      [sourceClientId, JSON.stringify(sourceMap)],
-    );
     await a.query(
       'INSERT INTO ultra_identity_bindings(pair_id,tsk_client_id,agent_id) VALUES($1,$2,$3)',
       [pairId, sourceClientId, agentId],
@@ -118,7 +109,7 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
        VALUES($1,'status', $3,'complete',$4::jsonb),
              ($2,'provision-tsk',$3,'complete',$5::jsonb)`,
       [safeId, secretId, agentId, JSON.stringify({ ok: true, value: 'preserved' }),
-        JSON.stringify({ ok: true, sharedSecret: sourceMap.sharedSecret })],
+        JSON.stringify({ ok: true, credentialProvisionPayload: 'redact-at-export' })],
     );
     const protocolEvidence = {
       bpcPromotionAttestation: composition.bpc.readinessAttestation,
@@ -133,6 +124,15 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       sourceEpoch,
       sourceKeyId: 'enterprise28-source-key-1',
       sourcePrivateKey: sourceSigning.privateKey,
+      sourceCredentialProofs: [{
+        authorityCapability: composition.sourceCredentialAuthority,
+        expected: {
+          agentId,
+          pairId,
+          sourceClientId,
+        },
+        proof: composition.tsk.sourceCredentialProof,
+      }],
     });
     const bundle = guardCountersignIndependentState(sourceBundle, {
       expectedCommandId: composition.commandId,
@@ -141,7 +141,9 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       sourcePublicKey: sourceSigning.publicKey,
       ...composition.resolvers,
     });
-    assert.equal(JSON.stringify(bundle).includes(sourceMap.sharedSecret), false);
+    assert.equal(bundle.manifest.state.credentialBindings[0].sourceSecretDigest,
+      composition.verifiedSourceCredential.secretDigest);
+    assert.equal(JSON.stringify(bundle).includes('redact-at-export'), false);
     const importerSigkillRtoMs = await killImporterBeforeCommit({
       postgresUrl: bUrl,
       bundle,
@@ -186,10 +188,7 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       leaseResolver,
       headKeyResolver,
     });
-    const sourceSecretDigest = (await b.query(
-      `SELECT source_secret_digest FROM ultra_ha_tsk_reprovision
-        WHERE cluster_id=$1 AND pair_id=$2`, [clusterId, pairId],
-    )).rows[0].source_secret_digest;
+    const sourceSecretDigest = composition.verifiedSourceCredential.secretDigest;
     const reprovisioned = await completeImportedPromotedTskCredential(b, authority, {
       advisoryLockKey,
       agentId,
