@@ -191,7 +191,7 @@ export async function verifyPromotedTskCredentialProof(capability, candidate, ex
   }
   const lease = proof.activationLease;
   if (lease.leaseStatus !== 'active' || proof.commandId !== lease.commandId ||
-      proof.record.streamId !== lease.streamId || proof.record.sourceEpoch !== String(lease.leaseEpoch) ||
+      proof.record.streamId !== lease.streamId ||
       proof.record.fenceToken !== String(lease.leaseEpoch)) {
     throw new Error('credential proof is not bound to the promoted lease');
   }

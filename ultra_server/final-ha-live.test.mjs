@@ -16,6 +16,10 @@ test('live composition requires exact command binding, independent systems, and 
     publicCredential: { status: 'active', publicMapDigest: 'a'.repeat(64) },
     publicCredentialSource: { clientId: 'source-client', publicMapDigest: 'b'.repeat(64) },
     publicCredentialTarget: { clientId: 'target-client', publicMapDigest: 'a'.repeat(64) },
+    targetCredentialProof: {
+      commandId,
+      record: { mutation: { clientId: 'target-client' } },
+    },
     credentialSourceRevocation: { commandId },
     credentialActivationLeaseGrant: { commandId },
     systemIds: { sourceA: '4', receiverB: '5', control: '6' },

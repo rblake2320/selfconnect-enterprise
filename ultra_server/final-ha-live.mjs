@@ -6,6 +6,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { runBpcLiveComposition } from './bpc-live-composition.mjs';
 import { assertCleanReviewedCheckout } from './final-ha-acceptance.mjs';
+import {
+  createPromotedTskAuthorityCapability,
+  verifyPromotedTskCredentialProof,
+} from './promoted-tsk-authority.js';
 import { runTskLiveComposition } from './tsk-live-composition.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -48,6 +52,9 @@ export function validateLiveProtocolComposition(bpc, tsk, commandId) {
   assert.notEqual(tsk.publicCredentialSource.clientId, tsk.publicCredentialTarget.clientId);
   assert.notEqual(tsk.publicCredentialSource.publicMapDigest,
     tsk.publicCredentialTarget.publicMapDigest);
+  assert.equal(tsk.targetCredentialProof.commandId, commandId);
+  assert.equal(tsk.targetCredentialProof.record.mutation.clientId,
+    tsk.publicCredentialTarget.clientId);
   assert.equal(tsk.credentialSourceRevocation.commandId, commandId);
   assert.equal(tsk.credentialActivationLeaseGrant.commandId, commandId);
   assert.equal(new Set(Object.values(bpc.systemIds)).size, 3);
@@ -102,6 +109,27 @@ export async function runLiveProtocolComposition(env = process.env) {
   bpcApi.verifyPromotionReadinessAttestation(bpcResolver, bpc.readinessAttestation);
   tskApi.verifyBFinalizedReceipt(tskBResolver, tsk.bFinalizedReceipt);
   tskApi.verifyLeaseGrant(tskGuardResolver, tsk.activationLeaseGrant);
+  const credentialGuardResolver = { resolve: (keyId) =>
+    keyId === tsk.credentialActivationLeaseGrant.guardKeyId
+      ? createPublicKey(tsk.publicKeys.guard) : null };
+  const credentialHeadResolver = { resolve: (keyId, alg) =>
+    keyId === tsk.targetCredentialProof.head.keyId && alg === 'ed25519'
+      ? createPublicKey(tsk.publicKeys.credentialHead) : null };
+  const credentialAuthority = createPromotedTskAuthorityCapability({
+    activationLease: tsk.credentialActivationLeaseGrant,
+    leaseResolver: credentialGuardResolver,
+    headKeyResolver: credentialHeadResolver,
+  });
+  const verifiedTargetCredential = await verifyPromotedTskCredentialProof(
+    credentialAuthority,
+    tsk.targetCredentialProof,
+    {
+      agentId: tsk.targetCredentialProof.agentId,
+      pairId: tsk.targetCredentialProof.pairId,
+      sourceClientId: tsk.publicCredentialSource.clientId,
+      sourceSecretDigest: tsk.publicCredentialSource.secretDigest,
+    },
+  );
   validateLiveProtocolComposition(bpc, tsk, commandId);
 
   return Object.freeze({
@@ -109,6 +137,7 @@ export async function runLiveProtocolComposition(env = process.env) {
     commits: Object.freeze({ enterprise: enterpriseSha, bpc: bpcCommit, tsk: tskCommit }),
     bpc,
     tsk,
+    verifiedTargetCredential,
     resolvers: Object.freeze({ bpcResolver, tskBResolver, tskGuardResolver }),
     publicKeyFingerprints: Object.freeze({
       bpcSource: fingerprint(bpc.publicKeys.source),

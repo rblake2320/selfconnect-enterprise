@@ -8,6 +8,8 @@ import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 import { Redis } from 'ioredis';
 
+import { promotedTskCredentialLabel } from './promoted-tsk-authority.js';
+
 const HOUR_MS = 3_600_000;
 const ID = /^[A-Za-z0-9_.:/-]{1,128}$/;
 
@@ -156,31 +158,52 @@ function derivedId(prefix, value) {
   return `${prefix}:${createHash('sha256').update(value).digest('hex').slice(0, 24)}`;
 }
 
-async function readPublicCredential(pool, streamId, clientId, expectedSequence) {
+async function readPublicCredentialProof(pool, streamId, clientId, expectedSequence,
+  activationLease, { agentId, pairId, commandId }) {
   const row = (await pool.query(
-    `SELECT sequence::text,source_epoch,fence_token::text,op_digest,head_digest,
-            mutation->>'clientId' AS client_id,
-            mutation->>'publicMapDigest' AS public_map_digest,
-            mutation->>'secretDigest' AS secret_digest
+    `SELECT sequence::text,source_epoch,fence_token::text,op_digest,mutation,
+            head_prev,head_digest,head_key_id,head_alg,head_sig
        FROM tsk_outbox_rows
       WHERE stream_id=$1 AND mutation->>'kind'='tsk.credential.snapshot.v1'
       ORDER BY sequence DESC LIMIT 1`,
     [streamId],
   )).rows[0];
-  assert.equal(String(row?.client_id), clientId);
-  for (const field of ['op_digest', 'head_digest', 'public_map_digest', 'secret_digest']) {
-    assert.match(String(row?.[field]), /^[0-9a-f]{64}$/);
-  }
+  const mutation = structuredClone(row?.mutation);
+  assert.equal(String(mutation?.clientId), clientId);
+  for (const value of [row?.op_digest, row?.head_digest, mutation?.publicMapDigest,
+    mutation?.secretDigest]) assert.match(String(value), /^[0-9a-f]{64}$/);
   assert.equal(Number(row.sequence), expectedSequence);
   return Object.freeze({
-    clientId: String(row.client_id),
-    publicMapDigest: String(row.public_map_digest),
-    operationDigest: String(row.op_digest),
-    headDigest: String(row.head_digest),
-    sequence: Number(row.sequence),
-    sourceEpoch: String(row.source_epoch),
-    fenceEpoch: Number(row.fence_token),
-    status: 'active',
+    format: 'selfconnect-promoted-tsk-credential-proof-v1',
+    agentId,
+    pairId,
+    commandId,
+    activationLease: structuredClone(activationLease),
+    record: Object.freeze({
+      contractVersion: '1', streamId, sourceEpoch: String(row.source_epoch),
+      sequence: Number(row.sequence), fenceToken: String(row.fence_token),
+      opDigest: String(row.op_digest), mutation,
+    }),
+    head: Object.freeze({
+      streamId, sequence: Number(row.sequence), prevHeadDigest: String(row.head_prev),
+      opDigest: String(row.op_digest), keyId: String(row.head_key_id),
+      alg: String(row.head_alg), headDigest: String(row.head_digest),
+      signature: String(row.head_sig),
+    }),
+  });
+}
+
+function publicCredentialSummary(proof) {
+  return Object.freeze({
+    clientId: proof.record.mutation.clientId,
+    publicMapDigest: proof.record.mutation.publicMapDigest,
+    secretDigest: proof.record.mutation.secretDigest,
+    operationDigest: proof.record.opDigest,
+    headDigest: proof.head.headDigest,
+    sequence: proof.record.sequence,
+    sourceEpoch: proof.record.sourceEpoch,
+    fenceEpoch: Number(proof.record.fenceToken),
+    status: proof.record.mutation.publicMap.status,
   });
 }
 
@@ -315,6 +338,8 @@ export async function runTskLiveComposition(rawOptions) {
   const leaseId = 'enterprise28-source-lease-1';
   const bNodeId = keyIds.bReceipt;
   const credentialStreamId = derivedId('tsk:credential', options.streamId);
+  const credentialAgentId = 'enterprise28-agent-1';
+  const credentialPairId = 'enterprise28-pair-1';
   const sourceCredentialLeaseId = derivedId('lease-a', options.commandId);
   const targetCredentialLeaseId = derivedId('lease-b', options.commandId);
   const runtimeRole = 'tsk_enterprise28_runtime';
@@ -464,12 +489,14 @@ export async function runTskLiveComposition(rawOptions) {
     const sourceCredentialMap = generateTumblerMap({
       keyLength: 64, minTumblers: 2, maxTumblers: 2,
     });
-    sourceCredentialMap.label = 'enterprise28:source-principal';
+    sourceCredentialMap.label = `agent:${credentialAgentId}`;
     sourceCredentialMap.status = 'active';
     await sourceCredentialStore.set(sourceCredentialMap.clientId, sourceCredentialMap);
-    const publicCredentialSource = await readPublicCredential(
-      aPool, credentialStreamId, sourceCredentialMap.clientId, 1,
+    const sourceCredentialProof = await readPublicCredentialProof(
+      aPool, credentialStreamId, sourceCredentialMap.clientId, 1, sourceCredentialGrant,
+      { agentId: credentialAgentId, pairId: credentialPairId, commandId },
     );
+    const publicCredentialSource = publicCredentialSummary(sourceCredentialProof);
     assert.equal(
       JSON.stringify(publicCredentialSource).includes(sourceCredentialMap.sharedSecret),
       false,
@@ -682,15 +709,20 @@ export async function runTskLiveComposition(rawOptions) {
     const credentialMap = generateTumblerMap({
       keyLength: 64, minTumblers: 2, maxTumblers: 2,
     });
-    credentialMap.label = 'enterprise28:reprovisioned-principal';
+    credentialMap.label = promotedTskCredentialLabel({
+      commandId, pairId: credentialPairId, agentId: credentialAgentId,
+    });
     credentialMap.status = 'active';
     await credentialStore.set(credentialMap.clientId, credentialMap);
     const persistedCredential = await credentialStore.get(credentialMap.clientId);
     assert.equal(persistedCredential?.clientId, credentialMap.clientId);
     assert.equal(persistedCredential?.status, 'active');
-    const publicCredentialTarget = await readPublicCredential(
+    const targetCredentialProof = await readPublicCredentialProof(
       bPool, credentialStreamId, credentialMap.clientId, 1,
+      credentialActivationLeaseGrant,
+      { agentId: credentialAgentId, pairId: credentialPairId, commandId },
     );
+    const publicCredentialTarget = publicCredentialSummary(targetCredentialProof);
     assert.notEqual(
       publicCredentialTarget.clientId,
       publicCredentialSource.clientId,
@@ -750,6 +782,8 @@ export async function runTskLiveComposition(rawOptions) {
       credentialActivationLeaseGrant,
       publicCredentialSource,
       publicCredentialTarget,
+      sourceCredentialProof,
+      targetCredentialProof,
       // Backward-compatible alias for the promoted target credential.
       publicCredential: publicCredentialTarget,
       tskCommit: reviewed.actualCommit,
