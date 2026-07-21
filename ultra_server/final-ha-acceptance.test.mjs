@@ -8,12 +8,12 @@ import { validateLiveCompositionEvidence } from './live-composition-evidence.mjs
 
 function liveEvidence() {
   return {
-    schemaVersion: 4, kind: 'enterprise-live-authority-handoff', commandId: 'promote-1',
+    schemaVersion: 5, kind: 'enterprise-live-authority-handoff', commandId: 'promote-1',
     commits: { enterprise: 'a'.repeat(40), bpc: 'b'.repeat(40), tsk: 'c'.repeat(40) },
     systems: {
       bpc: { sourceA: '1', promotedB: '2', control: '3' },
       tsk: { sourceA: '4', receiverB: '5', control: '6' },
-      enterprise: { source: '4', target: '5' },
+      enterprise: { source: '4', target: '5', failbackSource: '5', failbackTarget: '4' },
     },
     artifacts: {
       bpcPromotion: '1'.repeat(64), bpcFailback: '0'.repeat(64),
@@ -22,6 +22,10 @@ function liveEvidence() {
       tskReturnFinalized: '7'.repeat(64), tskReturnActivation: '8'.repeat(64),
       enterpriseManifest: '4'.repeat(64),
       promotedCredentialProof: '5'.repeat(64), promotedCredentialReceipt: '6'.repeat(64),
+      returnedCredentialProof: '9'.repeat(64),
+      returnedCredentialActivation: 'a'.repeat(64),
+      enterpriseFailbackManifest: 'b'.repeat(64),
+      enterpriseFailbackCredentialReceipt: 'c'.repeat(64),
     },
     outcomes: {
       bpcStaleWriterDenied: true, bpcFailbackStaleWriterDenied: true,
@@ -29,10 +33,18 @@ function liveEvidence() {
       tskStaleWriterDenied: true,
       tskReturnStaleWriterDenied: true,
       tskStaleCredentialWriterDenied: true, promotedSourceNextSequence: 2,
+      tskReturnStaleCredentialWriterDenied: true,
       returnedSourceNextSequence: 3,
       tskReturnCommandId: 'return-1',
       enterpriseTargetClientId: 'target', copiedTargetCredentialRows: 0,
       redactionPreserved: true, dataLossRpo: 0,
+      enterpriseFailbackCommandId: 'return-1', enterpriseFailbackSourceEpoch: 2,
+      enterpriseFailbackSourceClientId: 'target',
+      enterpriseFailbackTargetClientId: 'return-target',
+      enterpriseFailbackIdempotentRetry: true,
+      enterpriseFailbackStaleBCompletionDenied: true,
+      enterpriseFailbackStaleBProtocolWriterDenied: true,
+      enterpriseFailbackRpo: 0, enterpriseFailbackRtoMs: 12,
     },
     tskReturnAuthority: {
       commandId: 'return-1',

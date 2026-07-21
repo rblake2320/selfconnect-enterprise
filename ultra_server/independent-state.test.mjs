@@ -324,6 +324,29 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     );
     assert.equal(forgedRedaction.secretReprovisionRequired, false);
     assert.equal(forgedRedaction.redactionProvenance, null);
+
+    // Authority references are captured before proof verification yields. A
+    // caller cannot swap the signing key or advisory-lock identity mid-export.
+    const mutableExportInput = { ...exportInput };
+    let lockReads = 0;
+    Object.defineProperty(mutableExportInput, 'advisoryLockKey', {
+      enumerable: true,
+      get() {
+        lockReads += 1;
+        return lockReads === 1 ? lockKey : `${lockKey}:attacker`;
+      },
+    });
+    const stableExportPending = exportIndependentState(a, mutableExportInput);
+    mutableExportInput.sourcePrivateKey = generateKeyPairSync('ed25519').privateKey;
+    const stableSourceBundle = await stableExportPending;
+    assert.equal(lockReads, 1);
+    assert.doesNotThrow(() => guardCountersignIndependentState(stableSourceBundle, {
+      expectedCommandId: commandId,
+      sourcePublicKey: source.publicKey,
+      guardKeyId: 'guard-key-stable',
+      guardPrivateKey: guard.privateKey,
+      ...resolvers,
+    }));
     const bundle = guardCountersignIndependentState(sourceBundle, {
       expectedCommandId: commandId,
       sourcePublicKey: source.publicKey,

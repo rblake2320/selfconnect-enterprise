@@ -101,13 +101,25 @@ test('executes the full live lifecycle when dedicated acceptance authorities are
     result.publicCredentialTarget.publicMapDigest,
   );
   assert.equal(result.staleCredentialWriterDenied, true);
+  assert.equal(result.staleReturnedCredentialWriterDenied, true);
   assert.equal(result.credentialActivationLeaseGrant.leaseEpoch, 1);
   assert.equal(result.credentialSourceLeaseGrant.leaseEpoch, 0);
   assert.equal(result.credentialSourceRevocation.leaseStatus, 'revoked');
+  assert.equal(result.targetCredentialRevocation.leaseStatus, 'revoked');
+  assert.equal(result.targetCredentialRevocation.commandId, result.returnCommandId);
+  assert.equal(result.returnCredentialActivationLeaseGrant.leaseEpoch, 2);
+  assert.equal(result.returnCredentialActivationLeaseGrant.commandId,
+    result.returnCommandId);
+  assert.equal(result.publicCredentialReturn.status, 'active');
+  assert.notEqual(result.publicCredentialReturn.clientId,
+    result.publicCredentialTarget.clientId);
+  assert.notEqual(result.publicCredentialReturn.secretDigest,
+    result.publicCredentialTarget.secretDigest);
   assert.match(result.publicCredentialTarget.publicMapDigest, /^[0-9a-f]{64}$/);
   assert.equal(JSON.stringify(result).includes('PRIVATE KEY'), false);
   assert.match(result.publicKeys.credentialHead, /BEGIN PUBLIC KEY/);
   assert.match(result.publicKeys.sourceCredentialHead, /BEGIN PUBLIC KEY/);
+  assert.match(result.publicKeys.returnCredentialHead, /BEGIN PUBLIC KEY/);
   assert.match(
     result.publicVerificationKeys['credential-head-b-live-1'],
     /BEGIN PUBLIC KEY/,

@@ -12,6 +12,7 @@ import {
   PROMOTED_TSK_CREDENTIAL_PROOF_FORMAT,
   createPromotedTskAuthorityCapability,
   promotedTskCredentialLabel,
+  verifyPromotedTskCredentialRevocation,
   verifyPromotedTskCredentialProof,
 } from './promoted-tsk-authority.js';
 
@@ -100,6 +101,43 @@ test('verifies an exact promoted credential proof and returns only public bindin
   assert.equal(verified.targetClientId, value.proof.record.mutation.clientId);
   assert.equal(verified.activationGrantDigest, value.activationLease.grantDigest);
   assert.equal(JSON.stringify(verified).includes('sharedSecret'), false);
+});
+
+test('terminal credential revocation exactly continues the active promoted authority', () => {
+  const value = fixture();
+  const revocation = signLeaseGrant('guard-1', value.guard.privateKey, {
+    streamId: value.activationLease.streamId,
+    leaseEpoch: value.activationLease.leaseEpoch,
+    leaseStatus: 'revoked',
+    holderNodeId: value.activationLease.holderNodeId,
+    leaseId: value.activationLease.leaseId,
+    commandId: 'cmd-return-1',
+    leaseExpiresAtMs: value.activationLease.leaseExpiresAtMs,
+    leaseGrantSeq: value.activationLease.leaseGrantSeq + 1,
+    prevGrantDigest: value.activationLease.grantDigest,
+  });
+  const verified = verifyPromotedTskCredentialRevocation(
+    value.capability, revocation, 'cmd-return-1',
+  );
+  assert.equal(verified.activeGrantDigest, value.activationLease.grantDigest);
+  assert.equal(verified.grantDigest, revocation.grantDigest);
+
+  const mutations = [
+    (candidate) => { candidate.commandId = 'cmd-other'; },
+    (candidate) => { candidate.holderNodeId = 'node-other'; },
+    (candidate) => { candidate.leaseId = 'lease-other'; },
+    (candidate) => { candidate.leaseEpoch += 1; },
+    (candidate) => { candidate.leaseGrantSeq += 1; },
+    (candidate) => { candidate.prevGrantDigest = 'f'.repeat(64); },
+    (candidate) => { candidate.guardSignature = 'invalid'; },
+  ];
+  for (const mutate of mutations) {
+    const candidate = clone(revocation);
+    mutate(candidate);
+    assert.throws(() => verifyPromotedTskCredentialRevocation(
+      value.capability, candidate, 'cmd-return-1',
+    ));
+  }
 });
 
 test('capability is opaque and cannot be replaced with request callbacks or plain data', async () => {

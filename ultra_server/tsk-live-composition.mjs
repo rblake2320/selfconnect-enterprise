@@ -234,6 +234,7 @@ function createMaterial() {
     bHead: generateKeyPairSync('ed25519'),
     bSource: generateKeyPairSync('ed25519'),
     credentialHead: generateKeyPairSync('ed25519'),
+    returnCredentialHead: generateKeyPairSync('ed25519'),
     bReceipt: generateKeyPairSync('ed25519'),
     controlSecret: Buffer.alloc(32, 0x5d),
   });
@@ -346,6 +347,7 @@ export async function runTskLiveComposition(rawOptions) {
     aReceipt: 'receipt-a-live-1', bSource: 'source-b-live-1',
     sourceCredentialHead: 'credential-head-a-live-1',
     bHead: 'head-b-live-1', credentialHead: 'credential-head-b-live-1',
+    returnCredentialHead: 'credential-head-a-return-live-1',
     bReceipt: 'receipt-b-live-1', control: 'control-live-1',
   });
   const publicKeys = new Map([
@@ -357,6 +359,7 @@ export async function runTskLiveComposition(rawOptions) {
     [keyIds.bHead, material.bHead.publicKey],
     [keyIds.bSource, material.bSource.publicKey],
     [keyIds.credentialHead, material.credentialHead.publicKey],
+    [keyIds.returnCredentialHead, material.returnCredentialHead.publicKey],
     [keyIds.bReceipt, material.bReceipt.publicKey],
   ]);
   const resolver = Object.freeze({ resolve: (keyId) => publicKeys.get(keyId) ?? null });
@@ -368,6 +371,9 @@ export async function runTskLiveComposition(rawOptions) {
   const bSigner = signer(keyIds.bHead, material.bHead.privateKey);
   const credentialSigner = hexDigestSigner(
     keyIds.credentialHead, material.credentialHead.privateKey,
+  );
+  const returnCredentialSigner = hexDigestSigner(
+    keyIds.returnCredentialHead, material.returnCredentialHead.privateKey,
   );
   const sourceCredentialSigner = hexDigestSigner(
     keyIds.sourceCredentialHead, material.sourceCredentialHead.privateKey,
@@ -403,6 +409,8 @@ export async function runTskLiveComposition(rawOptions) {
   const credentialPairId = 'enterprise28-pair-1';
   const sourceCredentialLeaseId = derivedId('lease-a', options.commandId);
   const targetCredentialLeaseId = derivedId('lease-b', options.commandId);
+  const returnCredentialStreamId = derivedId('tsk:credential:return', options.streamId);
+  const returnCredentialLeaseId = derivedId('lease-a-return', options.commandId);
   const runtimeRole = 'tsk_enterprise28_runtime';
   const aRuntimePassword = randomBytes(24).toString('hex');
   const bRuntimePassword = randomBytes(24).toString('hex');
@@ -914,7 +922,9 @@ export async function runTskLiveComposition(rawOptions) {
 
     // Governed same-stream return: freeze B after N+1, independently replay the
     // complete signed ledger onto A, then ratify A as source at epoch 2.
-    const returnCommandId = derivedId('return', commandId);
+    // The Enterprise return bundle requires BPC and TSK to attest the same
+    // governed command. BPC's reviewed failback path uses this exact suffix.
+    const returnCommandId = `${commandId}-failback`;
     const returnTargetEpoch = targetEpoch + 1;
     assert.equal(
       await dbClockMs(bPool) < activationLeaseGrant.leaseExpiresAtMs,
@@ -1142,6 +1152,111 @@ export async function runTskLiveComposition(rawOptions) {
       returnFinalizedReceipt.signedHeadDigestAtN,
     );
 
+    // Return the independently reprovisioned credential authority as well as
+    // the generic source stream. B's credential lease is terminally revoked
+    // before A mints a fresh credential under the return command/epoch. The
+    // old B runtime keeps its original capability so its next commit proves
+    // that the database gate, rather than caller cooperation, denies it.
+    const targetCredentialRevocation = signLeaseGrant(
+      keyIds.guard, material.guard.privateKey, {
+        streamId: credentialStreamId,
+        leaseEpoch: targetEpoch,
+        leaseStatus: 'revoked',
+        holderNodeId: credentialActivationLeaseGrant.holderNodeId,
+        leaseId: credentialActivationLeaseGrant.leaseId,
+        commandId: returnCommandId,
+        leaseExpiresAtMs: credentialActivationLeaseGrant.leaseExpiresAtMs,
+        leaseGrantSeq: credentialActivationLeaseGrant.leaseGrantSeq + 1,
+        prevGrantDigest: credentialActivationLeaseGrant.grantDigest,
+      },
+    );
+    await bDb.transaction((exec) => installLeaseGrant(
+      exec, resolver, targetCredentialRevocation,
+    ));
+
+    let staleReturnedCredentialWriterDenied = false;
+    try {
+      await credentialStore.set(credentialMap.clientId, credentialMap);
+    } catch (error) {
+      if (!/revoked|not writable|lease|fence|grant digest/i.test(
+        String(error?.message ?? error),
+      )) throw error;
+      staleReturnedCredentialWriterDenied = true;
+    }
+    assert.equal(staleReturnedCredentialWriterDenied, true,
+      'old B credential writer must be denied after return');
+
+    await aPool.query(
+      'INSERT INTO tsk_outbox_fence (stream_id, fence_token) VALUES ($1, $2)',
+      [returnCredentialStreamId, returnTargetEpoch],
+    );
+    await aPool.query(
+      'INSERT INTO tsk_outbox_source_checkpoint ' +
+      '(stream_id, source_epoch, sequence) VALUES ($1, $2, 0)',
+      [returnCredentialStreamId, 'credential-e3'],
+    );
+    const returnCredentialActivationLeaseGrant = signLeaseGrant(
+      keyIds.guard, material.guard.privateKey, {
+        streamId: returnCredentialStreamId,
+        leaseEpoch: returnTargetEpoch,
+        leaseStatus: 'active',
+        holderNodeId: aNodeId,
+        leaseId: returnCredentialLeaseId,
+        commandId: returnCommandId,
+        leaseExpiresAtMs: await dbClockMs(aPool) + HOUR_MS,
+        leaseGrantSeq: 1,
+        prevGrantDigest: null,
+      },
+    );
+    verifyLeaseGrant(resolver, returnCredentialActivationLeaseGrant);
+    await aDb.transaction((exec) => installLeaseGrant(
+      exec, resolver, returnCredentialActivationLeaseGrant,
+    ));
+    const returnCredentialFenceReady = await assertSourceFenceReady(
+      aRuntimeDb, 'public', resolver, {
+        streamId: returnCredentialStreamId,
+        holderNodeId: returnCredentialActivationLeaseGrant.holderNodeId,
+        leaseId: returnCredentialActivationLeaseGrant.leaseId,
+        grantDigest: returnCredentialActivationLeaseGrant.grantDigest,
+      },
+    );
+    const returnCredentialStore = new PgHaTumblerMapStore(
+      aRuntimeDb,
+      aRuntimeOutboxReady,
+      aRuntimeCredentialReady,
+      aMutationBoundary,
+      aTicketSigner,
+      {
+        streamId: returnCredentialStreamId,
+        sourceEpoch: returnTargetEpoch,
+        signer: returnCredentialSigner,
+      },
+      { resolver, controlToASkewBoundMs: 0, ready: returnCredentialFenceReady },
+    );
+    const returnCredentialMap = generateTumblerMap({
+      keyLength: 64, minTumblers: 2, maxTumblers: 2,
+    });
+    returnCredentialMap.label = promotedTskCredentialLabel({
+      commandId: returnCommandId,
+      pairId: credentialPairId,
+      agentId: credentialAgentId,
+    });
+    returnCredentialMap.status = 'active';
+    await returnCredentialStore.set(returnCredentialMap.clientId, returnCredentialMap);
+    const returnCredentialProof = await readPublicCredentialProof(
+      aPool, returnCredentialStreamId, returnCredentialMap.clientId, 1,
+      returnCredentialActivationLeaseGrant,
+      { agentId: credentialAgentId, pairId: credentialPairId,
+        commandId: returnCommandId },
+    );
+    const publicCredentialReturn = publicCredentialSummary(returnCredentialProof);
+    assert.notEqual(publicCredentialReturn.clientId, publicCredentialTarget.clientId,
+      'failback must mint a fresh returned credential identity');
+    assert.notEqual(publicCredentialReturn.secretDigest, publicCredentialTarget.secretDigest,
+      'failback must mint fresh returned credential secret material');
+    assert.equal(JSON.stringify(publicCredentialReturn).includes(
+      returnCredentialMap.sharedSecret), false);
+
     let staleTargetWriterDenied = false;
     try {
       await bOutbox.withOutboxTx((tx) => bOutbox.appendInTx(tx, {
@@ -1180,14 +1295,20 @@ export async function runTskLiveComposition(rawOptions) {
       staleWriterDenied,
       staleTargetWriterDenied,
       staleCredentialWriterDenied,
+      staleReturnedCredentialWriterDenied,
       credentialStreamId,
+      returnCredentialStreamId,
       credentialSourceLeaseGrant: sourceCredentialGrant,
       credentialSourceRevocation: sourceCredentialRevocation,
       credentialActivationLeaseGrant,
+      targetCredentialRevocation,
+      returnCredentialActivationLeaseGrant,
       publicCredentialSource,
       publicCredentialTarget,
+      publicCredentialReturn,
       sourceCredentialProof,
       targetCredentialProof,
+      returnCredentialProof,
       redisAuthority,
       // Backward-compatible alias for the promoted target credential.
       publicCredential: publicCredentialTarget,
@@ -1201,6 +1322,7 @@ export async function runTskLiveComposition(rawOptions) {
         bHead: material.bHead.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
         bSource: material.bSource.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
         credentialHead: material.credentialHead.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+        returnCredentialHead: material.returnCredentialHead.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
         bReceipt: material.bReceipt.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
       }),
       publicVerificationKeys: Object.freeze(Object.fromEntries(
