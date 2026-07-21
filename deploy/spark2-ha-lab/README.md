@@ -18,8 +18,8 @@ separate site, independent power/network, or a three-host Redis quorum.
 - Bind only to Spark-2's private inter-Spark address (`10.0.0.2`).
 - Keep `.env` mode `0600`; never commit it.
 - PostgreSQL and Redis use persistent named volumes.
-- Redis AOF is synchronous for the host-loss drill. This Redis instance is a
-  target data node, not a Sentinel quorum claim.
+- Redis AOF is synchronous so this service can support a future host-loss
+  drill. It is a target-side durability primitive, not a Sentinel quorum claim.
 - Existing Spark-2 containers are not modified or joined to this network.
 
 ## Start

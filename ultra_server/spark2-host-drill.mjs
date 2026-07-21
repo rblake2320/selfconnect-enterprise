@@ -1,10 +1,12 @@
 import { writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   buildSpark2Evidence, validateSpark2Result, validateSpark2Topology,
 } from './spark2-host-evidence.js';
 import { assertCleanReviewedCheckout } from './final-ha-acceptance.mjs';
+import { verifySparkHostAdmission } from './spark2-host-admission.js';
 import { runTskLiveComposition } from './tsk-live-composition.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -27,8 +29,10 @@ export async function runSpark2HostDrill(env = process.env) {
   if (!SHA.test(expectedTskCommit)) {
     throw new Error('SPARK_HA_EXPECTED_TSK_SHA must be a full commit SHA');
   }
-  await assertCleanReviewedCheckout(fileURLToPath(new URL('..', import.meta.url)),
-    expectedEnterpriseCommit);
+  const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
+  await assertCleanReviewedCheckout(repositoryRoot, expectedEnterpriseCommit);
+  const { admission, digest: admissionDigest } = await verifySparkHostAdmission(
+    resolve(repositoryRoot, 'deploy/spark2-ha-lab/admission.json'));
   const commandId = required(env, 'SPARK_HA_COMMAND_ID');
   const urls = Object.freeze({
     source: required(env, 'SPARK_HA_SOURCE_PG_URL'),
@@ -50,8 +54,10 @@ export async function runSpark2HostDrill(env = process.env) {
     preserveRedisAuthority: false,
     destructiveReset: true,
   });
-  validateSpark2Result(result, required(env, 'SPARK2_EXPECTED_SYSTEM_ID'));
+  validateSpark2Result(result, admission);
   const evidence = buildSpark2Evidence(result, {
+    admission,
+    admissionDigest,
     commandId,
     durationMs: Date.now() - started,
     enterpriseCommit: expectedEnterpriseCommit,
@@ -65,5 +71,5 @@ export async function runSpark2HostDrill(env = process.env) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const evidence = await runSpark2HostDrill();
   process.stdout.write(`Spark-2 cross-host A->B->A: RPO=${evidence.outcome.dataLossRpo} ` +
-    `RTO=${evidence.outcome.durationMs}ms target=${evidence.topology.targetHost}\n`);
+    `elapsed=${evidence.outcome.durationMs}ms target=${evidence.topology.targetHost}\n`);
 }

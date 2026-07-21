@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "scope": "separate-physical-host-same-lan",
+  "identityBasis": "distinct-ssh-ed25519-host-keys-with-strict-live-observation",
+  "source": {
+    "hostname": "spark-3cdf",
+    "address": "192.168.12.132",
+    "sshHostKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPnwoCQqOGzNs0sHfgKn4Htk+SjEK6QljPnaPYy8M1tR",
+    "machineIdSha256": "8383859c16f2a14ee62645efb08f9f25723377856bfdbf47b28ac3d08fb8ceb5",
+    "postgresSystemIds": {
+      "source": "7664860993977270305",
+      "control": "7664860993991704610"
+    }
+  },
+  "target": {
+    "hostname": "spark-3173",
+    "address": "10.0.0.2",
+    "sshPort": 22,
+    "sshUser": "rblake2320",
+    "sshHostKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH3gY9G2Bbvz3ZTc/gDEPJ3Abjj/qBDXlMD6XkYPQBJG",
+    "machineIdSha256": "8383859c16f2a14ee62645efb08f9f25723377856bfdbf47b28ac3d08fb8ceb5",
+    "postgresSystemId": "7664860268000567330",
+    "postgresContainer": "selfconnect-spark2-ha-postgres-target-1",
+    "postgresImageRef": "postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777",
+    "postgresImageId": "sha256:7e7dbab8d3b431a20793a6d99cb5a6bc84e44914309917f1bf5589a7568cdefd/arm64"
+  }
+}

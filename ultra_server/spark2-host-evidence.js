@@ -32,14 +32,19 @@ function digest(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-export function validateSpark2Result(result, expectedTargetSystemId) {
-  if (!SYSTEM_ID.test(expectedTargetSystemId)) {
-    throw new Error('SPARK2_EXPECTED_SYSTEM_ID is invalid');
+export function validateSpark2Result(result, admission) {
+  const expectedIds = {
+    sourceA: admission?.source?.postgresSystemIds?.source,
+    control: admission?.source?.postgresSystemIds?.control,
+    receiverB: admission?.target?.postgresSystemId,
+  };
+  for (const [name, value] of Object.entries(expectedIds)) {
+    if (!SYSTEM_ID.test(value)) throw new Error(`admitted ${name} system identifier is invalid`);
   }
   assert.equal(new Set(Object.values(result.systemIds)).size, 3,
     'source, target, and control PostgreSQL clusters must be independent');
-  assert.equal(result.systemIds.receiverB, expectedTargetSystemId,
-    'the receiver did not run on the admitted Spark-2 PostgreSQL cluster');
+  assert.deepEqual(result.systemIds, expectedIds,
+    'the lifecycle did not run on the admitted PostgreSQL authorities');
   assert.equal(result.staleWriterDenied, true);
   assert.equal(result.staleTargetWriterDenied, true);
   assert.equal(result.nextSequence, result.n + 1);
@@ -52,9 +57,9 @@ export function validateSpark2Result(result, expectedTargetSystemId) {
 }
 
 export function buildSpark2Evidence(result, {
-  commandId, durationMs, enterpriseCommit, tskCommit,
+  admission, admissionDigest, commandId, durationMs, enterpriseCommit, tskCommit,
 }) {
-  validateSpark2Result(result, result.systemIds.receiverB);
+  validateSpark2Result(result, admission);
   return Object.freeze({
     schemaVersion: 1,
     observedAt: new Date().toISOString(),
@@ -65,11 +70,16 @@ export function buildSpark2Evidence(result, {
       'independent-network-domain',
     ]),
     commits: Object.freeze({ enterprise: enterpriseCommit, tsk: tskCommit }),
+    hostAdmissionDigest: admissionDigest,
     commandId,
     topology: Object.freeze({
-      sourceHost: 'spark-3cdf',
-      controlHost: 'spark-3cdf',
-      targetHost: 'spark-3173',
+      identityBasis: admission.identityBasis,
+      sourceHost: admission.source.hostname,
+      controlHost: admission.source.hostname,
+      targetHost: admission.target.hostname,
+      sourceSshHostKeyDigest: digest(admission.source.sshHostKey),
+      targetSshHostKeyDigest: digest(admission.target.sshHostKey),
+      machineIdDistinct: admission.source.machineIdSha256 !== admission.target.machineIdSha256,
       postgresSystemIds: result.systemIds,
     }),
     outcome: Object.freeze({
