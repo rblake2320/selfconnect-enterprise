@@ -52,8 +52,9 @@ function assertExactRecord(actual, expected) {
  * returned receipt contains no credentials and is bound to the exact command,
  * stream, PostgreSQL authorities, Redis key, and pre-fault tuple.
  */
-export async function runSameTskRedisAuthorityFaults(options) {
-  const { authority, commandId, redis, streamId, systemIds, topology } = options;
+export async function runSameRedisAuthorityFaults(options) {
+  const { authority, commandId, redis, streamId, systemIds, topology,
+    kind = 'tsk-same-redis-authority-faults' } = options;
   assert.equal(authority.record.commandId, commandId);
   assert.equal(redis.kind, 'sentinel');
   const admin = new Redis({ host: redis.sentinels[0].host, port: redis.sentinels[0].port,
@@ -149,7 +150,7 @@ export async function runSameTskRedisAuthorityFaults(options) {
     });
     const crashRtoMs = now() - crashStart;
 
-    return Object.freeze({ schemaVersion: 1, kind: 'tsk-same-redis-authority-faults',
+    return Object.freeze({ schemaVersion: 1, kind,
       commandId, streamId, systemIds: Object.freeze({ ...systemIds }),
       redisAuthorityKeyDigest: digest(authority.key),
       redisAuthorityTupleDigest: digest(authority.record),
@@ -168,4 +169,10 @@ export async function runSameTskRedisAuthorityFaults(options) {
       topology.network, disconnected.container);
     if (stopped) dockerSafe('start', stopped.container);
   }
+}
+
+export async function runSameTskRedisAuthorityFaults(options) {
+  return runSameRedisAuthorityFaults({
+    ...options, kind: 'tsk-same-redis-authority-faults',
+  });
 }

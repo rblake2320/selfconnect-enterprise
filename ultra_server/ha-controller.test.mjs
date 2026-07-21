@@ -246,4 +246,8 @@ test('every state-mutating HTTP route declares the HA writer boundary', async ()
     'provisioning and proof completion must capture one authority across reload');
   assert.match(source, /process\.on\('SIGHUP'/,
     'production must expose an operating-system governed renewal signal');
+  assert.match(source, /loadUltraRedisAuthorityConfig\(process\.env/,
+    'production must parse the governed Redis Sentinel authority');
+  assert.match(source, /redisAuthorityConfig\.durability \?\? undefined/,
+    'the Ultra writer fence must receive the configured WAIT durability policy');
 });

@@ -491,16 +491,25 @@ export async function loadReloadablePromotedTskRuntime(
     drained = [];
     for (const resolve of waiters) resolve();
   };
-  const waitUntilUnblocked = async () => {
-    while (blocked && !closed) await new Promise((resolve) => unblock.push(resolve));
-    if (closed) throw new Error('promoted TSK runtime manager is closed');
+  const acquireRuntime = async () => {
+    for (;;) {
+      if (closed) throw new Error('promoted TSK runtime manager is closed');
+      if (blocked) {
+        await new Promise((resolve) => unblock.push(resolve));
+        continue;
+      }
+      const captured = runtime;
+      assertLeaseUsable(validateRuntimeAuthority(captured), now());
+      // Admission is synchronous with the blocked/closed checks. A close or reload cannot
+      // observe active===0 after this operation has been admitted, even though the caller will
+      // yield before its asynchronous operation body starts.
+      active += 1;
+      return captured;
+    }
   };
   const withRuntime = async (operation) => {
     if (typeof operation !== 'function') throw new Error('runtime operation must be a function');
-    await waitUntilUnblocked();
-    const captured = runtime;
-    assertLeaseUsable(validateRuntimeAuthority(captured), now());
-    active += 1;
+    const captured = await acquireRuntime();
     try {
       return await operation(captured);
     } finally {

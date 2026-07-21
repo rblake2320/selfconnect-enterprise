@@ -8,7 +8,7 @@ import { validateLiveCompositionEvidence } from './live-composition-evidence.mjs
 
 function liveEvidence() {
   return {
-    schemaVersion: 2, kind: 'enterprise-live-authority-handoff', commandId: 'promote-1',
+    schemaVersion: 3, kind: 'enterprise-live-authority-handoff', commandId: 'promote-1',
     commits: { enterprise: 'a'.repeat(40), bpc: 'b'.repeat(40), tsk: 'c'.repeat(40) },
     systems: {
       bpc: { sourceA: '1', promotedB: '2', control: '3' },
@@ -37,6 +37,18 @@ function liveEvidence() {
       faults: {
         livePartition: { rpo: 0, rtoMs: 10, oldMasterRefusedWrites: true,
           exactTuplePreserved: true, promotedMasterAddressDigest: '9'.repeat(64) },
+        masterSigkill: { rpo: 0, rtoMs: 10, exactTuplePreserved: true },
+      },
+    },
+    ultraRedisFaults: {
+      schemaVersion: 1, kind: 'ultra-same-redis-authority-faults', commandId: 'promote-1',
+      streamId: 'enterprise28:ultra-writer-fence/v1',
+      systemIds: { sourceA: '4', receiverB: '5', control: '6' },
+      redisAuthorityKeyDigest: 'a'.repeat(64), redisAuthorityTupleDigest: 'b'.repeat(64),
+      fenceEpoch: 1,
+      faults: {
+        livePartition: { rpo: 0, rtoMs: 10, oldMasterRefusedWrites: true,
+          exactTuplePreserved: true, promotedMasterAddressDigest: 'c'.repeat(64) },
         masterSigkill: { rpo: 0, rtoMs: 10, exactTuplePreserved: true },
       },
     },

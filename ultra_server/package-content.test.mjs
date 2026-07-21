@@ -21,6 +21,7 @@ const expectedRuntimeFiles = [
   'ultra-state-outbox.js',
   'ultra-state-authority-config.js',
   'ultra-state-stream-command.mjs',
+  'ultra-redis-authority.js',
 ];
 
 test('npm package uses an explicit runtime-only file allowlist', async () => {

@@ -13,7 +13,16 @@ import {
   verifySourceTskCredentialProof,
 } from './promoted-tsk-authority.js';
 import { runTskLiveComposition } from './tsk-live-composition.mjs';
-import { runSameTskRedisAuthorityFaults } from './tsk-same-authority-faults.mjs';
+import {
+  runSameRedisAuthorityFaults,
+  runSameTskRedisAuthorityFaults,
+} from './tsk-same-authority-faults.mjs';
+import {
+  createUltraRedisClient,
+  loadUltraRedisAuthorityConfig,
+} from './ultra-redis-authority.js';
+import { RedisFencingStore } from '@tsk/server';
+import { Redis } from 'ioredis';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..');
@@ -71,6 +80,28 @@ function sameAuthorityTopology(env) {
       '172.28.7.12:6379': Object.freeze({ ip: '172.28.7.12',
         container: required(env.TSK_SENTINEL_REPLICA2_CONTAINER, 'TSK_SENTINEL_REPLICA2_CONTAINER') }),
     }) });
+}
+
+async function claimUltraRedisAuthority(env, commandId) {
+  const config = loadUltraRedisAuthorityConfig(env, { haEnabled: true });
+  if (config.kind !== 'sentinel') throw new Error('final Ultra acceptance requires its Sentinel authority');
+  const client = createUltraRedisClient(Redis, config);
+  client.on('error', () => {});
+  const key = `ultra:ha:enterprise28-final:writer`;
+  const record = Object.freeze({ nodeId: 'ultra-site-b', fenceEpoch: 1,
+    expiresAt: Date.now() + 15 * 60_000, commandId });
+  try {
+    await client.connect();
+    const store = new RedisFencingStore(client, key, config.durability);
+    if (!await store.claim(record)) throw new Error('Ultra durable Sentinel fence claim was refused');
+    const current = await store.current();
+    if (!current || Object.keys(record).some((field) => current[field] !== record[field])) {
+      throw new Error('Ultra durable Sentinel fence claim did not re-read exactly');
+    }
+    return Object.freeze({ key, record: Object.freeze({ ...current }) });
+  } finally {
+    client.disconnect();
+  }
 }
 
 async function importPinnedServer(root, component) {
@@ -152,6 +183,15 @@ export async function runLiveProtocolComposition(env = process.env) {
       commandId, redis, streamId: 'enterprise28:tsk-live/v1', systemIds: tsk.systemIds,
       topology: sameAuthorityTopology(env) })
     : null;
+  const ultraAuthority = sameAuthorityFaults
+    ? await claimUltraRedisAuthority(env, commandId)
+    : null;
+  const ultraRedisFaults = sameAuthorityFaults
+    ? await runSameRedisAuthorityFaults({ authority: ultraAuthority,
+      commandId, redis, streamId: 'enterprise28:ultra-writer-fence/v1',
+      systemIds: tsk.systemIds, topology: sameAuthorityTopology(env),
+      kind: 'ultra-same-redis-authority-faults' })
+    : null;
 
   const [bpcApi, tskApi] = await Promise.all([
     importPinnedServer(bpcRoot, 'BPC'), importPinnedServer(tskRoot, 'TSK'),
@@ -211,6 +251,7 @@ export async function runLiveProtocolComposition(env = process.env) {
     bpc,
     tsk,
     tskRedisFaults,
+    ultraRedisFaults,
     sourceCredentialAuthority,
     verifiedSourceCredential,
     verifiedTargetCredential,

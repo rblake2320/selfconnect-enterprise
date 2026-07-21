@@ -287,3 +287,30 @@ test('restart accepts the current signed grant without replaying an in-process p
   assert.deepEqual(await manager.provision({ commandId: 'promote-2' }), { runtime: 7 });
   await manager.close();
 });
+
+test('close cannot overtake an operation admitted before its first await', async () => {
+  const events = [];
+  let releaseOperation;
+  let operationEntered;
+  const entered = new Promise((resolve) => { operationEntered = resolve; });
+  const runtime = fakeRuntime(1, { events });
+  runtime.provision = async () => {
+    events.push('op-enter');
+    operationEntered();
+    await new Promise((resolve) => { releaseOperation = resolve; });
+    events.push('op-exit');
+    return { ok: true };
+  };
+  const manager = await loadReloadablePromotedTskRuntime('descriptor.json', {
+    now: () => 1_000,
+    loader: async () => runtime,
+  });
+  const operation = manager.provision({ commandId: 'promote-2' });
+  const close = manager.close();
+  await entered;
+  assert.equal(events.includes('close:1'), false, 'runtime must remain open while admitted work runs');
+  releaseOperation();
+  assert.deepEqual(await operation, { ok: true });
+  await close;
+  assert.deepEqual(events, ['op-enter', 'op-exit', 'close:1']);
+});

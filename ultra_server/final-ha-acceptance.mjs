@@ -17,6 +17,8 @@ const REQUIRED_ENV = Object.freeze([
   'BPC_TEST_REDIS_URLS', 'TSK_TEST_POSTGRES_URL_A', 'TSK_TEST_POSTGRES_URL_B',
   'TSK_TEST_SOURCE_PG_URL_A', 'TSK_TEST_RECEIVER_PG_URL_B',
   'TSK_TEST_CONTROL_PG_URL', 'TSK_TEST_REDIS_URL',
+  'ULTRA_HA_REDIS_SENTINELS', 'ULTRA_HA_REDIS_MASTER_NAME',
+  'ULTRA_HA_REDIS_WAIT_REPLICAS', 'ULTRA_HA_REDIS_WAIT_TIMEOUT_MS',
   'ULTRA_TEST_POSTGRES_URL_A', 'ULTRA_TEST_POSTGRES_URL_B',
 ]);
 
@@ -186,6 +188,13 @@ export async function runFinalAcceptance(options = {}) {
       .reduce((sum, fault) => sum + fault.rtoMs, 0),
     outputSha256: liveReceipt.evidence.tskRedisFaults.redisAuthorityTupleDigest,
     evidence: Object.freeze(Object.entries(liveReceipt.evidence.tskRedisFaults.faults)
+      .map(([name, fault]) => `${name}:RPO=${fault.rpo}:RTO=${fault.rtoMs}ms`)),
+  }), Object.freeze({
+    id: 'same-ultra-redis-authority-faults',
+    durationMs: Object.values(liveReceipt.evidence.ultraRedisFaults.faults)
+      .reduce((sum, fault) => sum + fault.rtoMs, 0),
+    outputSha256: liveReceipt.evidence.ultraRedisFaults.redisAuthorityTupleDigest,
+    evidence: Object.freeze(Object.entries(liveReceipt.evidence.ultraRedisFaults.faults)
       .map(([name, fault]) => `${name}:RPO=${fault.rpo}:RTO=${fault.rtoMs}ms`)),
   }), Object.freeze({
     id: 'same-enterprise-authority-fault-restore',

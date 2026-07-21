@@ -370,7 +370,19 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       tskFinalizedDigest,
     }), /not independent/);
 
-    const imported = await importIndependentState(b, bundle, {
+    const callerOwnedBundle = structuredClone(bundle);
+    let releaseConnect;
+    let connectEntered;
+    const connectGate = new Promise((resolvePromise) => { releaseConnect = resolvePromise; });
+    const entered = new Promise((resolvePromise) => { connectEntered = resolvePromise; });
+    const delayedPool = {
+      async connect() {
+        connectEntered();
+        await connectGate;
+        return b.connect();
+      },
+    };
+    const importPromise = importIndependentState(delayedPool, callerOwnedBundle, {
       advisoryLockKey: lockKey,
       bpcPromotionDigest,
       clusterId,
@@ -382,7 +394,15 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       tskActivationDigest,
       tskFinalizedDigest,
     });
+    await entered;
+    callerOwnedBundle.manifest.state.identityBindings[0].agentId = 'post-verify-attacker';
+    callerOwnedBundle.manifest.state.credentialBindings[0].agentId = 'post-verify-attacker';
+    releaseConnect();
+    const imported = await importPromise;
     assert.equal(imported.idempotent, false);
+    assert.equal((await b.query(
+      'SELECT agent_id FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
+    )).rows[0].agent_id, `agent-${suffix}`);
     assert.equal((await importIndependentState(b, bundle, {
       advisoryLockKey: lockKey,
       bpcPromotionDigest,

@@ -27,6 +27,8 @@ const INDEPENDENT_STATE_TABLES = Object.freeze([
   'ultra_ha_tsk_reprovision',
 ]);
 const INDEPENDENT_STATE_LOCK_LIST = INDEPENDENT_STATE_TABLES.join(', ');
+const MAX_SNAPSHOT_DEPTH = 32;
+const MAX_SNAPSHOT_NODES = 100_000;
 
 // Compiled from ULTRA_PG_SCHEMA + ULTRA_INDEPENDENT_STATE_SCHEMA on PostgreSQL 16.
 // There is deliberately no environment override: changing the authority schema requires a
@@ -272,6 +274,49 @@ function redactionProvenance(row) {
     sourceSignatureDigest: row.source_signature_digest,
     sourceSystemId: row.redaction_source_system_id,
   };
+}
+
+function snapshotPlainData(value, state = { nodes: 0 }, depth = 0) {
+  state.nodes += 1;
+  if (state.nodes > MAX_SNAPSHOT_NODES || depth > MAX_SNAPSHOT_DEPTH) {
+    throw new Error('independent state snapshot exceeds structural bounds');
+  }
+  if (value === null || typeof value === 'string' || typeof value === 'boolean' ||
+      typeof value === 'number') return value;
+  if (!value || typeof value !== 'object' || Object.getOwnPropertySymbols(value).length !== 0) {
+    throw new Error('independent state snapshot must contain plain data only');
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype) {
+      throw new Error('independent state snapshot arrays must use Array.prototype');
+    }
+    const length = descriptors.length?.value;
+    if (!Number.isSafeInteger(length) || length < 0 || length > MAX_SNAPSHOT_NODES) {
+      throw new Error('independent state snapshot array length is invalid');
+    }
+    const result = [];
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || !('value' in descriptor)) {
+        throw new Error('independent state snapshot arrays must be dense data');
+      }
+      result.push(snapshotPlainData(descriptor.value, state, depth + 1));
+    }
+    return Object.freeze(result);
+  }
+  if (Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new Error('independent state snapshot objects must use Object.prototype');
+  }
+  const result = {};
+  for (const key of Object.keys(descriptors)) {
+    const descriptor = descriptors[key];
+    if (!('value' in descriptor)) {
+      throw new Error('independent state snapshot accessors are forbidden');
+    }
+    result[key] = snapshotPlainData(descriptor.value, state, depth + 1);
+  }
+  return Object.freeze(result);
 }
 
 function requiredStreamIdentifier(value, name) {
@@ -875,19 +920,40 @@ function verifyProtocolEvidence(evidence, manifest, resolvers) {
 }
 
 export async function importIndependentState(pool, bundle, input) {
-  verifyIndependentStateBundle(bundle, input);
-  const manifest = bundle.manifest;
-  if (manifest.clusterId !== input.clusterId || manifest.commandId !== input.commandId ||
-      manifest.sourceEpoch !== input.sourceEpoch ||
-      manifest.bpcPromotionDigest !== input.bpcPromotionDigest ||
-      manifest.tskActivationDigest !== input.tskActivationDigest ||
-      manifest.tskFinalizedDigest !== input.tskFinalizedDigest) throw new Error('promotion binding mismatch');
+  // The bundle is untrusted caller-owned data. Capture every data descriptor exactly once,
+  // synchronously before verification or the first await; only this frozen snapshot may cross
+  // the pool/transaction boundary. Public-key resolvers are trusted capability handles and are
+  // captured separately so caller mutation cannot swap them after verification.
+  const verifiedBundle = snapshotPlainData(bundle);
+  const authority = Object.freeze({
+    sourcePublicKey: input.sourcePublicKey,
+    guardPublicKey: input.guardPublicKey,
+    bpcResolver: input.bpcResolver,
+    tskBResolver: input.tskBResolver,
+    tskGuardResolver: input.tskGuardResolver,
+  });
+  const expected = Object.freeze({
+    advisoryLockKey: input.advisoryLockKey,
+    bpcPromotionDigest: input.bpcPromotionDigest,
+    clusterId: input.clusterId,
+    commandId: input.commandId,
+    sourceEpoch: input.sourceEpoch,
+    tskActivationDigest: input.tskActivationDigest,
+    tskFinalizedDigest: input.tskFinalizedDigest,
+  });
+  verifyIndependentStateBundle(verifiedBundle, authority);
+  const manifest = verifiedBundle.manifest;
+  if (manifest.clusterId !== expected.clusterId || manifest.commandId !== expected.commandId ||
+      manifest.sourceEpoch !== expected.sourceEpoch ||
+      manifest.bpcPromotionDigest !== expected.bpcPromotionDigest ||
+      manifest.tskActivationDigest !== expected.tskActivationDigest ||
+      manifest.tskFinalizedDigest !== expected.tskFinalizedDigest) throw new Error('promotion binding mismatch');
   validateState(manifest.state);
   return withSerializable(pool, async (client) => {
-    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [input.advisoryLockKey]);
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [expected.advisoryLockKey]);
     const targetSystemId = await systemIdentifier(client);
     if (targetSystemId === manifest.sourceSystemId) throw new Error('source and target PostgreSQL authorities are not independent');
-    if (targetSystemId !== bundle.protocolEvidence.tskFinalizedReceipt.bSystemId) {
+    if (targetSystemId !== verifiedBundle.protocolEvidence.tskFinalizedReceipt.bSystemId) {
       throw new Error('protocol evidence belongs to a different target PostgreSQL authority');
     }
     const current = await client.query('SELECT * FROM ultra_ha_import_head WHERE cluster_id=$1 FOR UPDATE', [manifest.clusterId]);
@@ -895,7 +961,7 @@ export async function importIndependentState(pool, bundle, input) {
       const row = current.rows[0];
       if (Number(row.source_epoch) > manifest.sourceEpoch) throw new Error('state rollback refused');
       if (Number(row.source_epoch) === manifest.sourceEpoch) {
-        if (row.manifest_digest !== bundle.manifestDigest || row.command_id !== manifest.commandId) {
+        if (row.manifest_digest !== verifiedBundle.manifestDigest || row.command_id !== manifest.commandId) {
           throw new Error('same-epoch state fork refused');
         }
         if (row.target_system_id !== targetSystemId || row.source_system_id !== manifest.sourceSystemId ||
@@ -913,7 +979,7 @@ export async function importIndependentState(pool, bundle, input) {
             [item.nonceHash, item.expiresAt],
           );
         }
-        return { idempotent: true, manifestDigest: bundle.manifestDigest, targetSystemId };
+        return { idempotent: true, manifestDigest: verifiedBundle.manifestDigest, targetSystemId };
       }
     }
     const processing = await client.query("SELECT COUNT(*)::int AS count FROM ultra_idempotency WHERE state='processing'");
@@ -951,10 +1017,10 @@ export async function importIndependentState(pool, bundle, input) {
               source_system_id, command_id, source_epoch,
               source_signature_digest, guard_signature_digest)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [item.idempotencyKey, item.responseDigest, bundle.manifestDigest,
+          [item.idempotencyKey, item.responseDigest, verifiedBundle.manifestDigest,
            manifest.sourceSystemId, manifest.commandId, manifest.sourceEpoch,
-           createHash('sha256').update(bundle.sourceSignature, 'utf8').digest('hex'),
-           createHash('sha256').update(bundle.guardSignature, 'utf8').digest('hex')],
+           createHash('sha256').update(verifiedBundle.sourceSignature, 'utf8').digest('hex'),
+           createHash('sha256').update(verifiedBundle.guardSignature, 'utf8').digest('hex')],
         );
       }
     }
@@ -976,7 +1042,7 @@ export async function importIndependentState(pool, bundle, input) {
          manifest_digest=EXCLUDED.manifest_digest, authority_digest=EXCLUDED.authority_digest,
          imported_at=clock_timestamp()`,
       [manifest.clusterId, manifest.commandId, manifest.sourceEpoch, manifest.sourceSystemId,
-      targetSystemId, bundle.manifestDigest, manifest.authorityDigest],
+      targetSystemId, verifiedBundle.manifestDigest, manifest.authorityDigest],
     );
     for (const item of manifest.state.credentialBindings) {
       await client.query(
@@ -992,44 +1058,54 @@ export async function importIndependentState(pool, bundle, input) {
       'UPDATE ultra_ha_import_head SET authority_digest=$2 WHERE cluster_id=$1',
       [manifest.clusterId, importedAuthorityDigest],
     );
-    return { idempotent: false, manifestDigest: bundle.manifestDigest, targetSystemId };
+    return { idempotent: false, manifestDigest: verifiedBundle.manifestDigest, targetSystemId };
   });
 }
 
 export async function completeImportedTskReprovision(pool, input) {
-  const targetMap = JSON.parse(JSON.stringify(input.targetMap));
-  requiredIdentifier(input.clusterId, 'clusterId');
-  requiredIdentifier(input.commandId, 'commandId');
-  positiveSafeInteger(input.sourceEpoch, 'sourceEpoch');
-  requiredIdentifier(input.pairId, 'pairId');
-  requiredIdentifier(input.agentId, 'agentId');
-  requiredIdentifier(input.sourceClientId, 'sourceClientId');
+  const targetMap = snapshotPlainData(input.targetMap);
+  const expected = Object.freeze({
+    advisoryLockKey: input.advisoryLockKey,
+    agentId: input.agentId,
+    clusterId: input.clusterId,
+    commandId: input.commandId,
+    pairId: input.pairId,
+    sourceClientId: input.sourceClientId,
+    sourceEpoch: input.sourceEpoch,
+  });
+  const assertWritable = input.assertWritable;
+  requiredIdentifier(expected.clusterId, 'clusterId');
+  requiredIdentifier(expected.commandId, 'commandId');
+  positiveSafeInteger(expected.sourceEpoch, 'sourceEpoch');
+  requiredIdentifier(expected.pairId, 'pairId');
+  requiredIdentifier(expected.agentId, 'agentId');
+  requiredIdentifier(expected.sourceClientId, 'sourceClientId');
   requiredIdentifier(targetMap?.clientId, 'targetMap.clientId');
-  if (targetMap.clientId === input.sourceClientId || targetMap.label !== `agent:${input.agentId}` ||
+  if (targetMap.clientId === expected.sourceClientId || targetMap.label !== `agent:${expected.agentId}` ||
       targetMap.status !== 'active' || typeof targetMap.sharedSecret !== 'string' ||
       targetMap.sharedSecret.length < 32 || !Array.isArray(targetMap.segments) ||
       targetMap.segments.length === 0) {
     throw new Error('target TSK credential is not a fresh active owned credential');
   }
-  if (typeof input.assertWritable !== 'function') {
+  if (typeof assertWritable !== 'function') {
     throw new Error('TSK reprovision requires a live writer-fence assertion');
   }
   return withSerializable(pool, async (client) => {
-    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [input.advisoryLockKey]);
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [expected.advisoryLockKey]);
     const head = (await client.query(
       `SELECT command_id, source_epoch, authority_digest FROM ultra_ha_import_head
-       WHERE cluster_id=$1 FOR UPDATE`, [input.clusterId],
+       WHERE cluster_id=$1 FOR UPDATE`, [expected.clusterId],
     )).rows[0];
-    if (!head || head.command_id !== input.commandId || Number(head.source_epoch) !== input.sourceEpoch) {
+    if (!head || head.command_id !== expected.commandId || Number(head.source_epoch) !== expected.sourceEpoch) {
       throw new Error('TSK reprovision does not match the imported promotion');
     }
     const pending = (await client.query(
       `SELECT agent_id, source_client_id, source_secret_digest, target_client_id,
               status, receipt_digest, target_proof_digest, activation_grant_digest
        FROM ultra_ha_tsk_reprovision WHERE cluster_id=$1 AND pair_id=$2 FOR UPDATE`,
-      [input.clusterId, input.pairId],
+      [expected.clusterId, expected.pairId],
     )).rows[0];
-    if (!pending || pending.agent_id !== input.agentId || pending.source_client_id !== input.sourceClientId) {
+    if (!pending || pending.agent_id !== expected.agentId || pending.source_client_id !== expected.sourceClientId) {
       throw new Error('TSK reprovision binding mismatch');
     }
     if (digest(await readTargetAuthorityState(client)) !== head.authority_digest) {
@@ -1037,13 +1113,13 @@ export async function completeImportedTskReprovision(pool, input) {
     }
     await assertNoActiveUnboundCredentials(client);
     const receipt = {
-      agentId: input.agentId,
-      clusterId: input.clusterId,
-      commandId: input.commandId,
-      pairId: input.pairId,
+      agentId: expected.agentId,
+      clusterId: expected.clusterId,
+      commandId: expected.commandId,
+      pairId: expected.pairId,
       publicMapDigest: publicTskMapDigest(targetMap),
-      sourceClientId: input.sourceClientId,
-      sourceEpoch: input.sourceEpoch,
+      sourceClientId: expected.sourceClientId,
+      sourceEpoch: expected.sourceEpoch,
       targetClientId: targetMap.clientId,
     };
     const receiptDigest = digest(receipt);
@@ -1057,8 +1133,8 @@ export async function completeImportedTskReprovision(pool, input) {
       if (!stored || digest(stored) !== digest(targetMap)) {
         throw new Error('completed TSK reprovision authority was rolled back or tampered');
       }
-      const writable = await input.assertWritable();
-      if (!writable?.ok || Number(writable.fenceEpoch) !== input.sourceEpoch) {
+      const writable = await assertWritable();
+      if (!writable?.ok || Number(writable.fenceEpoch) !== expected.sourceEpoch) {
         throw new Error('TSK reprovision writer fence is not current');
       }
       return Object.freeze({ ...receipt, receiptDigest, idempotent: true });
@@ -1070,22 +1146,22 @@ export async function completeImportedTskReprovision(pool, input) {
     const rebound = await client.query(
       `UPDATE ultra_identity_bindings SET tsk_client_id=$3, updated_at=clock_timestamp()
        WHERE pair_id=$1 AND agent_id=$2 AND tsk_client_id=$4`,
-      [input.pairId, input.agentId, targetMap.clientId, input.sourceClientId],
+      [expected.pairId, expected.agentId, targetMap.clientId, expected.sourceClientId],
     );
     if (rebound.rowCount !== 1) throw new Error('imported identity rebind failed');
     await client.query(
       `UPDATE ultra_ha_tsk_reprovision SET target_client_id=$3, status='complete',
          receipt_digest=$4, updated_at=clock_timestamp()
        WHERE cluster_id=$1 AND pair_id=$2`,
-      [input.clusterId, input.pairId, targetMap.clientId, receiptDigest],
+      [expected.clusterId, expected.pairId, targetMap.clientId, receiptDigest],
     );
     const authorityDigest = digest(await readTargetAuthorityState(client));
     await client.query(
       'UPDATE ultra_ha_import_head SET authority_digest=$2 WHERE cluster_id=$1',
-      [input.clusterId, authorityDigest],
+      [expected.clusterId, authorityDigest],
     );
-    const writable = await input.assertWritable();
-    if (!writable?.ok || Number(writable.fenceEpoch) !== input.sourceEpoch) {
+    const writable = await assertWritable();
+    if (!writable?.ok || Number(writable.fenceEpoch) !== expected.sourceEpoch) {
       throw new Error('TSK reprovision writer fence was lost before commit');
     }
     return Object.freeze({ ...receipt, receiptDigest, idempotent: false });
@@ -1099,49 +1175,59 @@ export async function completeImportedTskReprovision(pool, input) {
  * the Enterprise database.
  */
 export async function completeImportedPromotedTskCredential(pool, authorityCapability, input) {
-  const targetProof = structuredClone(input.targetProof);
-  requiredIdentifier(input.clusterId, 'clusterId');
-  requiredIdentifier(input.commandId, 'commandId');
-  positiveSafeInteger(input.sourceEpoch, 'sourceEpoch');
-  requiredIdentifier(input.pairId, 'pairId');
-  requiredIdentifier(input.agentId, 'agentId');
-  requiredIdentifier(input.sourceClientId, 'sourceClientId');
-  requiredDigest(input.sourceSecretDigest, 'sourceSecretDigest');
+  const targetProof = snapshotPlainData(input.targetProof);
+  const expected = Object.freeze({
+    advisoryLockKey: input.advisoryLockKey,
+    agentId: input.agentId,
+    clusterId: input.clusterId,
+    commandId: input.commandId,
+    pairId: input.pairId,
+    sourceClientId: input.sourceClientId,
+    sourceEpoch: input.sourceEpoch,
+    sourceSecretDigest: input.sourceSecretDigest,
+  });
+  requiredIdentifier(expected.clusterId, 'clusterId');
+  requiredIdentifier(expected.commandId, 'commandId');
+  positiveSafeInteger(expected.sourceEpoch, 'sourceEpoch');
+  requiredIdentifier(expected.pairId, 'pairId');
+  requiredIdentifier(expected.agentId, 'agentId');
+  requiredIdentifier(expected.sourceClientId, 'sourceClientId');
+  requiredDigest(expected.sourceSecretDigest, 'sourceSecretDigest');
   const verified = await verifyPromotedTskCredentialProof(
     authorityCapability,
     targetProof,
     {
-      agentId: input.agentId,
-      pairId: input.pairId,
-      sourceClientId: input.sourceClientId,
-      sourceSecretDigest: input.sourceSecretDigest,
+      agentId: expected.agentId,
+      pairId: expected.pairId,
+      sourceClientId: expected.sourceClientId,
+      sourceSecretDigest: expected.sourceSecretDigest,
     },
   );
-  if (verified.commandId !== input.commandId || verified.sourceEpoch !== input.sourceEpoch) {
+  if (verified.commandId !== expected.commandId || verified.sourceEpoch !== expected.sourceEpoch) {
     throw new Error('promoted TSK credential proof does not match the imported epoch/command');
   }
   const targetProofDigest = digest(targetProof);
   const receipt = Object.freeze({
     activationGrantDigest: verified.activationGrantDigest,
-    agentId: input.agentId,
-    clusterId: input.clusterId,
-    commandId: input.commandId,
+    agentId: expected.agentId,
+    clusterId: expected.clusterId,
+    commandId: expected.commandId,
     headDigest: verified.headDigest,
-    pairId: input.pairId,
+    pairId: expected.pairId,
     publicMapDigest: verified.publicMapDigest,
-    sourceClientId: input.sourceClientId,
-    sourceEpoch: input.sourceEpoch,
+    sourceClientId: expected.sourceClientId,
+    sourceEpoch: expected.sourceEpoch,
     targetClientId: verified.targetClientId,
     targetProofDigest,
   });
   const receiptDigest = digest(receipt);
   return withSerializable(pool, async (client) => {
-    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [input.advisoryLockKey]);
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [expected.advisoryLockKey]);
     const head = (await client.query(
       `SELECT command_id, source_epoch, authority_digest FROM ultra_ha_import_head
-       WHERE cluster_id=$1 FOR UPDATE`, [input.clusterId],
+       WHERE cluster_id=$1 FOR UPDATE`, [expected.clusterId],
     )).rows[0];
-    if (!head || head.command_id !== input.commandId || Number(head.source_epoch) !== input.sourceEpoch) {
+    if (!head || head.command_id !== expected.commandId || Number(head.source_epoch) !== expected.sourceEpoch) {
       throw new Error('TSK reprovision does not match the imported promotion');
     }
     const pending = (await client.query(
@@ -1149,11 +1235,11 @@ export async function completeImportedPromotedTskCredential(pool, authorityCapab
               target_proof,target_proof_digest,activation_grant_digest,receipt_digest
          FROM ultra_ha_tsk_reprovision
         WHERE cluster_id=$1 AND pair_id=$2 FOR UPDATE`,
-      [input.clusterId, input.pairId],
+      [expected.clusterId, expected.pairId],
     )).rows[0];
-    if (!pending || pending.agent_id !== input.agentId ||
-        pending.source_client_id !== input.sourceClientId ||
-        pending.source_secret_digest !== input.sourceSecretDigest) {
+    if (!pending || pending.agent_id !== expected.agentId ||
+        pending.source_client_id !== expected.sourceClientId ||
+        pending.source_secret_digest !== expected.sourceSecretDigest) {
       throw new Error('TSK reprovision binding mismatch');
     }
     if (digest(await readTargetAuthorityState(client)) !== head.authority_digest) {
@@ -1172,7 +1258,7 @@ export async function completeImportedPromotedTskCredential(pool, authorityCapab
     const rebound = await client.query(
       `UPDATE ultra_identity_bindings SET tsk_client_id=$3, updated_at=clock_timestamp()
        WHERE pair_id=$1 AND agent_id=$2 AND tsk_client_id=$4`,
-      [input.pairId, input.agentId, verified.targetClientId, input.sourceClientId],
+      [expected.pairId, expected.agentId, verified.targetClientId, expected.sourceClientId],
     );
     if (rebound.rowCount !== 1) throw new Error('imported identity rebind failed');
     await client.query(
@@ -1181,14 +1267,14 @@ export async function completeImportedPromotedTskCredential(pool, authorityCapab
               target_proof_digest=$5,activation_grant_digest=$6,receipt_digest=$7,
               updated_at=clock_timestamp()
         WHERE cluster_id=$1 AND pair_id=$2`,
-      [input.clusterId, input.pairId, verified.targetClientId,
+      [expected.clusterId, expected.pairId, verified.targetClientId,
         JSON.stringify(targetProof), targetProofDigest, verified.activationGrantDigest,
         receiptDigest],
     );
     const authorityDigest = digest(await readTargetAuthorityState(client));
     await client.query(
       'UPDATE ultra_ha_import_head SET authority_digest=$2 WHERE cluster_id=$1',
-      [input.clusterId, authorityDigest],
+      [expected.clusterId, authorityDigest],
     );
     return Object.freeze({ ...receipt, receiptDigest, idempotent: false });
   });

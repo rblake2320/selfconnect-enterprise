@@ -68,8 +68,13 @@ custody boundaries.
 
 ## Custody-separated commands
 
-All JSON descriptors are non-secret. `DATABASE_URL` stays in the process
-environment. PEM key files are supplied by path and must be ACL-protected.
+Export, countersign, import, and readiness JSON descriptors are non-secret;
+`DATABASE_URL` stays in those command processes' environments. The separate
+promoted-runtime descriptor named by `ULTRA_TSK_AUTHORITY_CONFIG_FILE` is an
+explicit exception: it currently contains `runtimeDatabaseUrl` and is therefore
+secret-bearing. Store it under a service-identity ACL, exclude it from retained
+evidence and ordinary backups, and rotate it with the database credential. PEM
+key files referenced by either descriptor are likewise ACL-protected.
 
 ```powershell
 # A/source custody

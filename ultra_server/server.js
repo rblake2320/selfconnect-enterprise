@@ -39,6 +39,10 @@ import {
 } from './independent-state.js';
 import { loadReloadablePromotedTskRuntime } from './promoted-tsk-runtime.js';
 import {
+  createUltraRedisClient,
+  loadUltraRedisAuthorityConfig,
+} from './ultra-redis-authority.js';
+import {
   createMetricsAuthMiddleware,
   metricAuthFailureLabel,
   metricMethodLabel,
@@ -164,12 +168,12 @@ for (const [name, value] of [
 if (RUNTIME_MODE === 'production') {
   const required = [
     'DATABASE_URL',
-    'REDIS_URL',
     'ULTRA_ADMIN_TOKEN',
     'ULTRA_METRICS_TOKEN',
     'ULTRA_RECOVERY_HMAC_KEY',
   ];
   const missing = required.filter((name) => !process.env[name]);
+  if (!process.env.REDIS_URL && !process.env.ULTRA_HA_REDIS_SENTINELS) missing.push('REDIS_URL or ULTRA_HA_REDIS_SENTINELS');
   if (missing.length > 0) throw new Error(`production mode missing required settings: ${missing.join(', ')}`);
   if (Buffer.byteLength(process.env.ULTRA_ADMIN_TOKEN, 'utf8') < 32) {
     throw new Error('ULTRA_ADMIN_TOKEN must contain at least 32 bytes in production');
@@ -199,14 +203,10 @@ if (RUNTIME_MODE === 'production') {
     ...(HA_STATE_MODE === 'independent' ? [ULTRA_INDEPENDENT_STATE_SCHEMA] : []),
   );
 
-  const redisClient = new Redis(process.env.REDIS_URL, {
-    lazyConnect: true,
-    ...(HA_CONFIG.enabled ? {
-      commandTimeout: 2_000,
-      enableOfflineQueue: false,
-      maxRetriesPerRequest: 1,
-    } : {}),
+  const redisAuthorityConfig = loadUltraRedisAuthorityConfig(process.env, {
+    haEnabled: HA_CONFIG.enabled,
   });
+  const redisClient = createUltraRedisClient(Redis, redisAuthorityConfig);
   await redisClient.connect();
   pairStore = new PgPairStore(pool);
   anomalyStore = new RedisAnomalyStore(redisClient, 'ultra:anomaly:');
@@ -214,7 +214,9 @@ if (RUNTIME_MODE === 'production') {
     ? null
     : new RedisNonceStore(redisClient, 'ultra:nonce:');
   if (HA_CONFIG.enabled) {
-    const fenceStore = new RedisFencingStore(redisClient, HA_CONFIG.fenceKey);
+    const fenceStore = new RedisFencingStore(
+      redisClient, HA_CONFIG.fenceKey, redisAuthorityConfig.durability ?? undefined,
+    );
     haController = new UltraHaController({
       clusterId: HA_CONFIG.clusterId,
       fenceStore,
