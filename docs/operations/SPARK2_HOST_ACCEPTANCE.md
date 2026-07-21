@@ -10,7 +10,8 @@ authority can reside on a second physical machine.
 
 ## Reviewed Inputs
 
-- Enterprise base: `60f8ae76fa52f868a704dbf51865b268d2d0886f`
+- Enterprise reviewed base: `60f8ae76fa52f868a704dbf51865b268d2d0886f`
+- Evidence controller code: `9174b708fe3007f2e8a5c79fec2c7b92719a5480`
 - TSK protocol: `20bf099e0b4f7479b93cf1d5e245b3f7c87e1675`
 - Controller: Node.js `v24.18.0` ARM64 archive, verified against the official
   Node.js `SHASUMS256.txt`
@@ -55,14 +56,14 @@ The owner's normal Docker configuration was not changed.
 ## Result
 
 - TSK commit: `20bf099e0b4f7479b93cf1d5e245b3f7c87e1675`
-- command: `spark2-host-20260721T062218Z`
+- command: `spark2-exact-9174b70`
 - data-loss RPO: `0`
 - initial sequence: `4`
 - promoted sequence: `5`
 - returned sequence: `6`
 - stale source writer denied: `true`
 - stale target writer denied after return: `true`
-- measured end-to-end duration: `31098 ms`
+- measured end-to-end duration: `31233 ms`
 
 Success was not inferred from a zero exit code. The verifier required three
 different PostgreSQL system identifiers, exact admission of the pre-recorded
@@ -72,10 +73,12 @@ denials.
 
 The secret-free receipt is retained on the acceptance controller at:
 
-`~/selfconnect-ha-drill/evidence/spark2-host-20260721T062218Z.json`
+`~/selfconnect-ha-drill/evidence/spark2-host-exact-9174b70-20260721T063148Z.json`
 
 The receipt is mode `0600` and contains only bounded topology, commit, timing,
 sequence, outcome, and SHA-256 digest fields. It passed a secret-pattern check.
+It binds both the exact clean Enterprise controller commit and exact clean TSK
+commit; either checkout being dirty or at a different commit is a hard failure.
 
 ## Reproduction
 
