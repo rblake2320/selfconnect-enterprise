@@ -1,0 +1,71 @@
+services:
+  postgres-source:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${SPARK1_POSTGRES_DB}
+      POSTGRES_PASSWORD: ${SPARK1_POSTGRES_PASSWORD}
+      POSTGRES_USER: ${SPARK1_POSTGRES_USER}
+    ports:
+      - "${SPARK1_BIND_ADDRESS:-192.168.12.132}:${SPARK1_SOURCE_PORT:-5541}:5432"
+    volumes:
+      - spark1_postgres_source_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  postgres-control:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${SPARK1_POSTGRES_DB}
+      POSTGRES_PASSWORD: ${SPARK1_POSTGRES_PASSWORD}
+      POSTGRES_USER: ${SPARK1_POSTGRES_USER}
+    ports:
+      - "${SPARK1_BIND_ADDRESS:-192.168.12.132}:${SPARK1_CONTROL_PORT:-5542}:5432"
+    volumes:
+      - spark1_postgres_control_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  redis-authority:
+    image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - always
+      - --requirepass
+      - ${SPARK1_REDIS_PASSWORD}
+    environment:
+      SPARK1_REDIS_PASSWORD: ${SPARK1_REDIS_PASSWORD}
+    ports:
+      - "${SPARK1_BIND_ADDRESS:-192.168.12.132}:${SPARK1_REDIS_PORT:-6391}:6379"
+    volumes:
+      - spark1_redis_authority_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$SPARK1_REDIS_PASSWORD --no-auth-warning ping | grep -qx PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  spark1_postgres_source_data:
+  spark1_postgres_control_data:
+  spark1_redis_authority_data:
