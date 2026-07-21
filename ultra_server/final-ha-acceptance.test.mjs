@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  ACCEPTANCE_STEPS, assertStepEvidence, evidenceLines, validatePins,
+  ACCEPTANCE_STEPS, assertCleanReviewedCheckout, assertStepEvidence, evidenceLines, validatePins,
 } from './final-ha-acceptance.mjs';
 
 test('final plan covers direct authorities, process/network faults, and Enterprise handoff', () => {
@@ -36,4 +36,8 @@ test('portfolio pins must be exact full commit IDs and roots must exist in the p
   assert.throws(() => validatePins({ components: {
     ...lock.components, 'tsk-protocol': { commit: 'short' },
   } }, { 'bpc-protocol': 'C:/bpc', 'tsk-protocol': 'C:/tsk' }), /pin is invalid/);
+});
+
+test('reviewed Enterprise checkout requires an exact full SHA', async () => {
+  await assert.rejects(assertCleanReviewedCheckout('.', 'short'), /full commit SHA/);
 });

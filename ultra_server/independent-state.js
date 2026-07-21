@@ -23,7 +23,7 @@ const INDEPENDENT_STATE_TABLES = Object.freeze([
 ]);
 const INDEPENDENT_STATE_LOCK_LIST = INDEPENDENT_STATE_TABLES.join(', ');
 
-// Compiled from ULTRA_PG_SCHEMA + ULTRA_INDEPENDENT_STATE_SCHEMA on PostgreSQL 17.
+// Compiled from ULTRA_PG_SCHEMA + ULTRA_INDEPENDENT_STATE_SCHEMA on PostgreSQL 16.
 // There is deliberately no environment override: changing the authority schema requires a
 // reviewed source change and a new pin.
 export const ULTRA_INDEPENDENT_STATE_MANIFEST_DIGEST =

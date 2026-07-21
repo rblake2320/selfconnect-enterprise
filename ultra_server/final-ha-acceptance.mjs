@@ -48,7 +48,7 @@ export const ACCEPTANCE_STEPS = Object.freeze([
   Object.freeze({
     id: 'enterprise-independent-failover-failback', component: 'selfconnect-enterprise',
     cwd: HERE, args: ['run', 'test:independent-state'],
-    markers: ['same-principal failback A -> B -> A completed', '# fail 0'],
+    markers: ['same-principal failback A -> B -> A completed', 'fail 0'],
   }),
   Object.freeze({
     id: 'enterprise-authenticated-outbox', component: 'selfconnect-enterprise',
@@ -132,7 +132,7 @@ async function gitHead(root) {
     timeoutMs: 30_000 })).trim();
 }
 
-async function assertCleanReviewedCheckout(root, expected) {
+export async function assertCleanReviewedCheckout(root, expected) {
   if (!SHA.test(expected ?? '')) throw new Error('ULTRA_FINAL_EXPECTED_ENTERPRISE_SHA must be a full commit SHA');
   const actual = await gitHead(root);
   if (actual !== expected) throw new Error(`Enterprise checkout mismatch: expected ${expected}, got ${actual}`);
