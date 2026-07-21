@@ -308,6 +308,35 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       tskActivationDigest,
       tskFinalizedDigest,
     })).idempotent, true);
+    const provenance = (await b.query(
+      'SELECT * FROM ultra_idempotency_redaction WHERE idempotency_key=$1', [secretKey],
+    )).rows[0];
+    assert.equal(provenance.original_response_digest,
+      sourceBundle.manifest.state.idempotency.find((item) => item.idempotencyKey === secretKey).responseDigest);
+    await b.query(
+      "UPDATE ultra_idempotency_redaction SET original_response_digest=$2 WHERE idempotency_key=$1",
+      [secretKey, 'b'.repeat(64)],
+    );
+    await assert.rejects(importIndependentState(b, bundle, {
+      advisoryLockKey: lockKey, bpcPromotionDigest, clusterId, commandId, sourceEpoch: 1,
+      sourcePublicKey: source.publicKey, guardPublicKey: guard.publicKey, ...resolvers,
+      tskActivationDigest, tskFinalizedDigest,
+    }), /redaction placeholder|rolled back or tampered/);
+    await b.query('DELETE FROM ultra_idempotency_redaction WHERE idempotency_key=$1', [secretKey]);
+    await assert.rejects(importIndependentState(b, bundle, {
+      advisoryLockKey: lockKey, bpcPromotionDigest, clusterId, commandId, sourceEpoch: 1,
+      sourcePublicKey: source.publicKey, guardPublicKey: guard.publicKey, ...resolvers,
+      tskActivationDigest, tskFinalizedDigest,
+    }), /rolled back or tampered/);
+    await b.query(
+      `INSERT INTO ultra_idempotency_redaction
+         (idempotency_key, original_response_digest, source_manifest_digest, source_system_id,
+          command_id, source_epoch, source_signature_digest, guard_signature_digest)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [provenance.idempotency_key, provenance.original_response_digest,
+       provenance.source_manifest_digest, provenance.source_system_id, provenance.command_id,
+       provenance.source_epoch, provenance.source_signature_digest, provenance.guard_signature_digest],
+    );
     assert.deepEqual((await b.query(
       'SELECT tsk_client_id, agent_id FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
     )).rows[0], { tsk_client_id: sourceMap.clientId, agent_id: `agent-${suffix}` });
