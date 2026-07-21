@@ -2,8 +2,9 @@
 
 **Scope:** the named controlled-deployment topology only  
 **Not established:** an ATO, compliance certification, legal admissibility, or
-availability outside the recorded topology. The hosted topology is one runner
-and does not establish independent physical host or site failure domains.
+availability outside the recorded topology. The hosted topology is one runner.
+The Spark-2 supplement in `SPARK2_HOST_ACCEPTANCE.md` establishes a
+two-physical-host same-LAN TSK handoff, but not an independent site domain.
 
 ## Topology
 
@@ -47,7 +48,7 @@ failback evidence is a failure.
 | Network/split brain | Live Redis master isolation; old master refuses writes, surviving quorum promotes, healed node converges |
 | Redis loss | Abrupt master loss with Sentinel quorum and enforced replica acknowledgement |
 | Database recovery | Exact promoted PostgreSQL `SIGKILL`/restart plus destructive Enterprise-table rebuild from signed state |
-| Protocol failback | Governed BPC A -> B -> A and TSK A -> B -> A return-authority drills; Enterprise-owned state is currently A -> B only |
+| Protocol failback | Governed BPC A -> B -> A and TSK A -> B -> A return-authority drills; TSK also passed across Spark-1/Spark-2; Enterprise-owned state is currently A -> B only |
 | Same principal | Pair and agent identity remain unchanged across the recorded protocol failover/failback and Enterprise A -> B handoff |
 | Old writer fencing | BPC and TSK pre-commit authority checks deny the prior authority after promotion/restart/heal |
 | Tamper/gap/replay/rollback | Component and Enterprise drills reject each class before readiness or mutation |
@@ -71,8 +72,9 @@ Enterprise-owned state drill imports A into B, restores B after process and
 database faults, and does not claim an Enterprise B -> A return handoff.
 Previously redacted idempotency results remain redacted; they are not re-hashed
 as ordinary responses. Readiness is granted only after the new credential
-binding and authority digest agree. Physical host/site loss and the Enterprise
-return handoff remain issue #28 acceptance gates.
+binding and authority digest agree. Separate-host execution is evidenced by the
+Spark-1/Spark-2 supplement. Whole-host loss, separate-site operation, and the
+Enterprise return handoff remain issue #28 acceptance gates.
 
 ## Operations
 
