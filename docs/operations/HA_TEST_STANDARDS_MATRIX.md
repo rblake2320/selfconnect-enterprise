@@ -45,7 +45,7 @@ authorized, certified, or compliant.
 | Enterprise B -> A failback | PARTIAL | Real-PG A -> B -> A mechanism passes; exact BPC/TSK artifacts, stale-B fence, repeats remain |
 | Repeated same-principal cycles | PARTIAL | One Enterprise A -> B -> A cycle passes; repeated production cycles remain |
 | Monitoring and alerting | PARTIAL | Config/security tests pass; deployed fault-to-alert drill remains |
-| Immutable evidence | OPEN | Hashes/retention exist; WORM or equivalent deployment is unverified |
+| Immutable evidence | PARTIAL | Live S3 Object Lock proof exists; exact HA artifacts are not wired into it |
 | Key custody | PARTIAL | Role separation passes; production HSM/TPM custody ceremony remains |
 | Independent topology review | PARTIAL | Exact two-host TSK slice reviewed; complete topology review remains |
 | Approved RPO/RTO objectives | PARTIAL | Measurements exist; owner-approved business targets do not |
@@ -89,12 +89,15 @@ PostgreSQL and reported:
 - Ultra outbox suite: `1` test, `0` skipped.
 
 Where a test cannot run, the JSON matrix requires a limitation and closure
-condition. Its schema uses typed evidence references (`ci`, `artifact`, `repo`,
-`drill`, `standard`, and `issue`); a `PASS` requires machine evidence. CI pins
-the exact required level IDs and their status, checks repository evidence paths,
-and rejects malformed or missing references. Changing an `open` or `partial`
-result to `pass` therefore requires a reviewed code change and machine evidence,
-not only a prose edit.
+condition. Its schema uses typed evidence-reference validation (`ci`,
+`artifact`, `repo`, `drill`, `review`, `standard`, and `issue`); a `PASS`
+requires machine evidence. CI pins the exact required level IDs and their
+status, checks repository evidence paths, and admits only CI run IDs in the
+reviewed receipt registry with a full head SHA and successful conclusion. This
+does not query GitHub at test time or prove semantic relevance automatically;
+review still owns that judgment. Changing an `open` or `partial` result to
+`pass` therefore requires a reviewed code change and machine evidence, not only
+a prose edit.
 
 The generic Windows suite's `38` skips are also grouped in the JSON ledger:
 

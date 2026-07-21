@@ -283,6 +283,18 @@ def test_ha_test_coverage_never_hides_unexecuted_levels_as_passes() -> None:
             group[field]
             for field in ("reason", "substitute", "non_equivalence", "closure")
         )
+    ci_receipts = matrix["ci_receipts"]
+    assert {receipt["run_id"] for receipt in ci_receipts} == {
+        "29866460441",
+        "29866745029",
+    }
+    for receipt in ci_receipts:
+        assert set(receipt) == {"run_id", "head_sha", "conclusion", "scope"}
+        assert re.fullmatch(r"\d+", receipt["run_id"])
+        assert re.fullmatch(r"[0-9a-f]{40}", receipt["head_sha"])
+        assert receipt["conclusion"] == "success"
+        assert receipt["scope"]
+    receipt_by_run = {receipt["run_id"]: receipt for receipt in ci_receipts}
 
     expected_status = {
         "process-loss": "pass",
@@ -303,7 +315,7 @@ def test_ha_test_coverage_never_hides_unexecuted_levels_as_passes() -> None:
         "enterprise-failback": "partial",
         "repeated-same-principal-failover": "partial",
         "monitoring-alerting": "partial",
-        "immutable-evidence-deployment": "open",
+        "immutable-evidence-deployment": "partial",
         "key-custody": "partial",
         "independent-security-review": "partial",
         "rpo-rto-objectives": "partial",
@@ -326,7 +338,15 @@ def test_ha_test_coverage_never_hides_unexecuted_levels_as_passes() -> None:
         for evidence in level["evidence"]:
             kind, separator, reference = evidence.partition(":")
             assert separator and reference, f"malformed evidence: {evidence}"
-            assert kind in {"artifact", "ci", "drill", "issue", "repo", "standard"}
+            assert kind in {
+                "artifact",
+                "ci",
+                "drill",
+                "issue",
+                "repo",
+                "review",
+                "standard",
+            }
             evidence_kinds.add(kind)
             if kind in {"artifact", "repo"}:
                 path = reference.split("#", 1)[0]
@@ -339,8 +359,18 @@ def test_ha_test_coverage_never_hides_unexecuted_levels_as_passes() -> None:
                     r"/rblake2320/selfconnect-enterprise/actions/runs/\d+",
                     parsed.path,
                 )
+                run_id = parsed.path.rsplit("/", 1)[1]
+                assert receipt_by_run[run_id]["conclusion"] == "success"
             elif kind == "issue":
                 assert reference == matrix["authoritative_open_work"]
+            elif kind == "review":
+                parsed = urlparse(reference)
+                assert parsed.scheme == "https" and parsed.hostname == "github.com"
+                assert re.fullmatch(
+                    r"/rblake2320/selfconnect-enterprise/pull/\d+",
+                    parsed.path,
+                )
+                assert re.fullmatch(r"issuecomment-\d+", parsed.fragment)
             elif kind == "standard":
                 assert reference in standard_ids
             elif kind == "drill":

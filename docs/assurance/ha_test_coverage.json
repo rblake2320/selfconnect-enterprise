@@ -43,6 +43,20 @@
       "closure": "Keep the dedicated POSIX and Windows-native tests green on the exact commit."
     }
   ],
+  "ci_receipts": [
+    {
+      "run_id": "29866460441",
+      "head_sha": "5aeb5243f142f827c77a5c38467f96075456b78c",
+      "conclusion": "success",
+      "scope": "PR 50 exact-head two-host Spark acceptance and full repository matrix"
+    },
+    {
+      "run_id": "29866745029",
+      "head_sha": "197fedc3ccc70f0ea3a36f13479f8eadb4c121ad",
+      "conclusion": "success",
+      "scope": "Post-merge master full matrix including live Ultra, production durability, and final HA acceptance"
+    }
+  ],
   "levels": [
     {
       "id": "process-loss",
@@ -237,11 +251,15 @@
     },
     {
       "id": "immutable-evidence-deployment",
-      "status": "open",
+      "status": "partial",
       "requirement": "Retain acceptance and incident evidence in an immutable or equivalently governed store outside the faulted system.",
-      "evidence": ["repo:docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#evidence-boundary"],
-      "limitations": "CI artifacts are hashed and retention-pinned but provider-side immutability or legal hold is not deployed or verified.",
-      "closure": "Deploy the reviewed WORM/immutable evidence control, write a real acceptance artifact, verify retention and deletion denial, and document recovery access."
+      "evidence": [
+        "artifact:docs/ato/WORM_LIVE_AWS_PROOF_2026-06-21.json",
+        "repo:docs/ato/WORM_LIVE_AWS_PROOF_2026-06-21.md",
+        "repo:docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#evidence-boundary"
+      ],
+      "limitations": "A real S3 Object Lock COMPLIANCE-mode run proved remote retention, readback, stable seal indexing, and conflicting-root rejection. The exact HA acceptance and incident artifacts are not yet routed through that sink, and ongoing custody/legal-hold operations are not established.",
+      "closure": "Route the exact HA acceptance and incident artifacts into the reviewed immutable sink, then exercise retention/deletion denial, recovery access, and continuing custody operations."
     },
     {
       "id": "key-custody",
@@ -260,7 +278,7 @@
       "requirement": "Obtain independent security review of the exact deployment topology and its retained evidence, not only source components.",
       "evidence": [
         "repo:docs/operations/SPARK2_HOST_ACCEPTANCE.md#verification-performed",
-        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866460441"
+        "review:https://github.com/rblake2320/selfconnect-enterprise/pull/50#issuecomment-5039068722"
       ],
       "limitations": "PR 50 received independent adversarial review of the exact two-host TSK slice. The complete Enterprise/BPC/TSK/Redis/restore topology has not received an independent deployment review.",
       "closure": "After the full topology and remaining drills exist, provide its manifests, receipts, custody boundary, and failure evidence to an independent reviewer and resolve all findings."
