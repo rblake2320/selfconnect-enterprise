@@ -2,14 +2,15 @@
 
 **Scope:** the named controlled-deployment topology only  
 **Not established:** an ATO, compliance certification, legal admissibility, or
-availability outside the recorded topology
+availability outside the recorded topology. The hosted topology is one runner
+and does not establish independent physical host or site failure domains.
 
 ## Topology
 
 The final acceptance command composes exact reviewed commits rather than local
 copies or compatible version ranges:
 
-- two independent Ultra/TSK PostgreSQL authority sites;
+- two independent Ultra/TSK PostgreSQL authority instances on one hosted runner;
 - one independent TSK control PostgreSQL authority;
 - three separate BPC PostgreSQL authorities and a three-member Redis quorum;
 - the completed TSK credential authority;
@@ -45,9 +46,10 @@ failback evidence is a failure.
 | Process loss | Real child `SIGKILL` before and after every TSK cutover phase, followed by idempotent resume |
 | Network/split brain | Live Redis master isolation; old master refuses writes, surviving quorum promotes, healed node converges |
 | Redis loss | Abrupt master loss with Sentinel quorum and enforced replica acknowledgement |
-| Database/site recovery | Frozen snapshot/tail recovery plus Enterprise A -> B -> A isolated-authority failback |
-| Same principal | Pair and agent identity remain unchanged across Enterprise failover and failback |
-| Old writer fencing | BPC and TSK pre-commit authority checks deny the prior site after promotion/restart/heal |
+| Database recovery | Exact promoted PostgreSQL `SIGKILL`/restart plus destructive Enterprise-table rebuild from signed state |
+| Protocol failback | Governed BPC A -> B -> A and TSK A -> B -> A return-authority drills; Enterprise-owned state is currently A -> B only |
+| Same principal | Pair and agent identity remain unchanged across the recorded protocol failover/failback and Enterprise A -> B handoff |
+| Old writer fencing | BPC and TSK pre-commit authority checks deny the prior authority after promotion/restart/heal |
 | Tamper/gap/replay/rollback | Component and Enterprise drills reject each class before readiness or mutation |
 | Secret custody | State transport strips TSK and idempotency secrets; each target requires fresh governed reprovisioning |
 | RPO/RTO | Component drills print per-fault values; the final evidence retains only bounded lines and output hashes |
@@ -63,12 +65,14 @@ still requires the separately governed WORM deployment control.
 
 ## Recovery and Failback
 
-Failback is a new higher-epoch handoff, never a reversal of history. The
-recovered A database is isolated, imports the B-signed state, preserves the
-same pair and agent identity, and provisions a new target-only TSK credential.
-Previously redacted idempotency results remain redacted across repeated
-handoffs; they are not re-hashed as ordinary responses. Readiness is granted
-only after the new credential binding and authority digest agree.
+Failback is a new higher-epoch handoff, never a reversal of history. The BPC
+and TSK protocol authorities exercise that return path directly. The current
+Enterprise-owned state drill imports A into B, restores B after process and
+database faults, and does not claim an Enterprise B -> A return handoff.
+Previously redacted idempotency results remain redacted; they are not re-hashed
+as ordinary responses. Readiness is granted only after the new credential
+binding and authority digest agree. Physical host/site loss and the Enterprise
+return handoff remain issue #28 acceptance gates.
 
 ## Operations
 
