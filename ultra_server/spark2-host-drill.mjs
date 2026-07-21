@@ -1,7 +1,8 @@
 import { writeFile } from 'node:fs/promises';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { buildSpark2Evidence, validateSpark2Result } from './spark2-host-evidence.js';
+import { assertCleanReviewedCheckout } from './final-ha-acceptance.mjs';
 import { runTskLiveComposition } from './tsk-live-composition.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -15,10 +16,17 @@ function required(env, name) {
 }
 
 export async function runSpark2HostDrill(env = process.env) {
+  const expectedEnterpriseCommit = required(env,
+    'SPARK_HA_EXPECTED_ENTERPRISE_SHA').toLowerCase();
+  if (!SHA.test(expectedEnterpriseCommit)) {
+    throw new Error('SPARK_HA_EXPECTED_ENTERPRISE_SHA must be a full commit SHA');
+  }
   const expectedTskCommit = required(env, 'SPARK_HA_EXPECTED_TSK_SHA').toLowerCase();
   if (!SHA.test(expectedTskCommit)) {
     throw new Error('SPARK_HA_EXPECTED_TSK_SHA must be a full commit SHA');
   }
+  await assertCleanReviewedCheckout(fileURLToPath(new URL('..', import.meta.url)),
+    expectedEnterpriseCommit);
   const commandId = required(env, 'SPARK_HA_COMMAND_ID');
   const started = Date.now();
   const result = await runTskLiveComposition({
@@ -37,6 +45,7 @@ export async function runSpark2HostDrill(env = process.env) {
   const evidence = buildSpark2Evidence(result, {
     commandId,
     durationMs: Date.now() - started,
+    enterpriseCommit: expectedEnterpriseCommit,
     tskCommit: expectedTskCommit,
   });
   await writeFile(required(env, 'SPARK_HA_EVIDENCE_FILE'),

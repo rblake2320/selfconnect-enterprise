@@ -21,10 +21,12 @@ test('accepts an exact three-cluster Spark-2 return handoff', () => {
   const result = fixture();
   assert.equal(validateSpark2Result(result, result.systemIds.receiverB), true);
   const evidence = buildSpark2Evidence(result, {
-    commandId: 'spark2-test', durationMs: 123, tskCommit: 'b'.repeat(40),
+    commandId: 'spark2-test', durationMs: 123,
+    enterpriseCommit: 'a'.repeat(40), tskCommit: 'b'.repeat(40),
   });
   assert.equal(evidence.scope, 'separate-physical-host-same-lan');
   assert.equal(evidence.outcome.dataLossRpo, 0);
+  assert.equal(evidence.commits.enterprise, 'a'.repeat(40));
   assert.deepEqual(evidence.exclusions,
     ['separate-site', 'independent-power-domain', 'independent-network-domain']);
 });

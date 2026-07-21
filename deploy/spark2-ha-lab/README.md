@@ -65,4 +65,6 @@ this remains separate-host evidence, not separate-site evidence.
 A -> B -> A lifecycle. It refuses unpinned TSK code, reused PostgreSQL cluster
 identities, an unexpected Spark-2 cluster identity, a stale writer that remains
 writable, or a result that does not return at exactly `N+2`. Its JSON evidence
-contains no connection strings, credentials, keys, or protocol payloads.
+contains no connection strings, credentials, keys, or protocol payloads. The
+controller and TSK checkouts must both be clean and exactly match full commit
+SHAs supplied to the command.

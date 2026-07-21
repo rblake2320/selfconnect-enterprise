@@ -26,7 +26,9 @@ export function validateSpark2Result(result, expectedTargetSystemId) {
   return true;
 }
 
-export function buildSpark2Evidence(result, { commandId, durationMs, tskCommit }) {
+export function buildSpark2Evidence(result, {
+  commandId, durationMs, enterpriseCommit, tskCommit,
+}) {
   validateSpark2Result(result, result.systemIds.receiverB);
   return Object.freeze({
     schemaVersion: 1,
@@ -37,7 +39,7 @@ export function buildSpark2Evidence(result, { commandId, durationMs, tskCommit }
       'independent-power-domain',
       'independent-network-domain',
     ]),
-    commits: Object.freeze({ tsk: tskCommit }),
+    commits: Object.freeze({ enterprise: enterpriseCommit, tsk: tskCommit }),
     commandId,
     topology: Object.freeze({
       sourceHost: 'spark-3cdf',
