@@ -1024,7 +1024,10 @@ app.post('/ha/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromo
         timestamp: new Date().toISOString(),
         level: 'ERROR',
         event: 'ha_tsk_reprovision_error',
-        error: String(error),
+        // The provisioning path handles a one-time shared secret. Never emit
+        // exception text here because a driver or dependency may include
+        // request parameters in it.
+        errorClass: typeof error?.name === 'string' ? error.name : 'Error',
       }));
       return res.status(409).json({ ok: false, error: 'TSK_REPROVISION_FAILED' });
     }
