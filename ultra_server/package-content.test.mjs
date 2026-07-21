@@ -12,6 +12,7 @@ const expectedRuntimeFiles = [
   'independent-state-command.mjs',
   'independent-state.js',
   'monitoring-security.js',
+  'promoted-tsk-authority.js',
   'recovery-token.js',
   'runtime-stores.js',
   'security-boundary.js',

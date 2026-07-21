@@ -586,6 +586,9 @@ export async function exportIndependentState(pool, input) {
         tskCredentials: [],
       }),
       bpcPromotionDigest,
+      bpcStreamId: requiredIdentifier(
+        protocolEvidence.bpcPromotionAttestation.streamId, 'bpcStreamId',
+      ),
       bpcTargetEpoch: positiveSafeInteger(
         protocolEvidence.bpcPromotionAttestation.targetEpoch, 'bpcTargetEpoch',
       ),
@@ -599,6 +602,9 @@ export async function exportIndependentState(pool, input) {
       stateBytes,
       stateDigest: digest(state),
       tskActivationDigest,
+      tskStreamId: requiredIdentifier(
+        protocolEvidence.tskFinalizedReceipt.streamId, 'tskStreamId',
+      ),
       tskTargetEpoch: positiveSafeInteger(
         protocolEvidence.tskActivationLease.leaseEpoch, 'tskTargetEpoch',
       ),
@@ -769,18 +775,20 @@ function validateState(state) {
 
 function validateManifest(manifest) {
   strictKeys(manifest, new Set([
-    'authorityDigest', 'bpcPromotionDigest', 'bpcTargetEpoch', 'clusterId', 'commandId', 'format', 'itemCount', 'sourceEpoch',
+    'authorityDigest', 'bpcPromotionDigest', 'bpcStreamId', 'bpcTargetEpoch', 'clusterId', 'commandId', 'format', 'itemCount', 'sourceEpoch',
     'sourceSystemId', 'state', 'stateBytes', 'stateDigest', 'tskActivationDigest',
-    'tskFinalizedDigest', 'tskTargetEpoch',
+    'tskFinalizedDigest', 'tskStreamId', 'tskTargetEpoch',
   ]), 'independent state manifest');
   if (manifest.format !== 'selfconnect-ultra-independent-state-v2') throw new Error('manifest format invalid');
   requiredIdentifier(manifest.clusterId, 'manifest.clusterId');
   requiredIdentifier(manifest.commandId, 'manifest.commandId');
   positiveSafeInteger(manifest.sourceEpoch, 'manifest.sourceEpoch');
   requiredDigest(manifest.bpcPromotionDigest, 'manifest.bpcPromotionDigest');
+  requiredIdentifier(manifest.bpcStreamId, 'manifest.bpcStreamId');
   positiveSafeInteger(manifest.bpcTargetEpoch, 'manifest.bpcTargetEpoch');
   requiredDigest(manifest.authorityDigest, 'manifest.authorityDigest');
   requiredDigest(manifest.tskActivationDigest, 'manifest.tskActivationDigest');
+  requiredIdentifier(manifest.tskStreamId, 'manifest.tskStreamId');
   positiveSafeInteger(manifest.tskTargetEpoch, 'manifest.tskTargetEpoch');
   requiredDigest(manifest.tskFinalizedDigest, 'manifest.tskFinalizedDigest');
   requiredDigest(manifest.stateDigest, 'manifest.stateDigest');
@@ -820,7 +828,8 @@ function verifyProtocolEvidence(evidence, manifest, resolvers) {
       lease.leaseEpoch !== manifest.tskTargetEpoch || finalized.epoch !== manifest.tskTargetEpoch - 1 ||
       lease.leaseStatus !== 'active' || lease.holderNodeId !== finalized.bKeyId ||
       bpc.targetSystemId === finalized.bSystemId || finalized.sourceSystemId !== manifest.sourceSystemId ||
-      bpc.streamId !== finalized.streamId || finalized.streamId !== lease.streamId) {
+      bpc.streamId !== manifest.bpcStreamId || finalized.streamId !== manifest.tskStreamId ||
+      finalized.streamId !== lease.streamId) {
     throw new Error('protocol evidence promotion binding mismatch');
   }
 }
