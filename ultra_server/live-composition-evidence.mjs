@@ -11,7 +11,7 @@ function sha256(value) {
 
 function publicEvidence(result) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: 'enterprise-live-authority-handoff',
     commandId: result.commandId,
     commits: result.commits,
@@ -41,11 +41,12 @@ function publicEvidence(result) {
       redactionPreserved: result.enterprise.redactionPreserved,
       dataLossRpo: result.enterprise.rpo,
     },
+    tskRedisFaults: result.tskRedisFaults,
   };
 }
 
 export function validateLiveCompositionEvidence(evidence, expected = {}) {
-  assert.equal(evidence?.schemaVersion, 1);
+  assert.equal(evidence?.schemaVersion, 2);
   assert.equal(evidence?.kind, 'enterprise-live-authority-handoff');
   assert.equal(evidence?.commandId, expected.commandId ?? evidence.commandId);
   for (const [name, value] of Object.entries(evidence?.commits ?? {})) {
@@ -64,6 +65,14 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
   assert.equal(evidence.outcomes.copiedTargetCredentialRows, 0);
   assert.equal(evidence.outcomes.redactionPreserved, true);
   assert.equal(evidence.outcomes.dataLossRpo, 0);
+  assert.equal(evidence.tskRedisFaults?.kind, 'tsk-same-redis-authority-faults');
+  assert.equal(evidence.tskRedisFaults?.commandId, evidence.commandId);
+  assert.deepEqual(evidence.tskRedisFaults?.systemIds, evidence.systems.tsk);
+  assert.equal(evidence.tskRedisFaults?.faults?.livePartition?.rpo, 0);
+  assert.equal(evidence.tskRedisFaults?.faults?.livePartition?.oldMasterRefusedWrites, true);
+  assert.equal(evidence.tskRedisFaults?.faults?.livePartition?.exactTuplePreserved, true);
+  assert.equal(evidence.tskRedisFaults?.faults?.masterSigkill?.rpo, 0);
+  assert.equal(evidence.tskRedisFaults?.faults?.masterSigkill?.exactTuplePreserved, true);
   return evidence;
 }
 

@@ -225,21 +225,60 @@ function createMaterial() {
 function validateOptions(options) {
   exactKeys(options, [
     'aPostgresUrl', 'bPostgresUrl', 'controlPostgresUrl', 'destructiveReset',
-    'commandId', 'expectedTskCommit', 'redisUrl', 'streamId', 'tskRoot',
+    'commandId', 'expectedTskCommit', 'preserveRedisAuthority', 'redis',
+    'streamId', 'tskRoot',
   ], 'TSK live-composition options');
   if (options.destructiveReset !== true) {
     throw new Error('destructiveReset=true is required for dedicated acceptance databases');
+  }
+  exactKeys(options.redis, options.redis.kind === 'sentinel'
+    ? ['kind', 'masterName', 'natMap', 'sentinels']
+    : ['kind', 'url'], 'TSK Redis options');
+  let redis;
+  if (options.redis.kind === 'url') {
+    redis = Object.freeze({ kind: 'url', url: requiredString(options.redis.url, 'redis.url') });
+  } else if (options.redis.kind === 'sentinel') {
+    if (!Array.isArray(options.redis.sentinels) || options.redis.sentinels.length < 3) {
+      throw new Error('redis.sentinels requires at least three endpoints');
+    }
+    const sentinels = options.redis.sentinels.map((entry, index) => {
+      exactKeys(entry, ['host', 'port'], `redis.sentinels[${index}]`);
+      const port = Number(entry.port);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error(`redis.sentinels[${index}].port is invalid`);
+      }
+      return Object.freeze({ host: requiredString(entry.host, `redis.sentinels[${index}].host`), port });
+    });
+    if (!options.redis.natMap || typeof options.redis.natMap !== 'object' ||
+        Array.isArray(options.redis.natMap)) throw new Error('redis.natMap must be an object');
+    redis = Object.freeze({ kind: 'sentinel', sentinels: Object.freeze(sentinels),
+      masterName: requiredString(options.redis.masterName, 'redis.masterName'),
+      natMap: Object.freeze({ ...options.redis.natMap }) });
+  } else {
+    throw new Error('redis.kind must be url or sentinel');
+  }
+  if (typeof options.preserveRedisAuthority !== 'boolean') {
+    throw new Error('preserveRedisAuthority must be boolean');
   }
   return Object.freeze({
     tskRoot: resolve(requiredString(options.tskRoot, 'tskRoot')),
     aPostgresUrl: requiredString(options.aPostgresUrl, 'aPostgresUrl'),
     bPostgresUrl: requiredString(options.bPostgresUrl, 'bPostgresUrl'),
     controlPostgresUrl: requiredString(options.controlPostgresUrl, 'controlPostgresUrl'),
-    redisUrl: requiredString(options.redisUrl, 'redisUrl'),
+    redis,
+    preserveRedisAuthority: options.preserveRedisAuthority,
     streamId: requiredId(options.streamId, 'streamId'),
     commandId: requiredId(options.commandId, 'commandId'),
     expectedTskCommit: requiredString(options.expectedTskCommit, 'expectedTskCommit').toLowerCase(),
   });
+}
+
+function createRedisClient(config) {
+  const common = { maxRetriesPerRequest: 2, connectTimeout: 10_000, lazyConnect: false };
+  return config.kind === 'url'
+    ? new Redis(config.url, common)
+    : new Redis({ ...common, sentinels: config.sentinels, name: config.masterName,
+      role: 'master', natMap: config.natMap });
 }
 
 /**
@@ -322,11 +361,7 @@ export async function runTskLiveComposition(rawOptions) {
     connectionString: options.controlPostgresUrl, max: 6, connectionTimeoutMillis: 10_000,
   });
   for (const pool of [aPool, bPool, controlPool]) pool.on('error', () => {});
-  const redis = new Redis(options.redisUrl, {
-    maxRetriesPerRequest: 2,
-    connectTimeout: 10_000,
-    lazyConnect: false,
-  });
+  const redis = createRedisClient(options.redis);
   redis.on('error', () => {});
 
   const redisKey = `enterprise28:tsk-live:${options.streamId}`;
@@ -590,7 +625,8 @@ export async function runTskLiveComposition(rawOptions) {
       status: 'revoked', grantedMaxExpiryMs: await controlNow() - 5_000,
       grantCommandId: 'enterprise28-control-revoke-1',
     });
-    const fenceStore = new RedisFencingStore(redis, redisKey);
+    const fenceStore = new RedisFencingStore(redis, redisKey,
+      options.redis.kind === 'sentinel' ? { waitReplicas: 1, waitTimeoutMs: 3_000 } : undefined);
     await control.advanceEpoch(options.streamId, commandId, targetEpoch, 'Bnode', fenceStore, {
       safetyMarginMs: 0,
       claimExpiresAtMs: await controlNow() + HOUR_MS,
@@ -824,6 +860,10 @@ export async function runTskLiveComposition(rawOptions) {
     )).rows[0].value);
     assert.equal(aMaximum, n, 'old A wrote nothing after the frozen sequence');
 
+    const redisRecord = await redis.get(redisKey);
+    if (redisRecord === null) throw new Error('TSK Redis authority record disappeared');
+    const redisAuthority = Object.freeze({ key: redisKey,
+      record: Object.freeze(JSON.parse(redisRecord)) });
     return Object.freeze({
       sourceFrozenReceipt,
       bFinalizedReceipt,
@@ -842,6 +882,7 @@ export async function runTskLiveComposition(rawOptions) {
       publicCredentialTarget,
       sourceCredentialProof,
       targetCredentialProof,
+      redisAuthority,
       // Backward-compatible alias for the promoted target credential.
       publicCredential: publicCredentialTarget,
       tskCommit: reviewed.actualCommit,
@@ -863,7 +904,7 @@ export async function runTskLiveComposition(rawOptions) {
     });
   } finally {
     await Promise.allSettled([
-      redis.del(redisKey),
+      options.preserveRedisAuthority ? Promise.resolve() : redis.del(redisKey),
       redis.quit(),
       aPool.end(),
       bPool.end(),

@@ -51,14 +51,6 @@ export const ACCEPTANCE_STEPS = Object.freeze([
     id: 'enterprise-authenticated-outbox', component: 'selfconnect-enterprise',
     cwd: HERE, args: ['run', 'test:ultra-outbox'], markers: ['fail 0'],
   }),
-  Object.freeze({
-    id: 'tsk-redis-sentinel-crash', component: 'tsk-protocol',
-    args: ['run', 'test:sentinel'], markers: ['RPO  : 0', 'Sentinel-failover checks passed'],
-  }),
-  Object.freeze({
-    id: 'tsk-live-redis-partition', component: 'tsk-protocol',
-    args: ['run', 'test:partition'], markers: ['RPO  : 0', 'split-brain-partition checks passed'],
-  }),
 ]);
 
 function sha256(value) {
@@ -188,6 +180,13 @@ export async function runFinalAcceptance(options = {}) {
       `enterprise-rpo=${liveReceipt.evidence.outcomes.dataLossRpo}`,
       `promoted-sequence=${liveReceipt.evidence.outcomes.promotedSourceNextSequence}`,
     ]),
+  }), Object.freeze({
+    id: 'same-tsk-redis-authority-faults',
+    durationMs: Object.values(liveReceipt.evidence.tskRedisFaults.faults)
+      .reduce((sum, fault) => sum + fault.rtoMs, 0),
+    outputSha256: liveReceipt.evidence.tskRedisFaults.redisAuthorityTupleDigest,
+    evidence: Object.freeze(Object.entries(liveReceipt.evidence.tskRedisFaults.faults)
+      .map(([name, fault]) => `${name}:RPO=${fault.rpo}:RTO=${fault.rtoMs}ms`)),
   }), Object.freeze({
     id: 'same-enterprise-authority-fault-restore',
     durationMs: Object.values(faultReceipt.evidence.faults)

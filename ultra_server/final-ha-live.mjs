@@ -13,6 +13,7 @@ import {
   verifySourceTskCredentialProof,
 } from './promoted-tsk-authority.js';
 import { runTskLiveComposition } from './tsk-live-composition.mjs';
+import { runSameTskRedisAuthorityFaults } from './tsk-same-authority-faults.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..');
@@ -30,6 +31,46 @@ function fingerprint(pem) {
   return createHash('sha256').update(
     createPublicKey(pem).export({ type: 'spki', format: 'der' }),
   ).digest('hex');
+}
+
+function parseHostPort(value, name) {
+  const [host, portText, ...rest] = required(value, name).split(':');
+  const port = Number(portText);
+  if (rest.length || !host || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`${name} must be host:port`);
+  }
+  return Object.freeze({ host, port });
+}
+
+function tskRedisOptions(env) {
+  if (env.TSK_TEST_SENTINELS) {
+    const sentinels = env.TSK_TEST_SENTINELS.split(',').map((value, index) =>
+      parseHostPort(value.trim(), `TSK_TEST_SENTINELS[${index}]`));
+    const natMap = {};
+    for (const [index, pair] of required(env.TSK_SENTINEL_NATMAP,
+      'TSK_SENTINEL_NATMAP').split(',').entries()) {
+      const [internal, external, ...rest] = pair.trim().split('=');
+      if (rest.length || !internal) throw new Error(`TSK_SENTINEL_NATMAP[${index}] is invalid`);
+      natMap[internal] = parseHostPort(external, `TSK_SENTINEL_NATMAP[${index}]`);
+    }
+    return Object.freeze({ kind: 'sentinel', sentinels: Object.freeze(sentinels),
+      masterName: required(env.TSK_TEST_SENTINEL_MASTER, 'TSK_TEST_SENTINEL_MASTER'),
+      natMap: Object.freeze(natMap) });
+  }
+  return Object.freeze({ kind: 'url',
+    url: required(env.TSK_TEST_REDIS_URL, 'TSK_TEST_REDIS_URL') });
+}
+
+function sameAuthorityTopology(env) {
+  return Object.freeze({ network: required(env.TSK_SENTINEL_NETWORK, 'TSK_SENTINEL_NETWORK'),
+    nodes: Object.freeze({
+      '172.28.7.10:6379': Object.freeze({ ip: '172.28.7.10',
+        container: required(env.TSK_SENTINEL_MASTER_CONTAINER, 'TSK_SENTINEL_MASTER_CONTAINER') }),
+      '172.28.7.11:6379': Object.freeze({ ip: '172.28.7.11',
+        container: required(env.TSK_SENTINEL_REPLICA1_CONTAINER, 'TSK_SENTINEL_REPLICA1_CONTAINER') }),
+      '172.28.7.12:6379': Object.freeze({ ip: '172.28.7.12',
+        container: required(env.TSK_SENTINEL_REPLICA2_CONTAINER, 'TSK_SENTINEL_REPLICA2_CONTAINER') }),
+    }) });
 }
 
 async function importPinnedServer(root, component) {
@@ -90,14 +131,22 @@ export async function runLiveProtocolComposition(env = process.env) {
     redisUrls: required(env.BPC_TEST_REDIS_URLS, 'BPC_TEST_REDIS_URLS').split(','),
     streamId: 'bpc:enterprise:live/v1',
   });
+  const redis = tskRedisOptions(env);
+  const sameAuthorityFaults = env.TSK_SAME_AUTHORITY_FAULTS === '1';
   const tsk = await runTskLiveComposition({
     tskRoot, expectedTskCommit: tskCommit, commandId,
     aPostgresUrl: env.TSK_TEST_SOURCE_PG_URL_A,
     bPostgresUrl: env.TSK_TEST_RECEIVER_PG_URL_B,
     controlPostgresUrl: env.TSK_TEST_CONTROL_PG_URL,
-    redisUrl: env.TSK_TEST_REDIS_URL,
+    redis,
+    preserveRedisAuthority: sameAuthorityFaults,
     streamId: 'enterprise28:tsk-live/v1', destructiveReset: true,
   });
+  const tskRedisFaults = sameAuthorityFaults
+    ? await runSameTskRedisAuthorityFaults({ authority: tsk.redisAuthority,
+      commandId, redis, streamId: 'enterprise28:tsk-live/v1', systemIds: tsk.systemIds,
+      topology: sameAuthorityTopology(env) })
+    : null;
 
   const [bpcApi, tskApi] = await Promise.all([
     importPinnedServer(bpcRoot, 'BPC'), importPinnedServer(tskRoot, 'TSK'),
@@ -156,6 +205,7 @@ export async function runLiveProtocolComposition(env = process.env) {
     commits: Object.freeze({ enterprise: enterpriseSha, bpc: bpcCommit, tsk: tskCommit }),
     bpc,
     tsk,
+    tskRedisFaults,
     sourceCredentialAuthority,
     verifiedSourceCredential,
     verifiedTargetCredential,

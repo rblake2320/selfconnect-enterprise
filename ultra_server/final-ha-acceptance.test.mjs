@@ -8,7 +8,7 @@ import { validateLiveCompositionEvidence } from './live-composition-evidence.mjs
 
 function liveEvidence() {
   return {
-    schemaVersion: 1, kind: 'enterprise-live-authority-handoff', commandId: 'promote-1',
+    schemaVersion: 2, kind: 'enterprise-live-authority-handoff', commandId: 'promote-1',
     commits: { enterprise: 'a'.repeat(40), bpc: 'b'.repeat(40), tsk: 'c'.repeat(40) },
     systems: {
       bpc: { sourceA: '1', promotedB: '2', control: '3' },
@@ -26,14 +26,24 @@ function liveEvidence() {
       enterpriseTargetClientId: 'target', copiedTargetCredentialRows: 0,
       redactionPreserved: true, dataLossRpo: 0,
     },
+    tskRedisFaults: {
+      schemaVersion: 1, kind: 'tsk-same-redis-authority-faults', commandId: 'promote-1',
+      streamId: 'enterprise28:tsk-live/v1', systemIds: { sourceA: '4', receiverB: '5', control: '6' },
+      redisAuthorityKeyDigest: '7'.repeat(64), redisAuthorityTupleDigest: '8'.repeat(64),
+      fenceEpoch: 1,
+      faults: {
+        livePartition: { rpo: 0, rtoMs: 10, oldMasterRefusedWrites: true,
+          exactTuplePreserved: true, promotedMasterAddressDigest: '9'.repeat(64) },
+        masterSigkill: { rpo: 0, rtoMs: 10, exactTuplePreserved: true },
+      },
+    },
   };
 }
 
 test('final plan covers direct authorities, process/network faults, and Enterprise handoff', () => {
   assert.deepEqual(ACCEPTANCE_STEPS.map((step) => step.id), [
     'bpc-authority-ha', 'tsk-credential-authority', 'tsk-process-sigkill',
-    'tsk-source-activation', 'enterprise-authenticated-outbox', 'tsk-redis-sentinel-crash',
-    'tsk-live-redis-partition',
+    'tsk-source-activation', 'enterprise-authenticated-outbox',
   ]);
   assert.equal(new Set(ACCEPTANCE_STEPS.map((step) => step.id)).size, ACCEPTANCE_STEPS.length);
 });
