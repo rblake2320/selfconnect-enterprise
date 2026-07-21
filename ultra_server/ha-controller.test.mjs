@@ -230,7 +230,7 @@ test('every state-mutating HTTP route declares the HA writer boundary', async ()
     'BPC lifecycle updates must share the per-pair activity lock',
   );
   assert.match(source,
-    /promotedTskRuntime = await loadPromotedTskCredentialRuntime\(\s*process\.env\.ULTRA_TSK_AUTHORITY_CONFIG_FILE/,
+    /promotedTskRuntime = await loadReloadablePromotedTskRuntime\(\s*process\.env\.ULTRA_TSK_AUTHORITY_CONFIG_FILE/,
     'independent production must load the real promoted TSK authority or fail startup',
   );
   assert.match(source, /tskStore = promotedTskRuntime\.credentialStore/,
@@ -241,4 +241,9 @@ test('every state-mutating HTTP route declares the HA writer boundary', async ()
     'the legacy callback and secret-copy completion path must be unreachable');
   assert.doesNotMatch(source, /targetMap = generateTumblerMap\(/,
     'the Enterprise HTTP route must not mint its own TSK credential');
+  assert.match(source,
+    /promotedTskRuntime\.withRuntime\(async \(authority\) =>/,
+    'provisioning and proof completion must capture one authority across reload');
+  assert.match(source, /process\.on\('SIGHUP'/,
+    'production must expose an operating-system governed renewal signal');
 });

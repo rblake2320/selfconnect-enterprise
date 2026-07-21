@@ -15,6 +15,7 @@ import {
 } from './promoted-tsk-authority.js';
 import {
   createPromotedTskCredentialRuntime,
+  loadReloadablePromotedTskRuntime,
   parsePromotedTskRuntimeDescriptor,
 } from './promoted-tsk-runtime.js';
 
@@ -153,9 +154,136 @@ test('runtime creates one real credential and binds its payload to a signed publ
   assert.equal(runtime.credentialStore, credentialStore,
     'independent server routes must share the same fenced authority store');
   assert.equal(JSON.stringify(first.targetProof).includes('sharedSecret'), false);
+  assert.equal(first.sharedSecret, maps.get(first.targetClientId).sharedSecret);
+  assert.equal(JSON.stringify(first.targetProof).includes(first.sharedSecret), false);
+  assert.equal(JSON.stringify(first.provisionPayload).includes(first.sharedSecret), false);
   assert.equal(first.targetProof.record.mutation.publicMap.label,
     promotedTskCredentialLabel(binding));
   assert.ok(first.provisionPayload);
   await assert.rejects(() => runtime.provision({ ...binding, commandId: 'promote-3' }),
     /activation lease/);
+});
+
+function fakeAuthority(seq, overrides = {}) {
+  return {
+    streamId: 'tsk:credential:b', sourceEpoch: 2, holderNodeId: 'site-b',
+    leaseId: 'lease-b-2', commandId: 'promote-2', grantSeq: seq,
+    grantDigest: String(seq).padStart(64, 'a').slice(-64),
+    prevGrantDigest: seq === 1 ? null : String(seq - 1).padStart(64, 'a').slice(-64),
+    leaseExpiresAtMs: 10_000 + seq, controlToASkewBoundMs: 10,
+    ...overrides,
+  };
+}
+
+function fakeRuntime(seq, overrides = {}) {
+  const events = overrides.events ?? [];
+  const authority = fakeAuthority(seq, overrides.authority);
+  const credentialStore = {
+    async list() { events.push(`list:${seq}`); return [`client-${seq}`]; },
+    async get() { events.push(`get:${seq}`); return { runtime: seq }; },
+    async set() { events.push(`set:${seq}`); },
+  };
+  return {
+    authority,
+    authorityCapability: { runtime: seq },
+    credentialStore,
+    async provision(binding) {
+      events.push(`provision:${seq}:${binding.commandId}`);
+      return { runtime: seq };
+    },
+    async close() { events.push(`close:${seq}`); },
+  };
+}
+
+test('reloadable runtime fails closed on initial load and lease expiry', async () => {
+  const events = [];
+  await assert.rejects(() => loadReloadablePromotedTskRuntime('descriptor.json', {
+    now: () => 20_000,
+    loader: async () => fakeRuntime(1, { events }),
+  }), /expired/);
+  assert.deepEqual(events, ['close:1']);
+
+  let clock = 1_000;
+  const manager = await loadReloadablePromotedTskRuntime('descriptor.json', {
+    now: () => clock,
+    loader: async () => fakeRuntime(1, { events }),
+  });
+  assert.deepEqual(await manager.credentialStore.list(), ['client-1']);
+  clock = 20_000;
+  await assert.rejects(() => manager.credentialStore.get('client-1'), /expired/);
+  await manager.close();
+});
+
+test('reload drains old operations, blocks new work, and swaps one captured runtime', async () => {
+  const events = [];
+  let releaseOld;
+  let oldEntered;
+  const oldEnteredPromise = new Promise((resolve) => { oldEntered = resolve; });
+  const old = fakeRuntime(1, { events });
+  old.provision = async () => {
+    events.push('old-enter');
+    oldEntered();
+    await new Promise((resolve) => { releaseOld = resolve; });
+    events.push('old-exit');
+    return { runtime: 1 };
+  };
+  const next = fakeRuntime(2, { events });
+  const queue = [old, next];
+  const manager = await loadReloadablePromotedTskRuntime('descriptor.json', {
+    now: () => 1_000,
+    loader: async () => queue.shift(),
+  });
+  const first = manager.provision({ commandId: 'promote-2' });
+  await oldEnteredPromise;
+  const reload = manager.reload();
+  await new Promise((resolve) => setImmediate(resolve));
+  let newSettled = false;
+  const second = manager.credentialStore.get('client').then((value) => {
+    newSettled = true;
+    return value;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(newSettled, false, 'new operations must wait behind the swap');
+  releaseOld();
+  assert.deepEqual(await first, { runtime: 1 });
+  assert.equal((await reload).grantSeq, 2);
+  assert.deepEqual(await second, { runtime: 2 });
+  assert.deepEqual(events, ['old-enter', 'old-exit', 'close:1', 'get:2']);
+  await manager.close();
+});
+
+test('reload rejects replay, discontinuity, and authority identity changes without losing old runtime', async () => {
+  const mutations = [
+    { grantSeq: 1 },
+    { grantSeq: 2, prevGrantDigest: 'f'.repeat(64) },
+    { grantSeq: 2, streamId: 'tsk:other' },
+    { grantSeq: 2, sourceEpoch: 3 },
+    { grantSeq: 2, holderNodeId: 'site-c' },
+    { grantSeq: 2, leaseId: 'lease-other' },
+    { grantSeq: 2, commandId: 'promote-other' },
+  ];
+  for (const authority of mutations) {
+    const events = [];
+    const queue = [
+      fakeRuntime(1, { events }),
+      fakeRuntime(authority.grantSeq, { events, authority }),
+    ];
+    const manager = await loadReloadablePromotedTskRuntime('descriptor.json', {
+      now: () => 1_000,
+      loader: async () => queue.shift(),
+    });
+    await assert.rejects(() => manager.reload(), /authority|stale|monotonic/);
+    assert.deepEqual(await manager.credentialStore.get('client'), { runtime: 1 });
+    assert.ok(events.includes(`close:${authority.grantSeq}`), 'rejected candidate must close');
+    await manager.close();
+  }
+});
+
+test('restart accepts the current signed grant without replaying an in-process predecessor', async () => {
+  const manager = await loadReloadablePromotedTskRuntime('descriptor.json', {
+    now: () => 1_000,
+    loader: async () => fakeRuntime(7),
+  });
+  assert.deepEqual(await manager.provision({ commandId: 'promote-2' }), { runtime: 7 });
+  await manager.close();
 });

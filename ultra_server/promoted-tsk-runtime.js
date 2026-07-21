@@ -213,6 +213,7 @@ export async function readPromotedTskCredentialProof(
 
 export function createPromotedTskCredentialRuntime({
   authorityCapability, proofPool, credentialStore, activationLease, streamId,
+  authority = null,
 }) {
   if (!authorityCapability || !proofPool || typeof proofPool.query !== 'function' ||
       typeof proofPool.connect !== 'function' ||
@@ -223,6 +224,7 @@ export function createPromotedTskCredentialRuntime({
   id(streamId, 'streamId');
   const capturedLease = structuredClone(activationLease);
   return Object.freeze({
+    authority,
     authorityCapability,
     credentialStore,
     async provision(rawBinding) {
@@ -278,6 +280,7 @@ export function createPromotedTskCredentialRuntime({
         }
         return Object.freeze({
           created,
+          sharedSecret: map.sharedSecret,
           targetProof,
           targetClientId: verified.targetClientId,
           // This is an authorized reprovisioning payload, not a durable one-time
@@ -382,6 +385,18 @@ export async function loadPromotedTskCredentialRuntime(descriptorPath) {
       ...createPromotedTskCredentialRuntime({
         authorityCapability, proofPool: runtimePool, credentialStore,
         activationLease: descriptor.activationLease, streamId: descriptor.streamId,
+        authority: Object.freeze({
+          streamId: descriptor.streamId,
+          sourceEpoch: descriptor.sourceEpoch,
+          holderNodeId: descriptor.holderNodeId,
+          leaseId: descriptor.leaseId,
+          commandId: descriptor.activationLease.commandId,
+          grantSeq: descriptor.activationLease.leaseGrantSeq,
+          grantDigest: descriptor.grantDigest,
+          prevGrantDigest: descriptor.activationLease.prevGrantDigest,
+          leaseExpiresAtMs: descriptor.activationLease.leaseExpiresAtMs,
+          controlToASkewBoundMs: descriptor.controlToASkewBoundMs,
+        }),
       }),
       close: () => runtimePool.end(),
     });
@@ -389,4 +404,158 @@ export async function loadPromotedTskCredentialRuntime(descriptorPath) {
     await runtimePool.end().catch(() => {});
     throw error;
   }
+}
+
+function validateRuntimeAuthority(runtime) {
+  if (!runtime || typeof runtime !== 'object' ||
+      typeof runtime.provision !== 'function' || typeof runtime.close !== 'function' ||
+      !runtime.credentialStore || !runtime.authority) {
+    throw new Error('loaded promoted TSK runtime is incomplete');
+  }
+  const authority = runtime.authority;
+  exact(authority, [
+    'commandId', 'controlToASkewBoundMs', 'grantDigest', 'grantSeq', 'holderNodeId',
+    'leaseExpiresAtMs', 'leaseId', 'prevGrantDigest', 'sourceEpoch', 'streamId',
+  ], 'promoted TSK runtime authority');
+  id(authority.streamId, 'authority streamId');
+  id(authority.holderNodeId, 'authority holderNodeId');
+  id(authority.leaseId, 'authority leaseId');
+  id(authority.commandId, 'authority commandId');
+  if (!Number.isSafeInteger(authority.sourceEpoch) || authority.sourceEpoch < 1 ||
+      !Number.isSafeInteger(authority.grantSeq) || authority.grantSeq < 1 ||
+      !Number.isSafeInteger(authority.leaseExpiresAtMs) || authority.leaseExpiresAtMs < 1 ||
+      !Number.isSafeInteger(authority.controlToASkewBoundMs) ||
+      authority.controlToASkewBoundMs < 0 || authority.controlToASkewBoundMs > 3_600_000 ||
+      !HEX64.test(authority.grantDigest) ||
+      (authority.prevGrantDigest !== null && !HEX64.test(authority.prevGrantDigest))) {
+    throw new Error('promoted TSK runtime authority metadata invalid');
+  }
+  return authority;
+}
+
+function assertSameAuthorityAndNewer(current, candidate) {
+  for (const field of ['streamId', 'sourceEpoch', 'holderNodeId', 'leaseId', 'commandId']) {
+    if (candidate[field] !== current[field]) {
+      throw new Error(`promoted TSK reload changed authority ${field}`);
+    }
+  }
+  if (candidate.grantSeq !== current.grantSeq + 1 ||
+      candidate.prevGrantDigest !== current.grantDigest ||
+      candidate.grantDigest === current.grantDigest ||
+      candidate.leaseExpiresAtMs <= current.leaseExpiresAtMs) {
+    throw new Error('promoted TSK reload is stale, replayed, or not a monotonic grant');
+  }
+}
+
+function assertLeaseUsable(authority, now = Date.now()) {
+  if (now + authority.controlToASkewBoundMs >= authority.leaseExpiresAtMs) {
+    throw new Error('promoted TSK authority lease is expired or inside its clock-skew boundary');
+  }
+}
+
+/**
+ * Owns one reloadable promoted authority. Reload is exclusive: new operations
+ * wait, in-flight operations drain, the signed descriptor is reloaded and
+ * checked as the next grant in the same authority chain, then the old pool is
+ * closed. Each delegated operation captures exactly one runtime.
+ */
+export async function loadReloadablePromotedTskRuntime(
+  descriptorPath,
+  { loader = loadPromotedTskCredentialRuntime, now = () => Date.now() } = {},
+) {
+  if (typeof loader !== 'function' || typeof now !== 'function') {
+    throw new Error('promoted TSK reload dependencies invalid');
+  }
+  let runtime = await loader(descriptorPath);
+  try {
+    assertLeaseUsable(validateRuntimeAuthority(runtime), now());
+  } catch (error) {
+    await runtime?.close?.().catch(() => {});
+    throw error;
+  }
+  let active = 0;
+  let blocked = false;
+  let closed = false;
+  let unblock = [];
+  let drained = [];
+  let reloadTail = Promise.resolve();
+
+  const wakeUnblocked = () => {
+    const waiters = unblock;
+    unblock = [];
+    for (const resolve of waiters) resolve();
+  };
+  const wakeDrained = () => {
+    if (active !== 0) return;
+    const waiters = drained;
+    drained = [];
+    for (const resolve of waiters) resolve();
+  };
+  const waitUntilUnblocked = async () => {
+    while (blocked && !closed) await new Promise((resolve) => unblock.push(resolve));
+    if (closed) throw new Error('promoted TSK runtime manager is closed');
+  };
+  const withRuntime = async (operation) => {
+    if (typeof operation !== 'function') throw new Error('runtime operation must be a function');
+    await waitUntilUnblocked();
+    const captured = runtime;
+    assertLeaseUsable(validateRuntimeAuthority(captured), now());
+    active += 1;
+    try {
+      return await operation(captured);
+    } finally {
+      active -= 1;
+      wakeDrained();
+    }
+  };
+  const reloadOnce = async () => {
+    if (closed) throw new Error('promoted TSK runtime manager is closed');
+    blocked = true;
+    if (active !== 0) await new Promise((resolve) => drained.push(resolve));
+    let candidate = null;
+    try {
+      candidate = await loader(descriptorPath);
+      const currentAuthority = validateRuntimeAuthority(runtime);
+      const candidateAuthority = validateRuntimeAuthority(candidate);
+      assertLeaseUsable(candidateAuthority, now());
+      assertSameAuthorityAndNewer(currentAuthority, candidateAuthority);
+      const previous = runtime;
+      runtime = candidate;
+      candidate = null;
+      await previous.close();
+      return Object.freeze({
+        grantSeq: candidateAuthority.grantSeq,
+        grantDigest: candidateAuthority.grantDigest,
+        leaseExpiresAtMs: candidateAuthority.leaseExpiresAtMs,
+      });
+    } finally {
+      await candidate?.close?.().catch(() => {});
+      blocked = false;
+      wakeUnblocked();
+    }
+  };
+
+  const credentialStore = Object.freeze({
+    list: (...args) => withRuntime((captured) => captured.credentialStore.list(...args)),
+    get: (...args) => withRuntime((captured) => captured.credentialStore.get(...args)),
+    set: (...args) => withRuntime((captured) => captured.credentialStore.set(...args)),
+  });
+  return Object.freeze({
+    credentialStore,
+    withRuntime,
+    provision: (binding) => withRuntime((captured) => captured.provision(binding)),
+    reload() {
+      const next = reloadTail.then(reloadOnce, reloadOnce);
+      reloadTail = next.catch(() => {});
+      return next;
+    },
+    async close() {
+      if (closed) return;
+      blocked = true;
+      if (active !== 0) await new Promise((resolve) => drained.push(resolve));
+      closed = true;
+      wakeUnblocked();
+      await runtime.close();
+    },
+  });
 }

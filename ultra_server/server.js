@@ -37,7 +37,7 @@ import {
   loadIndependentStateRuntimeConfig,
   readImportedTskReprovision,
 } from './independent-state.js';
-import { loadPromotedTskCredentialRuntime } from './promoted-tsk-runtime.js';
+import { loadReloadablePromotedTskRuntime } from './promoted-tsk-runtime.js';
 import {
   createMetricsAuthMiddleware,
   metricAuthFailureLabel,
@@ -227,7 +227,7 @@ if (RUNTIME_MODE === 'production') {
     });
   }
   if (HA_STATE_MODE === 'independent') {
-    promotedTskRuntime = await loadPromotedTskCredentialRuntime(
+    promotedTskRuntime = await loadReloadablePromotedTskRuntime(
       process.env.ULTRA_TSK_AUTHORITY_CONFIG_FILE,
     );
     tskStore = promotedTskRuntime.credentialStore;
@@ -921,6 +921,34 @@ app.post('/ha/command', requireAdminAuth, serializeHaTransition, async (req, res
   return res.status(outcome.status).json(outcome.result);
 });
 
+async function reloadPromotedTskAuthority(trigger) {
+  if (HA_STATE_MODE !== 'independent' || !promotedTskRuntime) {
+    throw new Error('promoted TSK authority reload is unavailable');
+  }
+  const refreshed = await promotedTskRuntime.reload();
+  console.log(JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level: 'INFO',
+    event: 'ha_tsk_authority_reloaded',
+    trigger,
+    grantSeq: refreshed.grantSeq,
+    grantDigest: refreshed.grantDigest,
+    leaseExpiresAtMs: refreshed.leaseExpiresAtMs,
+  }));
+  return refreshed;
+}
+
+// Governed online lease renewal. The manager blocks new operations, drains
+// in-flight operations, verifies a strictly newer signed grant for the exact
+// same authority, swaps atomically, and closes the old authority pool.
+app.post('/ha/reload-tsk-authority', requireWriterLease, requireAdminAuth, requirePromotionWriterLease, async (_req, res) => {
+  try {
+    return res.json({ ok: true, ...(await reloadPromotedTskAuthority('admin')) });
+  } catch {
+    return res.status(409).json({ ok: false, error: 'TSK_AUTHORITY_RELOAD_FAILED' });
+  }
+});
+
 // A promoted independent site cannot reuse source-held TSK shared secrets.
 // This separately operator+agent authorized ceremony creates a fresh target
 // credential on the real fenced TSK authority and records only its signed
@@ -946,26 +974,30 @@ app.post('/ha/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromo
       if (!promotedTskRuntime || !pending.sourceSecretDigest) {
         return res.status(409).json({ ok: false, error: 'TSK_PROMOTED_AUTHORITY_UNAVAILABLE' });
       }
-      const provisioned = await promotedTskRuntime.provision({
-        agentId,
-        commandId,
-        pairId,
-        sourceClientId,
-        sourceSecretDigest: pending.sourceSecretDigest,
-      });
-      const receipt = await completeImportedPromotedTskCredential(
-        runtimePgPool,
-        promotedTskRuntime.authorityCapability,
-        {
-        advisoryLockKey: HA_CONFIG.advisoryLockKey,
-        agentId,
-        clusterId,
-        commandId,
-        pairId,
-        sourceClientId,
-        sourceSecretDigest: pending.sourceSecretDigest,
-        sourceEpoch,
-        targetProof: provisioned.targetProof,
+      const { provisioned, receipt } = await promotedTskRuntime.withRuntime(async (authority) => {
+        const provisioned = await authority.provision({
+          agentId,
+          commandId,
+          pairId,
+          sourceClientId,
+          sourceSecretDigest: pending.sourceSecretDigest,
+        });
+        const receipt = await completeImportedPromotedTskCredential(
+          runtimePgPool,
+          authority.authorityCapability,
+          {
+            advisoryLockKey: HA_CONFIG.advisoryLockKey,
+            agentId,
+            clusterId,
+            commandId,
+            pairId,
+            sourceClientId,
+            sourceSecretDigest: pending.sourceSecretDigest,
+            sourceEpoch,
+            targetProof: provisioned.targetProof,
+          },
+        );
+        return { provisioned, receipt };
       });
       if (!receipt.idempotent) cTskProvisions.inc();
       console.log(JSON.stringify({
@@ -983,6 +1015,7 @@ app.post('/ha/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromo
       return res.json({
         ok: true,
         clientId: provisioned.targetClientId,
+        sharedSecret: provisioned.sharedSecret,
         provisionPayload: provisioned.provisionPayload,
         receipt,
       });
@@ -1200,4 +1233,15 @@ app.listen(PORT, '127.0.0.1', () => {
       stores: ['postgresql-pair', 'postgresql-tumbler', 'postgresql-binding', 'postgresql-idempotency', 'redis-nonce', 'redis-anomaly'],
     }));
   }
+});
+
+process.on('SIGHUP', () => {
+  void reloadPromotedTskAuthority('SIGHUP').catch(() => {
+    console.error(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'ERROR',
+      event: 'ha_tsk_authority_reload_failed',
+      trigger: 'SIGHUP',
+    }));
+  });
 });

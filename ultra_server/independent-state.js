@@ -537,6 +537,12 @@ export async function exportIndependentState(pool, input) {
   if (!Array.isArray(input.sourceCredentialProofs)) {
     throw new Error('sourceCredentialProofs must be an array');
   }
+  const proofPropertyNames = Object.getOwnPropertyNames(input.sourceCredentialProofs);
+  if (Object.getOwnPropertySymbols(input.sourceCredentialProofs).length !== 0 ||
+      proofPropertyNames.length !== input.sourceCredentialProofs.length + 1 ||
+      !proofPropertyNames.includes('length') || input.sourceCredentialProofs.length > maxItems) {
+    throw new Error('sourceCredentialProofs must be a bounded dense data array');
+  }
   // Start every proof snapshot/verification synchronously, before the first
   // database await. Each entry carries an opaque authority capability plus the
   // exact principal the signed source credential is expected to bind.
@@ -579,7 +585,8 @@ export async function exportIndependentState(pool, input) {
     const credentialBindings = [];
     for (const binding of bindings.rows) {
       const verified = verifiedSourceCredentialByPair.get(binding.pair_id);
-      if (!verified || verified.agentId !== binding.agent_id || verified.pairId !== binding.pair_id ||
+      if (!verified || verified.commandId !== commandId ||
+          verified.agentId !== binding.agent_id || verified.pairId !== binding.pair_id ||
           verified.sourceClientId !== binding.tsk_client_id) {
         throw new Error('signed source TSK credential does not match identity binding');
       }
