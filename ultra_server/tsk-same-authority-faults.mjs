@@ -95,7 +95,7 @@ export async function runSameTskRedisAuthorityFaults(options) {
       if (value === oldAddress) throw new Error('old master remains elected');
       return value;
     });
-    await client.quit().catch(() => {});
+    client.disconnect();
     client = redisClient(redis);
     client.on('error', () => {});
     await waitFor('exact authority tuple on partition survivor', async () => {
@@ -133,7 +133,7 @@ export async function runSameTskRedisAuthorityFaults(options) {
       if (value === crashAddress) throw new Error('crashed master remains elected');
       return value;
     });
-    await client.quit().catch(() => {});
+    client.disconnect();
     client = redisClient(redis);
     client.on('error', () => {});
     await waitFor('exact authority tuple on crash survivor', async () => {
@@ -162,7 +162,8 @@ export async function runSameTskRedisAuthorityFaults(options) {
           exactTuplePreserved: true }),
       }) });
   } finally {
-    await Promise.allSettled([client?.quit(), admin.quit()]);
+    try { client?.disconnect(); } catch { /* already disconnected */ }
+    try { admin.disconnect(); } catch { /* already disconnected */ }
     if (disconnected) dockerSafe('network', 'connect', '--ip', disconnected.ip,
       topology.network, disconnected.container);
     if (stopped) dockerSafe('start', stopped.container);
