@@ -68,8 +68,13 @@ custody boundaries.
 
 ## Custody-separated commands
 
-All JSON descriptors are non-secret. `DATABASE_URL` stays in the process
-environment. PEM key files are supplied by path and must be ACL-protected.
+Export, countersign, import, and readiness JSON descriptors are non-secret;
+`DATABASE_URL` stays in those command processes' environments. The separate
+promoted-runtime descriptor named by `ULTRA_TSK_AUTHORITY_CONFIG_FILE` is an
+explicit exception: it currently contains `runtimeDatabaseUrl` and is therefore
+secret-bearing. Store it under a service-identity ACL, exclude it from retained
+evidence and ordinary backups, and rotate it with the database credential. PEM
+key files referenced by either descriptor are likewise ACL-protected.
 
 ```powershell
 # A/source custody
@@ -89,8 +94,13 @@ node ultra_server/independent-state-command.mjs ready ready.json
 The export descriptor includes `clusterId`, `commandId`, `sourceEpoch`,
 `advisoryLockKey`, the full `protocolEvidence` object (BPC promotion
 attestation, TSK B-finalized receipt, and TSK activated lease), `sourceKeyId`,
-and `sourcePrivateKeyFile`. Guard and import descriptors provide public-key
-file maps for all three protocol resolvers. Import also repeats the three
+`sourcePrivateKeyFile`, and `sourceCredentialProofBindings`. Each credential
+binding names a secret-free signed TSK source proof file, its exact
+`agentId`/`pairId`/`sourceClientId`, and public-key file maps for the proof's
+lease and stream head. Export verifies those proofs through opaque authority
+capabilities and carries only the signed secret digest; it never reads or
+copies a legacy Enterprise tumbler map. Guard and import descriptors provide
+public-key file maps for all three protocol resolvers. Import also repeats the three
 expected receipt digests, so a valid bundle cannot be substituted across an
 operator-approved cutover. Never transfer either private key with the bundle.
 
@@ -102,12 +112,25 @@ also sets `ULTRA_HA_REQUIRED_COMMAND_ID`, `ULTRA_HA_REQUIRED_SOURCE_EPOCH`, and
 the exact local PostgreSQL system identifier. `/ready` remains fail-closed
 until that attestation exists and the ordinary writer fence is valid.
 
+Production independent mode also requires `ULTRA_TSK_AUTHORITY_CONFIG_FILE`.
+That protected descriptor points at the promoted site's TSK PostgreSQL
+authority and binds its exact active source lease, stream/epoch/holder/lease,
+public verification keys, file-held stream-head private key, and file-held
+credential-mutation secret. Startup builds TSK's reviewed
+`PgHaTumblerMapStore` with real schema, credential-authority, mutation-boundary,
+and source-fence readiness capabilities. Failure to load or attest it aborts
+startup; the legacy Enterprise-local TSK store is not a fallback.
+
 After import, call `POST /ha/reprovision-tsk` once per imported binding with
 the exact pinned `clusterId`, `commandId`, `sourceEpoch`, `pairId`,
 `sourceClientId`, and `agentId`. The route requires both operator bearer auth
-and the body-bound agent proof, plus the current Redis writer fence. It returns
-the fresh secret and provision payload only to that authorized caller; the
-durable receipt contains no secret. Retries return the same credential.
+and the body-bound agent proof, plus the current Redis writer fence. The actual
+TSK authority creates or resumes the command-bound credential and emits a
+signed public ledger proof. Enterprise verifies that proof through an opaque
+authority capability and persists only public digests before rebinding the
+identity. It returns the provision payload only to that authorized caller; the
+Enterprise database, logs, and receipt contain no shared secret. Authenticated
+retries return the same credential so a lost HTTP response is recoverable.
 
 Manifest v1 heads are not upgraded at the same epoch. Run a new governed
 promotion to produce a v2 manifest and new target credentials.

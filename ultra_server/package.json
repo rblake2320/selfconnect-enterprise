@@ -14,13 +14,16 @@
     "independent-state-command.mjs",
     "independent-state.js",
     "monitoring-security.js",
+    "promoted-tsk-authority.js",
+    "promoted-tsk-runtime.js",
     "recovery-token.js",
     "runtime-stores.js",
     "security-boundary.js",
     "server.js",
     "ultra-state-outbox.js",
     "ultra-state-authority-config.js",
-    "ultra-state-stream-command.mjs"
+    "ultra-state-stream-command.mjs",
+    "ultra-redis-authority.js"
   ],
   "scripts": {
     "start": "node server.js",
@@ -29,9 +32,12 @@
     "ha:state": "node independent-state-command.mjs",
     "ha:stream": "node ultra-state-stream-command.mjs",
     "test:ha-live": "node ha-live-conformance.mjs",
-    "test": "node --test agent-auth.test.mjs ha-controller.test.mjs independent-state-config.test.mjs monitoring-config.test.mjs monitoring-security.test.mjs package-content.test.mjs recovery-token.test.mjs runtime-stores.test.mjs security-boundary.test.mjs ultra-state-authority-config.test.mjs ultra-state-stream-config.test.mjs",
+    "test": "node --test agent-auth.test.mjs enterprise-fault-evidence.test.mjs final-ha-acceptance.test.mjs ha-controller.test.mjs independent-state-config.test.mjs monitoring-config.test.mjs monitoring-security.test.mjs package-content.test.mjs promoted-tsk-runtime.test.mjs recovery-token.test.mjs runtime-stores.test.mjs security-boundary.test.mjs ultra-redis-authority.test.mjs ultra-state-authority-config.test.mjs ultra-state-stream-config.test.mjs",
     "test:independent-state": "node --test independent-state.test.mjs",
     "test:ultra-outbox": "node --test ultra-state-outbox.test.mjs",
+    "test:final-ha-unit": "node --test final-ha-acceptance.test.mjs",
+    "test:protocol-composition": "node --test --test-concurrency=1 promoted-tsk-authority.test.mjs bpc-live-composition.test.mjs tsk-live-composition.test.mjs final-ha-live.test.mjs",
+    "test:final-ha": "node final-ha-acceptance.mjs",
     "test:live": "node server.test.mjs"
   },
   "dependencies": {

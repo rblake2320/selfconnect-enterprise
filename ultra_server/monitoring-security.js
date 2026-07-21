@@ -7,6 +7,7 @@ const ROUTE_LABELS = new Set([
   '/confirm-recovery',
   '/ha/command',
   '/ha/reprovision-tsk',
+  '/ha/reload-tsk-authority',
   '/ha/status',
   '/health',
   '/metrics',

@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import { Pool } from 'pg';
 import { generateTumblerMap } from '@tsk/core';
+import { canonicalOpDigest, canonicalize, streamHeadDigest } from '@tsk/server';
 
 import {
   PgNonceTombstoneStore,
@@ -15,8 +16,13 @@ import {
   exportIndependentState,
   guardCountersignIndependentState,
   importIndependentState,
+  readImportedTskReprovision,
   verifyIndependentStateBundle,
 } from './independent-state.js';
+import {
+  PROMOTED_TSK_CREDENTIAL_PROOF_FORMAT,
+  createPromotedTskAuthorityCapability,
+} from './promoted-tsk-authority.js';
 import { ULTRA_PG_SCHEMA, initializePgSchemas } from './runtime-stores.js';
 
 const urlA = process.env.ULTRA_TEST_POSTGRES_URL_A;
@@ -24,6 +30,13 @@ const urlB = process.env.ULTRA_TEST_POSTGRES_URL_B;
 if (!urlA || !urlB) throw new Error(
   'ULTRA_TEST_POSTGRES_URL_A and ULTRA_TEST_POSTGRES_URL_B are required (this drill never skips)',
 );
+
+async function resetUltraAuthority(pool) {
+  await pool.query(`DROP TABLE IF EXISTS
+    ultra_idempotency_redaction,ultra_ha_tsk_reprovision,ultra_ha_import_head,
+    ultra_nonce_tombstones,ultra_idempotency,ultra_identity_bindings,
+    ultra_tumbler_maps CASCADE`);
+}
 
 test('compiled catalog attestation rejects independent-state schema drift', async () => {
   const a = new Pool({ connectionString: urlA });
@@ -57,13 +70,14 @@ function frame(...parts) {
   return Buffer.concat(buffers);
 }
 
-function signedProtocolEvidence({ commandId, sourceSystemId, targetSystemId, keys }) {
+function signedProtocolEvidence({ commandId, sourceSystemId, targetSystemId, keys, targetEpoch = 1 }) {
   const bpcKeyId = 'bpc-snapshot-key-1';
   const bKeyId = 'b-key-1';
   const guardKeyId = 'tsk-guard-key-1';
   const bpcBare = {
-    streamId: 'ultra-stream', commandId, targetEpoch: 1, targetSourceEpoch: 'epoch-1',
-    targetSystemId, snapshotKeyId: bpcKeyId, manifestDigest: '1'.repeat(64),
+    streamId: 'ultra-stream', commandId, targetEpoch, targetSourceEpoch: `epoch-${targetEpoch}`,
+    targetSystemId: (BigInt(targetSystemId) + 1n).toString(),
+    snapshotKeyId: bpcKeyId, manifestDigest: '1'.repeat(64),
     appliedSequence: 0, stateDigest: '2'.repeat(64), fencedDigest: '3'.repeat(64),
   };
   const bpcMessage = (digest) => frame(
@@ -83,7 +97,8 @@ function signedProtocolEvidence({ commandId, sourceSystemId, targetSystemId, key
   };
 
   const bBare = {
-    streamId: 'ultra-stream', commandId, epoch: 0, sourceEpoch: 'epoch-0', n: 0,
+    streamId: 'ultra-stream', commandId, epoch: targetEpoch - 1,
+    sourceEpoch: `epoch-${targetEpoch - 1}`, n: 0,
     generationId: 'generation-1', frozenReceiptDigest: '4'.repeat(64),
     manifestDigest: '5'.repeat(64), manifestRoot: '6'.repeat(64), sourceSystemId,
     sourceKeyId: 'source-key', sourceSignature: 'source-signature',
@@ -108,7 +123,7 @@ function signedProtocolEvidence({ commandId, sourceSystemId, targetSystemId, key
   };
 
   const leaseBare = {
-    streamId: 'ultra-stream', leaseEpoch: 1, leaseStatus: 'active', holderNodeId: bKeyId,
+    streamId: 'ultra-stream', leaseEpoch: targetEpoch, leaseStatus: 'active', holderNodeId: bKeyId,
     leaseId: 'lease-1', commandId, leaseExpiresAtMs: Date.now() + 300_000,
     leaseGrantSeq: 1, prevGrantDigest: null,
   };
@@ -130,6 +145,69 @@ function signedProtocolEvidence({ commandId, sourceSystemId, targetSystemId, key
   return { bpcPromotionAttestation, tskActivationLease, tskFinalizedReceipt };
 }
 
+function signedSourceCredentialBinding({ agentId, map, pairId, protocolEvidence, guardPublicKey }) {
+  const headKeys = generateKeyPairSync('ed25519');
+  const publicMap = JSON.parse(JSON.stringify(map));
+  delete publicMap.sharedSecret;
+  const lease = protocolEvidence.tskActivationLease;
+  const mutation = {
+    kind: 'tsk.credential.snapshot.v1',
+    tumblerId: map.clientId,
+    clientId: map.clientId,
+    counter: 1,
+    publicMap,
+    publicMapDigest: createHash('sha256').update(canonicalize(publicMap), 'utf8').digest('hex'),
+    secretDigest: createHash('sha256').update(map.sharedSecret, 'utf8').digest('hex'),
+  };
+  const record = {
+    contractVersion: '1',
+    streamId: lease.streamId,
+    sourceEpoch: String(lease.leaseEpoch),
+    sequence: 1,
+    fenceToken: String(lease.leaseEpoch),
+    opDigest: canonicalOpDigest({
+      streamId: lease.streamId,
+      sourceEpoch: String(lease.leaseEpoch),
+      sequence: 1,
+      fenceToken: String(lease.leaseEpoch),
+      mutation,
+    }),
+    mutation,
+  };
+  const unsignedHead = {
+    streamId: lease.streamId,
+    sequence: 1,
+    prevHeadDigest: '0'.repeat(64),
+    opDigest: record.opDigest,
+    keyId: 'source-credential-head-1',
+    alg: 'ed25519',
+  };
+  const headDigest = streamHeadDigest(unsignedHead);
+  const proof = {
+    format: PROMOTED_TSK_CREDENTIAL_PROOF_FORMAT,
+    agentId,
+    pairId,
+    commandId: lease.commandId,
+    activationLease: lease,
+    record,
+    head: {
+      ...unsignedHead,
+      headDigest,
+      signature: edSign(null, Buffer.from(headDigest, 'hex'), headKeys.privateKey).toString('base64url'),
+    },
+  };
+  return {
+    authorityCapability: createPromotedTskAuthorityCapability({
+      activationLease: lease,
+      leaseResolver: { resolve: (keyId) => keyId === lease.guardKeyId ? guardPublicKey : null },
+      headKeyResolver: { resolve: (keyId, alg) =>
+        keyId === unsignedHead.keyId && alg === 'ed25519' ? headKeys.publicKey : null },
+    }),
+    expected: { agentId, pairId, sourceClientId: map.clientId },
+    proof,
+  };
+}
+
 test('signed independent-state handoff is atomic, redacted, replay-safe, and rollback-safe', async () => {
   const a = new Pool({ connectionString: urlA });
   const b = new Pool({ connectionString: urlB });
@@ -146,12 +224,15 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
   const pairId = `pair-${suffix}`;
   const safeKey = randomUUID();
   const secretKey = randomUUID();
+  const forgedRedactionKey = randomUUID();
   const processingKey = randomUUID();
   const lockKey = `ultra-ha:${clusterId}:transition`;
   const nonceHash = createHash('sha256').update(`nonce-${suffix}`, 'utf8').digest('hex');
   let sourceMap;
   let targetMap;
+  let failbackMap;
   try {
+    await Promise.all([resetUltraAuthority(a), resetUltraAuthority(b)]);
     await initializePgSchemas(a, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA);
     await initializePgSchemas(b, ULTRA_PG_SCHEMA, ULTRA_INDEPENDENT_STATE_SCHEMA);
     const [systemA, systemB] = await Promise.all([
@@ -191,9 +272,13 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     );
     await a.query(
       `INSERT INTO ultra_idempotency (idempotency_key, operation, agent_id, state, response)
-       VALUES ($1,'safe-op',$3,'complete',$2::jsonb),($4,'secret-op',$3,'complete',$5::jsonb)`,
+       VALUES ($1,'safe-op',$3,'complete',$2::jsonb),
+              ($4,'secret-op',$3,'complete',$5::jsonb),
+              ($6,'forged-redaction-op',$3,'complete',$7::jsonb)`,
       [safeKey, JSON.stringify({ ok: true, pairId }), `agent-${suffix}`, secretKey,
-       JSON.stringify({ ok: true, sharedSecret: 'must-not-cross-sites' })],
+       JSON.stringify({ ok: true, sharedSecret: 'must-not-cross-sites' }), forgedRedactionKey,
+       JSON.stringify({ ok: false, error: 'SECRET_REPROVISION_REQUIRED',
+         originalResponseDigest: 'a'.repeat(64) })],
     );
     const nonceA = new PgNonceTombstoneStore(a);
     assert.equal(await nonceA.checkAndConsume(`nonce-${suffix}`, 120_000), false);
@@ -207,6 +292,13 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       sourceKeyId: 'source-key-1',
       sourcePrivateKey: source.privateKey,
       protocolEvidence,
+      sourceCredentialProofs: [signedSourceCredentialBinding({
+        agentId: `agent-${suffix}`,
+        map: sourceMap,
+        pairId,
+        protocolEvidence,
+        guardPublicKey: protocolKeys.guard.publicKey,
+      })],
     };
     const unboundMap = generateTumblerMap();
     unboundMap.label = `agent:agent-${suffix}`;
@@ -215,7 +307,9 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       'INSERT INTO ultra_tumbler_maps (client_id, map) VALUES ($1,$2::jsonb)',
       [unboundMap.clientId, JSON.stringify(unboundMap)],
     );
-    await assert.rejects(exportIndependentState(a, exportInput), /active unbound TSK credential/);
+    await assert.rejects(exportIndependentState(a, {
+      ...exportInput, sourceCredentialProofs: [],
+    }), /credential inventory/);
     await a.query('DELETE FROM ultra_tumbler_maps WHERE client_id=$1', [unboundMap.clientId]);
 
     const sourceBundle = await exportIndependentState(a, exportInput);
@@ -225,6 +319,11 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     assert.equal(sourceBundle.manifest.state.idempotency.find(
       (item) => item.idempotencyKey === secretKey,
     ).secretReprovisionRequired, true);
+    const forgedRedaction = sourceBundle.manifest.state.idempotency.find(
+      (item) => item.idempotencyKey === forgedRedactionKey,
+    );
+    assert.equal(forgedRedaction.secretReprovisionRequired, false);
+    assert.equal(forgedRedaction.redactionProvenance, null);
     const bundle = guardCountersignIndependentState(sourceBundle, {
       expectedCommandId: commandId,
       sourcePublicKey: source.publicKey,
@@ -271,7 +370,19 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       tskFinalizedDigest,
     }), /not independent/);
 
-    const imported = await importIndependentState(b, bundle, {
+    const callerOwnedBundle = structuredClone(bundle);
+    let releaseConnect;
+    let connectEntered;
+    const connectGate = new Promise((resolvePromise) => { releaseConnect = resolvePromise; });
+    const entered = new Promise((resolvePromise) => { connectEntered = resolvePromise; });
+    const delayedPool = {
+      async connect() {
+        connectEntered();
+        await connectGate;
+        return b.connect();
+      },
+    };
+    const importPromise = importIndependentState(delayedPool, callerOwnedBundle, {
       advisoryLockKey: lockKey,
       bpcPromotionDigest,
       clusterId,
@@ -283,7 +394,15 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       tskActivationDigest,
       tskFinalizedDigest,
     });
+    await entered;
+    callerOwnedBundle.manifest.state.identityBindings[0].agentId = 'post-verify-attacker';
+    callerOwnedBundle.manifest.state.credentialBindings[0].agentId = 'post-verify-attacker';
+    releaseConnect();
+    const imported = await importPromise;
     assert.equal(imported.idempotent, false);
+    assert.equal((await b.query(
+      'SELECT agent_id FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
+    )).rows[0].agent_id, `agent-${suffix}`);
     assert.equal((await importIndependentState(b, bundle, {
       advisoryLockKey: lockKey,
       bpcPromotionDigest,
@@ -296,6 +415,35 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       tskActivationDigest,
       tskFinalizedDigest,
     })).idempotent, true);
+    const provenance = (await b.query(
+      'SELECT * FROM ultra_idempotency_redaction WHERE idempotency_key=$1', [secretKey],
+    )).rows[0];
+    assert.equal(provenance.original_response_digest,
+      sourceBundle.manifest.state.idempotency.find((item) => item.idempotencyKey === secretKey).responseDigest);
+    await b.query(
+      "UPDATE ultra_idempotency_redaction SET original_response_digest=$2 WHERE idempotency_key=$1",
+      [secretKey, 'b'.repeat(64)],
+    );
+    await assert.rejects(importIndependentState(b, bundle, {
+      advisoryLockKey: lockKey, bpcPromotionDigest, clusterId, commandId, sourceEpoch: 1,
+      sourcePublicKey: source.publicKey, guardPublicKey: guard.publicKey, ...resolvers,
+      tskActivationDigest, tskFinalizedDigest,
+    }), /redaction placeholder|rolled back or tampered/);
+    await b.query('DELETE FROM ultra_idempotency_redaction WHERE idempotency_key=$1', [secretKey]);
+    await assert.rejects(importIndependentState(b, bundle, {
+      advisoryLockKey: lockKey, bpcPromotionDigest, clusterId, commandId, sourceEpoch: 1,
+      sourcePublicKey: source.publicKey, guardPublicKey: guard.publicKey, ...resolvers,
+      tskActivationDigest, tskFinalizedDigest,
+    }), /rolled back or tampered/);
+    await b.query(
+      `INSERT INTO ultra_idempotency_redaction
+         (idempotency_key, original_response_digest, source_manifest_digest, source_system_id,
+          command_id, source_epoch, source_signature_digest, guard_signature_digest)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [provenance.idempotency_key, provenance.original_response_digest,
+       provenance.source_manifest_digest, provenance.source_system_id, provenance.command_id,
+       provenance.source_epoch, provenance.source_signature_digest, provenance.guard_signature_digest],
+    );
     assert.deepEqual((await b.query(
       'SELECT tsk_client_id, agent_id FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
     )).rows[0], { tsk_client_id: sourceMap.clientId, agent_id: `agent-${suffix}` });
@@ -426,17 +574,111 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       guardPublicKey: guard.publicKey,
       tskActivationDigest,
     }), /digest mismatch/);
+
+    // A complete failback is a new, higher-epoch handoff. It preserves the bound
+    // principal while secrets are reprovisioned again on the recovered authority.
+    const failbackCommandId = `failback-${suffix}`;
+    const failbackEvidence = signedProtocolEvidence({
+      commandId: failbackCommandId,
+      sourceSystemId: systemB.rows[0].id,
+      targetSystemId: systemA.rows[0].id,
+      keys: protocolKeys,
+      targetEpoch: 2,
+    });
+    const pendingCredential = await readImportedTskReprovision(b, {
+      clusterId, pairId,
+    });
+    assert.equal(pendingCredential.sourceSecretDigest,
+      createHash('sha256').update(sourceMap.sharedSecret, 'utf8').digest('hex'));
+    const failbackSource = await exportIndependentState(b, {
+      advisoryLockKey: lockKey,
+      clusterId,
+      commandId: failbackCommandId,
+      sourceEpoch: 2,
+      sourceKeyId: 'source-key-1',
+      sourcePrivateKey: source.privateKey,
+      protocolEvidence: failbackEvidence,
+      sourceCredentialProofs: [signedSourceCredentialBinding({
+        agentId: `agent-${suffix}`,
+        map: targetMap,
+        pairId,
+        protocolEvidence: failbackEvidence,
+        guardPublicKey: protocolKeys.guard.publicKey,
+      })],
+    });
+    const failbackBundle = guardCountersignIndependentState(failbackSource, {
+      expectedCommandId: failbackCommandId,
+      sourcePublicKey: source.publicKey,
+      guardKeyId: 'guard-key-1',
+      guardPrivateKey: guard.privateKey,
+      ...resolvers,
+    });
+
+    // Model an isolated recovered A authority: schema remains attested, while
+    // authoritative application state is restored only from the signed bundle.
+    await a.query('DELETE FROM ultra_identity_bindings WHERE pair_id=$1', [pairId]);
+    await a.query('DELETE FROM ultra_tumbler_maps WHERE client_id IN ($1,$2)', [
+      sourceMap.clientId, targetMap.clientId,
+    ]);
+    await a.query('DELETE FROM ultra_idempotency WHERE idempotency_key IN ($1,$2)', [safeKey, secretKey]);
+    await a.query('DELETE FROM ultra_nonce_tombstones WHERE nonce_hash=$1', [nonceHash]);
+    await a.query('DELETE FROM ultra_ha_import_head WHERE cluster_id=$1', [clusterId]);
+
+    const failbackImported = await importIndependentState(a, failbackBundle, {
+      advisoryLockKey: lockKey,
+      bpcPromotionDigest: failbackEvidence.bpcPromotionAttestation.attestationDigest,
+      clusterId,
+      commandId: failbackCommandId,
+      sourceEpoch: 2,
+      sourcePublicKey: source.publicKey,
+      guardPublicKey: guard.publicKey,
+      ...resolvers,
+      tskActivationDigest: failbackEvidence.tskActivationLease.grantDigest,
+      tskFinalizedDigest: failbackEvidence.tskFinalizedReceipt.receiptDigest,
+    });
+    assert.equal(failbackImported.targetSystemId, systemA.rows[0].id);
+    await assert.rejects(assertIndependentStateReady(a, {
+      clusterId,
+      commandId: failbackCommandId,
+      sourceEpoch: 2,
+      manifestDigest: failbackBundle.manifestDigest,
+    }), /requires TSK credential reprovisioning/);
+    failbackMap = generateTumblerMap();
+    failbackMap.label = `agent:agent-${suffix}`;
+    failbackMap.status = 'active';
+    await completeImportedTskReprovision(a, {
+      advisoryLockKey: lockKey,
+      agentId: `agent-${suffix}`,
+      assertWritable: async () => ({ ok: true, fenceEpoch: 2 }),
+      clusterId,
+      commandId: failbackCommandId,
+      pairId,
+      sourceClientId: targetMap.clientId,
+      sourceEpoch: 2,
+      targetMap: failbackMap,
+    });
+    const failbackReady = await assertIndependentStateReady(a, {
+      clusterId,
+      commandId: failbackCommandId,
+      sourceEpoch: 2,
+      manifestDigest: failbackBundle.manifestDigest,
+    });
+    assert.equal(failbackReady.targetSystemId, systemA.rows[0].id);
+    assert.deepEqual((await a.query(
+      'SELECT tsk_client_id, agent_id FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
+    )).rows[0], { tsk_client_id: failbackMap.clientId, agent_id: `agent-${suffix}` });
+    console.log('same-principal failback A -> B -> A completed; data-loss-RPO=0');
   } finally {
     for (const pool of [a, b]) {
       await pool.query('DELETE FROM ultra_ha_import_head WHERE cluster_id=$1', [clusterId]).catch(() => {});
       await pool.query('DELETE FROM ultra_identity_bindings WHERE pair_id=$1', [pairId]).catch(() => {});
       await pool.query(
-        'DELETE FROM ultra_tumbler_maps WHERE client_id IN ($1,$2)',
-        [sourceMap?.clientId ?? '', targetMap?.clientId ?? ''],
+        'DELETE FROM ultra_tumbler_maps WHERE client_id IN ($1,$2,$3)',
+        [sourceMap?.clientId ?? '', targetMap?.clientId ?? '', failbackMap?.clientId ?? ''],
       ).catch(() => {});
       await pool.query(
-        'DELETE FROM ultra_idempotency WHERE idempotency_key IN ($1,$2,$3)',
-        [safeKey, secretKey, processingKey],
+        'DELETE FROM ultra_idempotency WHERE idempotency_key IN ($1,$2,$3,$4)',
+        [safeKey, secretKey, processingKey, forgedRedactionKey],
       ).catch(() => {});
       await pool.query('DELETE FROM ultra_nonce_tombstones WHERE nonce_hash=$1', [nonceHash]).catch(() => {});
       await pool.end();

@@ -32,11 +32,16 @@ import {
   PgNonceTombstoneStore,
   ULTRA_INDEPENDENT_STATE_SCHEMA,
   assertIndependentStateReady,
-  completeImportedTskReprovision,
+  completeImportedPromotedTskCredential,
   independentStateAllowsWrites,
   loadIndependentStateRuntimeConfig,
   readImportedTskReprovision,
 } from './independent-state.js';
+import { loadReloadablePromotedTskRuntime } from './promoted-tsk-runtime.js';
+import {
+  createUltraRedisClient,
+  loadUltraRedisAuthorityConfig,
+} from './ultra-redis-authority.js';
 import {
   createMetricsAuthMiddleware,
   metricAuthFailureLabel,
@@ -102,7 +107,7 @@ import {
   RedisFencingStore,
   TSKProvisioner,
 } from '@tsk/server';
-import { generateTumblerMap, toProvisionPayload } from '@tsk/core';
+import { toProvisionPayload } from '@tsk/core';
 
 // ── Bridge import ─────────────────────────────────────────────────────────────
 import { verifyUltraRequest } from '@tsk/bpc-bridge';
@@ -147,6 +152,7 @@ let ipRateLimiter;
 let haController = null;
 let independentStateReady = null;
 let runtimePgPool = null;
+let promotedTskRuntime = null;
 
 const RATE_LIMIT_WINDOW_MS = parseInt(process.env.BPC_RATE_LIMIT_WINDOW_MS ?? '60000', 10);
 const IP_RATE_LIMIT = parseInt(process.env.BPC_IP_RATE_LIMIT ?? '200', 10);
@@ -162,12 +168,12 @@ for (const [name, value] of [
 if (RUNTIME_MODE === 'production') {
   const required = [
     'DATABASE_URL',
-    'REDIS_URL',
     'ULTRA_ADMIN_TOKEN',
     'ULTRA_METRICS_TOKEN',
     'ULTRA_RECOVERY_HMAC_KEY',
   ];
   const missing = required.filter((name) => !process.env[name]);
+  if (!process.env.REDIS_URL && !process.env.ULTRA_HA_REDIS_SENTINELS) missing.push('REDIS_URL or ULTRA_HA_REDIS_SENTINELS');
   if (missing.length > 0) throw new Error(`production mode missing required settings: ${missing.join(', ')}`);
   if (Buffer.byteLength(process.env.ULTRA_ADMIN_TOKEN, 'utf8') < 32) {
     throw new Error('ULTRA_ADMIN_TOKEN must contain at least 32 bytes in production');
@@ -197,23 +203,20 @@ if (RUNTIME_MODE === 'production') {
     ...(HA_STATE_MODE === 'independent' ? [ULTRA_INDEPENDENT_STATE_SCHEMA] : []),
   );
 
-  const redisClient = new Redis(process.env.REDIS_URL, {
-    lazyConnect: true,
-    ...(HA_CONFIG.enabled ? {
-      commandTimeout: 2_000,
-      enableOfflineQueue: false,
-      maxRetriesPerRequest: 1,
-    } : {}),
+  const redisAuthorityConfig = loadUltraRedisAuthorityConfig(process.env, {
+    haEnabled: HA_CONFIG.enabled,
   });
+  const redisClient = createUltraRedisClient(Redis, redisAuthorityConfig);
   await redisClient.connect();
   pairStore = new PgPairStore(pool);
   anomalyStore = new RedisAnomalyStore(redisClient, 'ultra:anomaly:');
   nonceBackend = HA_STATE_MODE === 'independent'
     ? null
     : new RedisNonceStore(redisClient, 'ultra:nonce:');
-  const pgTskStore = new PgTumblerStore(pool);
   if (HA_CONFIG.enabled) {
-    const fenceStore = new RedisFencingStore(redisClient, HA_CONFIG.fenceKey);
+    const fenceStore = new RedisFencingStore(
+      redisClient, HA_CONFIG.fenceKey, redisAuthorityConfig.durability ?? undefined,
+    );
     haController = new UltraHaController({
       clusterId: HA_CONFIG.clusterId,
       fenceStore,
@@ -224,9 +227,17 @@ if (RUNTIME_MODE === 'production') {
       nodeId: HA_CONFIG.nodeId,
       role: HA_CONFIG.role,
     });
-    tskStore = new FencedTumblerStore(pgTskStore, haController);
+  }
+  if (HA_STATE_MODE === 'independent') {
+    promotedTskRuntime = await loadReloadablePromotedTskRuntime(
+      process.env.ULTRA_TSK_AUTHORITY_CONFIG_FILE,
+    );
+    tskStore = promotedTskRuntime.credentialStore;
   } else {
-    tskStore = pgTskStore;
+    const pgTskStore = new PgTumblerStore(pool);
+    tskStore = HA_CONFIG.enabled
+      ? new FencedTumblerStore(pgTskStore, haController)
+      : pgTskStore;
   }
   if (INDEPENDENT_CONFIG.expected) {
     independentStateReady = await assertIndependentStateReady(pool, INDEPENDENT_CONFIG.expected);
@@ -912,9 +923,40 @@ app.post('/ha/command', requireAdminAuth, serializeHaTransition, async (req, res
   return res.status(outcome.status).json(outcome.result);
 });
 
+async function reloadPromotedTskAuthority(trigger) {
+  if (HA_STATE_MODE !== 'independent' || !promotedTskRuntime) {
+    throw new Error('promoted TSK authority reload is unavailable');
+  }
+  const refreshed = await promotedTskRuntime.reload();
+  console.log(JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level: 'INFO',
+    event: 'ha_tsk_authority_reloaded',
+    trigger,
+    grantSeq: refreshed.grantSeq,
+    grantDigest: refreshed.grantDigest,
+    leaseExpiresAtMs: refreshed.leaseExpiresAtMs,
+  }));
+  return refreshed;
+}
+
+// Governed online lease renewal. The manager blocks new operations, drains
+// in-flight operations, verifies a strictly newer signed grant for the exact
+// same authority, swaps atomically, and closes the old authority pool.
+app.post('/ha/reload-tsk-authority', requireWriterLease, requireAdminAuth, requirePromotionWriterLease, async (_req, res) => {
+  try {
+    return res.json({ ok: true, ...(await reloadPromotedTskAuthority('admin')) });
+  } catch {
+    return res.status(409).json({ ok: false, error: 'TSK_AUTHORITY_RELOAD_FAILED' });
+  }
+});
+
 // A promoted independent site cannot reuse source-held TSK shared secrets.
 // This separately operator+agent authorized ceremony creates a fresh target
-// credential in memory and atomically installs it with the imported binding.
+// credential on the real fenced TSK authority and records only its signed
+// public proof with the imported Enterprise binding. The shared secret is
+// returned only to the separately operator+agent authenticated caller and is
+// never persisted in the Enterprise authority.
 app.post('/ha/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromotionWriterLease, async (req, res) => {
     try {
       if (HA_STATE_MODE !== 'independent' || !runtimePgPool || !INDEPENDENT_CONFIG.expected) {
@@ -931,26 +973,33 @@ app.post('/ha/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromo
       if (!pending || pending.agentId !== agentId || pending.sourceClientId !== sourceClientId) {
         return res.status(409).json({ ok: false, error: 'TSK_REPROVISION_BINDING_MISMATCH' });
       }
-      let targetMap = pending.targetClientId ? await tskStore.get(pending.targetClientId) : null;
-      if (!targetMap) {
-        targetMap = generateTumblerMap();
-        targetMap.label = `agent:${agentId}`;
-        targetMap.status = 'active';
-        targetMap.requestCount = 0;
-        targetMap.lastUsedAt = null;
+      if (!promotedTskRuntime || !pending.sourceSecretDigest) {
+        return res.status(409).json({ ok: false, error: 'TSK_PROMOTED_AUTHORITY_UNAVAILABLE' });
       }
-      const receipt = await completeImportedTskReprovision(runtimePgPool, {
-        advisoryLockKey: HA_CONFIG.advisoryLockKey,
-        agentId,
-        assertWritable: () => haController.assertWritable({
-          minRemainingMs: HA_CONFIG.minLeaseRemainingMs,
-        }),
-        clusterId,
-        commandId,
-        pairId,
-        sourceClientId,
-        sourceEpoch,
-        targetMap,
+      const { provisioned, receipt } = await promotedTskRuntime.withRuntime(async (authority) => {
+        const provisioned = await authority.provision({
+          agentId,
+          commandId,
+          pairId,
+          sourceClientId,
+          sourceSecretDigest: pending.sourceSecretDigest,
+        });
+        const receipt = await completeImportedPromotedTskCredential(
+          runtimePgPool,
+          authority.authorityCapability,
+          {
+            advisoryLockKey: HA_CONFIG.advisoryLockKey,
+            agentId,
+            clusterId,
+            commandId,
+            pairId,
+            sourceClientId,
+            sourceSecretDigest: pending.sourceSecretDigest,
+            sourceEpoch,
+            targetProof: provisioned.targetProof,
+          },
+        );
+        return { provisioned, receipt };
       });
       if (!receipt.idempotent) cTskProvisions.inc();
       console.log(JSON.stringify({
@@ -960,16 +1009,16 @@ app.post('/ha/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromo
         agentId,
         pairId,
         sourceClientId,
-        targetClientId: targetMap.clientId,
+        targetClientId: provisioned.targetClientId,
         receiptDigest: receipt.receiptDigest,
         idempotent: receipt.idempotent,
       }));
       independentStateReady = await assertIndependentStateReady(runtimePgPool, expected).catch(() => null);
       return res.json({
         ok: true,
-        clientId: targetMap.clientId,
-        sharedSecret: targetMap.sharedSecret,
-        provisionPayload: toProvisionPayload(targetMap),
+        clientId: provisioned.targetClientId,
+        sharedSecret: provisioned.sharedSecret,
+        provisionPayload: provisioned.provisionPayload,
         receipt,
       });
     } catch (error) {
@@ -977,7 +1026,10 @@ app.post('/ha/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromo
         timestamp: new Date().toISOString(),
         level: 'ERROR',
         event: 'ha_tsk_reprovision_error',
-        error: String(error),
+        // The provisioning path handles a one-time shared secret. Never emit
+        // exception text here because a driver or dependency may include
+        // request parameters in it.
+        errorClass: typeof error?.name === 'string' ? error.name : 'Error',
       }));
       return res.status(409).json({ ok: false, error: 'TSK_REPROVISION_FAILED' });
     }
@@ -1186,4 +1238,15 @@ app.listen(PORT, '127.0.0.1', () => {
       stores: ['postgresql-pair', 'postgresql-tumbler', 'postgresql-binding', 'postgresql-idempotency', 'redis-nonce', 'redis-anomaly'],
     }));
   }
+});
+
+process.on('SIGHUP', () => {
+  void reloadPromotedTskAuthority('SIGHUP').catch(() => {
+    console.error(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'ERROR',
+      event: 'ha_tsk_authority_reload_failed',
+      trigger: 'SIGHUP',
+    }));
+  });
 });

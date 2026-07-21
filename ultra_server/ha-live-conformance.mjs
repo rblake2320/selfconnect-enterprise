@@ -5,6 +5,10 @@ import { readFile } from 'node:fs/promises';
 import Redis from 'ioredis';
 import { Pool } from 'pg';
 import { signGuardCommand } from '@tsk/server';
+import {
+  createUltraRedisClient,
+  loadUltraRedisAuthorityConfig,
+} from './ultra-redis-authority.js';
 
 const PHASE = process.argv[2];
 const STATE_PATH = process.argv[3];
@@ -151,11 +155,8 @@ async function assertOldFenced() {
 }
 
 async function corruptFence() {
-  const redis = new Redis(process.env.REDIS_URL, {
-    commandTimeout: 2_000,
-    lazyConnect: true,
-    maxRetriesPerRequest: 1,
-  });
+  const redis = createUltraRedisClient(Redis,
+    loadUltraRedisAuthorityConfig(process.env, { haEnabled: true }));
   try {
     await redis.connect();
     await redis.set(`ultra:ha:${CLUSTER_ID}:writer`, '{bad-json');
