@@ -28,7 +28,7 @@ const INDEPENDENT_STATE_LOCK_LIST = INDEPENDENT_STATE_TABLES.join(', ');
 // There is deliberately no environment override: changing the authority schema requires a
 // reviewed source change and a new pin.
 export const ULTRA_INDEPENDENT_STATE_MANIFEST_DIGEST =
-  '0e96069d68fea5e6a92b5cc381f8cc273b8f6324ebf7da56b4be5367652ae72f';
+  'd917df185baf879664b9724fb5f6b9518f55a0a6344c3f5bebec8b409c2c300b';
 
 export const ULTRA_INDEPENDENT_STATE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS ultra_nonce_tombstones (
