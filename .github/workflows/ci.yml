@@ -631,8 +631,9 @@ jobs:
           TSK_PROTOCOL_ROOT: ${{ github.workspace }}/../tsk-protocol
         run: |
           set -euo pipefail
-          export ULTRA_TEST_POSTGRES_B_CONTAINER="$(docker ps --filter publish=5443 --format '{{.ID}}')"
+          ULTRA_TEST_POSTGRES_B_CONTAINER="$(docker ps --filter publish=5443 --format '{{.ID}}')"
           [ -n "$ULTRA_TEST_POSTGRES_B_CONTAINER" ]
+          export ULTRA_TEST_POSTGRES_B_CONTAINER
           npm run test:protocol-composition --prefix ultra_server
       - name: Run pinned final acceptance and create secret-free evidence
         shell: bash
