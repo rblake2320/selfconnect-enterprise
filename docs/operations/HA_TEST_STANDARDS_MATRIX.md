@@ -40,7 +40,7 @@ authorized, certified, or compliant.
 | Authority composition | PASS | Exact completed BPC/TSK and Enterprise return composition; signed snapshot-after-fence saga, not cross-database atomic commit |
 | Secret reprovisioning | PARTIAL | Redacted real-PG transfer + fresh target credential pass; production custody ceremony remains |
 | Replica integrity denial | PASS | Stale/replay/tamper/gap/rollback denied in the named tested formats/topology |
-| Old-writer fencing | PARTIAL | BPC/TSK pass; exact Enterprise completed-authority failback fence remains |
+| Old-writer fencing | PARTIAL | Exact one-cycle Enterprise stale-B denial passes; restart, partition-heal, and repeated-cycle denial remain |
 | Recovered-site resync | PARTIAL | Readiness gates pass; no recovered physical site has been returned to service |
 | Enterprise B -> A failback | PASS | Exact BPC/TSK artifacts, terminal source fence, stale-B denial, fresh reprovisioning, and idempotent retry pass for one cycle |
 | Repeated same-principal cycles | PARTIAL | One Enterprise A -> B -> A cycle passes; repeated production cycles remain |

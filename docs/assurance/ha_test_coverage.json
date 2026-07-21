@@ -185,10 +185,10 @@
       "evidence": [
         "repo:docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#acceptance-matrix",
         "artifact:docs/verification/spark2-host-evidence-03add3e.json",
-        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866745029"
+        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29873592691"
       ],
-      "limitations": "BPC and TSK pre-commit fencing and cross-host TSK stale-writer denial pass. Enterprise independent-state tests use a controlled writable-authority assertion and do not yet prove the exact completed BPC/TSK Enterprise failback writer gate.",
-      "closure": "Compose the completed authority gate into Enterprise B-to-A failback, then prove stale B denial before and after restart, partition heal, and repeated cycles."
+      "limitations": "BPC and TSK pre-commit fencing, cross-host TSK denial, and the exact one-cycle Enterprise stale-B protocol/completion gates pass. Enterprise stale-B denial has not yet been repeated after stale-B restart, partition heal, and multiple complete cycles.",
+      "closure": "Repeat exact Enterprise stale-B denial after restart and partition heal across multiple A-to-B-to-A cycles, retaining per-cycle signed evidence."
     },
     {
       "id": "recovered-site-resync-before-write",
