@@ -11,7 +11,7 @@ authority can reside on a second physical machine.
 ## Reviewed Inputs
 
 - Enterprise reviewed base: `60f8ae76fa52f868a704dbf51865b268d2d0886f`
-- Evidence controller code: `9174b708fe3007f2e8a5c79fec2c7b92719a5480`
+- Evidence controller code: `0a211aaf6f2361caffb8d6b399a896d10e9cc5b4`
 - TSK protocol: `20bf099e0b4f7479b93cf1d5e245b3f7c87e1675`
 - Controller: Node.js `v24.18.0` ARM64 archive, verified against the official
   Node.js `SHASUMS256.txt`
@@ -56,14 +56,14 @@ The owner's normal Docker configuration was not changed.
 ## Result
 
 - TSK commit: `20bf099e0b4f7479b93cf1d5e245b3f7c87e1675`
-- command: `spark2-exact-9174b70`
+- command: `spark2-exact-0a211aa`
 - data-loss RPO: `0`
 - initial sequence: `4`
 - promoted sequence: `5`
 - returned sequence: `6`
 - stale source writer denied: `true`
 - stale target writer denied after return: `true`
-- measured end-to-end duration: `31233 ms`
+- measured end-to-end duration: `31154 ms`
 
 Success was not inferred from a zero exit code. The verifier required three
 different PostgreSQL system identifiers, exact admission of the pre-recorded
@@ -73,7 +73,7 @@ denials.
 
 The secret-free receipt is retained on the acceptance controller at:
 
-`~/selfconnect-ha-drill/evidence/spark2-host-exact-9174b70-20260721T063148Z.json`
+`~/selfconnect-ha-drill/evidence/spark2-host-exact-0a211aa-20260721T063425Z.json`
 
 The receipt is mode `0600` and contains only bounded topology, commit, timing,
 sequence, outcome, and SHA-256 digest fields. It passed a secret-pattern check.
@@ -105,7 +105,8 @@ databases and creates evidence with write-once file semantics.
 - Spark-1 reached Spark-2 PostgreSQL and Redis over the private inter-host link;
 - PostgreSQL `fsync`, `full_page_writes`, and `synchronous_commit` were `on`;
 - Redis used AOF with `appendfsync=always`;
-- the focused evidence validator passed `2/2`;
+- the focused evidence validator passed `3/3`, including refusal of loopback or
+  wrong-host endpoint substitution;
 - the full Ultra unit suite passed `61`, skipped `2` integration-only tests,
   and failed `0` on Spark-1;
 - the live cross-host lifecycle completed and produced the receipt above;
