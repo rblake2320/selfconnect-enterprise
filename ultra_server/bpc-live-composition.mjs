@@ -15,6 +15,7 @@ const SOURCE_EPOCH_A = 'bpc-enterprise-epoch-1';
 const SOURCE_EPOCH_B = 'bpc-enterprise-epoch-2';
 const SOURCE_EPOCH_A_FAILBACK = 'bpc-enterprise-epoch-3';
 const RUNTIME_ROLE = 'bpc_runtime_enterprise28';
+const AUTHORITY_ROLES = Object.freeze(['source-a', 'promoted-b', 'control']);
 const KEY_IDS = Object.freeze({
   guard: 'guard-enterprise-v1',
   source: 'source-enterprise-v1',
@@ -93,6 +94,95 @@ async function systemId(pool) {
     'SELECT system_identifier::text AS value FROM pg_catalog.pg_control_system()',
   );
   return String(result.rows[0]?.value ?? '');
+}
+
+async function readAuthorityIdentity(client, role) {
+  const result = await client.query(`
+    SELECT system_identifier::text AS system_identifier
+    FROM pg_catalog.pg_control_system()
+  `);
+  const systemIdentifier = String(result.rows[0]?.system_identifier ?? '');
+  if (!/^[0-9]{1,20}$/.test(systemIdentifier)) {
+    throw new Error(`PostgreSQL authority ${role} returned an invalid system identifier`);
+  }
+  return Object.freeze({ role, systemIdentifier });
+}
+
+const identitySet = (identities) => new Set(
+  identities.map(({ systemIdentifier }) => systemIdentifier),
+);
+
+/**
+ * Admit three independently initialized PostgreSQL authorities. One dedicated
+ * connection per role is retained for the complete sampling window so routing
+ * cannot splice identities between samples. Two identical snapshots are
+ * required; a duplicate identity never becomes acceptable through retry.
+ */
+export async function admitPostgresAuthorities(pools, options = {}) {
+  if (!Array.isArray(pools) || pools.length !== AUTHORITY_ROLES.length) {
+    throw new TypeError('exactly three PostgreSQL authority pools are required');
+  }
+  const attempts = options.attempts ?? 4;
+  const delayMs = options.delayMs ?? 100;
+  if (!Number.isSafeInteger(attempts) || attempts < 2 || attempts > 20 ||
+      !Number.isSafeInteger(delayMs) || delayMs < 0 || delayMs > 5_000) {
+    throw new TypeError('authority identity admission retry configuration is invalid');
+  }
+  const connected = await Promise.allSettled(pools.map((pool) => pool.connect()));
+  const clients = connected.filter((result) => result.status === 'fulfilled')
+    .map((result) => result.value);
+  const connectFailure = connected.find((result) => result.status === 'rejected');
+  if (connectFailure) {
+    for (const client of clients) {
+      try { client.release(); } catch { /* Preserve the primary connection failure. */ }
+    }
+    throw connectFailure.reason;
+  }
+  let operationError = null;
+  try {
+    let previous = null;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const sampled = await Promise.allSettled(clients.map(
+        (client, index) => readAuthorityIdentity(client, AUTHORITY_ROLES[index]),
+      ));
+      const queryFailure = sampled.find((result) => result.status === 'rejected');
+      if (queryFailure) throw queryFailure.reason;
+      const current = sampled.map((result) => result.value);
+      const stable = previous !== null && current.every((entry, index) =>
+        entry.systemIdentifier === previous[index].systemIdentifier);
+      if (stable) {
+        if (identitySet(current).size !== AUTHORITY_ROLES.length) {
+          const diagnostic = current.map(
+            ({ role, systemIdentifier }) => `${role}=${systemIdentifier}`,
+          ).join(',');
+          throw new Error(
+            `BPC requires three independent PostgreSQL authorities (${diagnostic})`,
+          );
+        }
+        return Object.freeze({
+          attempts: attempt,
+          identities: Object.freeze(current),
+        });
+      }
+      previous = current;
+      if (attempt < attempts && delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+    const diagnostic = previous.map(
+      ({ role, systemIdentifier }) => `${role}=${systemIdentifier}`,
+    ).join(',');
+    throw new Error(`PostgreSQL authority identities did not stabilize (${diagnostic})`);
+  } catch (error) {
+    operationError = error;
+    throw error;
+  } finally {
+    let releaseError = null;
+    for (const client of clients) {
+      try { client.release(); } catch (error) { releaseError ??= error; }
+    }
+    if (!operationError && releaseError) throw releaseError;
+  }
 }
 
 function runtimeUrl(base, password) {
@@ -227,8 +317,10 @@ export async function runBpcLiveComposition(options) {
     await Promise.all(redisMembers.map((client) => client.flushdb()));
     await Promise.all(pools.map((pool) => resetAuthority(pool, bpc)));
 
-    const [idA, idB, idControl] = await Promise.all(pools.map(systemId));
-    assert.equal(new Set([idA, idB, idControl]).size, 3, 'BPC requires three independent PostgreSQL authorities');
+    const admittedAuthorities = await admitPostgresAuthorities(pools);
+    const [idA, idB, idControl] = admittedAuthorities.identities.map(
+      ({ systemIdentifier }) => systemIdentifier,
+    );
 
     const dbA = new bpc.NodePostgresTransactor(poolA);
     const dbB = new bpc.NodePostgresTransactor(poolB);
