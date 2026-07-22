@@ -7,14 +7,17 @@ const DIGEST = /^[0-9a-f]{64}$/;
 const COMMAND_ID = /^[A-Za-z0-9_.:/-]{1,128}$/;
 const ARTIFACT_KEYS = Object.freeze([
   'bpcFailback', 'bpcPromotion', 'bpcRepeatFailback', 'bpcRepeatForward',
+  'bpcRecoveredReadiness',
   'enterpriseFailbackCredentialReceipt', 'enterpriseFailbackManifest',
   'enterpriseManifest', 'enterpriseRepeatFailbackCredentialReceipt',
   'enterpriseRepeatFailbackManifest', 'enterpriseRepeatForwardCredentialReceipt',
   'enterpriseRepeatForwardManifest', 'promotedCredentialProof',
+  'enterpriseRecoveredCredentialReceipt', 'enterpriseRecoveredManifest',
   'promotedCredentialReceipt', 'returnedCredentialActivation',
   'returnedCredentialProof', 'tskActivation', 'tskFinalized',
   'tskRepeatFailbackActivation', 'tskRepeatFailbackFinalized',
   'tskRepeatForwardActivation', 'tskRepeatForwardFinalized',
+  'tskRecoveredActivation', 'tskRecoveredFinalized',
   'tskReturnActivation', 'tskReturnFinalized',
 ]);
 
@@ -24,7 +27,7 @@ function sha256(value) {
 
 function publicEvidence(result) {
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     kind: 'enterprise-live-authority-handoff',
     commandId: result.commandId,
     commits: result.commits,
@@ -36,6 +39,8 @@ function publicEvidence(result) {
         target: result.enterprise.targetSystemId,
         failbackSource: result.enterprise.failback.sourceSystemId,
         failbackTarget: result.enterprise.failback.targetSystemId,
+        recoveredSource: result.enterprise.recoveredSite.sourceSystemId,
+        recoveredTarget: result.enterprise.recoveredSite.targetSystemId,
       },
     },
     artifacts: {
@@ -73,6 +78,14 @@ function publicEvidence(result) {
         result.enterprise.repeatedCycle.failback.manifestDigest,
       enterpriseRepeatFailbackCredentialReceipt:
         result.enterprise.repeatedCycle.failback.receiptDigest,
+      bpcRecoveredReadiness:
+        result.bpc.recoveredSite.readinessAttestation.attestationDigest,
+      tskRecoveredFinalized:
+        result.tsk.recoveredSite.handoff.finalizedReceipt.receiptDigest,
+      tskRecoveredActivation:
+        result.tsk.recoveredSite.handoff.activationLease.grantDigest,
+      enterpriseRecoveredManifest: result.enterprise.recoveredSite.manifestDigest,
+      enterpriseRecoveredCredentialReceipt: result.enterprise.recoveredSite.receiptDigest,
     },
     outcomes: {
       bpcStaleWriterDenied: result.bpc.staleWriterDenied,
@@ -110,6 +123,14 @@ function publicEvidence(result) {
         result.tsk.staleRepeatForwardCredentialDenied,
       tskRepeatFailbackStaleCredentialDenied:
         result.tsk.staleRepeatReturnCredentialDenied,
+      bpcRecoveredStaleWriterDenied:
+        result.bpc.recoveredSite.staleSourceWriterDenied,
+      bpcRecoveredFirstMutationSequence:
+        result.bpc.recoveredSite.firstMutationSequence,
+      tskRecoveredStaleWriterDenied:
+        result.tsk.recoveredSite.handoff.staleWriterDenied,
+      tskRecoveredStaleCredentialDenied:
+        result.tsk.recoveredSite.staleCredentialDenied,
     },
     tskReturnAuthority: {
       commandId: result.tsk.returnCommandId,
@@ -186,12 +207,50 @@ function publicEvidence(result) {
         },
       },
     },
+    recoveredSite: {
+      bpcCommandId: result.bpc.recoveredSite.commandId,
+      tskCommandId: result.tsk.recoveredSite.handoff.commandId,
+      enterpriseCommandId: result.enterprise.recoveredSite.commandId,
+      bpcSourceEpoch: result.bpc.recoveredSite.sourceEpoch,
+      bpcTargetEpoch: result.bpc.recoveredSite.targetEpoch,
+      tskSourceEpoch: result.tsk.recoveredSite.handoff.sourceEpoch,
+      tskTargetEpoch: result.tsk.recoveredSite.handoff.targetEpoch,
+      enterpriseSourceEpoch: result.enterprise.recoveredSite.sourceEpoch,
+      sourceSystemId: result.enterprise.recoveredSite.sourceSystemId,
+      targetSystemId: result.enterprise.recoveredSite.targetSystemId,
+      sourceClientId: result.enterprise.recoveredSite.sourceClientId,
+      targetClientId: result.enterprise.recoveredSite.targetClientId,
+      targetHolderId:
+        result.tsk.recoveredSite.handoff.activationLease.holderNodeId,
+      staleSourceCompletionDenied:
+        result.enterprise.recoveredSite.staleSourceCompletionDenied,
+      processRestarted: result.enterprise.recoveredSite.restartDenial.processRestarted,
+      restartedStaleCompletionDenied:
+        result.enterprise.recoveredSite.restartDenial.denied,
+      idempotentRetry: result.enterprise.recoveredSite.idempotentRetry,
+      rpo: result.enterprise.recoveredSite.rpo,
+      rtoMs: result.enterprise.recoveredSite.rtoMs,
+      artifacts: {
+        bpcReadiness:
+          result.bpc.recoveredSite.readinessAttestation.attestationDigest,
+        tskFinalized:
+          result.tsk.recoveredSite.handoff.finalizedReceipt.receiptDigest,
+        tskActivation:
+          result.tsk.recoveredSite.handoff.activationLease.grantDigest,
+        enterpriseManifest: result.enterprise.recoveredSite.manifestDigest,
+        enterpriseCredentialReceipt: result.enterprise.recoveredSite.receiptDigest,
+      },
+    },
+    protocolRestartDenials: {
+      bpc: result.bpc.restartDenials,
+      tsk: result.tsk.restartDenials,
+    },
     tskLatestAuthority: {
-      commandId: result.tsk.repeatedCycle.failback.commandId,
+      commandId: result.tsk.recoveredSite.handoff.commandId,
       fenceEpoch: result.tsk.redisAuthority.record.fenceEpoch,
       nodeId: result.tsk.redisAuthority.record.nodeId,
       activationGrantDigest:
-        result.tsk.repeatedCycle.failback.activationLease.grantDigest,
+        result.tsk.recoveredSite.handoff.activationLease.grantDigest,
     },
     tskRedisFaults: result.tskRedisFaults,
     ultraRedisFaults: result.ultraRedisFaults,
@@ -199,7 +258,7 @@ function publicEvidence(result) {
 }
 
 export function validateLiveCompositionEvidence(evidence, expected = {}) {
-  assert.equal(evidence?.schemaVersion, 6);
+  assert.equal(evidence?.schemaVersion, 7);
   assert.equal(evidence?.kind, 'enterprise-live-authority-handoff');
   assert.equal(evidence?.commandId, expected.commandId ?? evidence.commandId);
   assert.match(evidence?.commandId, COMMAND_ID);
@@ -218,6 +277,10 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
     evidence.systems.enterprise.target);
   assert.equal(evidence.systems.enterprise.failbackTarget,
     evidence.systems.enterprise.source);
+  assert.equal(evidence.systems.enterprise.recoveredSource,
+    evidence.systems.enterprise.source);
+  assert.equal(evidence.systems.enterprise.recoveredTarget,
+    evidence.systems.enterprise.target);
   assert.notEqual(evidence.systems.enterprise.source, evidence.systems.enterprise.target);
   assert.equal(evidence.outcomes.bpcStaleWriterDenied, true);
   assert.equal(evidence.outcomes.bpcFailbackStaleWriterDenied, true);
@@ -277,13 +340,13 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
     evidence.outcomes.returnedSourceNextSequence);
   assert.match(evidence.tskReturnAuthority?.targetHolderId, COMMAND_ID);
   assert.equal(evidence.tskLatestAuthority.commandId,
-    evidence.repeatedCycle.failback.tskCommandId);
+    evidence.recoveredSite.tskCommandId);
   assert.equal(evidence.tskLatestAuthority.fenceEpoch,
-    evidence.repeatedCycle.failback.tskTargetEpoch);
+    evidence.recoveredSite.tskTargetEpoch);
   assert.equal(evidence.tskLatestAuthority.nodeId,
-    evidence.tskReturnAuthority.targetHolderId);
+    evidence.recoveredSite.targetHolderId);
   assert.equal(evidence.tskLatestAuthority.activationGrantDigest,
-    evidence.artifacts.tskRepeatFailbackActivation);
+    evidence.artifacts.tskRecoveredActivation);
   const cycleArtifactBindings = {
     forward: {
       bpcReadiness: 'bpcRepeatForward',
@@ -334,8 +397,12 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
   assert.equal(evidence.repeatedCycle.forward.rpo, 0);
   assert.equal(evidence.repeatedCycle.failback.bpcTargetEpoch,
     evidence.repeatedCycle.forward.bpcTargetEpoch + 1);
+  assert.equal(evidence.repeatedCycle.failback.bpcSourceEpoch,
+    evidence.repeatedCycle.forward.bpcTargetEpoch);
   assert.equal(evidence.repeatedCycle.failback.tskTargetEpoch,
     evidence.repeatedCycle.forward.tskTargetEpoch + 1);
+  assert.equal(evidence.repeatedCycle.failback.tskSourceEpoch,
+    evidence.repeatedCycle.forward.tskTargetEpoch);
   assert.equal(evidence.repeatedCycle.failback.sourceSystemId,
     evidence.systems.enterprise.target);
   assert.equal(evidence.repeatedCycle.failback.targetSystemId,
@@ -353,6 +420,94 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
   assert.equal(evidence.outcomes.tskRepeatFailbackStaleWriterDenied, true);
   assert.equal(evidence.outcomes.tskRepeatForwardStaleCredentialDenied, true);
   assert.equal(evidence.outcomes.tskRepeatFailbackStaleCredentialDenied, true);
+  assert.equal(evidence.outcomes.bpcRecoveredStaleWriterDenied, true);
+  assert.equal(evidence.outcomes.bpcRecoveredFirstMutationSequence, 1);
+  assert.equal(evidence.outcomes.tskRecoveredStaleWriterDenied, true);
+  assert.equal(evidence.outcomes.tskRecoveredStaleCredentialDenied, true);
+  const recoveredKeys = [
+    'artifacts', 'bpcCommandId', 'bpcSourceEpoch', 'bpcTargetEpoch',
+    'enterpriseCommandId', 'enterpriseSourceEpoch', 'idempotentRetry',
+    'processRestarted', 'restartedStaleCompletionDenied', 'rpo', 'rtoMs',
+    'sourceClientId', 'sourceSystemId', 'staleSourceCompletionDenied',
+    'targetClientId', 'targetHolderId', 'targetSystemId', 'tskCommandId', 'tskSourceEpoch',
+    'tskTargetEpoch',
+  ].sort();
+  assert.deepEqual(Object.keys(evidence.recoveredSite).sort(), recoveredKeys);
+  assert.equal(evidence.recoveredSite.bpcCommandId,
+    evidence.recoveredSite.tskCommandId);
+  assert.equal(evidence.recoveredSite.enterpriseCommandId,
+    evidence.recoveredSite.tskCommandId);
+  assert.equal(evidence.recoveredSite.bpcTargetEpoch,
+    evidence.repeatedCycle.failback.bpcTargetEpoch + 1);
+  assert.equal(evidence.recoveredSite.bpcSourceEpoch,
+    evidence.repeatedCycle.failback.bpcTargetEpoch);
+  assert.equal(evidence.recoveredSite.bpcTargetEpoch,
+    evidence.recoveredSite.bpcSourceEpoch + 1);
+  assert.equal(evidence.recoveredSite.tskTargetEpoch,
+    evidence.repeatedCycle.failback.tskTargetEpoch + 1);
+  assert.equal(evidence.recoveredSite.tskSourceEpoch,
+    evidence.repeatedCycle.failback.tskTargetEpoch);
+  assert.equal(evidence.recoveredSite.tskTargetEpoch,
+    evidence.recoveredSite.tskSourceEpoch + 1);
+  assert.equal(evidence.recoveredSite.enterpriseSourceEpoch,
+    evidence.recoveredSite.tskTargetEpoch);
+  assert.equal(evidence.recoveredSite.sourceSystemId,
+    evidence.systems.enterprise.source);
+  assert.equal(evidence.recoveredSite.targetSystemId,
+    evidence.systems.enterprise.target);
+  assert.equal(evidence.recoveredSite.sourceClientId,
+    evidence.repeatedCycle.failback.targetClientId);
+  assert.notEqual(evidence.recoveredSite.sourceClientId,
+    evidence.recoveredSite.targetClientId);
+  assert.equal(evidence.recoveredSite.staleSourceCompletionDenied, true);
+  assert.equal(evidence.recoveredSite.processRestarted, true);
+  assert.equal(evidence.recoveredSite.restartedStaleCompletionDenied, true);
+  assert.equal(evidence.recoveredSite.idempotentRetry, true);
+  assert.equal(evidence.recoveredSite.rpo, 0);
+  assert.equal(Number.isSafeInteger(evidence.recoveredSite.rtoMs) &&
+    evidence.recoveredSite.rtoMs >= 0, true);
+  const recoveredArtifactBindings = {
+    bpcReadiness: 'bpcRecoveredReadiness',
+    tskFinalized: 'tskRecoveredFinalized',
+    tskActivation: 'tskRecoveredActivation',
+    enterpriseManifest: 'enterpriseRecoveredManifest',
+    enterpriseCredentialReceipt: 'enterpriseRecoveredCredentialReceipt',
+  };
+  assert.deepEqual(Object.keys(evidence.recoveredSite.artifacts).sort(),
+    Object.keys(recoveredArtifactBindings).sort());
+  for (const [field, artifactName] of Object.entries(recoveredArtifactBindings)) {
+    assert.equal(evidence.recoveredSite.artifacts[field],
+      evidence.artifacts[artifactName]);
+  }
+  const restartCuts = [
+    'initial', 'failback', 'repeatForward', 'repeatFailback', 'recoveredSite',
+  ];
+  const allRestartPids = new Set();
+  assert.deepEqual(Object.keys(evidence.protocolRestartDenials).sort(), ['bpc', 'tsk']);
+  for (const protocol of ['bpc', 'tsk']) {
+    const probes = evidence.protocolRestartDenials[protocol];
+    assert.deepEqual(Object.keys(probes).sort(), [...restartCuts].sort());
+    const protocolPids = new Set();
+    for (const cut of restartCuts) {
+      const probe = probes[cut];
+      assert.deepEqual(Object.keys(probe).sort(), [
+        'authorityStateDigest', 'childPid', 'denialCode', 'denied',
+        'noCommittedEffect', 'processRestarted', 'rtoMs',
+      ]);
+      assert.equal(probe.processRestarted, true);
+      assert.equal(probe.denied, true);
+      assert.equal(probe.denialCode, 'source-fence-rejected');
+      assert.equal(probe.noCommittedEffect, true);
+      assert.match(probe.authorityStateDigest, DIGEST);
+      assert.equal(Number.isSafeInteger(probe.childPid) && probe.childPid > 0, true);
+      assert.equal(Number.isSafeInteger(probe.rtoMs) && probe.rtoMs >= 0, true);
+      protocolPids.add(probe.childPid);
+      allRestartPids.add(probe.childPid);
+    }
+    assert.equal(protocolPids.size, restartCuts.length);
+  }
+  assert.equal(allRestartPids.size, restartCuts.length * 2,
+    'each BPC and TSK cut must use a distinct restarted child process');
   assert.equal(evidence.tskRedisFaults?.kind, 'tsk-same-redis-authority-faults');
   assert.equal(evidence.tskRedisFaults?.commandId,
     evidence.tskLatestAuthority.commandId);

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { createHash, createHmac, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { execFileSync, fork } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -16,6 +18,7 @@ const SOURCE_EPOCH_B = 'bpc-enterprise-epoch-2';
 const SOURCE_EPOCH_A_FAILBACK = 'bpc-enterprise-epoch-3';
 const SOURCE_EPOCH_B_REPEAT = 'bpc-enterprise-epoch-4';
 const SOURCE_EPOCH_A_REPEAT = 'bpc-enterprise-epoch-5';
+const SOURCE_EPOCH_B_RECOVERED = 'bpc-enterprise-epoch-6';
 const RUNTIME_ROLE = 'bpc_runtime_enterprise28';
 const AUTHORITY_ROLES = Object.freeze(['source-a', 'promoted-b', 'control']);
 const KEY_IDS = Object.freeze({
@@ -272,6 +275,58 @@ function mutationTicketSigner(bpc, secret, keyring) {
       ].join('|')).digest('hex');
     },
   };
+}
+
+async function proveStaleBpcWriterDeniedAfterRestart(config) {
+  const directory = await mkdtemp(path.join(tmpdir(), 'bpc-stale-restart-'));
+  const configPath = path.join(directory, 'input.json');
+  await writeFile(configPath, JSON.stringify(config), { encoding: 'utf8', mode: 0o600 });
+  const startedAt = Date.now();
+  try {
+    return await new Promise((resolvePromise, rejectPromise) => {
+      const child = fork(new URL('./bpc-stale-writer-worker.mjs', import.meta.url),
+        [configPath], {
+          cwd: new URL('.', import.meta.url),
+          stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+          windowsHide: true,
+          execArgv: process.execArgv.filter((arg) => !arg.startsWith('--input-type')),
+        });
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        rejectPromise(new Error('stale BPC restart probe timed out'));
+      }, 30_000);
+      let evidence = null;
+      let stderr = '';
+      child.stderr?.setEncoding('utf8');
+      child.stderr?.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-2_000); });
+      child.once('message', (message) => {
+        if (message?.kind === 'stale-bpc-writer-denied') evidence = message;
+      });
+      child.once('error', (error) => {
+        clearTimeout(timer);
+        rejectPromise(error);
+      });
+      child.once('close', (code, signal) => {
+        clearTimeout(timer);
+        if (code !== 0 || signal || !evidence || evidence.pid === process.pid ||
+            evidence.denialCode !== 'source-fence-rejected' ||
+            evidence.noCommittedEffect !== true ||
+            !/^[0-9a-f]{64}$/.test(evidence.authorityDigest)) {
+          rejectPromise(new Error(
+            `stale BPC restart probe failed (code=${code}, signal=${signal ?? 'none'}): ${stderr.trim()}`,
+          ));
+          return;
+        }
+        resolvePromise(Object.freeze({ processRestarted: true,
+          childPid: evidence.pid, denied: true,
+          denialCode: evidence.denialCode, noCommittedEffect: true,
+          authorityStateDigest: evidence.authorityDigest,
+          rtoMs: Date.now() - startedAt }));
+      });
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 function makePool(connectionString, max = 5) {
@@ -1250,6 +1305,264 @@ export async function runBpcLiveComposition(options) {
     assert.equal(staleB4WriterDenied, true,
       'revoked epoch-4 B remained writable after repeat failback');
 
+    // Recover the exact stale B authority rather than replacing it with a new
+    // logical database. A5 is terminally revoked, its complete committed state
+    // is exported, B is reset to a non-authoritative recovered image, and only
+    // the governed epoch-6 import/activation permits B's first new mutation.
+    const recoveredStartedAt = Date.now();
+    const recoveredCommandId = `${commandId}-recovered-site-promote`;
+    const recoveredRevokeCommandId = `${recoveredCommandId}-revoke-source`;
+    const revokedA5 = bpc.signSourceLeaseGrant(KEY_IDS.guard, guardPrivate, {
+      streamId,
+      epoch: 5,
+      status: 'revoked',
+      holderNodeId: 'node-a',
+      leaseId: grantA5.leaseId,
+      commandId: recoveredRevokeCommandId,
+      expiresAtMs: grantA5.expiresAtMs,
+      maxTransactionDurationMs: grantA5.maxTransactionDurationMs,
+      grantSeq: 2,
+      prevDigest: grantA5.grantDigest,
+    });
+    const revokedA5Control = bpc.signSourceLeaseGrant(KEY_IDS.guard, guardPrivate, {
+      streamId,
+      epoch: 5,
+      status: 'revoked',
+      holderNodeId: 'node-a',
+      leaseId: grantA5Control.leaseId,
+      commandId: recoveredRevokeCommandId,
+      expiresAtMs: grantA5Control.expiresAtMs,
+      maxTransactionDurationMs: grantA5Control.maxTransactionDurationMs,
+      grantSeq: 10,
+      prevDigest: grantA5Control.grantDigest,
+    });
+    await Promise.all([
+      dbRepeatAOwner.transaction((exec) =>
+        bpc.installSourceLeaseGrant(exec, resolver, revokedA5)),
+      dbControl.transaction((exec) =>
+        bpc.installSourceLeaseGrant(exec, resolver, revokedA5Control)),
+    ]);
+    const snapshotA5 = await bpc.buildPairSnapshotBundle(
+      dbRepeatAOwner, streamId, repeatReturnSequence, KEY_IDS.source, sourcePrivate,
+    );
+
+    // This is the same repeat-B database that was stale at epoch 4. Rebuild its
+    // governed schema in place, import the complete A5 state, and retain its
+    // PostgreSQL system identity as evidence that recovery did not substitute
+    // a fresh authority.
+    await resetAuthority(repeatBOwnerPool, bpc);
+    const dbRecoveredBOwner = new bpc.NodePostgresTransactor(repeatBOwnerPool);
+    await bpc.provisionSchemaVersion(dbRecoveredBOwner, 'public');
+    await bpc.provisionBpcHaSchema(dbRecoveredBOwner);
+    await repeatBOwnerPool.query(
+      'INSERT INTO bpc_ha.mutation_ticket_key(key_id,secret) VALUES($1,$2)',
+      [KEY_IDS.mutation, mutationSecret],
+    );
+    await bpc.provisionBpcRuntimeMutationBoundary(
+      dbRecoveredBOwner, RUNTIME_ROLE, KEY_IDS.mutation, mutationSecret,
+    );
+    const [readyRecoveredBRuntime, haReadyRecoveredBRuntime] = await Promise.all([
+      bpc.assertSchemaReady(dbRepeatBRuntime, 'public'),
+      bpc.assertBpcHaSchemaReady(dbRepeatBRuntime),
+    ]);
+    assert.equal(await systemId(repeatBOwnerPool), idB,
+      'recovered B did not retain the stale authority PostgreSQL system');
+    await Promise.all([
+      repeatBOwnerPool.query(
+        'INSERT INTO ha_outbox_fence(stream_id,fence_token) VALUES($1,5)', [streamId],
+      ),
+      repeatBOwnerPool.query(
+        'INSERT INTO ha_outbox_receiver_checkpoint(stream_id,source_epoch,sequence) VALUES($1,$2,0)',
+        [streamId, SOURCE_EPOCH_A_REPEAT],
+      ),
+    ]);
+    const recoveredBApplier = new bpc.PgPairMutationApplier(streamId, keyring);
+    await bpc.importPairSnapshotBundle(
+      dbRecoveredBOwner, resolver, snapshotA5,
+      bpc.bpcPairMutationSanitizer, recoveredBApplier,
+    );
+    const redisB6 = bpc.signRedisFenceRecord(KEY_IDS.guard, guardPrivate, {
+      streamId,
+      epoch: 6,
+      nodeId: 'node-b',
+      authoritySystemId: idB,
+      nodeCredentialKeyId: KEY_IDS.nodeB,
+      commandId: recoveredCommandId,
+      claimedAtMs: Date.now(),
+    });
+    await controller.begin({
+      streamId,
+      commandId: recoveredCommandId,
+      previousEpoch: 5,
+      targetEpoch: 6,
+      targetNodeId: 'node-b',
+      targetSourceEpoch: SOURCE_EPOCH_B_RECOVERED,
+      manifestDigest: bpc.pairSnapshotManifestDigest(snapshotA5.manifest),
+      finalSourceSequence: snapshotA5.manifest.finalSequence,
+      stateDigest: snapshotA5.manifest.stateDigest,
+      redisClaimDigest: bpc.redisFenceRecordDigest(redisB6),
+      oldLeaseDigest: revokedA5Control.grantDigest,
+      oldLeaseExpiresAtMs: revokedA5Control.expiresAtMs,
+      sourceTransactionWindowMs: revokedA5Control.maxTransactionDurationMs,
+    });
+    assert.equal(await fenceStore.claim(redisB6), true,
+      'BPC recovered-site epoch-6 quorum claim failed');
+    await awaitDatabaseClockAfter(
+      poolControl,
+      revokedA5Control.expiresAtMs + 25 + revokedA5Control.maxTransactionDurationMs,
+    );
+    const recoveredFenced = await controller.markFenced(
+      recoveredCommandId, fenceStore,
+    );
+    const grantB6 = bpc.signSourceLeaseGrant(KEY_IDS.guard, guardPrivate, {
+      streamId,
+      epoch: 6,
+      status: 'active',
+      holderNodeId: 'node-b',
+      leaseId: 'lease-b-epoch-6',
+      commandId: recoveredCommandId,
+      expiresAtMs: Date.now() + 60_000,
+      maxTransactionDurationMs: dbRepeatBRuntime.maxTransactionDurationMs,
+      grantSeq: 1,
+      prevDigest: null,
+    });
+    const grantB6Control = bpc.signSourceLeaseGrant(KEY_IDS.guard, guardPrivate, {
+      streamId: grantB6.streamId,
+      epoch: grantB6.epoch,
+      status: grantB6.status,
+      holderNodeId: grantB6.holderNodeId,
+      leaseId: grantB6.leaseId,
+      commandId: grantB6.commandId,
+      expiresAtMs: grantB6.expiresAtMs,
+      maxTransactionDurationMs: grantB6.maxTransactionDurationMs,
+      grantSeq: 11,
+      prevDigest: revokedA5Control.grantDigest,
+    });
+    await Promise.all([
+      dbRecoveredBOwner.transaction((exec) =>
+        bpc.installSourceLeaseGrant(exec, resolver, grantB6)),
+      dbControl.transaction((exec) =>
+        bpc.installSourceLeaseGrant(exec, resolver, grantB6Control)),
+    ]);
+    await bpc.promoteReceiverToSource(
+      dbRecoveredBOwner, resolver, snapshotA5, bpc.bpcPairMutationSanitizer,
+      6, SOURCE_EPOCH_B_RECOVERED, resolver, recoveredFenced,
+    );
+    const recoveredReadiness = await bpc.buildPromotionReadinessAttestation(
+      dbRecoveredBOwner, recoveredFenced, snapshotA5.manifest.keyId,
+      KEY_IDS.source, sourcePrivate,
+    );
+    bpc.verifyPromotionReadinessAttestation(resolver, recoveredReadiness);
+    const recoveredActive = await controller.markActive(
+      recoveredCommandId, recoveredReadiness, resolver,
+    );
+    await bpc.installActiveCutoverReceipt(
+      dbRecoveredBOwner, resolver, recoveredActive, recoveredReadiness,
+    );
+    const sourceFenceB6 = await bpc.PgSourceLeaseFence.open(
+      dbRepeatBRuntime,
+      haReadyRecoveredBRuntime,
+      resolver,
+      {
+        streamId,
+        epoch: 6,
+        holderNodeId: 'node-b',
+        authoritySystemId: idB,
+        nodeCredentialKeyId: KEY_IDS.nodeB,
+        leaseId: grantB6.leaseId,
+        grantDigest: grantB6.grantDigest,
+        redisClaimDigest: bpc.redisFenceRecordDigest(redisB6),
+        maxClockSkewMs: 25,
+        maxTransactionDurationMs: dbRepeatBRuntime.maxTransactionDurationMs,
+        activationDigest: recoveredActive.stateDigestSigned,
+      },
+      fenceStore,
+      nodeBIdentity,
+      ticketSigner,
+    );
+    const recoveredStoreB = bpc.createHaPairAuthority(
+      dbRepeatBRuntime,
+      readyRecoveredBRuntime,
+      { streamId, fenceToken: 6n, keyring, maxPendingRows: 100 },
+      sourceFenceB6,
+    );
+    await recoveredStoreB.set(pair(6));
+    const recoveredFirstMutationSequence = Number((await repeatBOwnerPool.query(
+      'SELECT sequence FROM ha_outbox_source_checkpoint WHERE stream_id=$1', [streamId],
+    )).rows[0]?.sequence);
+    assert.equal(recoveredFirstMutationSequence, 1,
+      'recovered B did not originate exactly the first epoch-6 mutation');
+    let staleA5WriterDenied = false;
+    try { await repeatStoreA.set(pair(60)); } catch { staleA5WriterDenied = true; }
+    assert.equal(staleA5WriterDenied, true,
+      'revoked epoch-5 A remained writable after recovered-site activation');
+    const restartProbe = ({ cut, database, grant, redisRecord, activationDigest,
+      nodeKeyId, nodePrivateKey, authoritySystemId, number }) =>
+      proveStaleBpcWriterDeniedAfterRestart({
+        cut,
+        bpcDistFile: path.join(path.resolve(options.bpcRoot),
+          'packages', 'server', 'dist', 'index.js'),
+        runtimeUrl: runtimeUrl(database, runtimePassword),
+        controlUrl: postgresUrls[2],
+        redisUrls,
+        redisKey: `bpc:enterprise28:${streamId}`,
+        publicKeys: {
+          [KEY_IDS.guard]: guardPublic.export({ type: 'spki', format: 'pem' }).toString(),
+          [KEY_IDS.source]: sourcePublic.export({ type: 'spki', format: 'pem' }).toString(),
+          [KEY_IDS.nodeA]: nodeAPublic.export({ type: 'spki', format: 'pem' }).toString(),
+          [KEY_IDS.nodeB]: nodeBPublic.export({ type: 'spki', format: 'pem' }).toString(),
+        },
+        nodeKeyId,
+        nodePrivateKey: nodePrivateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+        sealKeyId: KEY_IDS.seal,
+        sealKey: sealKey.toString('base64'),
+        mutationKeyId: KEY_IDS.mutation,
+        mutationSecret: mutationSecret.toString('base64'),
+        streamId,
+        fenceToken: String(grant.epoch),
+        fence: {
+          streamId,
+          epoch: grant.epoch,
+          holderNodeId: grant.holderNodeId,
+          authoritySystemId,
+          nodeCredentialKeyId: nodeKeyId,
+          leaseId: grant.leaseId,
+          grantDigest: grant.grantDigest,
+          redisClaimDigest: bpc.redisFenceRecordDigest(redisRecord),
+          maxClockSkewMs: 25,
+          maxTransactionDurationMs: grant.maxTransactionDurationMs,
+          ...(activationDigest ? { activationDigest } : {}),
+        },
+        pair: pair(number),
+      });
+    const initialRestartDenial = await restartProbe({ cut: 'initial',
+      database: postgresUrls[0], grant: grantA, redisRecord: redisA,
+        nodeKeyId: KEY_IDS.nodeA, nodePrivateKey: nodeAPrivate,
+        authoritySystemId: idA, number: 61 });
+    const failbackRestartDenial = await restartProbe({ cut: 'failback',
+      database: postgresUrls[1], grant: grantB, redisRecord: redisB,
+        activationDigest: activeCutoverReceipt.stateDigestSigned,
+        nodeKeyId: KEY_IDS.nodeB, nodePrivateKey: nodeBPrivate,
+        authoritySystemId: idB, number: 62 });
+    const repeatForwardRestartDenial = await restartProbe({ cut: 'repeatForward',
+      database: databaseUrl(postgresUrls[0], failbackDatabase),
+        grant: grantA3, redisRecord: redisA3,
+        activationDigest: failbackActiveCutoverReceipt.stateDigestSigned,
+        nodeKeyId: KEY_IDS.nodeA, nodePrivateKey: nodeAPrivate,
+        authoritySystemId: idA, number: 63 });
+    const repeatFailbackRestartDenial = await restartProbe({ cut: 'repeatFailback',
+      database: databaseUrl(postgresUrls[1], repeatBDatabase),
+        grant: grantB4, redisRecord: redisB4,
+        activationDigest: repeatForwardActive.stateDigestSigned,
+        nodeKeyId: KEY_IDS.nodeB, nodePrivateKey: nodeBPrivate,
+        authoritySystemId: idB, number: 64 });
+    const recoveredRestartDenial = await restartProbe({ cut: 'recoveredSite',
+      database: databaseUrl(postgresUrls[0], repeatADatabase),
+        grant: grantA5, redisRecord: redisA5,
+        activationDigest: repeatReturnActive.stateDigestSigned,
+        nodeKeyId: KEY_IDS.nodeA, nodePrivateKey: nodeAPrivate,
+        authoritySystemId: idA, number: 65 });
+
     return deepFreeze({
       protocolCommit: actualCommit,
       streamId,
@@ -1305,6 +1618,31 @@ export async function runBpcLiveComposition(options) {
         priorAuthoritiesReset: false,
         rpo: 0,
         rtoMs: Date.now() - repeatStartedAt,
+      },
+      recoveredSite: {
+        commandId: recoveredCommandId,
+        sourceEpoch: 5,
+        targetEpoch: 6,
+        targetSourceEpoch: SOURCE_EPOCH_B_RECOVERED,
+        sourceSystemId: idA,
+        targetSystemId: idB,
+        staleDatabaseReused: true,
+        importedSequence: snapshotA5.manifest.finalSequence,
+        firstMutationSequence: recoveredFirstMutationSequence,
+        staleSourceWriterDenied: staleA5WriterDenied,
+        restartDenial: recoveredRestartDenial,
+        readinessAttestation: structuredClone(recoveredReadiness),
+        activeCutoverReceipt: structuredClone(recoveredActive),
+        snapshotManifest: structuredClone(snapshotA5.manifest),
+        rpo: 0,
+        rtoMs: Date.now() - recoveredStartedAt,
+      },
+      restartDenials: {
+        initial: initialRestartDenial,
+        failback: failbackRestartDenial,
+        repeatForward: repeatForwardRestartDenial,
+        repeatFailback: repeatFailbackRestartDenial,
+        recoveredSite: recoveredRestartDenial,
       },
       readinessAttestation: structuredClone(readinessAttestation),
       activeCutoverReceipt: structuredClone(activeCutoverReceipt),

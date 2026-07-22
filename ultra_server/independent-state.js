@@ -1280,6 +1280,14 @@ export async function completeImportedTskReprovision(pool, input) {
  * capability. No shared secret or caller-provided writability callback enters
  * the Enterprise database.
  */
+export class StaleImportedPromotionError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'StaleImportedPromotionError';
+    this.code = 'STALE_IMPORTED_PROMOTION';
+  }
+}
+
 export async function completeImportedPromotedTskCredential(pool, authorityCapability, input) {
   const targetProof = snapshotPlainData(input.targetProof);
   const expected = Object.freeze({
@@ -1310,7 +1318,9 @@ export async function completeImportedPromotedTskCredential(pool, authorityCapab
     },
   );
   if (verified.commandId !== expected.commandId || verified.sourceEpoch !== expected.sourceEpoch) {
-    throw new Error('promoted TSK credential proof does not match the imported epoch/command');
+    throw new StaleImportedPromotionError(
+      'promoted TSK credential proof does not match the imported epoch/command',
+    );
   }
   const targetProofDigest = digest(targetProof);
   const receipt = Object.freeze({
@@ -1334,7 +1344,7 @@ export async function completeImportedPromotedTskCredential(pool, authorityCapab
        WHERE cluster_id=$1 FOR UPDATE`, [expected.clusterId],
     )).rows[0];
     if (!head || head.command_id !== expected.commandId || Number(head.source_epoch) !== expected.sourceEpoch) {
-      throw new Error('TSK reprovision does not match the imported promotion');
+      throw new StaleImportedPromotionError('TSK reprovision does not match the imported promotion');
     }
     const pending = (await client.query(
       `SELECT agent_id,source_client_id,source_secret_digest,target_client_id,status,
@@ -1346,7 +1356,7 @@ export async function completeImportedPromotedTskCredential(pool, authorityCapab
     if (!pending || pending.agent_id !== expected.agentId ||
         pending.source_client_id !== expected.sourceClientId ||
         pending.source_secret_digest !== expected.sourceSecretDigest) {
-      throw new Error('TSK reprovision binding mismatch');
+      throw new StaleImportedPromotionError('TSK reprovision binding mismatch');
     }
     if (digest(await readTargetAuthorityState(client)) !== head.authority_digest) {
       throw new Error('imported authority was rolled back or tampered before TSK reprovision');

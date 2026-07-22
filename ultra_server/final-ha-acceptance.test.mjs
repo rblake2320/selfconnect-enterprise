@@ -8,12 +8,13 @@ import { validateLiveCompositionEvidence } from './live-composition-evidence.mjs
 
 function liveEvidence() {
   return {
-    schemaVersion: 6, kind: 'enterprise-live-authority-handoff', commandId: 'promote-1',
+    schemaVersion: 7, kind: 'enterprise-live-authority-handoff', commandId: 'promote-1',
     commits: { enterprise: 'a'.repeat(40), bpc: 'b'.repeat(40), tsk: 'c'.repeat(40) },
     systems: {
       bpc: { sourceA: '1', promotedB: '2', control: '3' },
       tsk: { sourceA: '4', receiverB: '5', control: '6' },
-      enterprise: { source: '4', target: '5', failbackSource: '5', failbackTarget: '4' },
+      enterprise: { source: '4', target: '5', failbackSource: '5', failbackTarget: '4',
+        recoveredSource: '4', recoveredTarget: '5' },
     },
     artifacts: {
       bpcPromotion: '1'.repeat(64), bpcFailback: '0'.repeat(64),
@@ -35,6 +36,11 @@ function liveEvidence() {
       enterpriseRepeatForwardCredentialReceipt: '4'.repeat(64),
       enterpriseRepeatFailbackManifest: '5'.repeat(64),
       enterpriseRepeatFailbackCredentialReceipt: '6'.repeat(64),
+      bpcRecoveredReadiness: '7'.repeat(64),
+      tskRecoveredFinalized: '8'.repeat(64),
+      tskRecoveredActivation: '9'.repeat(64),
+      enterpriseRecoveredManifest: 'a'.repeat(64),
+      enterpriseRecoveredCredentialReceipt: 'b'.repeat(64),
     },
     outcomes: {
       bpcStaleWriterDenied: true, bpcFailbackStaleWriterDenied: true,
@@ -58,6 +64,10 @@ function liveEvidence() {
       tskRepeatFailbackStaleWriterDenied: true,
       tskRepeatForwardStaleCredentialDenied: true,
       tskRepeatFailbackStaleCredentialDenied: true,
+      bpcRecoveredStaleWriterDenied: true,
+      bpcRecoveredFirstMutationSequence: 1,
+      tskRecoveredStaleWriterDenied: true,
+      tskRecoveredStaleCredentialDenied: true,
     },
     tskReturnAuthority: {
       commandId: 'return-1',
@@ -103,16 +113,51 @@ function liveEvidence() {
         },
       },
     },
+    recoveredSite: {
+      bpcCommandId: 'promote-1-recovered-site-promote',
+      tskCommandId: 'promote-1-recovered-site-promote',
+      enterpriseCommandId: 'promote-1-recovered-site-promote',
+      bpcSourceEpoch: 5, bpcTargetEpoch: 6,
+      tskSourceEpoch: 4, tskTargetEpoch: 5,
+      enterpriseSourceEpoch: 5,
+      sourceSystemId: '4', targetSystemId: '5',
+      sourceClientId: 'repeat-a', targetClientId: 'recovered-b',
+      targetHolderId: 'recovered-b-holder',
+      staleSourceCompletionDenied: true, processRestarted: true,
+      restartedStaleCompletionDenied: true, idempotentRetry: true,
+      rpo: 0, rtoMs: 16,
+      artifacts: {
+        bpcReadiness: '7'.repeat(64), tskFinalized: '8'.repeat(64),
+        tskActivation: '9'.repeat(64), enterpriseManifest: 'a'.repeat(64),
+        enterpriseCredentialReceipt: 'b'.repeat(64),
+      },
+    },
+    protocolRestartDenials: {
+      bpc: Object.fromEntries(
+        ['initial', 'failback', 'repeatForward', 'repeatFailback', 'recoveredSite']
+          .map((name, index) => [name, { processRestarted: true, denied: true,
+            denialCode: 'source-fence-rejected', noCommittedEffect: true,
+            authorityStateDigest: 'a'.repeat(64),
+            childPid: 200 + index, rtoMs: 5 }]),
+      ),
+      tsk: Object.fromEntries(
+        ['initial', 'failback', 'repeatForward', 'repeatFailback', 'recoveredSite']
+          .map((name, index) => [name, { processRestarted: true, denied: true,
+            denialCode: 'source-fence-rejected', noCommittedEffect: true,
+            authorityStateDigest: 'b'.repeat(64),
+            childPid: 300 + index, rtoMs: 6 }]),
+      ),
+    },
     tskLatestAuthority: {
-      commandId: 'promote-1-cycle-2-failback', fenceEpoch: 4,
-      nodeId: 'return-a', activationGrantDigest: '2'.repeat(64),
+      commandId: 'promote-1-recovered-site-promote', fenceEpoch: 5,
+      nodeId: 'recovered-b-holder', activationGrantDigest: '9'.repeat(64),
     },
     tskRedisFaults: {
       schemaVersion: 1, kind: 'tsk-same-redis-authority-faults',
-      commandId: 'promote-1-cycle-2-failback',
+      commandId: 'promote-1-recovered-site-promote',
       streamId: 'enterprise28:tsk-live/v1', systemIds: { sourceA: '4', receiverB: '5', control: '6' },
       redisAuthorityKeyDigest: '7'.repeat(64), redisAuthorityTupleDigest: '8'.repeat(64),
-      fenceEpoch: 4, authorityNodeId: 'return-a',
+      fenceEpoch: 5, authorityNodeId: 'recovered-b-holder',
       faults: {
         livePartition: { rpo: 0, rtoMs: 10, oldMasterRefusedWrites: true,
           exactTuplePreserved: true, promotedMasterAddressDigest: '9'.repeat(64) },

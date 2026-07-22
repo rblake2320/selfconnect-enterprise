@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "reviewed_at": "2026-07-21",
+  "reviewed_at": "2026-07-22",
   "scope": "SelfConnect Enterprise Ultra named controlled-deployment topology",
   "authoritative_open_work": "https://github.com/rblake2320/selfconnect-enterprise/issues/28",
   "standards": [
@@ -61,6 +61,12 @@
       "head_sha": "70430c5b61d36ddc576b9ddf0744bc16339753ba",
       "conclusion": "success",
       "scope": "Post-merge master exact BPC/TSK Enterprise B-to-A failback, stale-B denial, and full six-PostgreSQL plus Redis quorum/Sentinel matrix"
+    },
+    {
+      "run_id": "29889970116",
+      "head_sha": "560ad520e914b424492a9e10934c7064ea093464",
+      "conclusion": "success",
+      "scope": "PR 67 exact-head repeated same-principal recovery, stale-site resynchronization, 15 restarted no-effect probes, and full six-PostgreSQL plus Redis quorum/Sentinel matrix"
     }
   ],
   "levels": [
@@ -190,16 +196,17 @@
       "limitations": "BPC and TSK pre-commit fencing, cross-host TSK denial, and stale-source protocol/completion denial across repeated exact Enterprise cycles pass. Enterprise stale-source denial has not yet been repeated after stale-site process restart and partition heal.",
       "closure": "Repeat exact Enterprise stale-source denial after stale-site restart and partition heal, retaining signed post-recovery evidence."
     },
-    {
-      "id": "recovered-site-resync-before-write",
-      "status": "partial",
+  {
+    "id": "recovered-site-resync-before-write",
+    "status": "pass",
       "requirement": "Reconcile a recovered old authority and prevent it from writing until full verified convergence under a newer epoch.",
       "evidence": [
         "repo:docs/operations/ULTRA_INDEPENDENT_STATE_HA.md#governed-ultra-source-authority",
-        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866745029"
-      ],
-      "limitations": "Readiness and source-authority gates fail closed in real PostgreSQL tests, but no recovered physical site has been resynchronized and returned to service.",
-      "closure": "Recover an isolated stale deployment, demonstrate write refusal, resynchronize all authorities, independently attest convergence, then enable the new-epoch first mutation."
+      "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866745029",
+      "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29889970116"
+    ],
+    "limitations": "The hosted six-PostgreSQL plus Redis/Sentinel drill reuses the stale B PostgreSQL authorities, proves stale writes have no committed effect, imports and independently attests BPC/TSK/Enterprise state, and permits only the exact first new-epoch mutations. This is process/container and logical-authority recovery on one CI host, not recovery from destroyed physical storage or a multi-site disaster.",
+    "closure": ""
     },
     {
       "id": "full-recovery-reconstitution",
@@ -232,18 +239,19 @@
       "limitations": "One exact A-to-B-to-A Enterprise cycle passes on the named topology with completed BPC/TSK artifacts, terminal source fencing, independently countersigned state, fresh target credential reprovisioning, stale-B protocol and completion denial, idempotent retry, and measured data-loss RPO zero. Repeated cycles, host/site loss, and production custody remain separate matrix levels.",
       "closure": ""
     },
-    {
-      "id": "repeated-same-principal-failover",
-      "status": "partial",
+  {
+    "id": "repeated-same-principal-failover",
+    "status": "pass",
       "requirement": "Repeat primary/replica failover and failback while preserving the same bound principal and monotonically advancing authority.",
       "evidence": [
         "repo:ultra_server/bpc-live-composition.mjs",
         "repo:ultra_server/tsk-live-composition.mjs",
         "repo:ultra_server/enterprise-live-handoff.mjs",
-        "repo:ultra_server/live-composition-evidence.mjs"
-      ],
-      "limitations": "Two complete A-to-B-to-A cycles pass locally under exact pinned BPC and TSK authorities on six distinct PostgreSQL systems plus real Redis. Each transition uses fresh signed exports and credentials, monotonic epochs, stale-source denial, idempotent completion, and per-cycle RPO/RTO. The hosted write-once evidence artifact and independent review are not yet complete.",
-      "closure": "Run the exact hosted six-PostgreSQL plus Redis matrix, retain the schema-v6 secret-free evidence artifact, and complete independent review before changing this level to PASS."
+      "repo:ultra_server/live-composition-evidence.mjs",
+      "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29889970116"
+    ],
+    "limitations": "Two complete A-to-B-to-A cycles plus an exact stale-B rebuild and governed A-to-B recovery pass under pinned BPC and TSK authorities on six distinct PostgreSQL systems plus real Redis. Fifteen distinct restarted child processes cover stale BPC writers, TSK writers, and Enterprise completions at all five cuts; each requires a protocol-specific typed denial and an unchanged before/after digest of the exact authoritative rows, so an error after a committed effect cannot count as a pass. Redis partition/heal remains a separate current-authority fault axis rather than a claimed cross-product with every process probe; that separate gap remains under old-writer-fencing.",
+    "closure": ""
     },
     {
       "id": "monitoring-alerting",

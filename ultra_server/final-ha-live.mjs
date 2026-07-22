@@ -162,11 +162,11 @@ export function validateLiveProtocolComposition(bpc, tsk, commandId) {
   assert.equal(tsk.returnSourceActivation.activationGrantDigest,
     tsk.returnActivationLeaseGrant.grantDigest);
   assert.equal(tsk.redisAuthority.record.commandId,
-    tsk.repeatedCycle.failback.commandId);
+    tsk.recoveredSite.handoff.commandId);
   assert.equal(tsk.redisAuthority.record.fenceEpoch,
-    tsk.repeatedCycle.failback.activationLease.leaseEpoch);
+    tsk.recoveredSite.handoff.activationLease.leaseEpoch);
   assert.equal(tsk.redisAuthority.record.nodeId,
-    tsk.repeatedCycle.failback.activationLease.holderNodeId);
+    tsk.recoveredSite.handoff.activationLease.holderNodeId);
   assert.equal(tsk.redisAuthority.record.active, true);
   assert.equal(tsk.publicCredential.status, 'active');
   assert.match(tsk.publicCredential.publicMapDigest, DIGEST);
@@ -204,6 +204,12 @@ export function validateLiveProtocolComposition(bpc, tsk, commandId) {
   assert.equal(tsk.staleRepeatReturnCredentialDenied, true);
   assert.equal(bpc.repeatedCycle.forward.targetEpoch, 4);
   assert.equal(bpc.repeatedCycle.failback.targetEpoch, 5);
+  assert.equal(bpc.recoveredSite.targetEpoch, 6);
+  assert.equal(bpc.recoveredSite.staleDatabaseReused, true);
+  assert.equal(bpc.recoveredSite.firstMutationSequence, 1);
+  assert.equal(tsk.recoveredSite.handoff.targetEpoch, 5);
+  assert.equal(tsk.recoveredSite.handoff.staleWriterDenied, true);
+  assert.equal(tsk.recoveredSite.staleCredentialDenied, true);
   assert.notEqual(tsk.publicCredentialReturn.clientId, tsk.publicCredentialTarget.clientId);
   assert.notEqual(tsk.publicCredentialReturn.secretDigest,
     tsk.publicCredentialTarget.secretDigest);
@@ -251,7 +257,7 @@ export async function runLiveProtocolComposition(env = process.env) {
   });
   const tskRedisFaults = sameAuthorityFaults
     ? await runSameTskRedisAuthorityFaults({ authority: tsk.redisAuthority,
-      commandId: tsk.repeatedCycle.failback.commandId, redis,
+      commandId: tsk.recoveredSite.handoff.commandId, redis,
       streamId: 'enterprise28:tsk-live/v1', systemIds: tsk.systemIds,
       topology: sameAuthorityTopology(env) })
     : null;
@@ -360,6 +366,21 @@ export async function runLiveProtocolComposition(env = process.env) {
       sourceSecretDigest: tsk.repeatForwardCredential.publicCredential.secretDigest,
     },
   );
+  const recoveredCredentialAuthority = createPromotedTskAuthorityCapability({
+    activationLease: tsk.recoveredSite.credential.leaseGrant,
+    leaseResolver: returnCredentialGuardResolver,
+    headKeyResolver: credentialHeadResolver,
+  });
+  const verifiedRecoveredCredential = await verifyPromotedTskCredentialProof(
+    recoveredCredentialAuthority,
+    tsk.recoveredSite.credential.proof,
+    {
+      agentId: tsk.recoveredSite.credential.proof.agentId,
+      pairId: tsk.recoveredSite.credential.proof.pairId,
+      sourceClientId: tsk.repeatReturnCredential.publicCredential.clientId,
+      sourceSecretDigest: tsk.repeatReturnCredential.publicCredential.secretDigest,
+    },
+  );
   validateLiveProtocolComposition(bpc, tsk, commandId);
 
   return Object.freeze({
@@ -377,6 +398,8 @@ export async function runLiveProtocolComposition(env = process.env) {
     verifiedRepeatForwardCredential,
     repeatReturnCredentialAuthority,
     verifiedRepeatReturnCredential,
+    recoveredCredentialAuthority,
+    verifiedRecoveredCredential,
     resolvers: Object.freeze({ bpcResolver, tskBResolver, tskGuardResolver,
       tskReturnResolver }),
     publicKeyFingerprints: Object.freeze({

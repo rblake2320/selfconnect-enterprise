@@ -61,4 +61,22 @@ test('executes governed BPC A to B promotion and B to A failback', {
   assert.equal(result.repeatedCycle.rpo, 0);
   assert.equal(Number.isSafeInteger(result.repeatedCycle.rtoMs) &&
     result.repeatedCycle.rtoMs >= 0, true);
+  assert.equal(result.recoveredSite.sourceEpoch, 5);
+  assert.equal(result.recoveredSite.targetEpoch, 6);
+  assert.equal(result.recoveredSite.targetSystemId, result.systemIds.promotedB);
+  assert.equal(result.recoveredSite.staleDatabaseReused, true);
+  assert.equal(result.recoveredSite.importedSequence, 7);
+  assert.equal(result.recoveredSite.firstMutationSequence, 1);
+  assert.equal(result.recoveredSite.staleSourceWriterDenied, true);
+  assert.equal(result.recoveredSite.rpo, 0);
+  assert.equal(Number.isSafeInteger(result.recoveredSite.rtoMs) &&
+    result.recoveredSite.rtoMs >= 0, true);
+  assert.deepEqual(Object.keys(result.restartDenials).sort(),
+    ['failback', 'initial', 'recoveredSite', 'repeatFailback', 'repeatForward']);
+  assert.equal(new Set(Object.values(result.restartDenials)
+    .map((probe) => probe.childPid)).size, 5);
+  for (const probe of Object.values(result.restartDenials)) {
+    assert.equal(probe.processRestarted, true);
+    assert.equal(probe.denied, true);
+  }
 });

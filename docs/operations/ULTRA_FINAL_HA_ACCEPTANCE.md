@@ -51,9 +51,9 @@ failback evidence is a failure.
 | Network/split brain | Live Redis master isolation; old master refuses writes, surviving quorum promotes, healed node converges |
 | Redis loss | Abrupt master loss with Sentinel quorum and enforced replica acknowledgement |
 | Database recovery | Exact promoted PostgreSQL `SIGKILL`/restart plus destructive Enterprise-table rebuild from signed state |
-| Protocol failback | Governed BPC, TSK, and Enterprise authorities complete two A -> B -> A cycles on six distinct PostgreSQL systems plus real Redis; each Enterprise transition consumes the exact pinned protocol artifacts |
+| Protocol failback and recovery | Governed BPC, TSK, and Enterprise authorities complete two A -> B -> A cycles, then rebuild the exact stale B authorities and perform a third A -> B recovery on six distinct PostgreSQL systems plus real Redis; each Enterprise transition consumes the exact pinned protocol artifacts |
 | Same principal | Pair and agent identity remain unchanged across both complete protocol and Enterprise failover/failback cycles while fresh target credentials are reprovisioned at each authority epoch |
-| Old writer fencing | BPC and TSK pre-commit authority checks deny the prior authority after promotion/restart/heal |
+| Old writer fencing | Five distinct restarted BPC child writers, five restarted TSK child writers, and five restarted Enterprise completion processes are denied across the five cuts. Each process requires the protocol-specific typed rejection and an unchanged SHA-256 digest of the exact authoritative rows before/after its attempted effect. Redis partition/heal separately preserves the exact current authority tuple. |
 | Tamper/gap/replay/rollback | Component and Enterprise drills reject each class before readiness or mutation |
 | Secret custody | State transport strips TSK and idempotency secrets; each target requires fresh governed reprovisioning |
 | RPO/RTO | Component drills print per-fault values; the final evidence retains only bounded lines and output hashes |
@@ -71,14 +71,24 @@ still requires the separately governed WORM deployment control.
 
 Failback is a new higher-epoch handoff, never a reversal of history. The BPC
 and TSK protocol authorities exercise that return path directly. The
-Enterprise-owned state test performs two real-PostgreSQL A -> B -> A cycles. It
+Enterprise-owned state test performs two real-PostgreSQL A -> B -> A cycles,
+then rebuilds the exact stale B authority in place and performs one governed
+A -> B recovery. It
 exports, independently countersigns, imports, reprovisions a fresh target
 credential, verifies exact manifest convergence and readiness, preserves the
 principal, denies stale completion, and reports per-cycle data-loss RPO zero.
+At each of the five cuts, fresh child processes reconnect to the stale BPC,
+TSK, and Enterprise databases; any successful stale mutation or completion
+fails the acceptance. The child probes use distinct operating-system process
+IDs and are not callbacks or reconstructed connections in the orchestrator
+process.
 The composed acceptance consumes the exact pinned BPC and TSK receipts and
-leases; it does not substitute synthetic protocol evidence. Stale-site
-restart/partition-heal fencing remains partial until the post-heal probes and
-retained evidence complete.
+leases; it does not substitute synthetic protocol evidence. Redis
+partition/heal evidence separately proves the exact current authority tuple
+survives and the old master refuses writes. The acceptance does not claim that
+every one of the fifteen process probes runs inside every network-fault window.
+The level remains partial until the exact hosted evidence and independent
+review complete.
 Previously redacted idempotency results remain redacted; they are not re-hashed
 as ordinary responses. Readiness is granted only after the new credential
 binding and authority digest agree. Separate-host execution is evidenced by the

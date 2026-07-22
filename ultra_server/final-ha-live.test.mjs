@@ -18,6 +18,8 @@ test('live composition requires exact command binding, independent systems, and 
       forward: { targetEpoch: 4 },
       failback: { targetEpoch: 5 },
     },
+    recoveredSite: { commandId: 'promote-live-1-recovered-site-promote',
+      targetEpoch: 6, staleDatabaseReused: true, firstMutationSequence: 1 },
     systemIds: { sourceA: '1', promotedB: '2', control: '3' },
   };
   const tsk = {
@@ -31,8 +33,8 @@ test('live composition requires exact command binding, independent systems, and 
     returnActivationLeaseGrant: { leaseEpoch: 2, commandId: 'return-promote-live-1',
       holderNodeId: 'return-a', grantDigest: 'c'.repeat(64) },
     returnSourceActivation: { n: 5, activationGrantDigest: 'c'.repeat(64) },
-    redisAuthority: { record: { commandId: 'promote-live-1-cycle-2-failback', fenceEpoch: 4,
-      nodeId: 'return-a', active: true } },
+    redisAuthority: { record: { commandId: 'promote-live-1-recovered-site-promote',
+      fenceEpoch: 5, nodeId: 'recovered-b', active: true } },
     staleCredentialWriterDenied: true,
     staleReturnedCredentialWriterDenied: true,
     publicCredential: { status: 'active', publicMapDigest: 'a'.repeat(64) },
@@ -58,6 +60,12 @@ test('live composition requires exact command binding, independent systems, and 
       failback: { sourceEpoch: 3, targetEpoch: 4, staleWriterDenied: true,
         commandId: 'promote-live-1-cycle-2-failback',
         activationLease: { leaseEpoch: 4, holderNodeId: 'return-a' } },
+    },
+    recoveredSite: {
+      handoff: { sourceEpoch: 4, targetEpoch: 5, staleWriterDenied: true,
+        commandId: 'promote-live-1-recovered-site-promote',
+        activationLease: { leaseEpoch: 5, holderNodeId: 'recovered-b' } },
+      staleCredentialDenied: true,
     },
     repeatForwardCredential: {
       leaseGrant: { leaseEpoch: 3 },
@@ -104,6 +112,9 @@ test('directly composes exact reviewed live BPC and TSK artifacts', {
   assert.equal(result.enterprise.repeatedCycle.failback.targetClientId,
     result.tsk.repeatReturnCredential.publicCredential.clientId);
   assert.equal(result.enterprise.repeatedCycle.failback.staleSourceCompletionDenied, true);
+  assert.equal(result.enterprise.recoveredSite.targetClientId,
+    result.tsk.recoveredSite.credential.publicCredential.clientId);
+  assert.equal(result.enterprise.recoveredSite.staleSourceCompletionDenied, true);
   if (process.env.ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE) {
     await writeLiveCompositionEvidence(process.env.ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE, result);
   }
