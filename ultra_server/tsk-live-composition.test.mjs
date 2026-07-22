@@ -93,6 +93,14 @@ test('executes the full live lifecycle when dedicated acceptance authorities are
   assert.equal(result.repeatedCycle.failback.targetEpoch, 4);
   assert.equal(result.repeatedCycle.failback.append.head.sequence, result.n + 4);
   assert.equal(result.repeatedCycle.failback.staleWriterDenied, true);
+  assert.equal(result.recoveredSite.handoff.sourceEpoch, 4);
+  assert.equal(result.recoveredSite.handoff.targetEpoch, 5);
+  assert.equal(result.recoveredSite.handoff.targetNodeId, 'node-b');
+  assert.equal(result.recoveredSite.handoff.append.head.sequence, result.n + 5);
+  assert.equal(result.recoveredSite.handoff.staleWriterDenied, true);
+  assert.equal(result.recoveredSite.staleCredentialDenied, true);
+  assert.equal(result.recoveredSite.credential.leaseGrant.leaseEpoch, 5);
+  assert.equal(result.recoveredSite.credential.publicCredential.status, 'active');
   assert.equal(result.tskCommit, TSK_COMMIT);
   assert.equal(result.publicCredentialSource.status, 'active');
   assert.equal(result.publicCredentialTarget.status, 'active');

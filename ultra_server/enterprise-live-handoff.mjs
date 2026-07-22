@@ -87,6 +87,55 @@ async function killImporterBeforeCommit(config) {
   }
 }
 
+async function proveStaleCompletionDeniedAfterRestart(config) {
+  const directory = await mkdtemp(join(tmpdir(), 'enterprise-stale-restart-'));
+  const configPath = join(directory, 'input.json');
+  await writeFile(configPath, JSON.stringify(config), { encoding: 'utf8', mode: 0o600 });
+  const startedAt = Date.now();
+  try {
+    return await new Promise((resolvePromise, rejectPromise) => {
+      const child = fork(
+        new URL('./enterprise-stale-completion-worker.mjs', import.meta.url),
+        [configPath],
+        {
+          cwd: new URL('.', import.meta.url),
+          stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+          windowsHide: true,
+        },
+      );
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        rejectPromise(new Error('stale-completion restart probe timed out'));
+      }, 30_000);
+      let evidence = null;
+      child.once('message', (message) => {
+        if (message?.kind === 'stale-completion-denied') evidence = message;
+      });
+      child.once('error', (error) => {
+        clearTimeout(timer);
+        rejectPromise(error);
+      });
+      child.once('close', (code, signal) => {
+        clearTimeout(timer);
+        if (code !== 0 || signal || !evidence || evidence.pid === process.pid) {
+          rejectPromise(new Error(
+            `stale-completion restart probe failed (code=${code}, signal=${signal ?? 'none'})`,
+          ));
+          return;
+        }
+        resolvePromise(Object.freeze({
+          processRestarted: true,
+          childPid: evidence.pid,
+          denied: true,
+          rtoMs: Date.now() - startedAt,
+        }));
+      });
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 /**
  * Compose the Enterprise state authority with the already-completed real BPC
  * and TSK promotions. This uses the exact signed artifacts returned by those
@@ -309,6 +358,24 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
         rtoMs: Date.now() - databaseStartedAt,
       });
     }
+    const initialRestartDenial = await proveStaleCompletionDeniedAfterRestart({
+      databaseUrl: aUrl,
+      guardPublicKey: composition.tsk.publicKeys.guard,
+      headPublicKey: composition.tsk.publicKeys.credentialHead,
+      activationLease: composition.tsk.credentialActivationLeaseGrant,
+      proof: composition.tsk.targetCredentialProof,
+      completion: {
+        advisoryLockKey,
+        agentId,
+        clusterId,
+        commandId: composition.commandId,
+        pairId,
+        sourceClientId,
+        sourceEpoch,
+        sourceSecretDigest,
+        targetProof: composition.tsk.targetCredentialProof,
+      },
+    });
 
     // Exact Enterprise B -> A failback. The current B credential is accepted
     // as export authority only through its completed, persisted A -> B
@@ -420,6 +487,24 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
         targetProof: composition.tsk.returnCredentialProof,
       },
     ), /does not match the imported promotion|binding mismatch/);
+    const failbackRestartDenial = await proveStaleCompletionDeniedAfterRestart({
+      databaseUrl: bUrl,
+      guardPublicKey: composition.tsk.publicKeys.guard,
+      headPublicKey: composition.tsk.publicKeys.returnCredentialHead,
+      activationLease: composition.tsk.returnCredentialActivationLeaseGrant,
+      proof: composition.tsk.returnCredentialProof,
+      completion: {
+        advisoryLockKey,
+        agentId,
+        clusterId,
+        commandId: returnCommandId,
+        pairId,
+        sourceClientId: reprovisioned.targetClientId,
+        sourceEpoch: returnSourceEpoch,
+        sourceSecretDigest: composition.verifiedTargetCredential.secretDigest,
+        targetProof: composition.tsk.returnCredentialProof,
+      },
+    });
 
     const executeRepeatedEnterpriseHandoff = async ({
       sourcePool,
@@ -441,8 +526,11 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       sourceCredentialProvenance,
       sourceCredentialProvenanceSecretDigest,
       targetCredentialAuthority,
+      targetCredentialLease,
+      targetCredentialHeadPublicKey,
       targetCredentialProof,
       targetCredential,
+      sourceDatabaseUrl,
     }) => {
       const startedAt = Date.now();
       const protocolEvidence = {
@@ -495,8 +583,7 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
         guardPublicKey: guardSigning.publicKey,
         ...resolvers,
       });
-      const completed = await completeImportedPromotedTskCredential(
-        targetPool, targetCredentialAuthority, {
+      const completionInput = {
           advisoryLockKey,
           agentId,
           clusterId,
@@ -506,7 +593,9 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
           sourceEpoch: cycleSourceEpoch,
           sourceSecretDigest: sourceCredentialSecretDigest,
           targetProof: targetCredentialProof,
-        },
+      };
+      const completed = await completeImportedPromotedTskCredential(
+        targetPool, targetCredentialAuthority, completionInput,
       );
       const ready = await assertIndependentStateReady(targetPool, {
         clusterId,
@@ -558,6 +647,14 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
         staleSourceCompletionDenied = true;
       }
       assert.equal(staleSourceCompletionDenied, true);
+      const restartDenial = await proveStaleCompletionDeniedAfterRestart({
+        databaseUrl: sourceDatabaseUrl,
+        guardPublicKey: composition.tsk.publicKeys.guard,
+        headPublicKey: targetCredentialHeadPublicKey,
+        activationLease: targetCredentialLease,
+        proof: targetCredentialProof,
+        completion: completionInput,
+      });
       return Object.freeze({
         commandId: cycleCommandId,
         sourceEpoch: cycleSourceEpoch,
@@ -569,6 +666,7 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
         receiptDigest: completed.receiptDigest,
         idempotentRetry: retry.idempotent,
         staleSourceCompletionDenied,
+        restartDenial,
         importedSystemId: imported.targetSystemId,
         convergence: Object.freeze({
           sourceManifestDigest: bundle.manifestDigest,
@@ -603,8 +701,11 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       sourceCredentialProvenanceSecretDigest:
         composition.verifiedTargetCredential.secretDigest,
       targetCredentialAuthority: composition.repeatForwardCredentialAuthority,
+      targetCredentialLease: composition.tsk.repeatForwardCredential.leaseGrant,
+      targetCredentialHeadPublicKey: composition.tsk.publicKeys.credentialHead,
       targetCredentialProof: composition.tsk.repeatForwardCredential.proof,
       targetCredential: composition.tsk.repeatForwardCredential.publicCredential,
+      sourceDatabaseUrl: aUrl,
     });
     assert.equal(
       repeatForward.commandId,
@@ -634,13 +735,57 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       sourceCredentialProvenanceSecretDigest:
         composition.verifiedReturnCredential.secretDigest,
       targetCredentialAuthority: composition.repeatReturnCredentialAuthority,
+      targetCredentialLease: composition.tsk.repeatReturnCredential.leaseGrant,
+      targetCredentialHeadPublicKey: composition.tsk.publicKeys.returnCredentialHead,
       targetCredentialProof: composition.tsk.repeatReturnCredential.proof,
       targetCredential: composition.tsk.repeatReturnCredential.publicCredential,
+      sourceDatabaseUrl: bUrl,
     });
     assert.equal(
       repeatFailback.commandId,
       composition.bpc.repeatedCycle.failback.commandId,
       'BPC, TSK, and Enterprise repeat-failback commands diverged',
+    );
+    // Recover the exact stale B Enterprise database in place. No prior B
+    // authority row survives this restore boundary; authority returns only
+    // after the complete signed A export, exact BPC/TSK bindings, import,
+    // readiness attestation, and credential completion converge.
+    await resetUltra(b);
+    const recoveredSite = await executeRepeatedEnterpriseHandoff({
+      sourcePool: a,
+      targetPool: b,
+      commandId: composition.tsk.recoveredSite.handoff.commandId,
+      sourceEpoch: composition.tsk.recoveredSite.credential.leaseGrant.leaseEpoch,
+      bpcPromotionAttestation:
+        composition.bpc.recoveredSite.readinessAttestation,
+      tskActivationLease: composition.tsk.recoveredSite.handoff.activationLease,
+      tskFinalizedReceipt: composition.tsk.recoveredSite.handoff.finalizedReceipt,
+      tskReceiptResolver: composition.resolvers.tskBResolver,
+      sourcePrivateKey: sourceSigning.privateKey,
+      sourcePublicKey: sourceSigning.publicKey,
+      sourceKeyId: 'enterprise28-source-key-a-recovered-1',
+      sourceCredentialAuthority: composition.repeatReturnCredentialAuthority,
+      sourceCredentialProof: composition.tsk.repeatReturnCredential.proof,
+      sourceCredentialRevocation:
+        composition.tsk.recoveredSite.sourceCredentialRevocation,
+      sourceCredential: composition.tsk.repeatReturnCredential.publicCredential,
+      sourceCredentialSecretDigest:
+        composition.verifiedRepeatReturnCredential.secretDigest,
+      sourceCredentialProvenance:
+        composition.tsk.repeatForwardCredential.publicCredential,
+      sourceCredentialProvenanceSecretDigest:
+        composition.verifiedRepeatForwardCredential.secretDigest,
+      targetCredentialAuthority: composition.recoveredCredentialAuthority,
+      targetCredentialLease: composition.tsk.recoveredSite.credential.leaseGrant,
+      targetCredentialHeadPublicKey: composition.tsk.publicKeys.credentialHead,
+      targetCredentialProof: composition.tsk.recoveredSite.credential.proof,
+      targetCredential: composition.tsk.recoveredSite.credential.publicCredential,
+      sourceDatabaseUrl: aUrl,
+    });
+    assert.equal(
+      recoveredSite.commandId,
+      composition.bpc.recoveredSite.commandId,
+      'BPC, TSK, and Enterprise recovered-site commands diverged',
     );
     return Object.freeze({
       clusterId,
@@ -674,7 +819,15 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
         forward: repeatForward,
         failback: repeatFailback,
       }),
+      recoveredSite,
       faults: Object.freeze({
+        staleCompletionRestarts: Object.freeze({
+          initial: initialRestartDenial,
+          failback: failbackRestartDenial,
+          repeatForward: repeatForward.restartDenial,
+          repeatFailback: repeatFailback.restartDenial,
+          recoveredSite: recoveredSite.restartDenial,
+        }),
         childProcessSigkill: Object.freeze({
           fault: 'sigkill-enterprise-importer-before-commit',
           resumed: true,
