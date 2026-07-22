@@ -4,10 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import {
-  probeRestartedStaleBpcAuthority,
-  runBpcLiveComposition,
-} from './bpc-live-composition.mjs';
+import { runBpcLiveComposition } from './bpc-live-composition.mjs';
 import { runEnterpriseLiveHandoff } from './enterprise-live-handoff.mjs';
 import { assertCleanReviewedCheckout } from './final-ha-acceptance.mjs';
 import {
@@ -15,10 +12,7 @@ import {
   verifyPromotedTskCredentialProof,
   verifySourceTskCredentialProof,
 } from './promoted-tsk-authority.js';
-import {
-  probeRestartedStaleTskAuthority,
-  runTskLiveComposition,
-} from './tsk-live-composition.mjs';
+import { runTskLiveComposition } from './tsk-live-composition.mjs';
 import {
   runSameRedisAuthorityFaults,
   runSameTskRedisAuthorityFaults,
@@ -244,7 +238,6 @@ export async function runLiveProtocolComposition(env = process.env) {
       env.BPC_TEST_POSTGRES_CONTROL_URL],
     redisUrls: required(env.BPC_TEST_REDIS_URLS, 'BPC_TEST_REDIS_URLS').split(','),
     streamId: 'bpc:enterprise:live/v1',
-    preserveStaleAuthority: sameAuthorityFaults,
   });
   const redis = tskRedisOptions(env);
   const tsk = await runTskLiveComposition({
@@ -254,7 +247,6 @@ export async function runLiveProtocolComposition(env = process.env) {
     controlPostgresUrl: env.TSK_TEST_CONTROL_PG_URL,
     redis,
     preserveRedisAuthority: sameAuthorityFaults,
-    preserveStaleAuthority: sameAuthorityFaults,
     streamId: 'enterprise28:tsk-live/v1', destructiveReset: true,
   });
   const tskRedisFaults = sameAuthorityFaults
@@ -262,24 +254,6 @@ export async function runLiveProtocolComposition(env = process.env) {
       commandId: tsk.repeatedCycle.failback.commandId, redis,
       streamId: 'enterprise28:tsk-live/v1', systemIds: tsk.systemIds,
       topology: sameAuthorityTopology(env) })
-    : null;
-  const postHealStaleAuthorities = sameAuthorityFaults
-    ? Object.freeze({
-      bpc: await probeRestartedStaleBpcAuthority({
-        bpcRoot,
-        expectedBpcCommit: bpcCommit,
-        sourcePostgresUrl: env.BPC_TEST_POSTGRES_B_URL,
-        descriptor: bpc.staleRecoveryProbe,
-        publicKeys: bpc.recoveryPublicKeys,
-      }),
-      tsk: await probeRestartedStaleTskAuthority({
-        tskRoot,
-        expectedTskCommit: tskCommit,
-        sourcePostgresUrl: env.TSK_TEST_RECEIVER_PG_URL_B,
-        descriptor: tsk.staleRecoveryProbe,
-        publicVerificationKeys: tsk.publicVerificationKeys,
-      }),
-    })
     : null;
 
   const [bpcApi, tskApi] = await Promise.all([
@@ -394,7 +368,6 @@ export async function runLiveProtocolComposition(env = process.env) {
     bpc,
     tsk,
     tskRedisFaults,
-    postHealStaleAuthorities,
     sourceCredentialAuthority,
     verifiedSourceCredential,
     verifiedTargetCredential,

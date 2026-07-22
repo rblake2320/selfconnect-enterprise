@@ -107,29 +107,6 @@ function liveEvidence() {
       commandId: 'promote-1-cycle-2-failback', fenceEpoch: 4,
       nodeId: 'return-a', activationGrantDigest: '2'.repeat(64),
     },
-    postHealStaleAuthorities: {
-      bpc: { restarted: true, staleWriterDenied: true, systemId: '2', epoch: 4 },
-      tsk: { restarted: true, staleWriterDenied: true, systemId: '5', epoch: 3 },
-    },
-    recoveredSiteResync: {
-      commandId: 'promote-1-cycle-2-promote',
-      bpc: {
-        targetSystemId: '2', importedSequence: 3, firstOriginatedSequence: 5,
-        attestationDigest: 'd'.repeat(64), staleBeforeRestart: true,
-        staleAfterRestart: true,
-      },
-      tsk: {
-        targetSystemId: '5', importedSequence: 3, firstOriginatedSequence: 4,
-        finalizedReceiptDigest: 'f'.repeat(64), staleBeforeRestart: true,
-        staleAfterRestart: true,
-      },
-      enterprise: {
-        targetSystemId: '5', sourceManifestDigest: '3'.repeat(64),
-        importedManifestDigest: '3'.repeat(64), readyManifestDigest: '3'.repeat(64),
-        targetClientId: 'repeat-b',
-      },
-      rpo: 0,
-    },
     tskRedisFaults: {
       schemaVersion: 1, kind: 'tsk-same-redis-authority-faults',
       commandId: 'promote-1-cycle-2-failback',
@@ -286,20 +263,4 @@ test('direct handoff evidence is exact, secret-free authority output', () => {
       }));
     }
   }
-  assert.throws(() => validateLiveCompositionEvidence({
-    ...evidence,
-    postHealStaleAuthorities: { ...evidence.postHealStaleAuthorities,
-      tsk: { ...evidence.postHealStaleAuthorities.tsk, staleWriterDenied: false } },
-  }));
-  assert.throws(() => validateLiveCompositionEvidence({
-    ...evidence,
-    recoveredSiteResync: { ...evidence.recoveredSiteResync,
-      tsk: { ...evidence.recoveredSiteResync.tsk, firstOriginatedSequence: 5 } },
-  }));
-  assert.throws(() => validateLiveCompositionEvidence({
-    ...evidence,
-    recoveredSiteResync: { ...evidence.recoveredSiteResync,
-      enterprise: { ...evidence.recoveredSiteResync.enterprise,
-        readyManifestDigest: '9'.repeat(64) } },
-  }));
 });

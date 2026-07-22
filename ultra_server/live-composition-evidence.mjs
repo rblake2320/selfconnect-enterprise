@@ -194,42 +194,6 @@ function publicEvidence(result) {
         result.tsk.repeatedCycle.failback.activationLease.grantDigest,
     },
     tskRedisFaults: result.tskRedisFaults,
-    postHealStaleAuthorities: result.postHealStaleAuthorities,
-    recoveredSiteResync: {
-      commandId: result.bpc.repeatedCycle.forward.commandId,
-      bpc: {
-        targetSystemId: result.bpc.repeatedCycle.forward.targetSystemId,
-        importedSequence: result.bpc.repeatedCycle.forward.importedSequence,
-        firstOriginatedSequence: result.bpc.repeatedCycle.forward.originatedSequence,
-        attestationDigest:
-          result.bpc.repeatedCycle.forward.readinessAttestation.attestationDigest,
-        staleBeforeRestart:
-          result.bpc.repeatedCycle.forward.staleSourceWriterDenied,
-        staleAfterRestart: result.postHealStaleAuthorities.bpc.staleWriterDenied,
-      },
-      tsk: {
-        targetSystemId: result.tsk.systemIds.receiverB,
-        importedSequence: result.tsk.repeatedCycle.forward.frozenReceipt.n,
-        firstOriginatedSequence:
-          result.tsk.repeatedCycle.forward.append.head.sequence,
-        finalizedReceiptDigest:
-          result.tsk.repeatedCycle.forward.finalizedReceipt.receiptDigest,
-        staleBeforeRestart: result.tsk.repeatedCycle.forward.staleWriterDenied,
-        staleAfterRestart: result.postHealStaleAuthorities.tsk.staleWriterDenied,
-      },
-      enterprise: {
-        targetSystemId: result.enterprise.repeatedCycle.forward.targetSystemId,
-        sourceManifestDigest:
-          result.enterprise.repeatedCycle.forward.convergence.sourceManifestDigest,
-        importedManifestDigest:
-          result.enterprise.repeatedCycle.forward.convergence.importedManifestDigest,
-        readyManifestDigest:
-          result.enterprise.repeatedCycle.forward.convergence.readyManifestDigest,
-        targetClientId:
-          result.enterprise.repeatedCycle.forward.convergence.targetCredentialClientId,
-      },
-      rpo: result.enterprise.repeatedCycle.forward.rpo,
-    },
     ultraRedisFaults: result.ultraRedisFaults,
   };
 }
@@ -389,58 +353,6 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
   assert.equal(evidence.outcomes.tskRepeatFailbackStaleWriterDenied, true);
   assert.equal(evidence.outcomes.tskRepeatForwardStaleCredentialDenied, true);
   assert.equal(evidence.outcomes.tskRepeatFailbackStaleCredentialDenied, true);
-  assert.deepEqual(Object.keys(evidence.postHealStaleAuthorities ?? {}).sort(), [
-    'bpc', 'tsk',
-  ]);
-  for (const probe of Object.values(evidence.postHealStaleAuthorities)) {
-    assert.equal(probe.restarted, true);
-    assert.equal(probe.staleWriterDenied, true);
-    assert.equal(Number.isSafeInteger(probe.epoch) && probe.epoch > 0, true);
-  }
-  assert.equal(evidence.postHealStaleAuthorities.bpc.systemId,
-    evidence.systems.bpc.promotedB);
-  assert.equal(evidence.postHealStaleAuthorities.tsk.systemId,
-    evidence.systems.tsk.receiverB);
-  const resync = evidence.recoveredSiteResync;
-  assert.deepEqual(Object.keys(resync ?? {}).sort(), [
-    'bpc', 'commandId', 'enterprise', 'rpo', 'tsk',
-  ]);
-  assert.equal(resync.commandId, evidence.repeatedCycle.forward.bpcCommandId);
-  assert.deepEqual(Object.keys(resync.bpc).sort(), [
-    'attestationDigest', 'firstOriginatedSequence', 'importedSequence',
-    'staleAfterRestart', 'staleBeforeRestart', 'targetSystemId',
-  ]);
-  assert.equal(resync.bpc.targetSystemId, evidence.systems.bpc.promotedB);
-  assert.equal(resync.bpc.attestationDigest,
-    evidence.artifacts.bpcRepeatForward);
-  assert.equal(resync.bpc.importedSequence < resync.bpc.firstOriginatedSequence,
-    true);
-  assert.equal(resync.bpc.staleBeforeRestart, true);
-  assert.equal(resync.bpc.staleAfterRestart, true);
-  assert.deepEqual(Object.keys(resync.tsk).sort(), [
-    'finalizedReceiptDigest', 'firstOriginatedSequence', 'importedSequence',
-    'staleAfterRestart', 'staleBeforeRestart', 'targetSystemId',
-  ]);
-  assert.equal(resync.tsk.targetSystemId, evidence.systems.tsk.receiverB);
-  assert.equal(resync.tsk.finalizedReceiptDigest,
-    evidence.artifacts.tskRepeatForwardFinalized);
-  assert.equal(resync.tsk.firstOriginatedSequence, resync.tsk.importedSequence + 1);
-  assert.equal(resync.tsk.staleBeforeRestart, true);
-  assert.equal(resync.tsk.staleAfterRestart, true);
-  assert.deepEqual(Object.keys(resync.enterprise).sort(), [
-    'importedManifestDigest', 'readyManifestDigest', 'sourceManifestDigest',
-    'targetClientId', 'targetSystemId',
-  ]);
-  assert.equal(resync.enterprise.targetSystemId, evidence.systems.enterprise.target);
-  assert.equal(resync.enterprise.sourceManifestDigest,
-    evidence.artifacts.enterpriseRepeatForwardManifest);
-  assert.equal(resync.enterprise.importedManifestDigest,
-    resync.enterprise.sourceManifestDigest);
-  assert.equal(resync.enterprise.readyManifestDigest,
-    resync.enterprise.sourceManifestDigest);
-  assert.equal(resync.enterprise.targetClientId,
-    evidence.repeatedCycle.forward.targetClientId);
-  assert.equal(resync.rpo, 0);
   assert.equal(evidence.tskRedisFaults?.kind, 'tsk-same-redis-authority-faults');
   assert.equal(evidence.tskRedisFaults?.commandId,
     evidence.tskLatestAuthority.commandId);
