@@ -30,8 +30,8 @@ async function authorityDigest() {
 
 try {
   const db = new bpc.NodePostgresTransactor(runtimePool, {
-    statementTimeoutMs: 3_000,
-    transactionTimeoutMs: 5_000,
+    statementTimeoutMs: 350,
+    transactionTimeoutMs: 500,
   });
   const controlDb = new bpc.NodePostgresTransactor(controlPool);
   const [ready, haReady, controlReady] = await Promise.all([
