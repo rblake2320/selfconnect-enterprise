@@ -266,9 +266,14 @@ def test_ha_test_coverage_never_hides_unexecuted_levels_as_passes() -> None:
     assert {group["id"]: group["count"] for group in skip_groups} == {
         "generic-windows-ultra-unavailable": 34,
         "generic-windows-posix-semantics": 4,
+        "worm-evidence-live-sink-unconfigured": 3,
     }
     assert sum("Ultra Server" in reason for reason in ALLOWED_SKIPS.values()) == 34
-    assert sum("Ultra Server" not in reason for reason in ALLOWED_SKIPS.values()) == 4
+    assert sum(
+        "Ultra Server" not in reason and "live WORM" not in reason
+        for reason in ALLOWED_SKIPS.values()
+    ) == 4
+    assert sum("live WORM" in reason for reason in ALLOWED_SKIPS.values()) == 3
     for group in skip_groups:
         assert set(group) == {
             "id",

@@ -1,0 +1,87 @@
+# Prometheus alerting rules for Ultra Server HA fault signals (issue #28,
+# docs/assurance/ha_test_coverage.json: monitoring-alerting).
+#
+# Every alert here is backed by a metric server.js actually emits (see
+# ultra_server/server.js and ultra_server/ha-metrics.js) — this file is
+# cross-checked against server.js by monitoring-alerting-config.test.mjs so a
+# renamed or removed metric fails CI instead of silently going dark.
+#
+# This is a reviewed reference rule set for the loopback-only local stack in
+# ultra_server/monitoring/docker-compose.yml, not a universal production
+# configuration: routing to a real on-call system (PagerDuty/Slack/email) is
+# an environment decision — see ultra_server/monitoring/alertmanager.yml and
+# docs/ato/MONITORING_ALERTING_OWNER_CHECKLIST.md.
+groups:
+  - name: ultra-ha-fault-signals
+    rules:
+      - alert: UltraTargetDown
+        expr: up{job="ultra-server"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ultra Server metrics target is down"
+          description: "Prometheus has not been able to scrape ultra-server for 1m."
+
+      - alert: UltraHaAuthorityLoss
+        expr: increase(ultra_ha_authority_loss_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ultra HA fencing/writer-lease boundary raised an error"
+          description: "ultra_ha_authority_loss_total increased: the fencing authority (Postgres advisory lock / fence store) was unreachable instead of returning a writable/not-writable decision."
+
+      - alert: UltraHaPromotionDenied
+        expr: increase(ultra_ha_promotion_denied_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ultra HA guard-command transition was denied"
+          description: "ultra_ha_promotion_denied_total increased for reason={{ $labels.reason }}: an activate/promote/demote transition was rejected."
+
+      - alert: UltraHaStaleWriterDenied
+        expr: increase(ultra_ha_stale_writer_denied_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ultra HA rejected a request from a stale/fenced writer"
+          description: "ultra_ha_stale_writer_denied_total increased: a write was rejected because the local writer lease was missing, expired, or fenced."
+
+      - alert: UltraHaRecoveryFailure
+        expr: increase(ultra_ha_recovery_failure_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "An Ultra HA recovery/reprovisioning/reload operation failed"
+          description: "ultra_ha_recovery_failure_total increased for stage={{ $labels.stage }}."
+
+      - alert: UltraHaReplicationLagHigh
+        expr: (time() - ultra_ha_independent_state_ready_timestamp_seconds) > 900
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No successful Ultra independent-state readiness check in 15+ minutes"
+          description: "time() - ultra_ha_independent_state_ready_timestamp_seconds is the replication-lag proxy; it has exceeded 900s, meaning the promoted authority has not confirmed readiness recently."
+
+      - alert: UltraHaIndependentStateCheckFailing
+        expr: increase(ultra_ha_independent_state_check_failures_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ultra independent-state readiness check is failing"
+          description: "ultra_ha_independent_state_check_failures_total increased: assertIndependentStateReady() raised instead of confirming readiness."
+
+      - alert: UltraAuthFailureSpike
+        expr: increase(ultra_auth_failures_total[5m]) > 20
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated Ultra authentication failure rate"
+          description: "More than 20 ultra_auth_failures_total in 5m for reason={{ $labels.reason }}."

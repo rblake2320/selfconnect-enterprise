@@ -65,11 +65,24 @@ ALLOWED_SKIPS = {
     "tests/test_enterprise/test_runtime_ownership.py::test_wrong_owner_lock_directory_is_rejected": "Skipped: POSIX ownership semantics",
     "tests/test_enterprise/test_runtime_ownership.py::test_precreated_symlink_lock_file_is_rejected": "Skipped: POSIX no-follow file-symlink semantics",
     "tests/test_enterprise/test_runtime_ownership.py::test_replaced_lock_file_during_binding_is_rejected": "Skipped: Windows denies unlink of locked file",
+    # Live WORM evidence-routing drill (docs/ato/WORM_EVIDENCE_ROUTING_OWNER_CHECKLIST.md):
+    # skipped here because no live S3 Object Lock / R2 bucket-lock sink is
+    # configured. Set SCENT_REQUIRE_WORM_LIVE=1 to make an unconfigured sink a
+    # hard collection-time failure instead of a skip.
+    "tests/test_enterprise/test_worm_evidence_live.py::test_live_sink_has_provider_enforced_retention": (
+        "Skipped: live WORM evidence sink not configured (set SCENT_WORM_SINK/SCENT_WORM_BUCKET)"
+    ),
+    "tests/test_enterprise/test_worm_evidence_live.py::test_live_routing_covers_every_named_evidence_artifact": (
+        "Skipped: live WORM evidence sink not configured (set SCENT_WORM_SINK/SCENT_WORM_BUCKET)"
+    ),
+    "tests/test_enterprise/test_worm_evidence_live.py::test_live_deletion_of_routed_evidence_is_denied": (
+        "Skipped: live WORM evidence sink not configured (set SCENT_WORM_SINK/SCENT_WORM_BUCKET)"
+    ),
 }
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 TRUSTED_CONFTEST_SHA256 = "4455e076e35ccf23bc9658ef7d10b3700d421f7de98b86d59306ee4fa1e34f5a"
-EXPECTED_COLLECTION_COUNT = 1_752
-EXPECTED_COLLECTION_SHA256 = "0b0a9c59b37703b46da0e77c70272809abef28c4355a478302649b365cc4d4fc"
+EXPECTED_COLLECTION_COUNT = 1_771
+EXPECTED_COLLECTION_SHA256 = "6d59a082236bc7da3b4048d21c4335d026396c265d101323bbe59156d4902150"
 
 
 def _verify_record_file(dist: Any, package_file: Any) -> Path:
