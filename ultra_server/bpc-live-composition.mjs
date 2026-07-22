@@ -1535,32 +1535,33 @@ export async function runBpcLiveComposition(options) {
         },
         pair: pair(number),
       });
-    const [initialRestartDenial, failbackRestartDenial,
-      repeatForwardRestartDenial, repeatFailbackRestartDenial,
-      recoveredRestartDenial] = await Promise.all([
-      restartProbe({ cut: 'initial', database: postgresUrls[0], grant: grantA, redisRecord: redisA,
+    const initialRestartDenial = await restartProbe({ cut: 'initial',
+      database: postgresUrls[0], grant: grantA, redisRecord: redisA,
         nodeKeyId: KEY_IDS.nodeA, nodePrivateKey: nodeAPrivate,
-        authoritySystemId: idA, number: 61 }),
-      restartProbe({ cut: 'failback', database: postgresUrls[1], grant: grantB, redisRecord: redisB,
+        authoritySystemId: idA, number: 61 });
+    const failbackRestartDenial = await restartProbe({ cut: 'failback',
+      database: postgresUrls[1], grant: grantB, redisRecord: redisB,
         activationDigest: activeCutoverReceipt.stateDigestSigned,
         nodeKeyId: KEY_IDS.nodeB, nodePrivateKey: nodeBPrivate,
-        authoritySystemId: idB, number: 62 }),
-      restartProbe({ cut: 'repeatForward', database: databaseUrl(postgresUrls[0], failbackDatabase),
+        authoritySystemId: idB, number: 62 });
+    const repeatForwardRestartDenial = await restartProbe({ cut: 'repeatForward',
+      database: databaseUrl(postgresUrls[0], failbackDatabase),
         grant: grantA3, redisRecord: redisA3,
         activationDigest: failbackActiveCutoverReceipt.stateDigestSigned,
         nodeKeyId: KEY_IDS.nodeA, nodePrivateKey: nodeAPrivate,
-        authoritySystemId: idA, number: 63 }),
-      restartProbe({ cut: 'repeatFailback', database: databaseUrl(postgresUrls[1], repeatBDatabase),
+        authoritySystemId: idA, number: 63 });
+    const repeatFailbackRestartDenial = await restartProbe({ cut: 'repeatFailback',
+      database: databaseUrl(postgresUrls[1], repeatBDatabase),
         grant: grantB4, redisRecord: redisB4,
         activationDigest: repeatForwardActive.stateDigestSigned,
         nodeKeyId: KEY_IDS.nodeB, nodePrivateKey: nodeBPrivate,
-        authoritySystemId: idB, number: 64 }),
-      restartProbe({ cut: 'recoveredSite', database: databaseUrl(postgresUrls[0], repeatADatabase),
+        authoritySystemId: idB, number: 64 });
+    const recoveredRestartDenial = await restartProbe({ cut: 'recoveredSite',
+      database: databaseUrl(postgresUrls[0], repeatADatabase),
         grant: grantA5, redisRecord: redisA5,
         activationDigest: repeatReturnActive.stateDigestSigned,
         nodeKeyId: KEY_IDS.nodeA, nodePrivateKey: nodeAPrivate,
-        authoritySystemId: idA, number: 65 }),
-    ]);
+        authoritySystemId: idA, number: 65 });
 
     return deepFreeze({
       protocolCommit: actualCommit,
