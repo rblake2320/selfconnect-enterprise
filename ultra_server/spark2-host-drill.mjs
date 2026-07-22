@@ -52,6 +52,7 @@ export async function runSpark2HostDrill(env = process.env) {
     controlPostgresUrl: urls.control,
     redis: Object.freeze({ kind: 'url', url: urls.redis }),
     preserveRedisAuthority: false,
+    preserveStaleAuthority: false,
     destructiveReset: true,
   });
   validateSpark2Result(result, admission);

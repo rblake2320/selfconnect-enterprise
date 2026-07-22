@@ -71,17 +71,19 @@ still requires the separately governed WORM deployment control.
 
 Failback is a new higher-epoch handoff, never a reversal of history. The BPC
 and TSK protocol authorities exercise that return path directly. The
-Enterprise-owned state test performs a real-PostgreSQL A -> B -> A return: it
+Enterprise-owned state test performs two real-PostgreSQL A -> B -> A cycles. It
 exports, independently countersigns, imports, reprovisions a fresh target
-credential, verifies readiness, preserves the principal, and reports data-loss
-RPO zero. That mechanism test uses synthetic signed protocol evidence and a
-callback writable assertion. It therefore does not establish exact completed
-BPC/TSK Enterprise failback composition or repeated same-principal cycles. Stale-site restart/partition-heal fencing remains a separate partial gate.
+credential, verifies exact manifest convergence and readiness, preserves the
+principal, denies stale completion, and reports per-cycle data-loss RPO zero.
+The composed acceptance consumes the exact pinned BPC and TSK receipts and
+leases; it does not substitute synthetic protocol evidence. Stale-site
+restart/partition-heal fencing remains partial until the post-heal probes and
+retained evidence complete.
 Previously redacted idempotency results remain redacted; they are not re-hashed
 as ordinary responses. Readiness is granted only after the new credential
 binding and authority digest agree. Separate-host execution is evidenced by the
-Spark-1/Spark-2 supplement. Whole-host loss, separate-site operation, and exact
-completed-authority Enterprise return remain issue #28 acceptance gates.
+Spark-1/Spark-2 supplement. Whole-host loss and separate-site operation remain
+issue #28 acceptance gates.
 
 ## Operations
 

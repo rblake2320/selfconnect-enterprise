@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { createHash, generateKeyPairSync, randomBytes, sign as edSign } from 'node:crypto';
+import {
+  createHash, createPublicKey, generateKeyPairSync, randomBytes, sign as edSign,
+} from 'node:crypto';
 import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -175,6 +177,57 @@ function derivedId(prefix, value) {
   return `${prefix}:${createHash('sha256').update(value).digest('hex').slice(0, 24)}`;
 }
 
+function databaseUrl(connectionString, databaseName) {
+  const url = new URL(connectionString);
+  url.pathname = `/${databaseName}`;
+  return url.toString();
+}
+
+export async function probeRestartedStaleTskAuthority(options) {
+  const reviewed = await loadReviewedTsk(options.tskRoot, options.expectedTskCommit);
+  const { NodePostgresTransactor, assertSourceFenceReady } = reviewed.server;
+  const databaseName = requiredString(
+    options.descriptor?.databaseName, 'descriptor.databaseName',
+  );
+  if (!/^enterprise28_tsk_repeat_b3$/.test(databaseName)) {
+    throw new Error('stale TSK database name is invalid');
+  }
+  const stalePool = new pg.Pool({
+    connectionString: databaseUrl(options.sourcePostgresUrl, databaseName),
+    max: 2,
+    connectionTimeoutMillis: 10_000,
+  });
+  const adminPool = new pg.Pool({
+    connectionString: options.sourcePostgresUrl,
+    max: 1,
+    connectionTimeoutMillis: 10_000,
+  });
+  stalePool.on('error', () => {});
+  adminPool.on('error', () => {});
+  try {
+    const resolver = Object.freeze({ resolve: (keyId) => {
+      const pem = options.publicVerificationKeys?.[keyId];
+      return pem ? createPublicKey(pem) : null;
+    } });
+    const db = new NodePostgresTransactor(stalePool);
+    await assert.rejects(() => assertSourceFenceReady(
+      db, 'public', resolver, options.descriptor.authorizedIdentity,
+    ), /revoked|not writable|lease|fence|grant digest/i);
+    return Object.freeze({
+      restarted: true,
+      staleWriterDenied: true,
+      systemId: await systemId(stalePool),
+      epoch: options.descriptor.epoch,
+    });
+  } finally {
+    await stalePool.end().catch(() => {});
+    await adminPool.query(
+      `DROP DATABASE IF EXISTS ${databaseName} WITH (FORCE)`,
+    ).catch(() => {});
+    await adminPool.end().catch(() => {});
+  }
+}
+
 async function readPublicCredentialProof(pool, streamId, clientId, expectedSequence,
   activationLease, { agentId, pairId, commandId }) {
   const row = (await pool.query(
@@ -244,7 +297,7 @@ function validateOptions(options) {
   exactKeys(options, [
     'aPostgresUrl', 'bPostgresUrl', 'controlPostgresUrl', 'destructiveReset',
     'commandId', 'expectedTskCommit', 'preserveRedisAuthority', 'redis',
-    'streamId', 'tskRoot',
+    'preserveStaleAuthority', 'streamId', 'tskRoot',
   ], 'TSK live-composition options');
   if (options.destructiveReset !== true) {
     throw new Error('destructiveReset=true is required for dedicated acceptance databases');
@@ -278,6 +331,9 @@ function validateOptions(options) {
   if (typeof options.preserveRedisAuthority !== 'boolean') {
     throw new Error('preserveRedisAuthority must be boolean');
   }
+  if (typeof options.preserveStaleAuthority !== 'boolean') {
+    throw new Error('preserveStaleAuthority must be boolean');
+  }
   return Object.freeze({
     tskRoot: resolve(requiredString(options.tskRoot, 'tskRoot')),
     aPostgresUrl: requiredString(options.aPostgresUrl, 'aPostgresUrl'),
@@ -285,6 +341,7 @@ function validateOptions(options) {
     controlPostgresUrl: requiredString(options.controlPostgresUrl, 'controlPostgresUrl'),
     redis,
     preserveRedisAuthority: options.preserveRedisAuthority,
+    preserveStaleAuthority: options.preserveStaleAuthority,
     streamId: requiredId(options.streamId, 'streamId'),
     commandId: requiredId(options.commandId, 'commandId'),
     expectedTskCommit: requiredString(options.expectedTskCommit, 'expectedTskCommit').toLowerCase(),
@@ -1791,6 +1848,16 @@ export async function runTskLiveComposition(rawOptions) {
         forward: repeatForward,
         failback: repeatReturn,
       }),
+      staleRecoveryProbe: options.preserveStaleAuthority ? Object.freeze({
+        databaseName: 'enterprise28_tsk_repeat_b3',
+        epoch: repeatForward.targetEpoch,
+        authorizedIdentity: Object.freeze({
+          streamId: options.streamId,
+          holderNodeId: repeatForward.activationLease.holderNodeId,
+          leaseId: repeatForward.activationLease.leaseId,
+          grantDigest: repeatForward.activationLease.grantDigest,
+        }),
+      }) : null,
       returnCommandId,
       systemIds,
       n,
@@ -1857,9 +1924,12 @@ export async function runTskLiveComposition(rawOptions) {
   } finally {
     for (const entry of repeatDatabases.reverse()) {
       await entry.pool.end().catch(() => {});
-      await entry.adminPool.query(
-        `DROP DATABASE IF EXISTS ${entry.databaseName} WITH (FORCE)`,
-      ).catch(() => {});
+      if (!(options.preserveStaleAuthority &&
+          entry.databaseName === 'enterprise28_tsk_repeat_b3')) {
+        await entry.adminPool.query(
+          `DROP DATABASE IF EXISTS ${entry.databaseName} WITH (FORCE)`,
+        ).catch(() => {});
+      }
     }
     await Promise.allSettled([
       options.preserveRedisAuthority ? Promise.resolve() : redis.del(redisKey),

@@ -69,27 +69,66 @@ function liveEvidence() {
     },
     repeatedCycle: {
       forward: {
-        commandId: 'promote-1-cycle-2-promote',
+        bpcCommandId: 'promote-1-cycle-2-promote',
+        tskCommandId: 'promote-1-cycle-2-promote',
+        enterpriseCommandId: 'promote-1-cycle-2-promote',
         bpcSourceEpoch: 3, bpcTargetEpoch: 4,
         tskSourceEpoch: 2, tskTargetEpoch: 3,
+        enterpriseSourceEpoch: 3,
         sourceSystemId: '4', targetSystemId: '5',
         sourceClientId: 'return-target', targetClientId: 'repeat-b',
         staleSourceCompletionDenied: true, idempotentRetry: true,
         rpo: 0, rtoMs: 14,
+        artifacts: {
+          bpcReadiness: 'd'.repeat(64), tskFinalized: 'f'.repeat(64),
+          tskActivation: '0'.repeat(64), enterpriseManifest: '3'.repeat(64),
+          enterpriseCredentialReceipt: '4'.repeat(64),
+        },
       },
       failback: {
-        commandId: 'promote-1-cycle-2-failback',
+        bpcCommandId: 'promote-1-cycle-2-failback',
+        tskCommandId: 'promote-1-cycle-2-failback',
+        enterpriseCommandId: 'promote-1-cycle-2-failback',
         bpcSourceEpoch: 4, bpcTargetEpoch: 5,
         tskSourceEpoch: 3, tskTargetEpoch: 4,
+        enterpriseSourceEpoch: 4,
         sourceSystemId: '5', targetSystemId: '4',
         sourceClientId: 'repeat-b', targetClientId: 'repeat-a',
         staleSourceCompletionDenied: true, idempotentRetry: true,
         rpo: 0, rtoMs: 15,
+        artifacts: {
+          bpcReadiness: 'e'.repeat(64), tskFinalized: '1'.repeat(64),
+          tskActivation: '2'.repeat(64), enterpriseManifest: '5'.repeat(64),
+          enterpriseCredentialReceipt: '6'.repeat(64),
+        },
       },
     },
     tskLatestAuthority: {
       commandId: 'promote-1-cycle-2-failback', fenceEpoch: 4,
       nodeId: 'return-a', activationGrantDigest: '2'.repeat(64),
+    },
+    postHealStaleAuthorities: {
+      bpc: { restarted: true, staleWriterDenied: true, systemId: '2', epoch: 4 },
+      tsk: { restarted: true, staleWriterDenied: true, systemId: '5', epoch: 3 },
+    },
+    recoveredSiteResync: {
+      commandId: 'promote-1-cycle-2-promote',
+      bpc: {
+        targetSystemId: '2', importedSequence: 3, firstOriginatedSequence: 5,
+        attestationDigest: 'd'.repeat(64), staleBeforeRestart: true,
+        staleAfterRestart: true,
+      },
+      tsk: {
+        targetSystemId: '5', importedSequence: 3, firstOriginatedSequence: 4,
+        finalizedReceiptDigest: 'f'.repeat(64), staleBeforeRestart: true,
+        staleAfterRestart: true,
+      },
+      enterprise: {
+        targetSystemId: '2', sourceManifestDigest: '3'.repeat(64),
+        importedManifestDigest: '3'.repeat(64), readyManifestDigest: '3'.repeat(64),
+        targetClientId: 'repeat-b',
+      },
+      rpo: 0,
     },
     tskRedisFaults: {
       schemaVersion: 1, kind: 'tsk-same-redis-authority-faults',
@@ -224,5 +263,43 @@ test('direct handoff evidence is exact, secret-free authority output', () => {
   assert.throws(() => validateLiveCompositionEvidence({
     ...evidence,
     tskLatestAuthority: { ...evidence.tskLatestAuthority, nodeId: 'wrong-node' },
+  }));
+  assert.throws(() => validateLiveCompositionEvidence({
+    ...evidence,
+    artifacts: { ...evidence.artifacts, unboundDigest: 'f'.repeat(64) },
+  }));
+  for (const cycleName of ['forward', 'failback']) {
+    const cycle = evidence.repeatedCycle[cycleName];
+    for (const commandField of ['bpcCommandId', 'tskCommandId', 'enterpriseCommandId']) {
+      assert.throws(() => validateLiveCompositionEvidence({
+        ...evidence,
+        repeatedCycle: { ...evidence.repeatedCycle,
+          [cycleName]: { ...cycle, [commandField]: `${cycle[commandField]}-wrong` } },
+      }));
+    }
+    for (const artifactField of Object.keys(cycle.artifacts)) {
+      assert.throws(() => validateLiveCompositionEvidence({
+        ...evidence,
+        repeatedCycle: { ...evidence.repeatedCycle,
+          [cycleName]: { ...cycle, artifacts: { ...cycle.artifacts,
+            [artifactField]: '9'.repeat(64) } } },
+      }));
+    }
+  }
+  assert.throws(() => validateLiveCompositionEvidence({
+    ...evidence,
+    postHealStaleAuthorities: { ...evidence.postHealStaleAuthorities,
+      tsk: { ...evidence.postHealStaleAuthorities.tsk, staleWriterDenied: false } },
+  }));
+  assert.throws(() => validateLiveCompositionEvidence({
+    ...evidence,
+    recoveredSiteResync: { ...evidence.recoveredSiteResync,
+      tsk: { ...evidence.recoveredSiteResync.tsk, firstOriginatedSequence: 5 } },
+  }));
+  assert.throws(() => validateLiveCompositionEvidence({
+    ...evidence,
+    recoveredSiteResync: { ...evidence.recoveredSiteResync,
+      enterprise: { ...evidence.recoveredSiteResync.enterprise,
+        readyManifestDigest: '9'.repeat(64) } },
   }));
 });

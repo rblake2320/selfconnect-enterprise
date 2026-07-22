@@ -444,6 +444,7 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       targetCredentialProof,
       targetCredential,
     }) => {
+      const startedAt = Date.now();
       const protocolEvidence = {
         bpcPromotionAttestation,
         tskActivationLease,
@@ -482,7 +483,6 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
         sourcePublicKey,
         ...resolvers,
       });
-      const startedAt = Date.now();
       const imported = await importIndependentState(targetPool, bundle, {
         advisoryLockKey,
         clusterId,
@@ -515,6 +515,13 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
         sourceEpoch: cycleSourceEpoch,
       });
       assert.equal(completed.targetClientId, targetCredential.clientId);
+      assert.equal(imported.manifestDigest, bundle.manifestDigest);
+      assert.equal(ready.manifestDigest, bundle.manifestDigest);
+      const convergedBinding = (await targetPool.query(
+        'SELECT tsk_client_id FROM ultra_identity_bindings WHERE pair_id=$1',
+        [pairId],
+      )).rows[0];
+      assert.equal(convergedBinding?.tsk_client_id, targetCredential.clientId);
       const retry = await completeImportedPromotedTskCredential(
         targetPool, targetCredentialAuthority, {
           advisoryLockKey,
@@ -563,6 +570,12 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
         idempotentRetry: retry.idempotent,
         staleSourceCompletionDenied,
         importedSystemId: imported.targetSystemId,
+        convergence: Object.freeze({
+          sourceManifestDigest: bundle.manifestDigest,
+          importedManifestDigest: imported.manifestDigest,
+          readyManifestDigest: ready.manifestDigest,
+          targetCredentialClientId: convergedBinding.tsk_client_id,
+        }),
         rpo: 0,
         rtoMs: Date.now() - startedAt,
       });

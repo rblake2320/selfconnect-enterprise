@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { createHash, createHmac, generateKeyPairSync, randomBytes } from 'node:crypto';
+import {
+  createHash, createHmac, createPublicKey, generateKeyPairSync, randomBytes,
+} from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
@@ -278,6 +280,68 @@ function makePool(connectionString, max = 5) {
   const pool = new Pool({ connectionString, max });
   pool.on('error', () => {});
   return pool;
+}
+
+export async function probeRestartedStaleBpcAuthority(options) {
+  const { moduleUrl } = loadPinnedBpcModule(
+    options.bpcRoot, options.expectedBpcCommit,
+  );
+  const bpc = await import(moduleUrl);
+  const databaseName = requiredString(
+    options.descriptor?.databaseName, 'descriptor.databaseName',
+  );
+  if (!/^bpc_repeat_b_[0-9a-f]{16}$/.test(databaseName)) {
+    throw new Error('stale BPC database name is invalid');
+  }
+  const adminPool = makePool(options.sourcePostgresUrl);
+  const restartedPassword = randomBytes(24).toString('hex');
+  await adminPool.query(
+    `ALTER ROLE ${RUNTIME_ROLE} PASSWORD '${restartedPassword}'`,
+  );
+  const stalePool = makePool(runtimeUrl(
+    databaseUrl(options.sourcePostgresUrl, databaseName), restartedPassword,
+  ));
+  try {
+    const db = new bpc.NodePostgresTransactor(stalePool, {
+      statementTimeoutMs: 350,
+      transactionTimeoutMs: 500,
+    });
+    const [ready, haReady] = await Promise.all([
+      bpc.assertSchemaReady(db, 'public'),
+      bpc.assertBpcHaSchemaReady(db),
+    ]);
+    assert.equal(ready !== null && haReady !== null, true);
+    const keys = options.publicKeys;
+    const resolver = { resolve(keyId) {
+      const pem = keys?.[keyId];
+      return pem ? createPublicKey(pem) : null;
+    } };
+    const unreachable = () => {
+      throw new Error('stale BPC probe reached an external authority after revocation');
+    };
+    await assert.rejects(() => bpc.PgSourceLeaseFence.open(
+      db,
+      haReady,
+      resolver,
+      options.descriptor.fence,
+      Object.freeze({ current: unreachable }),
+      Object.freeze({
+        keyId: options.descriptor.fence.nodeCredentialKeyId,
+        prove: unreachable,
+      }),
+      Object.freeze({ keyId: KEY_IDS.mutation, sign: unreachable }),
+    ), /revoked|not active|lease|fence/i);
+    return Object.freeze({
+      restarted: true,
+      staleWriterDenied: true,
+      systemId: await systemId(stalePool),
+      epoch: options.descriptor.fence.epoch,
+    });
+  } finally {
+    await stalePool.end().catch(() => {});
+    await dropIsolatedDatabase(adminPool, databaseName).catch(() => {});
+    await adminPool.end().catch(() => {});
+  }
 }
 
 async function awaitDatabaseClockAfter(pool, thresholdMs, timeoutMs = 90_000) {
@@ -1313,13 +1377,37 @@ export async function runBpcLiveComposition(options) {
         guard: guardPublic.export({ type: 'spki', format: 'pem' }).toString(),
         source: sourcePublic.export({ type: 'spki', format: 'pem' }).toString(),
       },
+      staleRecoveryProbe: options.preserveStaleAuthority ? Object.freeze({
+        databaseName: repeatBDatabase,
+        fence: Object.freeze({
+          streamId,
+          epoch: 4,
+          holderNodeId: 'node-b',
+          authoritySystemId: idB,
+          nodeCredentialKeyId: KEY_IDS.nodeB,
+          leaseId: grantB4.leaseId,
+          grantDigest: grantB4.grantDigest,
+          redisClaimDigest: bpc.redisFenceRecordDigest(redisB4),
+          maxClockSkewMs: 25,
+          maxTransactionDurationMs: dbRepeatBRuntime.maxTransactionDurationMs,
+          activationDigest: repeatForwardActive.stateDigestSigned,
+        }),
+      }) : null,
+      recoveryPublicKeys: options.preserveStaleAuthority ? Object.freeze({
+        [KEY_IDS.guard]: guardPublic.export({ type: 'spki', format: 'pem' }).toString(),
+        [KEY_IDS.source]: sourcePublic.export({ type: 'spki', format: 'pem' }).toString(),
+        [KEY_IDS.nodeA]: nodeAPublic.export({ type: 'spki', format: 'pem' }).toString(),
+        [KEY_IDS.nodeB]: nodeBPublic.export({ type: 'spki', format: 'pem' }).toString(),
+      }) : null,
     });
   } finally {
     await Promise.allSettled(runtimePools.map((pool) => pool.end()));
     await Promise.allSettled(isolatedPools.map((pool) => pool.end()));
     await Promise.allSettled([
       dropIsolatedDatabase(poolA, failbackDatabase),
-      dropIsolatedDatabase(poolB, repeatBDatabase),
+      options.preserveStaleAuthority
+        ? Promise.resolve()
+        : dropIsolatedDatabase(poolB, repeatBDatabase),
       dropIsolatedDatabase(poolA, repeatADatabase),
     ]);
     await Promise.allSettled(pools.map((pool) => pool.end()));

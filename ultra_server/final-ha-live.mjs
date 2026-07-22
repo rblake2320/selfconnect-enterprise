@@ -4,7 +4,10 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { runBpcLiveComposition } from './bpc-live-composition.mjs';
+import {
+  probeRestartedStaleBpcAuthority,
+  runBpcLiveComposition,
+} from './bpc-live-composition.mjs';
 import { runEnterpriseLiveHandoff } from './enterprise-live-handoff.mjs';
 import { assertCleanReviewedCheckout } from './final-ha-acceptance.mjs';
 import {
@@ -12,7 +15,10 @@ import {
   verifyPromotedTskCredentialProof,
   verifySourceTskCredentialProof,
 } from './promoted-tsk-authority.js';
-import { runTskLiveComposition } from './tsk-live-composition.mjs';
+import {
+  probeRestartedStaleTskAuthority,
+  runTskLiveComposition,
+} from './tsk-live-composition.mjs';
 import {
   runSameRedisAuthorityFaults,
   runSameTskRedisAuthorityFaults,
@@ -230,6 +236,7 @@ export async function runLiveProtocolComposition(env = process.env) {
   const tskCommit = lock.components?.['tsk-protocol']?.commit;
   if (!SHA.test(bpcCommit ?? '') || !SHA.test(tskCommit ?? '')) throw new Error('protocol commit pins are invalid');
   const commandId = required(env.ULTRA_FINAL_COMMAND_ID, 'ULTRA_FINAL_COMMAND_ID');
+  const sameAuthorityFaults = env.TSK_SAME_AUTHORITY_FAULTS === '1';
 
   const bpc = await runBpcLiveComposition({
     bpcRoot, expectedBpcCommit: bpcCommit, commandId,
@@ -237,9 +244,9 @@ export async function runLiveProtocolComposition(env = process.env) {
       env.BPC_TEST_POSTGRES_CONTROL_URL],
     redisUrls: required(env.BPC_TEST_REDIS_URLS, 'BPC_TEST_REDIS_URLS').split(','),
     streamId: 'bpc:enterprise:live/v1',
+    preserveStaleAuthority: sameAuthorityFaults,
   });
   const redis = tskRedisOptions(env);
-  const sameAuthorityFaults = env.TSK_SAME_AUTHORITY_FAULTS === '1';
   const tsk = await runTskLiveComposition({
     tskRoot, expectedTskCommit: tskCommit, commandId,
     aPostgresUrl: env.TSK_TEST_SOURCE_PG_URL_A,
@@ -247,6 +254,7 @@ export async function runLiveProtocolComposition(env = process.env) {
     controlPostgresUrl: env.TSK_TEST_CONTROL_PG_URL,
     redis,
     preserveRedisAuthority: sameAuthorityFaults,
+    preserveStaleAuthority: sameAuthorityFaults,
     streamId: 'enterprise28:tsk-live/v1', destructiveReset: true,
   });
   const tskRedisFaults = sameAuthorityFaults
@@ -254,6 +262,24 @@ export async function runLiveProtocolComposition(env = process.env) {
       commandId: tsk.repeatedCycle.failback.commandId, redis,
       streamId: 'enterprise28:tsk-live/v1', systemIds: tsk.systemIds,
       topology: sameAuthorityTopology(env) })
+    : null;
+  const postHealStaleAuthorities = sameAuthorityFaults
+    ? Object.freeze({
+      bpc: await probeRestartedStaleBpcAuthority({
+        bpcRoot,
+        expectedBpcCommit: bpcCommit,
+        sourcePostgresUrl: env.BPC_TEST_POSTGRES_B_URL,
+        descriptor: bpc.staleRecoveryProbe,
+        publicKeys: bpc.recoveryPublicKeys,
+      }),
+      tsk: await probeRestartedStaleTskAuthority({
+        tskRoot,
+        expectedTskCommit: tskCommit,
+        sourcePostgresUrl: env.TSK_TEST_RECEIVER_PG_URL_B,
+        descriptor: tsk.staleRecoveryProbe,
+        publicVerificationKeys: tsk.publicVerificationKeys,
+      }),
+    })
     : null;
 
   const [bpcApi, tskApi] = await Promise.all([
@@ -368,6 +394,7 @@ export async function runLiveProtocolComposition(env = process.env) {
     bpc,
     tsk,
     tskRedisFaults,
+    postHealStaleAuthorities,
     sourceCredentialAuthority,
     verifiedSourceCredential,
     verifiedTargetCredential,
