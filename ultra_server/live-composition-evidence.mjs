@@ -27,7 +27,7 @@ function sha256(value) {
 
 function publicEvidence(result) {
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     kind: 'enterprise-live-authority-handoff',
     commandId: result.commandId,
     commits: result.commits,
@@ -245,6 +245,7 @@ function publicEvidence(result) {
       bpc: result.bpc.restartDenials,
       tsk: result.tsk.restartDenials,
     },
+    postHealRestartDenials: result.postHealRestartDenials,
     tskLatestAuthority: {
       commandId: result.tsk.recoveredSite.handoff.commandId,
       fenceEpoch: result.tsk.redisAuthority.record.fenceEpoch,
@@ -258,7 +259,7 @@ function publicEvidence(result) {
 }
 
 export function validateLiveCompositionEvidence(evidence, expected = {}) {
-  assert.equal(evidence?.schemaVersion, 7);
+  assert.equal(evidence?.schemaVersion, 8);
   assert.equal(evidence?.kind, 'enterprise-live-authority-handoff');
   assert.equal(evidence?.commandId, expected.commandId ?? evidence.commandId);
   assert.match(evidence?.commandId, COMMAND_ID);
@@ -507,7 +508,7 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
     assert.equal(protocolPids.size, restartCuts.length);
   }
   assert.equal(allRestartPids.size, restartCuts.length * 2,
-    'each BPC and TSK cut must use a distinct restarted child process');
+    'each pre-heal BPC and TSK cut must use a distinct restarted child process');
   assert.equal(evidence.tskRedisFaults?.kind, 'tsk-same-redis-authority-faults');
   assert.equal(evidence.tskRedisFaults?.commandId,
     evidence.tskLatestAuthority.commandId);
@@ -521,6 +522,48 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
   assert.equal(evidence.tskRedisFaults?.faults?.livePartition?.exactTuplePreserved, true);
   assert.equal(evidence.tskRedisFaults?.faults?.masterSigkill?.rpo, 0);
   assert.equal(evidence.tskRedisFaults?.faults?.masterSigkill?.exactTuplePreserved, true);
+  assert.deepEqual(Object.keys(evidence.postHealRestartDenials ?? {}).sort(),
+    ['bpc', 'healedAuthority', 'tsk']);
+  const healedAuthority = evidence.postHealRestartDenials.healedAuthority;
+  assert.deepEqual(Object.keys(healedAuthority).sort(), [
+    'authorityNodeId', 'commandId', 'fenceEpoch', 'partitionRtoMs',
+    'redisAuthorityTupleDigest',
+  ]);
+  assert.equal(healedAuthority.commandId, evidence.tskRedisFaults.commandId);
+  assert.equal(healedAuthority.fenceEpoch, evidence.tskRedisFaults.fenceEpoch);
+  assert.equal(healedAuthority.authorityNodeId,
+    evidence.tskRedisFaults.authorityNodeId);
+  assert.equal(healedAuthority.redisAuthorityTupleDigest,
+    evidence.tskRedisFaults.redisAuthorityTupleDigest);
+  assert.match(healedAuthority.redisAuthorityTupleDigest, DIGEST);
+  assert.equal(healedAuthority.partitionRtoMs,
+    evidence.tskRedisFaults.faults.livePartition.rtoMs);
+  assert.equal(Number.isSafeInteger(healedAuthority.partitionRtoMs) &&
+    healedAuthority.partitionRtoMs >= 0, true);
+  for (const protocol of ['bpc', 'tsk']) {
+    const probes = evidence.postHealRestartDenials[protocol];
+    assert.deepEqual(Object.keys(probes).sort(), [...restartCuts].sort());
+    const protocolPids = new Set();
+    for (const cut of restartCuts) {
+      const probe = probes[cut];
+      assert.deepEqual(Object.keys(probe).sort(), [
+        'authorityStateDigest', 'childPid', 'denialCode', 'denied',
+        'noCommittedEffect', 'processRestarted', 'rtoMs',
+      ]);
+      assert.equal(probe.processRestarted, true);
+      assert.equal(probe.denied, true);
+      assert.equal(probe.denialCode, 'source-fence-rejected');
+      assert.equal(probe.noCommittedEffect, true);
+      assert.match(probe.authorityStateDigest, DIGEST);
+      assert.equal(Number.isSafeInteger(probe.childPid) && probe.childPid > 0, true);
+      assert.equal(Number.isSafeInteger(probe.rtoMs) && probe.rtoMs >= 0, true);
+      protocolPids.add(probe.childPid);
+      allRestartPids.add(probe.childPid);
+    }
+    assert.equal(protocolPids.size, restartCuts.length);
+  }
+  assert.equal(allRestartPids.size, restartCuts.length * 4,
+    'pre-heal and post-heal BPC/TSK cuts must use twenty distinct child processes');
   assert.equal(evidence.ultraRedisFaults?.kind, 'ultra-same-redis-authority-faults');
   assert.equal(evidence.ultraRedisFaults?.commandId, evidence.commandId);
   assert.equal(evidence.ultraRedisFaults?.systemIds?.sourceA, evidence.systems.enterprise.source);

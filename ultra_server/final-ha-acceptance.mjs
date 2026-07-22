@@ -190,6 +190,19 @@ export async function runFinalAcceptance(options = {}) {
     evidence: Object.freeze(Object.entries(liveReceipt.evidence.tskRedisFaults.faults)
       .map(([name, fault]) => `${name}:RPO=${fault.rpo}:RTO=${fault.rtoMs}ms`)),
   }), Object.freeze({
+    id: 'post-heal-stale-protocol-writers',
+    durationMs: ['bpc', 'tsk'].flatMap((protocol) =>
+      Object.values(liveReceipt.evidence.postHealRestartDenials[protocol]))
+      .reduce((sum, probe) => sum + probe.rtoMs, 0),
+    outputSha256:
+      liveReceipt.evidence.postHealRestartDenials.healedAuthority.redisAuthorityTupleDigest,
+    evidence: Object.freeze([
+      'partition-healed=true',
+      'stale-protocol-writers-denied=10',
+      'committed-effects=0',
+      'fresh-processes=10',
+    ]),
+  }), Object.freeze({
     id: 'same-ultra-redis-authority-faults',
     durationMs: Object.values(liveReceipt.evidence.ultraRedisFaults.faults)
       .reduce((sum, fault) => sum + fault.rtoMs, 0),

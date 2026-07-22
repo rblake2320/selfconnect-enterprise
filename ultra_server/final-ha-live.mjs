@@ -4,7 +4,11 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { runBpcLiveComposition } from './bpc-live-composition.mjs';
+import {
+  discardPostHealBpcRestartProbes,
+  runBpcLiveComposition,
+  runPostHealBpcRestartProbes,
+} from './bpc-live-composition.mjs';
 import { runEnterpriseLiveHandoff } from './enterprise-live-handoff.mjs';
 import { assertCleanReviewedCheckout } from './final-ha-acceptance.mjs';
 import {
@@ -12,7 +16,11 @@ import {
   verifyPromotedTskCredentialProof,
   verifySourceTskCredentialProof,
 } from './promoted-tsk-authority.js';
-import { runTskLiveComposition } from './tsk-live-composition.mjs';
+import {
+  discardPostHealTskRestartProbes,
+  runPostHealTskRestartProbes,
+  runTskLiveComposition,
+} from './tsk-live-composition.mjs';
 import {
   runSameRedisAuthorityFaults,
   runSameTskRedisAuthorityFaults,
@@ -238,29 +246,70 @@ export async function runLiveProtocolComposition(env = process.env) {
   const commandId = required(env.ULTRA_FINAL_COMMAND_ID, 'ULTRA_FINAL_COMMAND_ID');
   const sameAuthorityFaults = env.TSK_SAME_AUTHORITY_FAULTS === '1';
 
-  const bpc = await runBpcLiveComposition({
-    bpcRoot, expectedBpcCommit: bpcCommit, commandId,
-    postgresUrls: [env.BPC_TEST_POSTGRES_URL, env.BPC_TEST_POSTGRES_B_URL,
-      env.BPC_TEST_POSTGRES_CONTROL_URL],
-    redisUrls: required(env.BPC_TEST_REDIS_URLS, 'BPC_TEST_REDIS_URLS').split(','),
-    streamId: 'bpc:enterprise:live/v1',
-  });
   const redis = tskRedisOptions(env);
-  const tsk = await runTskLiveComposition({
-    tskRoot, expectedTskCommit: tskCommit, commandId,
-    aPostgresUrl: env.TSK_TEST_SOURCE_PG_URL_A,
-    bPostgresUrl: env.TSK_TEST_RECEIVER_PG_URL_B,
-    controlPostgresUrl: env.TSK_TEST_CONTROL_PG_URL,
-    redis,
-    preserveRedisAuthority: sameAuthorityFaults,
-    streamId: 'enterprise28:tsk-live/v1', destructiveReset: true,
-  });
-  const tskRedisFaults = sameAuthorityFaults
-    ? await runSameTskRedisAuthorityFaults({ authority: tsk.redisAuthority,
-      commandId: tsk.recoveredSite.handoff.commandId, redis,
-      streamId: 'enterprise28:tsk-live/v1', systemIds: tsk.systemIds,
-      topology: sameAuthorityTopology(env) })
-    : null;
+  let bpc;
+  let tsk;
+  let tskRedisFaults = null;
+  let postHealRestartDenials = null;
+  try {
+    bpc = await runBpcLiveComposition({
+      bpcRoot, expectedBpcCommit: bpcCommit, commandId,
+      postgresUrls: [env.BPC_TEST_POSTGRES_URL, env.BPC_TEST_POSTGRES_B_URL,
+        env.BPC_TEST_POSTGRES_CONTROL_URL],
+      redisUrls: required(env.BPC_TEST_REDIS_URLS, 'BPC_TEST_REDIS_URLS').split(','),
+      preservePostHealProbes: sameAuthorityFaults,
+      streamId: 'bpc:enterprise:live/v1',
+    });
+    tsk = await runTskLiveComposition({
+      tskRoot, expectedTskCommit: tskCommit, commandId,
+      aPostgresUrl: env.TSK_TEST_SOURCE_PG_URL_A,
+      bPostgresUrl: env.TSK_TEST_RECEIVER_PG_URL_B,
+      controlPostgresUrl: env.TSK_TEST_CONTROL_PG_URL,
+      redis,
+      preserveRedisAuthority: sameAuthorityFaults,
+      preservePostHealProbes: sameAuthorityFaults,
+      streamId: 'enterprise28:tsk-live/v1', destructiveReset: true,
+    });
+    if (sameAuthorityFaults) {
+      tskRedisFaults = await runSameTskRedisAuthorityFaults({
+        authority: tsk.redisAuthority,
+        commandId: tsk.recoveredSite.handoff.commandId, redis,
+        streamId: 'enterprise28:tsk-live/v1', systemIds: tsk.systemIds,
+        topology: sameAuthorityTopology(env),
+      });
+      const healed = tskRedisFaults.faults.livePartition;
+      assert.equal(healed.oldMasterRefusedWrites, true);
+      assert.equal(healed.exactTuplePreserved, true);
+      assert.equal(healed.rpo, 0);
+      const [postHealBpc, postHealTsk] = await Promise.all([
+        runPostHealBpcRestartProbes(bpc),
+        runPostHealTskRestartProbes(tsk),
+      ]);
+      postHealRestartDenials = Object.freeze({
+        healedAuthority: Object.freeze({
+          commandId: tskRedisFaults.commandId,
+          fenceEpoch: tskRedisFaults.fenceEpoch,
+          authorityNodeId: tskRedisFaults.authorityNodeId,
+          redisAuthorityTupleDigest: tskRedisFaults.redisAuthorityTupleDigest,
+          partitionRtoMs: healed.rtoMs,
+        }),
+        bpc: postHealBpc,
+        tsk: postHealTsk,
+      });
+    }
+  } catch (error) {
+    const cleanup = await Promise.allSettled([
+      bpc ? discardPostHealBpcRestartProbes(bpc) : Promise.resolve(),
+      tsk ? discardPostHealTskRestartProbes(tsk) : Promise.resolve(),
+    ]);
+    const cleanupFailures = cleanup.filter((outcome) => outcome.status === 'rejected')
+      .map((outcome) => outcome.reason);
+    if (cleanupFailures.length > 0) {
+      throw new AggregateError([error, ...cleanupFailures],
+        'protocol composition failed and retained-authority cleanup was incomplete');
+    }
+    throw error;
+  }
 
   const [bpcApi, tskApi] = await Promise.all([
     importPinnedServer(bpcRoot, 'BPC'), importPinnedServer(tskRoot, 'TSK'),
@@ -389,6 +438,7 @@ export async function runLiveProtocolComposition(env = process.env) {
     bpc,
     tsk,
     tskRedisFaults,
+    postHealRestartDenials,
     sourceCredentialAuthority,
     verifiedSourceCredential,
     verifiedTargetCredential,

@@ -9,12 +9,17 @@ import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 import { Redis } from 'ioredis';
 
+import {
+  createCleanupTransfer,
+  runExhaustiveCleanup,
+} from './post-heal-probe-lifecycle.mjs';
 import { promotedTskCredentialLabel } from './promoted-tsk-authority.js';
 import { loadPromotedTskCredentialRuntime } from './promoted-tsk-runtime.js';
 
 const HOUR_MS = 3_600_000;
 const ACCEPTANCE_SOURCE_LEASE_MS = 15_000;
 const ID = /^[A-Za-z0-9_.:/-]{1,128}$/;
+const POST_HEAL_RESTART_PROBES = new WeakMap();
 
 function requiredString(value, name) {
   if (typeof value !== 'string' || value.length === 0 || value.includes('\0')) {
@@ -170,6 +175,24 @@ async function proveStaleTskWriterDeniedAfterRestart(config) {
   }
 }
 
+export async function runPostHealTskRestartProbes(composition) {
+  const lifecycle = POST_HEAL_RESTART_PROBES.get(composition);
+  if (!lifecycle) throw new Error('TSK post-heal restart probes are unavailable or already consumed');
+  POST_HEAL_RESTART_PROBES.delete(composition);
+  try {
+    return await lifecycle.run();
+  } finally {
+    await lifecycle.cleanup();
+  }
+}
+
+export async function discardPostHealTskRestartProbes(composition) {
+  const lifecycle = POST_HEAL_RESTART_PROBES.get(composition);
+  if (!lifecycle) return;
+  POST_HEAL_RESTART_PROBES.delete(composition);
+  await lifecycle.cleanup();
+}
+
 async function executeSchema(pool, ddl) {
   for (const statement of ddl.split(';').map((item) => item.trim()).filter(Boolean)) {
     await pool.query(statement);
@@ -293,11 +316,15 @@ function createMaterial() {
 }
 
 function validateOptions(options) {
-  exactKeys(options, [
+  const optionKeys = [
     'aPostgresUrl', 'bPostgresUrl', 'controlPostgresUrl', 'destructiveReset',
     'commandId', 'expectedTskCommit', 'preserveRedisAuthority', 'redis',
     'streamId', 'tskRoot',
-  ], 'TSK live-composition options');
+  ];
+  if (Object.hasOwn(options, 'preservePostHealProbes')) {
+    optionKeys.push('preservePostHealProbes');
+  }
+  exactKeys(options, optionKeys, 'TSK live-composition options');
   if (options.destructiveReset !== true) {
     throw new Error('destructiveReset=true is required for dedicated acceptance databases');
   }
@@ -330,6 +357,10 @@ function validateOptions(options) {
   if (typeof options.preserveRedisAuthority !== 'boolean') {
     throw new Error('preserveRedisAuthority must be boolean');
   }
+  if (Object.hasOwn(options, 'preservePostHealProbes') &&
+      typeof options.preservePostHealProbes !== 'boolean') {
+    throw new Error('preservePostHealProbes must be boolean');
+  }
   return Object.freeze({
     tskRoot: resolve(requiredString(options.tskRoot, 'tskRoot')),
     aPostgresUrl: requiredString(options.aPostgresUrl, 'aPostgresUrl'),
@@ -337,6 +368,7 @@ function validateOptions(options) {
     controlPostgresUrl: requiredString(options.controlPostgresUrl, 'controlPostgresUrl'),
     redis,
     preserveRedisAuthority: options.preserveRedisAuthority,
+    preservePostHealProbes: options.preservePostHealProbes === true,
     streamId: requiredId(options.streamId, 'streamId'),
     commandId: requiredId(options.commandId, 'commandId'),
     expectedTskCommit: requiredString(options.expectedTskCommit, 'expectedTskCommit').toLowerCase(),
@@ -479,6 +511,8 @@ export async function runTskLiveComposition(rawOptions) {
   let bRuntimePool;
   let protectedRuntimeDir;
   const repeatDatabases = [];
+  const postHealRestartProbeConfigs = new Map();
+  const postHealCleanup = createCleanupTransfer();
 
   const createRepeatAuthority = async (adminPool, connectionString, databaseName) => {
     if (!/^[a-z][a-z0-9_]{0,62}$/.test(databaseName)) {
@@ -497,7 +531,7 @@ export async function runTskLiveComposition(rawOptions) {
     await executeSchema(pool, TSK_SOURCE_LEASE_SCHEMA);
     await executeSchema(pool, TSK_SOURCE_WITNESS_SCHEMA);
     await executeSchema(pool, TSK_RECEIVER_SCHEMA);
-    repeatDatabases.push({ adminPool, databaseName, pool });
+    repeatDatabases.push({ adminPool, adminUrl: connectionString, databaseName, pool });
     return Object.freeze({
       pool,
       db,
@@ -1263,7 +1297,7 @@ export async function runTskLiveComposition(rawOptions) {
       targetSchemaReady, targetReceiverReady, targetGenerationId,
       targetReceiptKeyId, targetReceiptPrivateKey, targetSigner,
       targetLeaseChain, handoffCommandId, handoffTargetEpoch, mutation,
-      sourceDatabaseUrl, sourceHeadKeyId, sourceHeadPrivateKey,
+      sourceDatabaseUrl, sourceHeadKeyId, sourceHeadPrivateKey, restartCut,
     }) => {
       assert.equal(
         await dbClockMs(sourcePool) < sourceLease.leaseExpiresAtMs,
@@ -1471,7 +1505,7 @@ export async function runTskLiveComposition(rawOptions) {
         staleWriterDenied = true;
       }
       assert.equal(staleWriterDenied, true);
-      const restartDenial = await proveStaleTskWriterDeniedAfterRestart({
+      const restartProbeConfig = {
         tskDistFile: resolve(options.tskRoot, 'packages', 'server', 'dist', 'index.js'),
         databaseUrl: sourceDatabaseUrl,
         publicKeys: Object.fromEntries([...publicKeys.entries()].map(([keyId, key]) => [
@@ -1490,7 +1524,9 @@ export async function runTskLiveComposition(rawOptions) {
           grantDigest: sourceLease.grantDigest,
         },
         mutation,
-      });
+      };
+      postHealRestartProbeConfigs.set(restartCut, restartProbeConfig);
+      const restartDenial = await proveStaleTskWriterDeniedAfterRestart(restartProbeConfig);
       return Object.freeze({
         commandId: handoffCommandId,
         sourceEpoch: sourceLease.leaseEpoch,
@@ -1533,6 +1569,7 @@ export async function runTskLiveComposition(rawOptions) {
       sourceDatabaseUrl: options.aPostgresUrl,
       sourceHeadKeyId: keyIds.aHead,
       sourceHeadPrivateKey: material.aHead.privateKey,
+      restartCut: 'repeatForward',
     });
     const repeatA = await createRepeatAuthority(
       aPool, options.aPostgresUrl, 'enterprise28_tsk_repeat_a4',
@@ -1586,6 +1623,7 @@ export async function runTskLiveComposition(rawOptions) {
         value.pathname = '/enterprise28_tsk_repeat_b3'; return value.toString(); })(),
       sourceHeadKeyId: keyIds.bHead,
       sourceHeadPrivateKey: material.bHead.privateKey,
+      restartCut: 'repeatFailback',
     });
     const repeatReturnReady = await assertSourceFenceReady(
       repeatA.db, 'public', resolver, {
@@ -1633,6 +1671,7 @@ export async function runTskLiveComposition(rawOptions) {
         value.pathname = '/enterprise28_tsk_repeat_a4'; return value.toString(); })(),
       sourceHeadKeyId: keyIds.aHead,
       sourceHeadPrivateKey: material.aHead.privateKey,
+      restartCut: 'recoveredSite',
     });
 
     // Return the independently reprovisioned credential authority as well as
@@ -1982,8 +2021,8 @@ export async function runTskLiveComposition(rawOptions) {
     }
     assert.equal(staleTargetWriterDenied, true, 'old B writer must be denied after return');
 
-    const baseRestartProbe = async ({ databaseUrl, lease, headKeyId,
-      headPrivateKey, mutation }) => proveStaleTskWriterDeniedAfterRestart({
+    const restartProbeConfig = ({ databaseUrl, lease, headKeyId,
+      headPrivateKey, mutation }) => ({
       tskDistFile: resolve(options.tskRoot, 'packages', 'server', 'dist', 'index.js'),
       databaseUrl,
       publicKeys: Object.fromEntries([...publicKeys.entries()].map(([keyId, key]) => [
@@ -2001,20 +2040,28 @@ export async function runTskLiveComposition(rawOptions) {
       },
       mutation,
     });
+    const initialRestartConfig = restartProbeConfig({
+      databaseUrl: options.aPostgresUrl, lease: aGrant,
+      headKeyId: keyIds.aHead, headPrivateKey: material.aHead.privateKey,
+      mutation: { tumblerId: 'T15', counter: 7 },
+    });
+    const failbackRestartConfig = restartProbeConfig({
+      databaseUrl: options.bPostgresUrl, lease: activationLeaseGrant,
+      headKeyId: keyIds.bHead, headPrivateKey: material.bHead.privateKey,
+      mutation: { tumblerId: 'T16', counter: 8 },
+    });
+    postHealRestartProbeConfigs.set('initial', initialRestartConfig);
+    postHealRestartProbeConfigs.set('failback', failbackRestartConfig);
     const [initialRestartDenial, failbackRestartDenial] = await Promise.all([
-      baseRestartProbe({ databaseUrl: options.aPostgresUrl, lease: aGrant,
-        headKeyId: keyIds.aHead, headPrivateKey: material.aHead.privateKey,
-        mutation: { tumblerId: 'T15', counter: 7 } }),
-      baseRestartProbe({ databaseUrl: options.bPostgresUrl, lease: activationLeaseGrant,
-        headKeyId: keyIds.bHead, headPrivateKey: material.bHead.privateKey,
-        mutation: { tumblerId: 'T16', counter: 8 } }),
+      proveStaleTskWriterDeniedAfterRestart(initialRestartConfig),
+      proveStaleTskWriterDeniedAfterRestart(failbackRestartConfig),
     ]);
 
     const redisRecord = await redis.get(redisKey);
     if (redisRecord === null) throw new Error('TSK Redis authority record disappeared');
     const redisAuthority = Object.freeze({ key: redisKey,
       record: Object.freeze(JSON.parse(redisRecord)) });
-    return Object.freeze({
+    const result = Object.freeze({
       sourceFrozenReceipt,
       bFinalizedReceipt,
       activationLeaseGrant,
@@ -2109,12 +2156,51 @@ export async function runTskLiveComposition(rawOptions) {
         ]),
       )),
     });
+    if (options.preservePostHealProbes) {
+      const expectedCuts = [
+        'initial', 'failback', 'repeatForward', 'repeatFailback', 'recoveredSite',
+      ];
+      assert.deepEqual([...postHealRestartProbeConfigs.keys()].sort(),
+        [...expectedCuts].sort());
+      const cleanupEntries = repeatDatabases.map(({ adminUrl, databaseName }) =>
+        Object.freeze({ adminUrl, databaseName }));
+      const lifecycle = {
+        async run() {
+          const evidence = {};
+          for (const cut of expectedCuts) {
+            evidence[cut] = await proveStaleTskWriterDeniedAfterRestart(
+              postHealRestartProbeConfigs.get(cut),
+            );
+          }
+          return Object.freeze(evidence);
+        },
+        async cleanup() {
+          await runExhaustiveCleanup(cleanupEntries.map(({
+            adminUrl, databaseName,
+          }) => async () => {
+            const cleanupPool = new pg.Pool({
+              connectionString: adminUrl, max: 1, connectionTimeoutMillis: 10_000,
+            });
+            cleanupPool.on('error', () => {});
+            try {
+              await cleanupPool.query(`DROP DATABASE IF EXISTS ${databaseName} WITH (FORCE)`);
+            } finally {
+              await cleanupPool.end().catch(() => {});
+            }
+          }), 'failed to clean one or more retained TSK authority databases');
+        },
+      };
+      postHealCleanup.transfer(() => POST_HEAL_RESTART_PROBES.set(result, lifecycle));
+    }
+    return result;
   } finally {
     for (const entry of repeatDatabases.reverse()) {
       await entry.pool.end().catch(() => {});
-      await entry.adminPool.query(
-        `DROP DATABASE IF EXISTS ${entry.databaseName} WITH (FORCE)`,
-      ).catch(() => {});
+      if (!postHealCleanup.transferred) {
+        await entry.adminPool.query(
+          `DROP DATABASE IF EXISTS ${entry.databaseName} WITH (FORCE)`,
+        ).catch(() => {});
+      }
     }
     await Promise.allSettled([
       options.preserveRedisAuthority ? Promise.resolve() : redis.del(redisKey),
