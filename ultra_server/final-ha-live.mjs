@@ -187,6 +187,22 @@ export function validateLiveProtocolComposition(bpc, tsk, commandId) {
   assert.equal(tsk.returnCredentialProof.commandId, tsk.returnCommandId);
   assert.equal(tsk.returnCredentialProof.record.mutation.clientId,
     tsk.publicCredentialReturn.clientId);
+  assert.equal(tsk.repeatedCycle.forward.sourceEpoch, 2);
+  assert.equal(tsk.repeatedCycle.forward.targetEpoch, 3);
+  assert.equal(tsk.repeatedCycle.forward.staleWriterDenied, true);
+  assert.equal(tsk.repeatedCycle.failback.sourceEpoch, 3);
+  assert.equal(tsk.repeatedCycle.failback.targetEpoch, 4);
+  assert.equal(tsk.repeatedCycle.failback.staleWriterDenied, true);
+  assert.equal(tsk.repeatForwardCredential.leaseGrant.leaseEpoch, 3);
+  assert.equal(tsk.repeatForwardCredential.proof.commandId,
+    tsk.repeatedCycle.forward.commandId);
+  assert.equal(tsk.repeatReturnCredential.leaseGrant.leaseEpoch, 4);
+  assert.equal(tsk.repeatReturnCredential.proof.commandId,
+    tsk.repeatedCycle.failback.commandId);
+  assert.equal(tsk.staleRepeatForwardCredentialDenied, true);
+  assert.equal(tsk.staleRepeatReturnCredentialDenied, true);
+  assert.equal(bpc.repeatedCycle.forward.targetEpoch, 4);
+  assert.equal(bpc.repeatedCycle.failback.targetEpoch, 5);
   assert.notEqual(tsk.publicCredentialReturn.clientId, tsk.publicCredentialTarget.clientId);
   assert.notEqual(tsk.publicCredentialReturn.secretDigest,
     tsk.publicCredentialTarget.secretDigest);
@@ -234,7 +250,7 @@ export async function runLiveProtocolComposition(env = process.env) {
   });
   const tskRedisFaults = sameAuthorityFaults
     ? await runSameTskRedisAuthorityFaults({ authority: tsk.redisAuthority,
-      commandId: tsk.returnCommandId, redis,
+      commandId: tsk.repeatedCycle.failback.commandId, redis,
       streamId: 'enterprise28:tsk-live/v1', systemIds: tsk.systemIds,
       topology: sameAuthorityTopology(env) })
     : null;
@@ -313,6 +329,36 @@ export async function runLiveProtocolComposition(env = process.env) {
       sourceSecretDigest: tsk.publicCredentialTarget.secretDigest,
     },
   );
+  const repeatForwardCredentialAuthority = createPromotedTskAuthorityCapability({
+    activationLease: tsk.repeatForwardCredential.leaseGrant,
+    leaseResolver: returnCredentialGuardResolver,
+    headKeyResolver: credentialHeadResolver,
+  });
+  const verifiedRepeatForwardCredential = await verifyPromotedTskCredentialProof(
+    repeatForwardCredentialAuthority,
+    tsk.repeatForwardCredential.proof,
+    {
+      agentId: tsk.repeatForwardCredential.proof.agentId,
+      pairId: tsk.repeatForwardCredential.proof.pairId,
+      sourceClientId: tsk.publicCredentialReturn.clientId,
+      sourceSecretDigest: tsk.publicCredentialReturn.secretDigest,
+    },
+  );
+  const repeatReturnCredentialAuthority = createPromotedTskAuthorityCapability({
+    activationLease: tsk.repeatReturnCredential.leaseGrant,
+    leaseResolver: returnCredentialGuardResolver,
+    headKeyResolver: returnCredentialHeadResolver,
+  });
+  const verifiedRepeatReturnCredential = await verifyPromotedTskCredentialProof(
+    repeatReturnCredentialAuthority,
+    tsk.repeatReturnCredential.proof,
+    {
+      agentId: tsk.repeatReturnCredential.proof.agentId,
+      pairId: tsk.repeatReturnCredential.proof.pairId,
+      sourceClientId: tsk.repeatForwardCredential.publicCredential.clientId,
+      sourceSecretDigest: tsk.repeatForwardCredential.publicCredential.secretDigest,
+    },
+  );
   validateLiveProtocolComposition(bpc, tsk, commandId);
 
   return Object.freeze({
@@ -326,6 +372,10 @@ export async function runLiveProtocolComposition(env = process.env) {
     verifiedTargetCredential,
     returnCredentialAuthority,
     verifiedReturnCredential,
+    repeatForwardCredentialAuthority,
+    verifiedRepeatForwardCredential,
+    repeatReturnCredentialAuthority,
+    verifiedRepeatReturnCredential,
     resolvers: Object.freeze({ bpcResolver, tskBResolver, tskGuardResolver,
       tskReturnResolver }),
     publicKeyFingerprints: Object.freeze({

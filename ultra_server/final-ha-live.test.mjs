@@ -14,6 +14,10 @@ test('live composition requires exact command binding, independent systems, and 
     readinessAttestation: { commandId, targetEpoch: 2 }, staleWriterDenied: true,
     failback: { targetSystemId: '1', targetEpoch: 3, staleBWriterDenied: true,
       priorAuthoritiesReset: false, sourcePostgresSystemReused: true },
+    repeatedCycle: {
+      forward: { targetEpoch: 4 },
+      failback: { targetEpoch: 5 },
+    },
     systemIds: { sourceA: '1', promotedB: '2', control: '3' },
   };
   const tsk = {
@@ -48,6 +52,22 @@ test('live composition requires exact command binding, independent systems, and 
       leaseEpoch: 2 },
     returnCredentialProof: { commandId: 'return-promote-live-1',
       record: { mutation: { clientId: 'return-client' } } },
+    repeatedCycle: {
+      forward: { sourceEpoch: 2, targetEpoch: 3, staleWriterDenied: true,
+        commandId: 'promote-live-1-cycle-2-forward' },
+      failback: { sourceEpoch: 3, targetEpoch: 4, staleWriterDenied: true,
+        commandId: 'promote-live-1-cycle-2-failback' },
+    },
+    repeatForwardCredential: {
+      leaseGrant: { leaseEpoch: 3 },
+      proof: { commandId: 'promote-live-1-cycle-2-forward' },
+    },
+    repeatReturnCredential: {
+      leaseGrant: { leaseEpoch: 4 },
+      proof: { commandId: 'promote-live-1-cycle-2-failback' },
+    },
+    staleRepeatForwardCredentialDenied: true,
+    staleRepeatReturnCredentialDenied: true,
     systemIds: { sourceA: '4', receiverB: '5', control: '6' },
   };
   assert.equal(validateLiveProtocolComposition(bpc, tsk, commandId), true);
