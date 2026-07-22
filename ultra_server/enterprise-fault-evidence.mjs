@@ -8,6 +8,9 @@ const ALLOWED_FAULTS = Object.freeze({
   destructiveRestore: 'drop-and-rebuild-enterprise-authority-on-promoted-b',
   databaseSigkill: 'sigkill-exact-promoted-enterprise-postgres',
 });
+const RESTART_CUTS = Object.freeze([
+  'initial', 'failback', 'repeatForward', 'repeatFailback', 'recoveredSite',
+]);
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
@@ -15,7 +18,7 @@ function sha256(value) {
 
 function publicEvidence(result) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: 'enterprise-same-authority-fault-acceptance',
     commandId: result.commandId,
     enterpriseManifestDigest: result.enterprise.manifestDigest,
@@ -26,14 +29,15 @@ function publicEvidence(result) {
 }
 
 export function validateEnterpriseFaultEvidence(evidence, expected = {}) {
-  assert.equal(evidence?.schemaVersion, 1);
+  assert.equal(evidence?.schemaVersion, 2);
   assert.equal(evidence?.kind, 'enterprise-same-authority-fault-acceptance');
   assert.equal(evidence?.commandId, expected.commandId ?? evidence.commandId);
   assert.match(evidence?.enterpriseManifestDigest, DIGEST);
   assert.equal(typeof evidence?.sourceSystemId, 'string');
   assert.equal(typeof evidence?.targetSystemId, 'string');
   assert.notEqual(evidence.sourceSystemId, evidence.targetSystemId);
-  assert.deepEqual(Object.keys(evidence?.faults ?? {}).sort(), Object.keys(ALLOWED_FAULTS).sort());
+  assert.deepEqual(Object.keys(evidence?.faults ?? {}).sort(),
+    [...Object.keys(ALLOWED_FAULTS), 'staleCompletionRestarts'].sort());
   for (const [name, expectedFault] of Object.entries(ALLOWED_FAULTS)) {
     const fault = evidence.faults[name];
     assert.equal(fault?.fault, expectedFault);
@@ -46,6 +50,19 @@ export function validateEnterpriseFaultEvidence(evidence, expected = {}) {
   assert.equal(evidence.faults.destructiveRestore.sameCredentialReceipt, true);
   assert.equal(evidence.faults.databaseSigkill.sameTargetSystemId, true);
   assert.equal(evidence.faults.databaseSigkill.sameCredentialReceipt, true);
+  assert.deepEqual(Object.keys(evidence.faults.staleCompletionRestarts).sort(),
+    [...RESTART_CUTS].sort());
+  const pids = new Set();
+  for (const cut of RESTART_CUTS) {
+    const probe = evidence.faults.staleCompletionRestarts[cut];
+    assert.equal(probe.processRestarted, true);
+    assert.equal(probe.denied, true);
+    assert.equal(Number.isSafeInteger(probe.childPid) && probe.childPid > 0, true);
+    assert.equal(Number.isSafeInteger(probe.rtoMs) && probe.rtoMs >= 0, true);
+    pids.add(probe.childPid);
+  }
+  assert.equal(pids.size, RESTART_CUTS.length,
+    'every stale cut must be probed by a distinct restarted child process');
   return evidence;
 }
 

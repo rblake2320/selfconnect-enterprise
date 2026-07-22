@@ -28,6 +28,12 @@ function result() {
           fault: 'sigkill-exact-promoted-enterprise-postgres', resumed: true,
           sameTargetSystemId: true, sameCredentialReceipt: true, rpo: 0, rtoMs: 31,
         },
+        staleCompletionRestarts: Object.fromEntries(
+          ['initial', 'failback', 'repeatForward', 'repeatFailback', 'recoveredSite']
+            .map((name, index) => [name, {
+              processRestarted: true, denied: true, childPid: 100 + index, rtoMs: 4,
+            }]),
+        ),
       },
     },
   };
@@ -49,7 +55,7 @@ test('same-authority fault evidence is strict, hashed, and write-once', async ()
 
 test('fault acceptance rejects marker-like or incomplete claims', () => {
   const valid = {
-    schemaVersion: 1, kind: 'enterprise-same-authority-fault-acceptance',
+    schemaVersion: 2, kind: 'enterprise-same-authority-fault-acceptance',
     commandId: 'promote-1', enterpriseManifestDigest: 'a'.repeat(64),
     sourceSystemId: '1', targetSystemId: '2', faults: result().enterprise.faults,
   };
