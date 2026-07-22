@@ -89,7 +89,7 @@ def test_runner_invokes_pytest_once_without_shell_or_summary_parsing() -> None:
 
 
 def test_collection_and_conftest_inputs_are_pinned() -> None:
-    assert EXPECTED_COLLECTION_COUNT == 1_752
+    assert EXPECTED_COLLECTION_COUNT == 1_771
     assert len(EXPECTED_COLLECTION_SHA256) == 64
     assert len(TRUSTED_CONFTEST_SHA256) == 64
 
@@ -112,7 +112,7 @@ def test_structured_results_count_reports_not_terminal_text() -> None:
 
 
 def test_skip_policy_uses_nodeid_and_reason() -> None:
-    assert len(ALLOWED_SKIPS) == 38
+    assert len(ALLOWED_SKIPS) == 41
     assert _allowed_skip(
         "tests/test_e2e_ultra_gate.py::test_live",
         "Skipped: Ultra Server not available on localhost:7777",

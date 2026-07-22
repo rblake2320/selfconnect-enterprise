@@ -41,6 +41,14 @@
       "substitute": "The four exact skipped node IDs run without skips in the dedicated ubuntu-latest POSIX runtime-ownership job.",
       "non_equivalence": "Windows DACL, reparse-point, and handle-retarget tests remain separate because POSIX results do not prove Windows semantics and Windows results do not prove POSIX semantics.",
       "closure": "Keep the dedicated POSIX and Windows-native tests green on the exact commit."
+    },
+    {
+      "id": "worm-evidence-live-sink-unconfigured",
+      "count": 3,
+      "reason": "No live S3 Object Lock or Cloudflare R2 bucket-lock sink is configured in this environment (SCENT_WORM_SINK/SCENT_WORM_BUCKET unset).",
+      "substitute": "tests/test_enterprise/test_evidence_worm_router.py exercises the exact same routing, fork-detection, and deletion-denial logic against a mocked boto3 S3 client and against InMemoryWitnessSink.",
+      "non_equivalence": "A mocked-boto3 pass proves the routing and denial-detection code paths are correct; it is not evidence that a real bucket's Object Lock configuration actually denies deletion. Only a dedicated job running with SCENT_REQUIRE_WORM_LIVE=1 against a real bucket supports that claim, and an unconfigured environment invoked that way fails at collection time instead of skipping.",
+      "closure": "Provision the dedicated evidence bucket per docs/ato/WORM_EVIDENCE_ROUTING_OWNER_CHECKLIST.md, run with SCENT_REQUIRE_WORM_LIVE=1 against real credentials, and retain the resulting proof artifact."
     }
   ],
   "ci_receipts": [
@@ -268,10 +276,19 @@
       "evidence": [
         "repo:ultra_server/monitoring-config.test.mjs",
         "repo:ultra_server/monitoring-security.test.mjs",
+        "repo:ultra_server/ha-metrics.js",
+        "repo:ultra_server/ha-metrics.test.mjs",
+        "repo:ultra_server/monitoring/alert_rules.yml",
+        "repo:ultra_server/monitoring/alertmanager.yml",
+        "repo:ultra_server/monitoring-alerting-config.test.mjs",
+        "repo:ultra_server/alert-fault-drill.mjs",
+        "repo:docs/operations/ULTRA_ALERT_FAULT_DRILL.md",
+        "repo:docs/ato/MONITORING_ALERTING_OWNER_CHECKLIST.md",
+        "drill:sha256:e7f679c12d76c24b23730f8bfee838786fef87b4b81c272e3c6a76537dea0e3a",
         "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866745029"
       ],
-      "limitations": "Monitoring configuration and security tests pass, but an independently observed deployment alerting drill for the exact multi-host topology has not run.",
-      "closure": "Deploy the approved monitors and alert routes, inject each named fault, prove timely delivery and acknowledgement, and retain bounded incident evidence."
+      "limitations": "Prometheus counters/gauge now exist for all five named signals, alert rules and Alertmanager routing are real and were proven end to end (fault metric -> firing alert -> webhook delivery) against a local Docker stack per docs/operations/ULTRA_ALERT_FAULT_DRILL.md, but that drill uses a synthetic single-host exporter, not a live multi-host Ultra deployment, and no real paging/chat receiver is configured behind the webhook secret. An independently observed deployment alerting drill for the exact multi-host topology has not run.",
+      "closure": "Provision a real Alertmanager receiver (PagerDuty/Slack/email), deploy the monitors and alert routes onto the exact multi-host topology, have an independent operator inject each named fault, prove timely delivery and acknowledgement, and retain bounded incident evidence — see docs/ato/MONITORING_ALERTING_OWNER_CHECKLIST.md."
     },
     {
       "id": "immutable-evidence-deployment",
@@ -280,10 +297,15 @@
       "evidence": [
         "artifact:docs/ato/WORM_LIVE_AWS_PROOF_2026-06-21.json",
         "repo:docs/ato/WORM_LIVE_AWS_PROOF_2026-06-21.md",
-        "repo:docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#evidence-boundary"
+        "repo:docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#evidence-boundary",
+        "repo:enterprise/evidence_worm_router.py",
+        "repo:tests/test_enterprise/test_evidence_worm_router.py",
+        "repo:tests/test_enterprise/test_worm_evidence_live.py",
+        "repo:scripts/route_ha_evidence_to_worm.py",
+        "repo:docs/ato/WORM_EVIDENCE_ROUTING_OWNER_CHECKLIST.md"
       ],
-      "limitations": "A real S3 Object Lock COMPLIANCE-mode run proved remote retention, readback, stable seal indexing, and conflicting-root rejection. The exact HA acceptance and incident artifacts are not yet routed through that sink, and ongoing custody/legal-hold operations are not established.",
-      "closure": "Route the exact HA acceptance and incident artifacts into the reviewed immutable sink, then exercise retention/deletion denial, recovery access, and continuing custody operations."
+      "limitations": "A real S3 Object Lock COMPLIANCE-mode run proved remote retention, readback, stable seal indexing, and conflicting-root rejection. enterprise/evidence_worm_router.py now routes the exact named HA acceptance/incident artifacts through that same sink contract, with a fail-closed CLI, a live deletion-denial check (S3ObjectLockSink.attempt_delete), and a live pytest drill that fails (not skips) when explicitly requested without a configured sink — but no owner has yet run it against a real dedicated bucket, and ongoing custody/legal-hold operations are not established.",
+      "closure": "Provision the dedicated evidence bucket, run scripts/route_ha_evidence_to_worm.py and the SCENT_REQUIRE_WORM_LIVE=1 pytest drill against it, and establish continuing custody/legal-hold operations — see docs/ato/WORM_EVIDENCE_ROUTING_OWNER_CHECKLIST.md."
     },
     {
       "id": "key-custody",

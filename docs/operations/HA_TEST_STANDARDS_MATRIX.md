@@ -44,8 +44,8 @@ authorized, certified, or compliant.
 | Recovered-site resync | PASS | The stale B authorities are rebuilt in place, independently attested, denied before convergence, and admitted only for exact first new-epoch mutations; this is logical/container recovery, not destroyed physical-site recovery |
 | Enterprise B -> A failback | PASS | Exact BPC/TSK artifacts, terminal source fence, stale-B denial, fresh reprovisioning, and idempotent retry pass for one cycle |
 | Repeated same-principal cycles | PASS | Two exact A -> B -> A cycles plus stale-site rebuild and governed A -> B recovery pass on six PostgreSQL systems plus Redis, with exact-head hosted evidence and independent review |
-| Monitoring and alerting | PARTIAL | Config/security tests pass; deployed fault-to-alert drill remains |
-| Immutable evidence | PARTIAL | Live S3 Object Lock proof exists; exact HA artifacts are not wired into it |
+| Monitoring and alerting | PARTIAL | Real HA-fault metrics, alert rules, and Alertmanager routing exist and were proven end to end against a local Docker stack (docs/operations/ULTRA_ALERT_FAULT_DRILL.md); a real receiver and the exact multi-host independently observed drill remain |
+| Immutable evidence | PARTIAL | Live S3 Object Lock proof exists; enterprise/evidence_worm_router.py now routes the exact HA artifacts through that sink contract and tests deletion denial, but no owner has run it against a real bucket yet |
 | Key custody | PARTIAL | Role separation passes; production HSM/TPM custody ceremony remains |
 | Independent topology review | PARTIAL | Exact two-host TSK slice reviewed; complete topology review remains |
 | Approved RPO/RTO objectives | PARTIAL | Measurements exist; owner-approved business targets do not |

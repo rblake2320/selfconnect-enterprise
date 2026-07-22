@@ -50,6 +50,11 @@ import {
   validateMetricsTokenConfiguration,
 } from './monitoring-security.js';
 import {
+  haPromotionDenialLabel,
+  haRecoveryFailureStageLabel,
+  isHaCommandDenied,
+} from './ha-metrics.js';
+import {
   MemoryIdempotencyStore,
   MemoryIdentityBindingStore,
   PgIdempotencyStore,
@@ -78,7 +83,7 @@ import {
 } from '@bpc/server';
 
 // ── Prometheus metrics ────────────────────────────────────────────────────────
-import { register, Counter, collectDefaultMetrics } from 'prom-client';
+import { register, Counter, Gauge, collectDefaultMetrics } from 'prom-client';
 collectDefaultMetrics({ prefix: 'ultra_node_' });
 
 const cHttpRequests = new Counter({
@@ -98,6 +103,39 @@ const cTskProvisions = new Counter({
 const cBpcRegistrations = new Counter({
   name: 'ultra_bpc_registrations_total',
   help: 'Total successful BPC pair registrations',
+});
+
+// ── HA fault-signal metrics (docs/assurance/ha_test_coverage.json:
+// monitoring-alerting: "Detect, alert, and retain operator-visible evidence
+// for authority loss, replication lag, denied promotion, stale writers, and
+// recovery failure.") Label values are bounded by ha-metrics.js so an
+// unexpected internal error string cannot create unbounded label cardinality.
+const cHaPromotionDenied = new Counter({
+  name: 'ultra_ha_promotion_denied_total',
+  help: 'Total denied HA guard-command transitions (activate/promote/demote), by reason',
+  labelNames: ['reason'],
+});
+const cHaAuthorityLoss = new Counter({
+  name: 'ultra_ha_authority_loss_total',
+  help: 'Total times the HA fencing/writer-lease boundary raised instead of returning a decision',
+});
+const cHaStaleWriterDenied = new Counter({
+  name: 'ultra_ha_stale_writer_denied_total',
+  help: 'Total requests rejected because the local writer lease was missing, stale, or fenced',
+});
+const cHaRecoveryFailure = new Counter({
+  name: 'ultra_ha_recovery_failure_total',
+  help: 'Total failed HA recovery/reprovisioning/reload operations, by stage',
+  labelNames: ['stage'],
+});
+const cHaIndependentStateCheckFailures = new Counter({
+  name: 'ultra_ha_independent_state_check_failures_total',
+  help: 'Total failed independent-state readiness checks',
+});
+const gHaIndependentStateReadyTimestamp = new Gauge({
+  name: 'ultra_ha_independent_state_ready_timestamp_seconds',
+  help: 'Unix timestamp of the last successful independent-state readiness check. '
+    + 'time() minus this value is the replication-lag proxy an alert rule thresholds on.',
 });
 
 // ── TSK imports ───────────────────────────────────────────────────────────────
@@ -348,6 +386,7 @@ function haLockMiddleware({ lockMode, requireWriter, requireIndependentReady = t
     void withLock(HA_CONFIG.advisoryLockKey, async () => {
       if (requireWriter) {
         if (requireIndependentReady && !independentStateAllowsWrites(HA_STATE_MODE, independentStateReady)) {
+          cHaStaleWriterDenied.inc();
           return res.status(503).json({
             ok: false,
             error: 'ULTRA_INDEPENDENT_STATE_NOT_READY',
@@ -357,6 +396,7 @@ function haLockMiddleware({ lockMode, requireWriter, requireIndependentReady = t
           minRemainingMs: HA_CONFIG.minLeaseRemainingMs,
         });
         if (!writable.ok) {
+          cHaStaleWriterDenied.inc();
           return res.status(503).json({ ok: false, error: 'ULTRA_WRITER_FENCED' });
         }
         req.scFenceEpoch = writable.fenceEpoch;
@@ -364,6 +404,7 @@ function haLockMiddleware({ lockMode, requireWriter, requireIndependentReady = t
       await waitForResponse(res, next);
       return undefined;
     }).catch((error) => {
+      cHaAuthorityLoss.inc();
       console.error(JSON.stringify({
         timestamp: new Date().toISOString(),
         level: 'ERROR',
@@ -909,6 +950,12 @@ app.post('/ha/command', requireAdminAuth, serializeHaTransition, async (req, res
     return res.status(409).json({ ok: false, error: 'ULTRA_HA_DISABLED' });
   }
   const outcome = await haController.applyCommand(req.body);
+  if (isHaCommandDenied(outcome.status)) {
+    cHaPromotionDenied.inc({ reason: haPromotionDenialLabel(outcome.result?.error) });
+    if (outcome.result?.error === 'fencing_authority_unavailable') {
+      cHaAuthorityLoss.inc();
+    }
+  }
   console.log(JSON.stringify({
     timestamp: new Date().toISOString(),
     level: outcome.status === 200 ? 'INFO' : 'WARN',
@@ -947,6 +994,7 @@ app.post('/ha/reload-tsk-authority', requireWriterLease, requireAdminAuth, requi
   try {
     return res.json({ ok: true, ...(await reloadPromotedTskAuthority('admin')) });
   } catch {
+    cHaRecoveryFailure.inc({ stage: haRecoveryFailureStageLabel('tsk_authority_reload') });
     return res.status(409).json({ ok: false, error: 'TSK_AUTHORITY_RELOAD_FAILED' });
   }
 });
@@ -1013,7 +1061,13 @@ app.post('/ha/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromo
         receiptDigest: receipt.receiptDigest,
         idempotent: receipt.idempotent,
       }));
-      independentStateReady = await assertIndependentStateReady(runtimePgPool, expected).catch(() => null);
+      independentStateReady = await assertIndependentStateReady(runtimePgPool, expected).catch(() => {
+        cHaIndependentStateCheckFailures.inc();
+        return null;
+      });
+      if (independentStateReady) {
+        gHaIndependentStateReadyTimestamp.set(Date.now() / 1000);
+      }
       return res.json({
         ok: true,
         clientId: provisioned.targetClientId,
@@ -1022,6 +1076,7 @@ app.post('/ha/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromo
         receipt,
       });
     } catch (error) {
+      cHaRecoveryFailure.inc({ stage: haRecoveryFailureStageLabel('tsk_reprovision') });
       console.error(JSON.stringify({
         timestamp: new Date().toISOString(),
         level: 'ERROR',
@@ -1242,6 +1297,7 @@ app.listen(PORT, '127.0.0.1', () => {
 
 process.on('SIGHUP', () => {
   void reloadPromotedTskAuthority('SIGHUP').catch(() => {
+    cHaRecoveryFailure.inc({ stage: haRecoveryFailureStageLabel('sighup_reload') });
     console.error(JSON.stringify({
       timestamp: new Date().toISOString(),
       level: 'ERROR',

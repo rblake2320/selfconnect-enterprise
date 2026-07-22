@@ -9,6 +9,7 @@ const expectedRuntimeFiles = [
   'agent-auth.js',
   'ha-command.mjs',
   'ha-controller.js',
+  'ha-metrics.js',
   'independent-state-command.mjs',
   'independent-state.js',
   'monitoring-security.js',

@@ -1,0 +1,21 @@
+# Alertmanager configuration for the Ultra monitoring reference stack.
+#
+# Like prometheus.yml, this is a reproducible LOCAL reference config, not a
+# universal production deployment: it routes every alert to a single
+# generic webhook receiver whose URL is read from a mounted, git-ignored
+# secret file (never committed, never inlined here). Wiring that webhook to
+# a real on-call system (PagerDuty, Slack, Opsgenie, email relay, ...) is an
+# environment/owner decision — see
+# docs/ato/MONITORING_ALERTING_OWNER_CHECKLIST.md.
+route:
+  receiver: operator-webhook
+  group_by: ["alertname"]
+  group_wait: 10s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: operator-webhook
+    webhook_configs:
+      - url_file: /run/secrets/alertmanager_webhook_url
+        send_resolved: true

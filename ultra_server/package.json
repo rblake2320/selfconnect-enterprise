@@ -11,6 +11,7 @@
     "agent-auth.js",
     "ha-command.mjs",
     "ha-controller.js",
+    "ha-metrics.js",
     "independent-state-command.mjs",
     "independent-state.js",
     "monitoring-security.js",
@@ -32,13 +33,14 @@
     "ha:state": "node independent-state-command.mjs",
     "ha:stream": "node ultra-state-stream-command.mjs",
     "test:ha-live": "node ha-live-conformance.mjs",
-    "test": "node --test agent-auth.test.mjs enterprise-fault-evidence.test.mjs final-ha-acceptance.test.mjs ha-controller.test.mjs independent-state-config.test.mjs monitoring-config.test.mjs monitoring-security.test.mjs package-content.test.mjs post-heal-probe-lifecycle.test.mjs promoted-tsk-runtime.test.mjs recovery-token.test.mjs runtime-stores.test.mjs security-boundary.test.mjs spark2-host-drill.test.mjs ultra-redis-authority.test.mjs ultra-state-authority-config.test.mjs ultra-state-stream-config.test.mjs",
+    "test": "node --test agent-auth.test.mjs enterprise-fault-evidence.test.mjs final-ha-acceptance.test.mjs ha-controller.test.mjs ha-metrics.test.mjs independent-state-config.test.mjs monitoring-alerting-config.test.mjs monitoring-config.test.mjs monitoring-security.test.mjs package-content.test.mjs post-heal-probe-lifecycle.test.mjs promoted-tsk-runtime.test.mjs recovery-token.test.mjs runtime-stores.test.mjs security-boundary.test.mjs spark2-host-drill.test.mjs ultra-redis-authority.test.mjs ultra-state-authority-config.test.mjs ultra-state-stream-config.test.mjs",
     "test:independent-state": "node --test independent-state.test.mjs",
     "test:ultra-outbox": "node --test ultra-state-outbox.test.mjs",
     "test:final-ha-unit": "node --test final-ha-acceptance.test.mjs",
     "test:protocol-composition": "node --test --test-concurrency=1 promoted-tsk-authority.test.mjs bpc-authority-identity.test.mjs bpc-live-composition.test.mjs tsk-live-composition.test.mjs final-ha-live.test.mjs",
     "test:final-ha": "node final-ha-acceptance.mjs",
     "test:spark2-host": "node spark2-host-drill.mjs",
+    "test:alert-drill": "node alert-fault-drill.mjs",
     "test:live": "node server.test.mjs"
   },
   "dependencies": {

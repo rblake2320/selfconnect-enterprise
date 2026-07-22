@@ -324,6 +324,17 @@ class S3ObjectLockSink(ReplicationSink):
             "minimum_retention_days": self.retention_days,
         }
 
+    def attempt_delete(self, key: str) -> None:
+        """Attempt to delete a retained object.
+
+        This exists only so callers can prove a live Object Lock bucket
+        actually denies deletion of retained evidence: a successful delete
+        here means immutability is NOT enforced and must be treated as a
+        verification failure, never as routine cleanup. Raises whatever
+        exception the provider raises (e.g. AccessDenied) on denial.
+        """
+        self._client.delete_object(Bucket=self.bucket, Key=key)
+
 
 class CloudflareR2Sink(ReplicationSink):
     """Cloudflare R2 S3-compatible replication sink.
@@ -439,6 +450,15 @@ class CloudflareR2Sink(ReplicationSink):
         raise ReplicationError(
             "r2_bucket_lock_has_no_enabled_rule_covering_prefix_and_retention"
         )
+
+    def attempt_delete(self, key: str) -> None:
+        """Attempt to delete a retained object.
+
+        See S3ObjectLockSink.attempt_delete: a successful delete here means
+        the R2 bucket-lock rule is NOT enforcing retention and must be
+        treated as a verification failure, never as routine cleanup.
+        """
+        self._client.delete_object(Bucket=self.bucket, Key=key)
 
 
 def _safe_s3_component(value: str) -> str:
