@@ -280,6 +280,18 @@ function makePool(connectionString, max = 5) {
   return pool;
 }
 
+async function awaitDatabaseClockAfter(pool, thresholdMs, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await pool.query(
+      'SELECT (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint AS now_ms',
+    );
+    if (Number(result.rows[0].now_ms) > thresholdMs) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error('control PostgreSQL clock did not pass the signed fencing threshold');
+}
+
 /**
  * Executes the reviewed BPC public HA lifecycle directly. This helper never
  * parses subprocess output and never constructs a promotion/readiness receipt;
@@ -549,9 +561,7 @@ export async function runBpcLiveComposition(options) {
     });
     assert.equal(await fenceStore.claim(redisB), true, 'BPC epoch-2 quorum claim failed');
     const fenceReadyAt = revokedA.expiresAtMs + 25 + revokedA.maxTransactionDurationMs;
-    if (Date.now() <= fenceReadyAt) {
-      await new Promise((resolve) => setTimeout(resolve, fenceReadyAt - Date.now() + 20));
-    }
+    await awaitDatabaseClockAfter(poolControl, fenceReadyAt);
     const fenced = await controller.markFenced(commandId, fenceStore);
 
     const grantB = bpc.signSourceLeaseGrant(KEY_IDS.guard, guardPrivate, {
@@ -747,9 +757,7 @@ export async function runBpcLiveComposition(options) {
     assert.equal(await fenceStore.claim(redisA3), true, 'BPC epoch-3 failback quorum claim failed');
     const failbackFenceReadyAt = revokedBControl.expiresAtMs + 25
       + revokedBControl.maxTransactionDurationMs;
-    if (Date.now() <= failbackFenceReadyAt) {
-      await new Promise((resolve) => setTimeout(resolve, failbackFenceReadyAt - Date.now() + 20));
-    }
+    await awaitDatabaseClockAfter(poolControl, failbackFenceReadyAt);
     const failbackFenced = await controller.markFenced(failbackCommandId, fenceStore);
     const grantA3 = bpc.signSourceLeaseGrant(KEY_IDS.guard, guardPrivate, {
       streamId,
@@ -952,10 +960,7 @@ export async function runBpcLiveComposition(options) {
       'BPC epoch-4 repeat promotion quorum claim failed');
     const repeatForwardFenceReadyAt = revokedA3Control.expiresAtMs + 25
       + revokedA3Control.maxTransactionDurationMs;
-    if (Date.now() <= repeatForwardFenceReadyAt) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, repeatForwardFenceReadyAt - Date.now() + 20));
-    }
+    await awaitDatabaseClockAfter(poolControl, repeatForwardFenceReadyAt);
     const repeatForwardFenced = await controller.markFenced(
       repeatForwardCommandId, fenceStore,
     );
@@ -1152,10 +1157,7 @@ export async function runBpcLiveComposition(options) {
       'BPC epoch-5 repeat failback quorum claim failed');
     const repeatReturnFenceReadyAt = revokedB4Control.expiresAtMs + 25
       + revokedB4Control.maxTransactionDurationMs;
-    if (Date.now() <= repeatReturnFenceReadyAt) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, repeatReturnFenceReadyAt - Date.now() + 20));
-    }
+    await awaitDatabaseClockAfter(poolControl, repeatReturnFenceReadyAt);
     const repeatReturnFenced = await controller.markFenced(
       repeatReturnCommandId, fenceStore,
     );
