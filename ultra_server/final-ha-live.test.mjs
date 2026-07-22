@@ -98,6 +98,12 @@ test('directly composes exact reviewed live BPC and TSK artifacts', {
   assert.equal(result.enterprise.failback.targetClientId,
     result.tsk.publicCredentialReturn.clientId);
   assert.equal(result.enterprise.failback.staleBProtocolWriterDenied, true);
+  assert.equal(result.enterprise.repeatedCycle.forward.targetClientId,
+    result.tsk.repeatForwardCredential.publicCredential.clientId);
+  assert.equal(result.enterprise.repeatedCycle.forward.staleSourceCompletionDenied, true);
+  assert.equal(result.enterprise.repeatedCycle.failback.targetClientId,
+    result.tsk.repeatReturnCredential.publicCredential.clientId);
+  assert.equal(result.enterprise.repeatedCycle.failback.staleSourceCompletionDenied, true);
   if (process.env.ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE) {
     await writeLiveCompositionEvidence(process.env.ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE, result);
   }

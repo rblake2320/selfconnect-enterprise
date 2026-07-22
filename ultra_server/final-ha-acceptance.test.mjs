@@ -8,7 +8,7 @@ import { validateLiveCompositionEvidence } from './live-composition-evidence.mjs
 
 function liveEvidence() {
   return {
-    schemaVersion: 5, kind: 'enterprise-live-authority-handoff', commandId: 'promote-1',
+    schemaVersion: 6, kind: 'enterprise-live-authority-handoff', commandId: 'promote-1',
     commits: { enterprise: 'a'.repeat(40), bpc: 'b'.repeat(40), tsk: 'c'.repeat(40) },
     systems: {
       bpc: { sourceA: '1', promotedB: '2', control: '3' },
@@ -26,6 +26,15 @@ function liveEvidence() {
       returnedCredentialActivation: 'a'.repeat(64),
       enterpriseFailbackManifest: 'b'.repeat(64),
       enterpriseFailbackCredentialReceipt: 'c'.repeat(64),
+      bpcRepeatForward: 'd'.repeat(64), bpcRepeatFailback: 'e'.repeat(64),
+      tskRepeatForwardFinalized: 'f'.repeat(64),
+      tskRepeatForwardActivation: '0'.repeat(64),
+      tskRepeatFailbackFinalized: '1'.repeat(64),
+      tskRepeatFailbackActivation: '2'.repeat(64),
+      enterpriseRepeatForwardManifest: '3'.repeat(64),
+      enterpriseRepeatForwardCredentialReceipt: '4'.repeat(64),
+      enterpriseRepeatFailbackManifest: '5'.repeat(64),
+      enterpriseRepeatFailbackCredentialReceipt: '6'.repeat(64),
     },
     outcomes: {
       bpcStaleWriterDenied: true, bpcFailbackStaleWriterDenied: true,
@@ -45,6 +54,10 @@ function liveEvidence() {
       enterpriseFailbackStaleBCompletionDenied: true,
       enterpriseFailbackStaleBProtocolWriterDenied: true,
       enterpriseFailbackRpo: 0, enterpriseFailbackRtoMs: 12,
+      tskRepeatForwardStaleWriterDenied: true,
+      tskRepeatFailbackStaleWriterDenied: true,
+      tskRepeatForwardStaleCredentialDenied: true,
+      tskRepeatFailbackStaleCredentialDenied: true,
     },
     tskReturnAuthority: {
       commandId: 'return-1',
@@ -54,11 +67,36 @@ function liveEvidence() {
       importedSequence: 2, nextSequence: 3,
       redisFenceEpoch: 2, redisNodeId: 'return-a',
     },
+    repeatedCycle: {
+      forward: {
+        commandId: 'promote-1-cycle-2-promote',
+        bpcSourceEpoch: 3, bpcTargetEpoch: 4,
+        tskSourceEpoch: 2, tskTargetEpoch: 3,
+        sourceSystemId: '4', targetSystemId: '5',
+        sourceClientId: 'return-target', targetClientId: 'repeat-b',
+        staleSourceCompletionDenied: true, idempotentRetry: true,
+        rpo: 0, rtoMs: 14,
+      },
+      failback: {
+        commandId: 'promote-1-cycle-2-failback',
+        bpcSourceEpoch: 4, bpcTargetEpoch: 5,
+        tskSourceEpoch: 3, tskTargetEpoch: 4,
+        sourceSystemId: '5', targetSystemId: '4',
+        sourceClientId: 'repeat-b', targetClientId: 'repeat-a',
+        staleSourceCompletionDenied: true, idempotentRetry: true,
+        rpo: 0, rtoMs: 15,
+      },
+    },
+    tskLatestAuthority: {
+      commandId: 'promote-1-cycle-2-failback', fenceEpoch: 4,
+      nodeId: 'return-a', activationGrantDigest: '2'.repeat(64),
+    },
     tskRedisFaults: {
-      schemaVersion: 1, kind: 'tsk-same-redis-authority-faults', commandId: 'return-1',
+      schemaVersion: 1, kind: 'tsk-same-redis-authority-faults',
+      commandId: 'promote-1-cycle-2-failback',
       streamId: 'enterprise28:tsk-live/v1', systemIds: { sourceA: '4', receiverB: '5', control: '6' },
       redisAuthorityKeyDigest: '7'.repeat(64), redisAuthorityTupleDigest: '8'.repeat(64),
-      fenceEpoch: 2, authorityNodeId: 'return-a',
+      fenceEpoch: 4, authorityNodeId: 'return-a',
       faults: {
         livePartition: { rpo: 0, rtoMs: 10, oldMasterRefusedWrites: true,
           exactTuplePreserved: true, promotedMasterAddressDigest: '9'.repeat(64) },
@@ -185,6 +223,6 @@ test('direct handoff evidence is exact, secret-free authority output', () => {
   }));
   assert.throws(() => validateLiveCompositionEvidence({
     ...evidence,
-    tskReturnAuthority: { ...evidence.tskReturnAuthority, redisNodeId: 'wrong-node' },
+    tskLatestAuthority: { ...evidence.tskLatestAuthority, nodeId: 'wrong-node' },
   }));
 });
