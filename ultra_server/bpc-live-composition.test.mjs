@@ -43,5 +43,22 @@ test('executes governed BPC A to B promotion and B to A failback', {
   assert.equal(result.failback.priorAuthoritiesReset, false);
   assert.equal(result.failback.staleBWriterDenied, true);
   assert.equal(result.failback.importedSequence, 2);
-  assert.equal(result.failback.originatedSequence, 1);
+  assert.equal(result.failback.originatedSequence, 3);
+  assert.equal(result.repeatedCycle.principalId, 'enterprise-pair-1');
+  assert.equal(result.repeatedCycle.forward.sourceEpoch, 3);
+  assert.equal(result.repeatedCycle.forward.targetEpoch, 4);
+  assert.equal(result.repeatedCycle.forward.sourceSystemId, result.systemIds.sourceA);
+  assert.equal(result.repeatedCycle.forward.targetSystemId, result.systemIds.promotedB);
+  assert.equal(result.repeatedCycle.forward.originatedSequence, 5);
+  assert.equal(result.repeatedCycle.forward.staleSourceWriterDenied, true);
+  assert.equal(result.repeatedCycle.failback.sourceEpoch, 4);
+  assert.equal(result.repeatedCycle.failback.targetEpoch, 5);
+  assert.equal(result.repeatedCycle.failback.sourceSystemId, result.systemIds.promotedB);
+  assert.equal(result.repeatedCycle.failback.targetSystemId, result.systemIds.sourceA);
+  assert.equal(result.repeatedCycle.failback.originatedSequence, 7);
+  assert.equal(result.repeatedCycle.failback.staleSourceWriterDenied, true);
+  assert.equal(result.repeatedCycle.priorAuthoritiesReset, false);
+  assert.equal(result.repeatedCycle.rpo, 0);
+  assert.equal(Number.isSafeInteger(result.repeatedCycle.rtoMs) &&
+    result.repeatedCycle.rtoMs >= 0, true);
 });

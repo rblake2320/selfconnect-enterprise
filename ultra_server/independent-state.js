@@ -1002,14 +1002,26 @@ function verifyProtocolEvidence(evidence, manifest, resolvers) {
       lease.grantDigest !== manifest.tskActivationDigest) {
     throw new Error('protocol evidence digest mismatch');
   }
-  if (bpc.commandId !== manifest.commandId || finalized.commandId !== manifest.commandId ||
-      lease.commandId !== manifest.commandId || bpc.targetEpoch !== manifest.bpcTargetEpoch ||
-      lease.leaseEpoch !== manifest.tskTargetEpoch || finalized.epoch !== manifest.tskTargetEpoch - 1 ||
-      lease.leaseStatus !== 'active' || lease.holderNodeId !== finalized.bKeyId ||
-      bpc.targetSystemId === finalized.bSystemId || finalized.sourceSystemId !== manifest.sourceSystemId ||
-      bpc.streamId !== manifest.bpcStreamId || finalized.streamId !== manifest.tskStreamId ||
-      finalized.streamId !== lease.streamId) {
-    throw new Error('protocol evidence promotion binding mismatch');
+  const bindings = {
+    bpcCommand: bpc.commandId === manifest.commandId,
+    finalizedCommand: finalized.commandId === manifest.commandId,
+    leaseCommand: lease.commandId === manifest.commandId,
+    bpcEpoch: bpc.targetEpoch === manifest.bpcTargetEpoch,
+    leaseEpoch: lease.leaseEpoch === manifest.tskTargetEpoch,
+    finalizedEpoch: finalized.epoch === manifest.tskTargetEpoch - 1,
+    activeLease: lease.leaseStatus === 'active',
+    holder: lease.holderNodeId === finalized.bKeyId,
+    independentTargets: bpc.targetSystemId !== finalized.bSystemId,
+    sourceSystem: finalized.sourceSystemId === manifest.sourceSystemId,
+    bpcStream: bpc.streamId === manifest.bpcStreamId,
+    tskStream: finalized.streamId === manifest.tskStreamId,
+    leaseStream: finalized.streamId === lease.streamId,
+  };
+  const failedBindings = Object.entries(bindings)
+    .filter(([, matched]) => !matched)
+    .map(([name]) => name);
+  if (failedBindings.length > 0) {
+    throw new Error(`protocol evidence promotion binding mismatch: ${failedBindings.join(',')}`);
   }
 }
 

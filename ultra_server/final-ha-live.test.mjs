@@ -14,6 +14,10 @@ test('live composition requires exact command binding, independent systems, and 
     readinessAttestation: { commandId, targetEpoch: 2 }, staleWriterDenied: true,
     failback: { targetSystemId: '1', targetEpoch: 3, staleBWriterDenied: true,
       priorAuthoritiesReset: false, sourcePostgresSystemReused: true },
+    repeatedCycle: {
+      forward: { targetEpoch: 4 },
+      failback: { targetEpoch: 5 },
+    },
     systemIds: { sourceA: '1', promotedB: '2', control: '3' },
   };
   const tsk = {
@@ -27,7 +31,7 @@ test('live composition requires exact command binding, independent systems, and 
     returnActivationLeaseGrant: { leaseEpoch: 2, commandId: 'return-promote-live-1',
       holderNodeId: 'return-a', grantDigest: 'c'.repeat(64) },
     returnSourceActivation: { n: 5, activationGrantDigest: 'c'.repeat(64) },
-    redisAuthority: { record: { commandId: 'return-promote-live-1', fenceEpoch: 2,
+    redisAuthority: { record: { commandId: 'promote-live-1-cycle-2-failback', fenceEpoch: 4,
       nodeId: 'return-a', active: true } },
     staleCredentialWriterDenied: true,
     staleReturnedCredentialWriterDenied: true,
@@ -48,6 +52,23 @@ test('live composition requires exact command binding, independent systems, and 
       leaseEpoch: 2 },
     returnCredentialProof: { commandId: 'return-promote-live-1',
       record: { mutation: { clientId: 'return-client' } } },
+    repeatedCycle: {
+      forward: { sourceEpoch: 2, targetEpoch: 3, staleWriterDenied: true,
+        commandId: 'promote-live-1-cycle-2-promote' },
+      failback: { sourceEpoch: 3, targetEpoch: 4, staleWriterDenied: true,
+        commandId: 'promote-live-1-cycle-2-failback',
+        activationLease: { leaseEpoch: 4, holderNodeId: 'return-a' } },
+    },
+    repeatForwardCredential: {
+      leaseGrant: { leaseEpoch: 3 },
+      proof: { commandId: 'promote-live-1-cycle-2-promote' },
+    },
+    repeatReturnCredential: {
+      leaseGrant: { leaseEpoch: 4 },
+      proof: { commandId: 'promote-live-1-cycle-2-failback' },
+    },
+    staleRepeatForwardCredentialDenied: true,
+    staleRepeatReturnCredentialDenied: true,
     systemIds: { sourceA: '4', receiverB: '5', control: '6' },
   };
   assert.equal(validateLiveProtocolComposition(bpc, tsk, commandId), true);
@@ -77,6 +98,12 @@ test('directly composes exact reviewed live BPC and TSK artifacts', {
   assert.equal(result.enterprise.failback.targetClientId,
     result.tsk.publicCredentialReturn.clientId);
   assert.equal(result.enterprise.failback.staleBProtocolWriterDenied, true);
+  assert.equal(result.enterprise.repeatedCycle.forward.targetClientId,
+    result.tsk.repeatForwardCredential.publicCredential.clientId);
+  assert.equal(result.enterprise.repeatedCycle.forward.staleSourceCompletionDenied, true);
+  assert.equal(result.enterprise.repeatedCycle.failback.targetClientId,
+    result.tsk.repeatReturnCredential.publicCredential.clientId);
+  assert.equal(result.enterprise.repeatedCycle.failback.staleSourceCompletionDenied, true);
   if (process.env.ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE) {
     await writeLiveCompositionEvidence(process.env.ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE, result);
   }

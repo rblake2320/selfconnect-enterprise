@@ -411,12 +411,45 @@ export async function runTskLiveComposition(rawOptions) {
   const targetCredentialLeaseId = derivedId('lease-b', options.commandId);
   const returnCredentialStreamId = derivedId('tsk:credential:return', options.streamId);
   const returnCredentialLeaseId = derivedId('lease-a-return', options.commandId);
+  const repeatForwardCredentialStreamId = derivedId(
+    'tsk:credential:repeat-forward', options.streamId,
+  );
+  const repeatReturnCredentialStreamId = derivedId(
+    'tsk:credential:repeat-return', options.streamId,
+  );
   const runtimeRole = 'tsk_enterprise28_runtime';
   const aRuntimePassword = randomBytes(24).toString('hex');
   const bRuntimePassword = randomBytes(24).toString('hex');
   let aRuntimePool;
   let bRuntimePool;
   let protectedRuntimeDir;
+  const repeatDatabases = [];
+
+  const createRepeatAuthority = async (adminPool, connectionString, databaseName) => {
+    if (!/^[a-z][a-z0-9_]{0,62}$/.test(databaseName)) {
+      throw new Error('repeat authority database name is invalid');
+    }
+    await adminPool.query(`DROP DATABASE IF EXISTS ${databaseName} WITH (FORCE)`);
+    await adminPool.query(`CREATE DATABASE ${databaseName}`);
+    const url = new URL(connectionString);
+    url.pathname = `/${databaseName}`;
+    const pool = new pg.Pool({
+      connectionString: url.toString(), max: 4, connectionTimeoutMillis: 10_000,
+    });
+    pool.on('error', () => {});
+    const db = new NodePostgresTransactor(pool);
+    await executeSchema(pool, TSK_OUTBOX_PG_SCHEMA);
+    await executeSchema(pool, TSK_SOURCE_LEASE_SCHEMA);
+    await executeSchema(pool, TSK_SOURCE_WITNESS_SCHEMA);
+    await executeSchema(pool, TSK_RECEIVER_SCHEMA);
+    repeatDatabases.push({ adminPool, databaseName, pool });
+    return Object.freeze({
+      pool,
+      db,
+      schemaReady: await provisionSchemaVersion(db, 'public'),
+      receiverReady: await assertReceiverReady(db, 'public'),
+    });
+  };
 
   try {
     const sourceDrop = 'DROP TABLE IF EXISTS tsk_outbox_rows, tsk_outbox_applied, ' +
@@ -1152,6 +1185,300 @@ export async function runTskLiveComposition(rawOptions) {
       returnFinalizedReceipt.signedHeadDigestAtN,
     );
 
+    const executeRepeatedSourceHandoff = async ({
+      sourceDb, sourcePool, sourceNodeId, sourceKeyId, sourcePrivateKey,
+      sourceLease, sourceOutbox, targetDb, targetNodeId,
+      targetSchemaReady, targetReceiverReady, targetGenerationId,
+      targetReceiptKeyId, targetReceiptPrivateKey, targetSigner,
+      targetLeaseChain, handoffCommandId, handoffTargetEpoch, mutation,
+    }) => {
+      assert.equal(
+        await dbClockMs(sourcePool) < sourceLease.leaseExpiresAtMs,
+        true,
+        'source handoff must begin before its signed lease expires',
+      );
+      for (const historicalGrant of targetLeaseChain) {
+        await targetDb.transaction((exec) => installLeaseGrant(
+          exec, resolver, historicalGrant,
+        ));
+      }
+      const revokedSourceLease = signLeaseGrant(
+        keyIds.guard, material.guard.privateKey, {
+          streamId: options.streamId,
+          leaseEpoch: sourceLease.leaseEpoch,
+          leaseStatus: 'revoked',
+          holderNodeId: sourceLease.holderNodeId,
+          leaseId: sourceLease.leaseId,
+          commandId: handoffCommandId,
+          leaseExpiresAtMs: sourceLease.leaseExpiresAtMs,
+          leaseGrantSeq: sourceLease.leaseGrantSeq + 1,
+          prevGrantDigest: sourceLease.grantDigest,
+        },
+      );
+      await sourceDb.transaction((exec) => installLeaseGrant(
+        exec, resolver, revokedSourceLease,
+      ));
+      const frozenReceipt = await emitSourceFrozenReceipt(sourceDb, 'public', {
+        sourceKeyId,
+        sourcePrivateKey,
+        leaseResolver: resolver,
+        headResolver: resolver,
+      }, {
+        streamId: options.streamId,
+        commandId: handoffCommandId,
+        epoch: sourceLease.leaseEpoch,
+        sourceNodeId,
+      });
+      const sourceExport = await buildSourceExportManifest(sourceDb, 'public', {
+        streamId: options.streamId,
+        epoch: sourceLease.leaseEpoch,
+        commandId: handoffCommandId,
+        sourceNodeId,
+      }, {
+        sourceKeyId,
+        sourcePrivateKey,
+        sanitizer,
+        leaseResolver: resolver,
+        headResolver: resolver,
+        frozenReceipt,
+        maxChunkItems: 4,
+      });
+      const countersignedExport = guardCountersignSourceExport(
+        sourceExport.bundle, sourceExport.manifest, {
+          guardKeyId: keyIds.guard,
+          guardPrivateKey: material.guard.privateKey,
+          sanitizer,
+          sourceManifestResolver: resolver,
+          headResolver: resolver,
+          frozenResolver: resolver,
+          frozenReceipt,
+          expectedCommandId: handoffCommandId,
+        },
+      );
+      const finalizedReceipt = await stageAndFinalizeReceiverGeneration(
+        targetDb, 'public', targetReceiverReady, targetGenerationId,
+        sourceExport.bundle, countersignedExport, {
+          sanitizer,
+          sourceResolver: resolver,
+          guardResolver: resolver,
+          headResolver: resolver,
+          frozenResolver: resolver,
+          bVerifyResolver: resolver,
+          frozenReceipt,
+          expectedCommandId: handoffCommandId,
+          bKeyId: targetReceiptKeyId,
+          bPrivateKey: targetReceiptPrivateKey,
+        },
+      );
+      verifyBFinalizedReceipt(resolver, finalizedReceipt);
+      await control.writeLease({
+        streamId: options.streamId,
+        leaseId: sourceLease.leaseId,
+        holderNodeId: sourceLease.holderNodeId,
+        epoch: sourceLease.leaseEpoch,
+        status: 'active',
+        grantedMaxExpiryMs: sourceLease.leaseExpiresAtMs,
+        grantCommandId: derivedId('control-repeat-active', handoffCommandId),
+      });
+      await control.beginPromotionIntent(
+        options.streamId, handoffCommandId, handoffTargetEpoch,
+      );
+      await control.bindSourceFenced(
+        options.streamId, handoffCommandId, handoffTargetEpoch,
+        frozenReceipt, resolver,
+      );
+      await control.writeLease({
+        streamId: options.streamId,
+        leaseId: sourceLease.leaseId,
+        holderNodeId: sourceLease.holderNodeId,
+        epoch: sourceLease.leaseEpoch,
+        status: 'revoked',
+        grantedMaxExpiryMs: sourceLease.leaseExpiresAtMs,
+        grantCommandId: derivedId('control-repeat-revoke', handoffCommandId),
+      });
+      const claimExpiresAtMs = await controlNow() + HOUR_MS;
+      await assert.rejects(() => control.advanceEpoch(
+        options.streamId, handoffCommandId, handoffTargetEpoch,
+        targetNodeId, fenceStore, {
+          safetyMarginMs: 0,
+          claimExpiresAtMs,
+        },
+      ), /not expired|safety margin/i);
+      await awaitControlLeaseExpiry(controlPool, sourceLease.leaseExpiresAtMs);
+      await control.advanceEpoch(
+        options.streamId, handoffCommandId, handoffTargetEpoch,
+        targetNodeId, fenceStore, {
+          safetyMarginMs: 0,
+          claimExpiresAtMs,
+        },
+      );
+      assert.deepEqual(await fenceStore.current(), {
+        nodeId: targetNodeId,
+        fenceEpoch: handoffTargetEpoch,
+        expiresAt: claimExpiresAtMs,
+        commandId: handoffCommandId,
+        active: true,
+      });
+      await control.markImporting(
+        options.streamId, handoffCommandId, handoffTargetEpoch,
+      );
+      await control.markReady(
+        options.streamId, handoffCommandId, handoffTargetEpoch,
+        finalizedReceipt, resolver,
+      );
+      await control.activate(
+        options.streamId, handoffCommandId, handoffTargetEpoch,
+      );
+      const activationLease = await control.activateSource(
+        options.streamId, handoffCommandId, handoffTargetEpoch,
+        finalizedReceipt, resolver, resolver, targetLeaseChain,
+      );
+      verifyLeaseGrant(resolver, activationLease);
+      const sourceActivation = await activateFinalizedReceiverAsSource(
+        targetDb, targetSchemaReady, targetReceiverReady, options.streamId,
+        targetGenerationId, {
+          sanitizer,
+          sourceResolver: resolver,
+          guardResolver: resolver,
+          headResolver: resolver,
+          frozenResolver: resolver,
+          bReceiptResolver: resolver,
+          leaseResolver: resolver,
+          frozenReceipt,
+          finalizedReceipt,
+          activationLease,
+          targetEpoch: handoffTargetEpoch,
+        },
+      );
+      const targetFenceReady = await assertSourceFenceReady(
+        targetDb, 'public', resolver, {
+          streamId: options.streamId,
+          holderNodeId: activationLease.holderNodeId,
+          leaseId: activationLease.leaseId,
+          grantDigest: activationLease.grantDigest,
+        },
+      );
+      const targetOutbox = new PgTskDurableOutbox(
+        targetDb, targetSchemaReady, {
+          streamId: options.streamId,
+          sanitizer,
+          signer: targetSigner,
+          maxPendingRows: 100_000,
+          backpressure: 'fail-authoritative-mutation',
+        }, { resolver, controlToASkewBoundMs: 0, ready: targetFenceReady },
+      );
+      const append = await targetOutbox.withOutboxTx(
+        (tx) => targetOutbox.appendInTx(tx, {
+          streamId: options.streamId,
+          rawMutation: mutation,
+          fenceToken: BigInt(handoffTargetEpoch),
+        }),
+      );
+      assert.equal(append.head.sequence, frozenReceipt.n + 1);
+      assert.equal(append.head.prevHeadDigest, frozenReceipt.signedHeadDigestAtN);
+      let staleWriterDenied = false;
+      try {
+        await sourceOutbox.withOutboxTx((tx) => sourceOutbox.appendInTx(tx, {
+          streamId: options.streamId,
+          rawMutation: mutation,
+          fenceToken: BigInt(sourceLease.leaseEpoch),
+        }));
+      } catch (error) {
+        if (!/revoked|not writable|lease|fence/i.test(
+          String(error?.message ?? error),
+        )) throw error;
+        staleWriterDenied = true;
+      }
+      assert.equal(staleWriterDenied, true);
+      return Object.freeze({
+        commandId: handoffCommandId,
+        sourceEpoch: sourceLease.leaseEpoch,
+        targetEpoch: handoffTargetEpoch,
+        frozenReceipt,
+        finalizedReceipt,
+        revokedSourceLease,
+        activationLease,
+        sourceActivation,
+        append,
+        staleWriterDenied,
+      });
+    };
+
+    const repeatB = await createRepeatAuthority(
+      bPool, options.bPostgresUrl, 'enterprise28_tsk_repeat_b3',
+    );
+    assert.equal(await systemId(repeatB.pool), systemIds.receiverB);
+    const repeatForward = await executeRepeatedSourceHandoff({
+      sourceDb: aDb,
+      sourcePool: aPool,
+      sourceNodeId: aNodeId,
+      sourceKeyId: keyIds.source,
+      sourcePrivateKey: material.source.privateKey,
+      sourceLease: returnActivationLeaseGrant,
+      sourceOutbox: returnedAOutbox,
+      targetDb: repeatB.db,
+      targetNodeId: bNodeId,
+      targetSchemaReady: repeatB.schemaReady,
+      targetReceiverReady: repeatB.receiverReady,
+      targetGenerationId: 'enterprise28-repeat-generation-3',
+      targetReceiptKeyId: keyIds.bReceipt,
+      targetReceiptPrivateKey: material.bReceipt.privateKey,
+      targetSigner: bSigner,
+      targetLeaseChain: [activationLeaseGrant, bRevokedGrant],
+      handoffCommandId: `${commandId}-cycle-2-promote`,
+      handoffTargetEpoch: returnTargetEpoch + 1,
+      mutation: { tumblerId: 'T11', counter: 3 },
+    });
+    const repeatA = await createRepeatAuthority(
+      aPool, options.aPostgresUrl, 'enterprise28_tsk_repeat_a4',
+    );
+    assert.equal(await systemId(repeatA.pool), systemIds.sourceA);
+    const repeatForwardReady = await assertSourceFenceReady(
+      repeatB.db, 'public', resolver, {
+        streamId: options.streamId,
+        holderNodeId: repeatForward.activationLease.holderNodeId,
+        leaseId: repeatForward.activationLease.leaseId,
+        grantDigest: repeatForward.activationLease.grantDigest,
+      },
+    );
+    const repeatForwardOutbox = new PgTskDurableOutbox(
+      repeatB.db, repeatB.schemaReady, {
+        streamId: options.streamId,
+        sanitizer,
+        signer: bSigner,
+        maxPendingRows: 100_000,
+        backpressure: 'fail-authoritative-mutation',
+      }, {
+        resolver,
+        controlToASkewBoundMs: 0,
+        ready: repeatForwardReady,
+      },
+    );
+    const repeatReturn = await executeRepeatedSourceHandoff({
+      sourceDb: repeatB.db,
+      sourcePool: repeatB.pool,
+      sourceNodeId: bNodeId,
+      sourceKeyId: keyIds.bSource,
+      sourcePrivateKey: material.bSource.privateKey,
+      sourceLease: repeatForward.activationLease,
+      sourceOutbox: repeatForwardOutbox,
+      targetDb: repeatA.db,
+      targetNodeId: aNodeId,
+      targetSchemaReady: repeatA.schemaReady,
+      targetReceiverReady: repeatA.receiverReady,
+      targetGenerationId: 'enterprise28-repeat-generation-4',
+      targetReceiptKeyId: keyIds.aReceipt,
+      targetReceiptPrivateKey: material.aReceipt.privateKey,
+      targetSigner: aSigner,
+      targetLeaseChain: [
+        aGrant, revokedGrant, returnActivationLeaseGrant,
+        repeatForward.revokedSourceLease,
+      ],
+      handoffCommandId: `${commandId}-cycle-2-failback`,
+      handoffTargetEpoch: returnTargetEpoch + 2,
+      mutation: { tumblerId: 'T12', counter: 4 },
+    });
+
     // Return the independently reprovisioned credential authority as well as
     // the generic source stream. B's credential lease is terminally revoked
     // before A mints a fresh credential under the return command/epoch. The
@@ -1257,6 +1584,181 @@ export async function runTskLiveComposition(rawOptions) {
     assert.equal(JSON.stringify(publicCredentialReturn).includes(
       returnCredentialMap.sharedSecret), false);
 
+    const mintRepeatedCredential = async ({
+      pool, db, runtimeDb: credentialRuntimeDb, outboxReady,
+      credentialReady, mutationBoundary: credentialMutationBoundary,
+      ticketSigner, streamId, epoch, sourceEpoch: credentialSourceEpoch,
+      holderNodeId, leaseId: credentialLeaseId,
+      credentialCommandId, streamSigner,
+    }) => {
+      await pool.query(
+        'INSERT INTO tsk_outbox_fence (stream_id, fence_token) VALUES ($1, $2)',
+        [streamId, epoch],
+      );
+      await pool.query(
+        'INSERT INTO tsk_outbox_source_checkpoint ' +
+        '(stream_id, source_epoch, sequence) VALUES ($1, $2, 0)',
+        [streamId, credentialSourceEpoch],
+      );
+      const leaseGrant = signLeaseGrant(
+        keyIds.guard, material.guard.privateKey, {
+          streamId,
+          leaseEpoch: epoch,
+          leaseStatus: 'active',
+          holderNodeId,
+          leaseId: credentialLeaseId,
+          commandId: credentialCommandId,
+          leaseExpiresAtMs: await dbClockMs(pool) + HOUR_MS,
+          leaseGrantSeq: 1,
+          prevGrantDigest: null,
+        },
+      );
+      await db.transaction((exec) => installLeaseGrant(exec, resolver, leaseGrant));
+      const ready = await assertSourceFenceReady(
+        credentialRuntimeDb, 'public', resolver, {
+          streamId,
+          holderNodeId,
+          leaseId: credentialLeaseId,
+          grantDigest: leaseGrant.grantDigest,
+        },
+      );
+      const store = new PgHaTumblerMapStore(
+        credentialRuntimeDb,
+        outboxReady,
+        credentialReady,
+        credentialMutationBoundary,
+        ticketSigner,
+        {
+          streamId,
+          sourceEpoch: epoch,
+          signer: streamSigner,
+        },
+        { resolver, controlToASkewBoundMs: 0, ready },
+      );
+      const map = generateTumblerMap({
+        keyLength: 64, minTumblers: 2, maxTumblers: 2,
+      });
+      map.label = promotedTskCredentialLabel({
+        commandId: credentialCommandId,
+        pairId: credentialPairId,
+        agentId: credentialAgentId,
+      });
+      map.status = 'active';
+      await store.set(map.clientId, map);
+      const proof = await readPublicCredentialProof(
+        pool, streamId, map.clientId, 1, leaseGrant, {
+          agentId: credentialAgentId,
+          pairId: credentialPairId,
+          commandId: credentialCommandId,
+        },
+      );
+      return Object.freeze({
+        streamId,
+        leaseGrant,
+        store,
+        map,
+        proof,
+        publicCredential: publicCredentialSummary(proof),
+      });
+    };
+
+    const returnCredentialRevocation = signLeaseGrant(
+      keyIds.guard, material.guard.privateKey, {
+        streamId: returnCredentialStreamId,
+        leaseEpoch: returnTargetEpoch,
+        leaseStatus: 'revoked',
+        holderNodeId: returnCredentialActivationLeaseGrant.holderNodeId,
+        leaseId: returnCredentialActivationLeaseGrant.leaseId,
+        commandId: repeatForward.commandId,
+        leaseExpiresAtMs: returnCredentialActivationLeaseGrant.leaseExpiresAtMs,
+        leaseGrantSeq: returnCredentialActivationLeaseGrant.leaseGrantSeq + 1,
+        prevGrantDigest: returnCredentialActivationLeaseGrant.grantDigest,
+      },
+    );
+    await aDb.transaction((exec) => installLeaseGrant(
+      exec, resolver, returnCredentialRevocation,
+    ));
+    let staleRepeatForwardCredentialDenied = false;
+    try {
+      await returnCredentialStore.set(returnCredentialMap.clientId, returnCredentialMap);
+    } catch (error) {
+      if (!/revoked|not writable|lease|fence|grant digest/i.test(
+        String(error?.message ?? error),
+      )) throw error;
+      staleRepeatForwardCredentialDenied = true;
+    }
+    assert.equal(staleRepeatForwardCredentialDenied, true);
+
+    const repeatForwardCredential = await mintRepeatedCredential({
+      pool: bPool,
+      db: bDb,
+      runtimeDb,
+      outboxReady: runtimeOutboxReady,
+      credentialReady: runtimeCredentialReady,
+      mutationBoundary,
+      ticketSigner: mutationTicketSigner,
+      streamId: repeatForwardCredentialStreamId,
+      epoch: repeatForward.targetEpoch,
+      sourceEpoch: 'credential-e4',
+      holderNodeId: bNodeId,
+      leaseId: derivedId('lease-b-repeat', options.commandId),
+      credentialCommandId: repeatForward.commandId,
+      streamSigner: credentialSigner,
+    });
+    const repeatForwardCredentialRevocation = signLeaseGrant(
+      keyIds.guard, material.guard.privateKey, {
+        streamId: repeatForwardCredential.streamId,
+        leaseEpoch: repeatForward.targetEpoch,
+        leaseStatus: 'revoked',
+        holderNodeId: repeatForwardCredential.leaseGrant.holderNodeId,
+        leaseId: repeatForwardCredential.leaseGrant.leaseId,
+        commandId: repeatReturn.commandId,
+        leaseExpiresAtMs: repeatForwardCredential.leaseGrant.leaseExpiresAtMs,
+        leaseGrantSeq: 2,
+        prevGrantDigest: repeatForwardCredential.leaseGrant.grantDigest,
+      },
+    );
+    await bDb.transaction((exec) => installLeaseGrant(
+      exec, resolver, repeatForwardCredentialRevocation,
+    ));
+    let staleRepeatReturnCredentialDenied = false;
+    try {
+      await repeatForwardCredential.store.set(
+        repeatForwardCredential.map.clientId, repeatForwardCredential.map,
+      );
+    } catch (error) {
+      if (!/revoked|not writable|lease|fence|grant digest/i.test(
+        String(error?.message ?? error),
+      )) throw error;
+      staleRepeatReturnCredentialDenied = true;
+    }
+    assert.equal(staleRepeatReturnCredentialDenied, true);
+
+    const repeatReturnCredential = await mintRepeatedCredential({
+      pool: aPool,
+      db: aDb,
+      runtimeDb: aRuntimeDb,
+      outboxReady: aRuntimeOutboxReady,
+      credentialReady: aRuntimeCredentialReady,
+      mutationBoundary: aMutationBoundary,
+      ticketSigner: aTicketSigner,
+      streamId: repeatReturnCredentialStreamId,
+      epoch: repeatReturn.targetEpoch,
+      sourceEpoch: 'credential-e5',
+      holderNodeId: aNodeId,
+      leaseId: derivedId('lease-a-repeat', options.commandId),
+      credentialCommandId: repeatReturn.commandId,
+      streamSigner: returnCredentialSigner,
+    });
+    assert.notEqual(
+      repeatForwardCredential.publicCredential.clientId,
+      repeatReturnCredential.publicCredential.clientId,
+    );
+    assert.notEqual(
+      repeatForwardCredential.publicCredential.secretDigest,
+      repeatReturnCredential.publicCredential.secretDigest,
+    );
+
     let staleTargetWriterDenied = false;
     try {
       await bOutbox.withOutboxTx((tx) => bOutbox.appendInTx(tx, {
@@ -1285,6 +1787,10 @@ export async function runTskLiveComposition(rawOptions) {
       returnFinalizedReceipt,
       returnActivationLeaseGrant,
       returnSourceActivation,
+      repeatedCycle: Object.freeze({
+        forward: repeatForward,
+        failback: repeatReturn,
+      }),
       returnCommandId,
       systemIds,
       n,
@@ -1303,6 +1809,22 @@ export async function runTskLiveComposition(rawOptions) {
       credentialActivationLeaseGrant,
       targetCredentialRevocation,
       returnCredentialActivationLeaseGrant,
+      returnCredentialRevocation,
+      repeatForwardCredentialRevocation,
+      staleRepeatForwardCredentialDenied,
+      staleRepeatReturnCredentialDenied,
+      repeatForwardCredential: Object.freeze({
+        streamId: repeatForwardCredential.streamId,
+        leaseGrant: repeatForwardCredential.leaseGrant,
+        proof: repeatForwardCredential.proof,
+        publicCredential: repeatForwardCredential.publicCredential,
+      }),
+      repeatReturnCredential: Object.freeze({
+        streamId: repeatReturnCredential.streamId,
+        leaseGrant: repeatReturnCredential.leaseGrant,
+        proof: repeatReturnCredential.proof,
+        publicCredential: repeatReturnCredential.publicCredential,
+      }),
       publicCredentialSource,
       publicCredentialTarget,
       publicCredentialReturn,
@@ -1333,6 +1855,12 @@ export async function runTskLiveComposition(rawOptions) {
       )),
     });
   } finally {
+    for (const entry of repeatDatabases.reverse()) {
+      await entry.pool.end().catch(() => {});
+      await entry.adminPool.query(
+        `DROP DATABASE IF EXISTS ${entry.databaseName} WITH (FORCE)`,
+      ).catch(() => {});
+    }
     await Promise.allSettled([
       options.preserveRedisAuthority ? Promise.resolve() : redis.del(redisKey),
       redis.quit(),

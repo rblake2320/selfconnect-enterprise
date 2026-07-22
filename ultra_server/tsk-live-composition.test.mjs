@@ -85,6 +85,14 @@ test('executes the full live lifecycle when dedicated acceptance authorities are
     result.returnFinalizedReceipt.signedHeadDigestAtN);
   assert.equal(result.returnSourceActivation.activationGrantDigest,
     result.returnActivationLeaseGrant.grantDigest);
+  assert.equal(result.repeatedCycle.forward.sourceEpoch, 2);
+  assert.equal(result.repeatedCycle.forward.targetEpoch, 3);
+  assert.equal(result.repeatedCycle.forward.append.head.sequence, result.n + 3);
+  assert.equal(result.repeatedCycle.forward.staleWriterDenied, true);
+  assert.equal(result.repeatedCycle.failback.sourceEpoch, 3);
+  assert.equal(result.repeatedCycle.failback.targetEpoch, 4);
+  assert.equal(result.repeatedCycle.failback.append.head.sequence, result.n + 4);
+  assert.equal(result.repeatedCycle.failback.staleWriterDenied, true);
   assert.equal(result.tskCommit, TSK_COMMIT);
   assert.equal(result.publicCredentialSource.status, 'active');
   assert.equal(result.publicCredentialTarget.status, 'active');
@@ -110,6 +118,16 @@ test('executes the full live lifecycle when dedicated acceptance authorities are
   assert.equal(result.returnCredentialActivationLeaseGrant.leaseEpoch, 2);
   assert.equal(result.returnCredentialActivationLeaseGrant.commandId,
     result.returnCommandId);
+  assert.equal(result.returnCredentialRevocation.leaseStatus, 'revoked');
+  assert.equal(result.returnCredentialRevocation.commandId,
+    result.repeatedCycle.forward.commandId);
+  assert.equal(result.repeatForwardCredential.leaseGrant.leaseEpoch, 3);
+  assert.equal(result.repeatForwardCredential.publicCredential.status, 'active');
+  assert.equal(result.repeatForwardCredentialRevocation.leaseStatus, 'revoked');
+  assert.equal(result.repeatReturnCredential.leaseGrant.leaseEpoch, 4);
+  assert.equal(result.repeatReturnCredential.publicCredential.status, 'active');
+  assert.equal(result.staleRepeatForwardCredentialDenied, true);
+  assert.equal(result.staleRepeatReturnCredentialDenied, true);
   assert.equal(result.publicCredentialReturn.status, 'active');
   assert.notEqual(result.publicCredentialReturn.clientId,
     result.publicCredentialTarget.clientId);

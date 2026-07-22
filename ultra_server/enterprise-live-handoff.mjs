@@ -420,6 +420,228 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
         targetProof: composition.tsk.returnCredentialProof,
       },
     ), /does not match the imported promotion|binding mismatch/);
+
+    const executeRepeatedEnterpriseHandoff = async ({
+      sourcePool,
+      targetPool,
+      commandId: cycleCommandId,
+      sourceEpoch: cycleSourceEpoch,
+      bpcPromotionAttestation,
+      tskActivationLease,
+      tskFinalizedReceipt,
+      tskReceiptResolver,
+      sourcePrivateKey,
+      sourcePublicKey,
+      sourceKeyId,
+      sourceCredentialAuthority,
+      sourceCredentialProof,
+      sourceCredentialRevocation,
+      sourceCredential,
+      sourceCredentialSecretDigest,
+      sourceCredentialProvenance,
+      sourceCredentialProvenanceSecretDigest,
+      targetCredentialAuthority,
+      targetCredentialProof,
+      targetCredential,
+    }) => {
+      const startedAt = Date.now();
+      const protocolEvidence = {
+        bpcPromotionAttestation,
+        tskActivationLease,
+        tskFinalizedReceipt,
+      };
+      const sourceBundle = await exportIndependentState(sourcePool, {
+        advisoryLockKey,
+        clusterId,
+        commandId: cycleCommandId,
+        protocolEvidence,
+        sourceEpoch: cycleSourceEpoch,
+        sourceKeyId,
+        sourcePrivateKey,
+        sourceCredentialProofs: [{
+          authorityCapability: sourceCredentialAuthority,
+          proofKind: 'promoted',
+          expected: {
+            agentId,
+            pairId,
+            sourceClientId: sourceCredentialProvenance.clientId,
+            sourceSecretDigest: sourceCredentialProvenanceSecretDigest,
+          },
+          proof: sourceCredentialProof,
+          terminalRevocation: sourceCredentialRevocation,
+        }],
+      });
+      const resolvers = Object.freeze({
+        bpcResolver: composition.resolvers.bpcResolver,
+        tskBResolver: tskReceiptResolver,
+        tskGuardResolver: composition.resolvers.tskGuardResolver,
+      });
+      const bundle = guardCountersignIndependentState(sourceBundle, {
+        expectedCommandId: cycleCommandId,
+        guardKeyId: 'enterprise28-guard-key-1',
+        guardPrivateKey: guardSigning.privateKey,
+        sourcePublicKey,
+        ...resolvers,
+      });
+      const imported = await importIndependentState(targetPool, bundle, {
+        advisoryLockKey,
+        clusterId,
+        commandId: cycleCommandId,
+        sourceEpoch: cycleSourceEpoch,
+        bpcPromotionDigest: bpcPromotionAttestation.attestationDigest,
+        tskActivationDigest: tskActivationLease.grantDigest,
+        tskFinalizedDigest: tskFinalizedReceipt.receiptDigest,
+        sourcePublicKey,
+        guardPublicKey: guardSigning.publicKey,
+        ...resolvers,
+      });
+      const completed = await completeImportedPromotedTskCredential(
+        targetPool, targetCredentialAuthority, {
+          advisoryLockKey,
+          agentId,
+          clusterId,
+          commandId: cycleCommandId,
+          pairId,
+          sourceClientId: sourceCredential.clientId,
+          sourceEpoch: cycleSourceEpoch,
+          sourceSecretDigest: sourceCredentialSecretDigest,
+          targetProof: targetCredentialProof,
+        },
+      );
+      const ready = await assertIndependentStateReady(targetPool, {
+        clusterId,
+        commandId: cycleCommandId,
+        manifestDigest: bundle.manifestDigest,
+        sourceEpoch: cycleSourceEpoch,
+      });
+      assert.equal(completed.targetClientId, targetCredential.clientId);
+      assert.equal(imported.manifestDigest, bundle.manifestDigest);
+      assert.equal(ready.manifestDigest, bundle.manifestDigest);
+      const convergedBinding = (await targetPool.query(
+        'SELECT tsk_client_id FROM ultra_identity_bindings WHERE pair_id=$1',
+        [pairId],
+      )).rows[0];
+      assert.equal(convergedBinding?.tsk_client_id, targetCredential.clientId);
+      const retry = await completeImportedPromotedTskCredential(
+        targetPool, targetCredentialAuthority, {
+          advisoryLockKey,
+          agentId,
+          clusterId,
+          commandId: cycleCommandId,
+          pairId,
+          sourceClientId: sourceCredential.clientId,
+          sourceEpoch: cycleSourceEpoch,
+          sourceSecretDigest: sourceCredentialSecretDigest,
+          targetProof: targetCredentialProof,
+        },
+      );
+      assert.equal(retry.idempotent, true);
+      let staleSourceCompletionDenied = false;
+      try {
+        await completeImportedPromotedTskCredential(
+          sourcePool, targetCredentialAuthority, {
+            advisoryLockKey,
+            agentId,
+            clusterId,
+            commandId: cycleCommandId,
+            pairId,
+            sourceClientId: sourceCredential.clientId,
+            sourceEpoch: cycleSourceEpoch,
+            sourceSecretDigest: sourceCredentialSecretDigest,
+            targetProof: targetCredentialProof,
+          },
+        );
+      } catch (error) {
+        if (!/does not match the imported promotion|binding mismatch/i.test(
+          String(error?.message ?? error),
+        )) throw error;
+        staleSourceCompletionDenied = true;
+      }
+      assert.equal(staleSourceCompletionDenied, true);
+      return Object.freeze({
+        commandId: cycleCommandId,
+        sourceEpoch: cycleSourceEpoch,
+        manifestDigest: bundle.manifestDigest,
+        sourceSystemId: bundle.manifest.sourceSystemId,
+        targetSystemId: ready.targetSystemId,
+        sourceClientId: sourceCredential.clientId,
+        targetClientId: completed.targetClientId,
+        receiptDigest: completed.receiptDigest,
+        idempotentRetry: retry.idempotent,
+        staleSourceCompletionDenied,
+        importedSystemId: imported.targetSystemId,
+        convergence: Object.freeze({
+          sourceManifestDigest: bundle.manifestDigest,
+          importedManifestDigest: imported.manifestDigest,
+          readyManifestDigest: ready.manifestDigest,
+          targetCredentialClientId: convergedBinding.tsk_client_id,
+        }),
+        rpo: 0,
+        rtoMs: Date.now() - startedAt,
+      });
+    };
+
+    const repeatForward = await executeRepeatedEnterpriseHandoff({
+      sourcePool: a,
+      targetPool: b,
+      commandId: composition.tsk.repeatedCycle.forward.commandId,
+      sourceEpoch: composition.tsk.repeatForwardCredential.leaseGrant.leaseEpoch,
+      bpcPromotionAttestation:
+        composition.bpc.repeatedCycle.forward.readinessAttestation,
+      tskActivationLease: composition.tsk.repeatedCycle.forward.activationLease,
+      tskFinalizedReceipt: composition.tsk.repeatedCycle.forward.finalizedReceipt,
+      tskReceiptResolver: composition.resolvers.tskBResolver,
+      sourcePrivateKey: sourceSigning.privateKey,
+      sourcePublicKey: sourceSigning.publicKey,
+      sourceKeyId: 'enterprise28-source-key-a-repeat-1',
+      sourceCredentialAuthority: composition.returnCredentialAuthority,
+      sourceCredentialProof: composition.tsk.returnCredentialProof,
+      sourceCredentialRevocation: composition.tsk.returnCredentialRevocation,
+      sourceCredential: composition.tsk.publicCredentialReturn,
+      sourceCredentialSecretDigest: composition.verifiedReturnCredential.secretDigest,
+      sourceCredentialProvenance: composition.tsk.publicCredentialTarget,
+      sourceCredentialProvenanceSecretDigest:
+        composition.verifiedTargetCredential.secretDigest,
+      targetCredentialAuthority: composition.repeatForwardCredentialAuthority,
+      targetCredentialProof: composition.tsk.repeatForwardCredential.proof,
+      targetCredential: composition.tsk.repeatForwardCredential.publicCredential,
+    });
+    assert.equal(
+      repeatForward.commandId,
+      composition.bpc.repeatedCycle.forward.commandId,
+      'BPC, TSK, and Enterprise repeat-forward commands diverged',
+    );
+    const repeatFailback = await executeRepeatedEnterpriseHandoff({
+      sourcePool: b,
+      targetPool: a,
+      commandId: composition.tsk.repeatedCycle.failback.commandId,
+      sourceEpoch: composition.tsk.repeatReturnCredential.leaseGrant.leaseEpoch,
+      bpcPromotionAttestation:
+        composition.bpc.repeatedCycle.failback.readinessAttestation,
+      tskActivationLease: composition.tsk.repeatedCycle.failback.activationLease,
+      tskFinalizedReceipt: composition.tsk.repeatedCycle.failback.finalizedReceipt,
+      tskReceiptResolver: composition.resolvers.tskReturnResolver,
+      sourcePrivateKey: promotedSourceSigning.privateKey,
+      sourcePublicKey: promotedSourceSigning.publicKey,
+      sourceKeyId: 'enterprise28-source-key-b-repeat-1',
+      sourceCredentialAuthority: composition.repeatForwardCredentialAuthority,
+      sourceCredentialProof: composition.tsk.repeatForwardCredential.proof,
+      sourceCredentialRevocation: composition.tsk.repeatForwardCredentialRevocation,
+      sourceCredential: composition.tsk.repeatForwardCredential.publicCredential,
+      sourceCredentialSecretDigest:
+        composition.verifiedRepeatForwardCredential.secretDigest,
+      sourceCredentialProvenance: composition.tsk.publicCredentialReturn,
+      sourceCredentialProvenanceSecretDigest:
+        composition.verifiedReturnCredential.secretDigest,
+      targetCredentialAuthority: composition.repeatReturnCredentialAuthority,
+      targetCredentialProof: composition.tsk.repeatReturnCredential.proof,
+      targetCredential: composition.tsk.repeatReturnCredential.publicCredential,
+    });
+    assert.equal(
+      repeatFailback.commandId,
+      composition.bpc.repeatedCycle.failback.commandId,
+      'BPC, TSK, and Enterprise repeat-failback commands diverged',
+    );
     return Object.freeze({
       clusterId,
       manifestDigest: bundle.manifestDigest,
@@ -447,6 +669,10 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
           composition.tsk.staleReturnedCredentialWriterDenied,
         rpo: 0,
         rtoMs: Date.now() - failbackStartedAt,
+      }),
+      repeatedCycle: Object.freeze({
+        forward: repeatForward,
+        failback: repeatFailback,
       }),
       faults: Object.freeze({
         childProcessSigkill: Object.freeze({

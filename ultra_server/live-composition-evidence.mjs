@@ -5,6 +5,18 @@ import { readFile, writeFile } from 'node:fs/promises';
 const SHA = /^[0-9a-f]{40}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
 const COMMAND_ID = /^[A-Za-z0-9_.:/-]{1,128}$/;
+const ARTIFACT_KEYS = Object.freeze([
+  'bpcFailback', 'bpcPromotion', 'bpcRepeatFailback', 'bpcRepeatForward',
+  'enterpriseFailbackCredentialReceipt', 'enterpriseFailbackManifest',
+  'enterpriseManifest', 'enterpriseRepeatFailbackCredentialReceipt',
+  'enterpriseRepeatFailbackManifest', 'enterpriseRepeatForwardCredentialReceipt',
+  'enterpriseRepeatForwardManifest', 'promotedCredentialProof',
+  'promotedCredentialReceipt', 'returnedCredentialActivation',
+  'returnedCredentialProof', 'tskActivation', 'tskFinalized',
+  'tskRepeatFailbackActivation', 'tskRepeatFailbackFinalized',
+  'tskRepeatForwardActivation', 'tskRepeatForwardFinalized',
+  'tskReturnActivation', 'tskReturnFinalized',
+]);
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
@@ -12,7 +24,7 @@ function sha256(value) {
 
 function publicEvidence(result) {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     kind: 'enterprise-live-authority-handoff',
     commandId: result.commandId,
     commits: result.commits,
@@ -41,6 +53,26 @@ function publicEvidence(result) {
         result.tsk.returnCredentialActivationLeaseGrant.grantDigest,
       enterpriseFailbackManifest: result.enterprise.failback.manifestDigest,
       enterpriseFailbackCredentialReceipt: result.enterprise.failback.receiptDigest,
+      bpcRepeatForward:
+        result.bpc.repeatedCycle.forward.readinessAttestation.attestationDigest,
+      bpcRepeatFailback:
+        result.bpc.repeatedCycle.failback.readinessAttestation.attestationDigest,
+      tskRepeatForwardFinalized:
+        result.tsk.repeatedCycle.forward.finalizedReceipt.receiptDigest,
+      tskRepeatForwardActivation:
+        result.tsk.repeatedCycle.forward.activationLease.grantDigest,
+      tskRepeatFailbackFinalized:
+        result.tsk.repeatedCycle.failback.finalizedReceipt.receiptDigest,
+      tskRepeatFailbackActivation:
+        result.tsk.repeatedCycle.failback.activationLease.grantDigest,
+      enterpriseRepeatForwardManifest:
+        result.enterprise.repeatedCycle.forward.manifestDigest,
+      enterpriseRepeatForwardCredentialReceipt:
+        result.enterprise.repeatedCycle.forward.receiptDigest,
+      enterpriseRepeatFailbackManifest:
+        result.enterprise.repeatedCycle.failback.manifestDigest,
+      enterpriseRepeatFailbackCredentialReceipt:
+        result.enterprise.repeatedCycle.failback.receiptDigest,
     },
     outcomes: {
       bpcStaleWriterDenied: result.bpc.staleWriterDenied,
@@ -70,6 +102,14 @@ function publicEvidence(result) {
         result.enterprise.failback.staleBProtocolWriterDenied,
       enterpriseFailbackRpo: result.enterprise.failback.rpo,
       enterpriseFailbackRtoMs: result.enterprise.failback.rtoMs,
+      tskRepeatForwardStaleWriterDenied:
+        result.tsk.repeatedCycle.forward.staleWriterDenied,
+      tskRepeatFailbackStaleWriterDenied:
+        result.tsk.repeatedCycle.failback.staleWriterDenied,
+      tskRepeatForwardStaleCredentialDenied:
+        result.tsk.staleRepeatForwardCredentialDenied,
+      tskRepeatFailbackStaleCredentialDenied:
+        result.tsk.staleRepeatReturnCredentialDenied,
     },
     tskReturnAuthority: {
       commandId: result.tsk.returnCommandId,
@@ -84,13 +124,82 @@ function publicEvidence(result) {
       redisFenceEpoch: result.tsk.redisAuthority.record.fenceEpoch,
       redisNodeId: result.tsk.redisAuthority.record.nodeId,
     },
+    repeatedCycle: {
+      forward: {
+        bpcCommandId: result.bpc.repeatedCycle.forward.commandId,
+        tskCommandId: result.tsk.repeatedCycle.forward.commandId,
+        enterpriseCommandId: result.enterprise.repeatedCycle.forward.commandId,
+        bpcSourceEpoch: result.bpc.repeatedCycle.forward.sourceEpoch,
+        bpcTargetEpoch: result.bpc.repeatedCycle.forward.targetEpoch,
+        tskSourceEpoch: result.tsk.repeatedCycle.forward.sourceEpoch,
+        tskTargetEpoch: result.tsk.repeatedCycle.forward.targetEpoch,
+        enterpriseSourceEpoch: result.enterprise.repeatedCycle.forward.sourceEpoch,
+        sourceSystemId: result.enterprise.repeatedCycle.forward.sourceSystemId,
+        targetSystemId: result.enterprise.repeatedCycle.forward.targetSystemId,
+        sourceClientId: result.enterprise.repeatedCycle.forward.sourceClientId,
+        targetClientId: result.enterprise.repeatedCycle.forward.targetClientId,
+        staleSourceCompletionDenied:
+          result.enterprise.repeatedCycle.forward.staleSourceCompletionDenied,
+        idempotentRetry: result.enterprise.repeatedCycle.forward.idempotentRetry,
+        rpo: result.enterprise.repeatedCycle.forward.rpo,
+        rtoMs: result.enterprise.repeatedCycle.forward.rtoMs,
+        artifacts: {
+          bpcReadiness:
+            result.bpc.repeatedCycle.forward.readinessAttestation.attestationDigest,
+          tskFinalized:
+            result.tsk.repeatedCycle.forward.finalizedReceipt.receiptDigest,
+          tskActivation:
+            result.tsk.repeatedCycle.forward.activationLease.grantDigest,
+          enterpriseManifest: result.enterprise.repeatedCycle.forward.manifestDigest,
+          enterpriseCredentialReceipt:
+            result.enterprise.repeatedCycle.forward.receiptDigest,
+        },
+      },
+      failback: {
+        bpcCommandId: result.bpc.repeatedCycle.failback.commandId,
+        tskCommandId: result.tsk.repeatedCycle.failback.commandId,
+        enterpriseCommandId: result.enterprise.repeatedCycle.failback.commandId,
+        bpcSourceEpoch: result.bpc.repeatedCycle.failback.sourceEpoch,
+        bpcTargetEpoch: result.bpc.repeatedCycle.failback.targetEpoch,
+        tskSourceEpoch: result.tsk.repeatedCycle.failback.sourceEpoch,
+        tskTargetEpoch: result.tsk.repeatedCycle.failback.targetEpoch,
+        enterpriseSourceEpoch: result.enterprise.repeatedCycle.failback.sourceEpoch,
+        sourceSystemId: result.enterprise.repeatedCycle.failback.sourceSystemId,
+        targetSystemId: result.enterprise.repeatedCycle.failback.targetSystemId,
+        sourceClientId: result.enterprise.repeatedCycle.failback.sourceClientId,
+        targetClientId: result.enterprise.repeatedCycle.failback.targetClientId,
+        staleSourceCompletionDenied:
+          result.enterprise.repeatedCycle.failback.staleSourceCompletionDenied,
+        idempotentRetry: result.enterprise.repeatedCycle.failback.idempotentRetry,
+        rpo: result.enterprise.repeatedCycle.failback.rpo,
+        rtoMs: result.enterprise.repeatedCycle.failback.rtoMs,
+        artifacts: {
+          bpcReadiness:
+            result.bpc.repeatedCycle.failback.readinessAttestation.attestationDigest,
+          tskFinalized:
+            result.tsk.repeatedCycle.failback.finalizedReceipt.receiptDigest,
+          tskActivation:
+            result.tsk.repeatedCycle.failback.activationLease.grantDigest,
+          enterpriseManifest: result.enterprise.repeatedCycle.failback.manifestDigest,
+          enterpriseCredentialReceipt:
+            result.enterprise.repeatedCycle.failback.receiptDigest,
+        },
+      },
+    },
+    tskLatestAuthority: {
+      commandId: result.tsk.repeatedCycle.failback.commandId,
+      fenceEpoch: result.tsk.redisAuthority.record.fenceEpoch,
+      nodeId: result.tsk.redisAuthority.record.nodeId,
+      activationGrantDigest:
+        result.tsk.repeatedCycle.failback.activationLease.grantDigest,
+    },
     tskRedisFaults: result.tskRedisFaults,
     ultraRedisFaults: result.ultraRedisFaults,
   };
 }
 
 export function validateLiveCompositionEvidence(evidence, expected = {}) {
-  assert.equal(evidence?.schemaVersion, 5);
+  assert.equal(evidence?.schemaVersion, 6);
   assert.equal(evidence?.kind, 'enterprise-live-authority-handoff');
   assert.equal(evidence?.commandId, expected.commandId ?? evidence.commandId);
   assert.match(evidence?.commandId, COMMAND_ID);
@@ -99,6 +208,8 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
     if (expected.commits?.[name]) assert.equal(value, expected.commits[name]);
   }
   assert.deepEqual(Object.keys(evidence?.commits ?? {}).sort(), ['bpc', 'enterprise', 'tsk']);
+  assert.deepEqual(Object.keys(evidence?.artifacts ?? {}).sort(),
+    [...ARTIFACT_KEYS].sort());
   for (const value of Object.values(evidence?.artifacts ?? {})) assert.match(value, DIGEST);
   assert.equal(new Set(Object.values(evidence.systems.bpc)).size, 3);
   assert.equal(new Set(Object.values(evidence.systems.tsk)).size, 3);
@@ -165,17 +276,90 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
   assert.equal(evidence.tskReturnAuthority.nextSequence,
     evidence.outcomes.returnedSourceNextSequence);
   assert.match(evidence.tskReturnAuthority?.targetHolderId, COMMAND_ID);
-  assert.equal(evidence.tskReturnAuthority.redisFenceEpoch,
-    evidence.tskReturnAuthority.targetEpoch);
-  assert.equal(evidence.tskReturnAuthority.redisNodeId,
+  assert.equal(evidence.tskLatestAuthority.commandId,
+    evidence.repeatedCycle.failback.tskCommandId);
+  assert.equal(evidence.tskLatestAuthority.fenceEpoch,
+    evidence.repeatedCycle.failback.tskTargetEpoch);
+  assert.equal(evidence.tskLatestAuthority.nodeId,
     evidence.tskReturnAuthority.targetHolderId);
+  assert.equal(evidence.tskLatestAuthority.activationGrantDigest,
+    evidence.artifacts.tskRepeatFailbackActivation);
+  const cycleArtifactBindings = {
+    forward: {
+      bpcReadiness: 'bpcRepeatForward',
+      tskFinalized: 'tskRepeatForwardFinalized',
+      tskActivation: 'tskRepeatForwardActivation',
+      enterpriseManifest: 'enterpriseRepeatForwardManifest',
+      enterpriseCredentialReceipt: 'enterpriseRepeatForwardCredentialReceipt',
+    },
+    failback: {
+      bpcReadiness: 'bpcRepeatFailback',
+      tskFinalized: 'tskRepeatFailbackFinalized',
+      tskActivation: 'tskRepeatFailbackActivation',
+      enterpriseManifest: 'enterpriseRepeatFailbackManifest',
+      enterpriseCredentialReceipt: 'enterpriseRepeatFailbackCredentialReceipt',
+    },
+  };
+  const cycleKeys = [
+    'artifacts', 'bpcCommandId', 'bpcSourceEpoch', 'bpcTargetEpoch',
+    'enterpriseCommandId', 'enterpriseSourceEpoch', 'idempotentRetry', 'rpo',
+    'rtoMs', 'sourceClientId', 'sourceSystemId', 'staleSourceCompletionDenied',
+    'targetClientId', 'targetSystemId', 'tskCommandId', 'tskSourceEpoch',
+    'tskTargetEpoch',
+  ].sort();
+  for (const [name, cycle] of Object.entries(evidence.repeatedCycle)) {
+    assert.deepEqual(Object.keys(cycle).sort(), cycleKeys);
+    assert.deepEqual(Object.keys(cycle.artifacts).sort(), [
+      'bpcReadiness', 'enterpriseCredentialReceipt', 'enterpriseManifest',
+      'tskActivation', 'tskFinalized',
+    ]);
+    assert.match(cycle.bpcCommandId, COMMAND_ID);
+    assert.equal(cycle.tskCommandId, cycle.bpcCommandId);
+    assert.equal(cycle.enterpriseCommandId, cycle.bpcCommandId);
+    assert.equal(cycle.enterpriseSourceEpoch, cycle.tskTargetEpoch);
+    for (const [field, artifactName] of Object.entries(cycleArtifactBindings[name])) {
+      assert.equal(cycle.artifacts[field], evidence.artifacts[artifactName]);
+    }
+  }
+  assert.equal(evidence.repeatedCycle.forward.bpcTargetEpoch,
+    evidence.repeatedCycle.forward.bpcSourceEpoch + 1);
+  assert.equal(evidence.repeatedCycle.forward.tskTargetEpoch,
+    evidence.repeatedCycle.forward.tskSourceEpoch + 1);
+  assert.equal(evidence.repeatedCycle.forward.sourceSystemId,
+    evidence.systems.enterprise.source);
+  assert.equal(evidence.repeatedCycle.forward.targetSystemId,
+    evidence.systems.enterprise.target);
+  assert.equal(evidence.repeatedCycle.forward.staleSourceCompletionDenied, true);
+  assert.equal(evidence.repeatedCycle.forward.idempotentRetry, true);
+  assert.equal(evidence.repeatedCycle.forward.rpo, 0);
+  assert.equal(evidence.repeatedCycle.failback.bpcTargetEpoch,
+    evidence.repeatedCycle.forward.bpcTargetEpoch + 1);
+  assert.equal(evidence.repeatedCycle.failback.tskTargetEpoch,
+    evidence.repeatedCycle.forward.tskTargetEpoch + 1);
+  assert.equal(evidence.repeatedCycle.failback.sourceSystemId,
+    evidence.systems.enterprise.target);
+  assert.equal(evidence.repeatedCycle.failback.targetSystemId,
+    evidence.systems.enterprise.source);
+  assert.equal(evidence.repeatedCycle.failback.sourceClientId,
+    evidence.repeatedCycle.forward.targetClientId);
+  assert.equal(evidence.repeatedCycle.failback.staleSourceCompletionDenied, true);
+  assert.equal(evidence.repeatedCycle.failback.idempotentRetry, true);
+  assert.equal(evidence.repeatedCycle.failback.rpo, 0);
+  for (const cycle of Object.values(evidence.repeatedCycle)) {
+    assert.notEqual(cycle.sourceClientId, cycle.targetClientId);
+    assert.equal(Number.isSafeInteger(cycle.rtoMs) && cycle.rtoMs >= 0, true);
+  }
+  assert.equal(evidence.outcomes.tskRepeatForwardStaleWriterDenied, true);
+  assert.equal(evidence.outcomes.tskRepeatFailbackStaleWriterDenied, true);
+  assert.equal(evidence.outcomes.tskRepeatForwardStaleCredentialDenied, true);
+  assert.equal(evidence.outcomes.tskRepeatFailbackStaleCredentialDenied, true);
   assert.equal(evidence.tskRedisFaults?.kind, 'tsk-same-redis-authority-faults');
   assert.equal(evidence.tskRedisFaults?.commandId,
-    evidence.outcomes.tskReturnCommandId);
+    evidence.tskLatestAuthority.commandId);
   assert.equal(evidence.tskRedisFaults?.fenceEpoch,
-    evidence.tskReturnAuthority.targetEpoch);
+    evidence.tskLatestAuthority.fenceEpoch);
   assert.equal(evidence.tskRedisFaults?.authorityNodeId,
-    evidence.tskReturnAuthority.targetHolderId);
+    evidence.tskLatestAuthority.nodeId);
   assert.deepEqual(evidence.tskRedisFaults?.systemIds, evidence.systems.tsk);
   assert.equal(evidence.tskRedisFaults?.faults?.livePartition?.rpo, 0);
   assert.equal(evidence.tskRedisFaults?.faults?.livePartition?.oldMasterRefusedWrites, true);
