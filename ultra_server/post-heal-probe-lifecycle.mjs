@@ -16,7 +16,7 @@ export async function runExhaustiveCleanup(tasks, label) {
       tasks.some((task) => typeof task !== 'function')) {
     throw new TypeError('cleanup tasks must be a non-empty function array');
   }
-  const outcomes = await Promise.allSettled(tasks.map((task) => task()));
+  const outcomes = await Promise.allSettled(tasks.map(async (task) => task()));
   const failures = outcomes.filter((outcome) => outcome.status === 'rejected')
     .map((outcome) => outcome.reason);
   if (failures.length > 0) {
