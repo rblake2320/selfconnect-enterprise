@@ -8,7 +8,7 @@ import { validateLiveCompositionEvidence } from './live-composition-evidence.mjs
 
 function liveEvidence() {
   return {
-    schemaVersion: 7, kind: 'enterprise-live-authority-handoff', commandId: 'promote-1',
+    schemaVersion: 8, kind: 'enterprise-live-authority-handoff', commandId: 'promote-1',
     commits: { enterprise: 'a'.repeat(40), bpc: 'b'.repeat(40), tsk: 'c'.repeat(40) },
     systems: {
       bpc: { sourceA: '1', promotedB: '2', control: '3' },
@@ -148,6 +148,27 @@ function liveEvidence() {
             childPid: 300 + index, rtoMs: 6 }]),
       ),
     },
+    postHealRestartDenials: {
+      healedAuthority: {
+        commandId: 'promote-1-recovered-site-promote', fenceEpoch: 5,
+        authorityNodeId: 'recovered-b-holder',
+        redisAuthorityTupleDigest: '8'.repeat(64), partitionRtoMs: 10,
+      },
+      bpc: Object.fromEntries(
+        ['initial', 'failback', 'repeatForward', 'repeatFailback', 'recoveredSite']
+          .map((name, index) => [name, { processRestarted: true, denied: true,
+            denialCode: 'source-fence-rejected', noCommittedEffect: true,
+            authorityStateDigest: 'c'.repeat(64),
+            childPid: 400 + index, rtoMs: 7 }]),
+      ),
+      tsk: Object.fromEntries(
+        ['initial', 'failback', 'repeatForward', 'repeatFailback', 'recoveredSite']
+          .map((name, index) => [name, { processRestarted: true, denied: true,
+            denialCode: 'source-fence-rejected', noCommittedEffect: true,
+            authorityStateDigest: 'd'.repeat(64),
+            childPid: 500 + index, rtoMs: 8 }]),
+      ),
+    },
     tskLatestAuthority: {
       commandId: 'promote-1-recovered-site-promote', fenceEpoch: 5,
       nodeId: 'recovered-b-holder', activationGrantDigest: '9'.repeat(64),
@@ -285,6 +306,26 @@ test('direct handoff evidence is exact, secret-free authority output', () => {
   assert.throws(() => validateLiveCompositionEvidence({
     ...evidence,
     tskLatestAuthority: { ...evidence.tskLatestAuthority, nodeId: 'wrong-node' },
+  }));
+  assert.throws(() => validateLiveCompositionEvidence({
+    ...evidence,
+    postHealRestartDenials: { ...evidence.postHealRestartDenials,
+      healedAuthority: { ...evidence.postHealRestartDenials.healedAuthority,
+        redisAuthorityTupleDigest: 'f'.repeat(64) } },
+  }));
+  assert.throws(() => validateLiveCompositionEvidence({
+    ...evidence,
+    postHealRestartDenials: { ...evidence.postHealRestartDenials,
+      bpc: { ...evidence.postHealRestartDenials.bpc,
+        initial: { ...evidence.postHealRestartDenials.bpc.initial,
+          noCommittedEffect: false } } },
+  }));
+  assert.throws(() => validateLiveCompositionEvidence({
+    ...evidence,
+    postHealRestartDenials: { ...evidence.postHealRestartDenials,
+      tsk: { ...evidence.postHealRestartDenials.tsk,
+        initial: { ...evidence.postHealRestartDenials.tsk.initial,
+          childPid: evidence.protocolRestartDenials.tsk.initial.childPid } } },
   }));
   assert.throws(() => validateLiveCompositionEvidence({
     ...evidence,

@@ -29,6 +29,7 @@ const KEY_IDS = Object.freeze({
   mutation: 'mutation-enterprise-v1',
   seal: 'seal-enterprise-v1',
 });
+const POST_HEAL_RESTART_PROBES = new WeakMap();
 
 function requiredString(value, name) {
   if (typeof value !== 'string' || value.length === 0) {
@@ -327,6 +328,24 @@ async function proveStaleBpcWriterDeniedAfterRestart(config) {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+export async function runPostHealBpcRestartProbes(composition) {
+  const lifecycle = POST_HEAL_RESTART_PROBES.get(composition);
+  if (!lifecycle) throw new Error('BPC post-heal restart probes are unavailable or already consumed');
+  POST_HEAL_RESTART_PROBES.delete(composition);
+  try {
+    return await lifecycle.run();
+  } finally {
+    await lifecycle.cleanup();
+  }
+}
+
+export async function discardPostHealBpcRestartProbes(composition) {
+  const lifecycle = POST_HEAL_RESTART_PROBES.get(composition);
+  if (!lifecycle) return;
+  POST_HEAL_RESTART_PROBES.delete(composition);
+  await lifecycle.cleanup();
 }
 
 function makePool(connectionString, max = 5) {
@@ -1496,9 +1515,8 @@ export async function runBpcLiveComposition(options) {
     try { await repeatStoreA.set(pair(60)); } catch { staleA5WriterDenied = true; }
     assert.equal(staleA5WriterDenied, true,
       'revoked epoch-5 A remained writable after recovered-site activation');
-    const restartProbe = ({ cut, database, grant, redisRecord, activationDigest,
-      nodeKeyId, nodePrivateKey, authoritySystemId, number }) =>
-      proveStaleBpcWriterDeniedAfterRestart({
+    const restartProbeConfig = ({ cut, database, grant, redisRecord, activationDigest,
+      nodeKeyId, nodePrivateKey, authoritySystemId, number }) => ({
         cut,
         bpcDistFile: path.join(path.resolve(options.bpcRoot),
           'packages', 'server', 'dist', 'index.js'),
@@ -1535,35 +1553,42 @@ export async function runBpcLiveComposition(options) {
         },
         pair: pair(number),
       });
-    const initialRestartDenial = await restartProbe({ cut: 'initial',
+    const restartProbeConfigs = Object.freeze({
+      initial: restartProbeConfig({ cut: 'initial',
       database: postgresUrls[0], grant: grantA, redisRecord: redisA,
         nodeKeyId: KEY_IDS.nodeA, nodePrivateKey: nodeAPrivate,
-        authoritySystemId: idA, number: 61 });
-    const failbackRestartDenial = await restartProbe({ cut: 'failback',
+        authoritySystemId: idA, number: 61 }),
+      failback: restartProbeConfig({ cut: 'failback',
       database: postgresUrls[1], grant: grantB, redisRecord: redisB,
         activationDigest: activeCutoverReceipt.stateDigestSigned,
         nodeKeyId: KEY_IDS.nodeB, nodePrivateKey: nodeBPrivate,
-        authoritySystemId: idB, number: 62 });
-    const repeatForwardRestartDenial = await restartProbe({ cut: 'repeatForward',
+        authoritySystemId: idB, number: 62 }),
+      repeatForward: restartProbeConfig({ cut: 'repeatForward',
       database: databaseUrl(postgresUrls[0], failbackDatabase),
         grant: grantA3, redisRecord: redisA3,
         activationDigest: failbackActiveCutoverReceipt.stateDigestSigned,
         nodeKeyId: KEY_IDS.nodeA, nodePrivateKey: nodeAPrivate,
-        authoritySystemId: idA, number: 63 });
-    const repeatFailbackRestartDenial = await restartProbe({ cut: 'repeatFailback',
+        authoritySystemId: idA, number: 63 }),
+      repeatFailback: restartProbeConfig({ cut: 'repeatFailback',
       database: databaseUrl(postgresUrls[1], repeatBDatabase),
         grant: grantB4, redisRecord: redisB4,
         activationDigest: repeatForwardActive.stateDigestSigned,
         nodeKeyId: KEY_IDS.nodeB, nodePrivateKey: nodeBPrivate,
-        authoritySystemId: idB, number: 64 });
-    const recoveredRestartDenial = await restartProbe({ cut: 'recoveredSite',
+        authoritySystemId: idB, number: 64 }),
+      recoveredSite: restartProbeConfig({ cut: 'recoveredSite',
       database: databaseUrl(postgresUrls[0], repeatADatabase),
         grant: grantA5, redisRecord: redisA5,
         activationDigest: repeatReturnActive.stateDigestSigned,
         nodeKeyId: KEY_IDS.nodeA, nodePrivateKey: nodeAPrivate,
-        authoritySystemId: idA, number: 65 });
+        authoritySystemId: idA, number: 65 }),
+    });
+    const restartDenials = {};
+    for (const [cut, config] of Object.entries(restartProbeConfigs)) {
+      restartDenials[cut] = await proveStaleBpcWriterDeniedAfterRestart(config);
+    }
+    const recoveredRestartDenial = restartDenials.recoveredSite;
 
-    return deepFreeze({
+    const result = deepFreeze({
       protocolCommit: actualCommit,
       streamId,
       systemIds: { sourceA: idA, promotedB: idB, control: idControl },
@@ -1638,10 +1663,10 @@ export async function runBpcLiveComposition(options) {
         rtoMs: Date.now() - recoveredStartedAt,
       },
       restartDenials: {
-        initial: initialRestartDenial,
-        failback: failbackRestartDenial,
-        repeatForward: repeatForwardRestartDenial,
-        repeatFailback: repeatFailbackRestartDenial,
+        initial: restartDenials.initial,
+        failback: restartDenials.failback,
+        repeatForward: restartDenials.repeatForward,
+        repeatFailback: restartDenials.repeatFailback,
         recoveredSite: recoveredRestartDenial,
       },
       readinessAttestation: structuredClone(readinessAttestation),
@@ -1652,14 +1677,41 @@ export async function runBpcLiveComposition(options) {
         source: sourcePublic.export({ type: 'spki', format: 'pem' }).toString(),
       },
     });
+    if (options.preservePostHealProbes === true) {
+      POST_HEAL_RESTART_PROBES.set(result, {
+        async run() {
+          const evidence = {};
+          for (const [cut, config] of Object.entries(restartProbeConfigs)) {
+            evidence[cut] = await proveStaleBpcWriterDeniedAfterRestart({
+              ...config, cut: `postHeal:${cut}`,
+            });
+          }
+          return deepFreeze(evidence);
+        },
+        async cleanup() {
+          const cleanupA = makePool(postgresUrls[0], 1);
+          const cleanupB = makePool(postgresUrls[1], 1);
+          try {
+            await dropIsolatedDatabase(cleanupA, failbackDatabase);
+            await dropIsolatedDatabase(cleanupB, repeatBDatabase);
+            await dropIsolatedDatabase(cleanupA, repeatADatabase);
+          } finally {
+            await Promise.allSettled([cleanupA.end(), cleanupB.end()]);
+          }
+        },
+      });
+    }
+    return result;
   } finally {
     await Promise.allSettled(runtimePools.map((pool) => pool.end()));
     await Promise.allSettled(isolatedPools.map((pool) => pool.end()));
-    await Promise.allSettled([
-      dropIsolatedDatabase(poolA, failbackDatabase),
-      dropIsolatedDatabase(poolB, repeatBDatabase),
-      dropIsolatedDatabase(poolA, repeatADatabase),
-    ]);
+    if (options.preservePostHealProbes !== true) {
+      await Promise.allSettled([
+        dropIsolatedDatabase(poolA, failbackDatabase),
+        dropIsolatedDatabase(poolB, repeatBDatabase),
+        dropIsolatedDatabase(poolA, repeatADatabase),
+      ]);
+    }
     await Promise.allSettled(pools.map((pool) => pool.end()));
     for (const client of redisMembers) client.disconnect();
     sealKey.fill(0);
