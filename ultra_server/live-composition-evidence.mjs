@@ -241,6 +241,10 @@ function publicEvidence(result) {
         enterpriseCredentialReceipt: result.enterprise.recoveredSite.receiptDigest,
       },
     },
+    protocolRestartDenials: {
+      bpc: result.bpc.restartDenials,
+      tsk: result.tsk.restartDenials,
+    },
     tskLatestAuthority: {
       commandId: result.tsk.recoveredSite.handoff.commandId,
       fenceEpoch: result.tsk.redisAuthority.record.fenceEpoch,
@@ -461,6 +465,28 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
     assert.equal(evidence.recoveredSite.artifacts[field],
       evidence.artifacts[artifactName]);
   }
+  const restartCuts = [
+    'initial', 'failback', 'repeatForward', 'repeatFailback', 'recoveredSite',
+  ];
+  const allRestartPids = new Set();
+  assert.deepEqual(Object.keys(evidence.protocolRestartDenials).sort(), ['bpc', 'tsk']);
+  for (const protocol of ['bpc', 'tsk']) {
+    const probes = evidence.protocolRestartDenials[protocol];
+    assert.deepEqual(Object.keys(probes).sort(), [...restartCuts].sort());
+    const protocolPids = new Set();
+    for (const cut of restartCuts) {
+      const probe = probes[cut];
+      assert.equal(probe.processRestarted, true);
+      assert.equal(probe.denied, true);
+      assert.equal(Number.isSafeInteger(probe.childPid) && probe.childPid > 0, true);
+      assert.equal(Number.isSafeInteger(probe.rtoMs) && probe.rtoMs >= 0, true);
+      protocolPids.add(probe.childPid);
+      allRestartPids.add(probe.childPid);
+    }
+    assert.equal(protocolPids.size, restartCuts.length);
+  }
+  assert.equal(allRestartPids.size, restartCuts.length * 2,
+    'each BPC and TSK cut must use a distinct restarted child process');
   assert.equal(evidence.tskRedisFaults?.kind, 'tsk-same-redis-authority-faults');
   assert.equal(evidence.tskRedisFaults?.commandId,
     evidence.tskLatestAuthority.commandId);

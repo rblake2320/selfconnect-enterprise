@@ -101,6 +101,14 @@ test('executes the full live lifecycle when dedicated acceptance authorities are
   assert.equal(result.recoveredSite.staleCredentialDenied, true);
   assert.equal(result.recoveredSite.credential.leaseGrant.leaseEpoch, 5);
   assert.equal(result.recoveredSite.credential.publicCredential.status, 'active');
+  assert.deepEqual(Object.keys(result.restartDenials).sort(),
+    ['failback', 'initial', 'recoveredSite', 'repeatFailback', 'repeatForward']);
+  assert.equal(new Set(Object.values(result.restartDenials)
+    .map((probe) => probe.childPid)).size, 5);
+  for (const probe of Object.values(result.restartDenials)) {
+    assert.equal(probe.processRestarted, true);
+    assert.equal(probe.denied, true);
+  }
   assert.equal(result.tskCommit, TSK_COMMIT);
   assert.equal(result.publicCredentialSource.status, 'active');
   assert.equal(result.publicCredentialTarget.status, 'active');

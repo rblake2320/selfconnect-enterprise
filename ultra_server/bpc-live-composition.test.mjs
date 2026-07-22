@@ -71,4 +71,12 @@ test('executes governed BPC A to B promotion and B to A failback', {
   assert.equal(result.recoveredSite.rpo, 0);
   assert.equal(Number.isSafeInteger(result.recoveredSite.rtoMs) &&
     result.recoveredSite.rtoMs >= 0, true);
+  assert.deepEqual(Object.keys(result.restartDenials).sort(),
+    ['failback', 'initial', 'recoveredSite', 'repeatFailback', 'repeatForward']);
+  assert.equal(new Set(Object.values(result.restartDenials)
+    .map((probe) => probe.childPid)).size, 5);
+  for (const probe of Object.values(result.restartDenials)) {
+    assert.equal(probe.processRestarted, true);
+    assert.equal(probe.denied, true);
+  }
 });

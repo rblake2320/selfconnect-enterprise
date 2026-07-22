@@ -132,6 +132,18 @@ function liveEvidence() {
         enterpriseCredentialReceipt: 'b'.repeat(64),
       },
     },
+    protocolRestartDenials: {
+      bpc: Object.fromEntries(
+        ['initial', 'failback', 'repeatForward', 'repeatFailback', 'recoveredSite']
+          .map((name, index) => [name, { processRestarted: true, denied: true,
+            childPid: 200 + index, rtoMs: 5 }]),
+      ),
+      tsk: Object.fromEntries(
+        ['initial', 'failback', 'repeatForward', 'repeatFailback', 'recoveredSite']
+          .map((name, index) => [name, { processRestarted: true, denied: true,
+            childPid: 300 + index, rtoMs: 6 }]),
+      ),
+    },
     tskLatestAuthority: {
       commandId: 'promote-1-recovered-site-promote', fenceEpoch: 5,
       nodeId: 'recovered-b-holder', activationGrantDigest: '9'.repeat(64),

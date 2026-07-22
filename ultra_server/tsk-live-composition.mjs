@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, fork } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, sign as edSign } from 'node:crypto';
 import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -116,6 +116,52 @@ function hotpSanitizer(ContractValidationError) {
       }
     },
   });
+}
+
+async function proveStaleTskWriterDeniedAfterRestart(config) {
+  const directory = await mkdtemp(join(tmpdir(), 'tsk-stale-restart-'));
+  const configPath = join(directory, 'input.json');
+  await writeFile(configPath, JSON.stringify(config), { encoding: 'utf8', mode: 0o600 });
+  const startedAt = Date.now();
+  try {
+    return await new Promise((resolvePromise, rejectPromise) => {
+      const child = fork(new URL('./tsk-stale-writer-worker.mjs', import.meta.url),
+        [configPath], {
+          cwd: new URL('.', import.meta.url),
+          stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+          windowsHide: true,
+          execArgv: process.execArgv.filter((arg) => !arg.startsWith('--input-type')),
+        });
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        rejectPromise(new Error('stale TSK restart probe timed out'));
+      }, 30_000);
+      let evidence = null;
+      let stderr = '';
+      child.stderr?.setEncoding('utf8');
+      child.stderr?.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-2_000); });
+      child.once('message', (message) => {
+        if (message?.kind === 'stale-tsk-writer-denied') evidence = message;
+      });
+      child.once('error', (error) => {
+        clearTimeout(timer);
+        rejectPromise(error);
+      });
+      child.once('close', (code, signal) => {
+        clearTimeout(timer);
+        if (code !== 0 || signal || !evidence || evidence.pid === process.pid) {
+          rejectPromise(new Error(
+            `stale TSK restart probe failed (code=${code}, signal=${signal ?? 'none'}): ${stderr.trim()}`,
+          ));
+          return;
+        }
+        resolvePromise(Object.freeze({ processRestarted: true,
+          childPid: evidence.pid, denied: true, rtoMs: Date.now() - startedAt }));
+      });
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 async function executeSchema(pool, ddl) {
@@ -1211,6 +1257,7 @@ export async function runTskLiveComposition(rawOptions) {
       targetSchemaReady, targetReceiverReady, targetGenerationId,
       targetReceiptKeyId, targetReceiptPrivateKey, targetSigner,
       targetLeaseChain, handoffCommandId, handoffTargetEpoch, mutation,
+      sourceDatabaseUrl, sourceHeadKeyId, sourceHeadPrivateKey,
     }) => {
       assert.equal(
         await dbClockMs(sourcePool) < sourceLease.leaseExpiresAtMs,
@@ -1418,6 +1465,26 @@ export async function runTskLiveComposition(rawOptions) {
         staleWriterDenied = true;
       }
       assert.equal(staleWriterDenied, true);
+      const restartDenial = await proveStaleTskWriterDeniedAfterRestart({
+        tskDistFile: resolve(options.tskRoot, 'packages', 'server', 'dist', 'index.js'),
+        databaseUrl: sourceDatabaseUrl,
+        publicKeys: Object.fromEntries([...publicKeys.entries()].map(([keyId, key]) => [
+          keyId, key.export({ type: 'spki', format: 'pem' }).toString(),
+        ])),
+        headPrivateKey: sourceHeadPrivateKey.export({
+          type: 'pkcs8', format: 'pem',
+        }).toString(),
+        headKeyId: sourceHeadKeyId,
+        streamId: options.streamId,
+        fenceToken: String(sourceLease.leaseEpoch),
+        authorizedLease: {
+          streamId: options.streamId,
+          holderNodeId: sourceLease.holderNodeId,
+          leaseId: sourceLease.leaseId,
+          grantDigest: sourceLease.grantDigest,
+        },
+        mutation,
+      });
       return Object.freeze({
         commandId: handoffCommandId,
         sourceEpoch: sourceLease.leaseEpoch,
@@ -1429,6 +1496,7 @@ export async function runTskLiveComposition(rawOptions) {
         sourceActivation,
         append,
         staleWriterDenied,
+        restartDenial,
       });
     };
 
@@ -1456,6 +1524,9 @@ export async function runTskLiveComposition(rawOptions) {
       handoffCommandId: `${commandId}-cycle-2-promote`,
       handoffTargetEpoch: returnTargetEpoch + 1,
       mutation: { tumblerId: 'T11', counter: 3 },
+      sourceDatabaseUrl: options.aPostgresUrl,
+      sourceHeadKeyId: keyIds.aHead,
+      sourceHeadPrivateKey: material.aHead.privateKey,
     });
     const repeatA = await createRepeatAuthority(
       aPool, options.aPostgresUrl, 'enterprise28_tsk_repeat_a4',
@@ -1505,6 +1576,10 @@ export async function runTskLiveComposition(rawOptions) {
       handoffCommandId: `${commandId}-cycle-2-failback`,
       handoffTargetEpoch: returnTargetEpoch + 2,
       mutation: { tumblerId: 'T12', counter: 4 },
+      sourceDatabaseUrl: (() => { const value = new URL(options.bPostgresUrl);
+        value.pathname = '/enterprise28_tsk_repeat_b3'; return value.toString(); })(),
+      sourceHeadKeyId: keyIds.bHead,
+      sourceHeadPrivateKey: material.bHead.privateKey,
     });
     const repeatReturnReady = await assertSourceFenceReady(
       repeatA.db, 'public', resolver, {
@@ -1548,6 +1623,10 @@ export async function runTskLiveComposition(rawOptions) {
       handoffCommandId: `${commandId}-recovered-site-promote`,
       handoffTargetEpoch: returnTargetEpoch + 3,
       mutation: { tumblerId: 'T13', counter: 5 },
+      sourceDatabaseUrl: (() => { const value = new URL(options.aPostgresUrl);
+        value.pathname = '/enterprise28_tsk_repeat_a4'; return value.toString(); })(),
+      sourceHeadKeyId: keyIds.aHead,
+      sourceHeadPrivateKey: material.aHead.privateKey,
     });
 
     // Return the independently reprovisioned credential authority as well as
@@ -1897,6 +1976,34 @@ export async function runTskLiveComposition(rawOptions) {
     }
     assert.equal(staleTargetWriterDenied, true, 'old B writer must be denied after return');
 
+    const baseRestartProbe = async ({ databaseUrl, lease, headKeyId,
+      headPrivateKey, mutation }) => proveStaleTskWriterDeniedAfterRestart({
+      tskDistFile: resolve(options.tskRoot, 'packages', 'server', 'dist', 'index.js'),
+      databaseUrl,
+      publicKeys: Object.fromEntries([...publicKeys.entries()].map(([keyId, key]) => [
+        keyId, key.export({ type: 'spki', format: 'pem' }).toString(),
+      ])),
+      headPrivateKey: headPrivateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+      headKeyId,
+      streamId: options.streamId,
+      fenceToken: String(lease.leaseEpoch),
+      authorizedLease: {
+        streamId: options.streamId,
+        holderNodeId: lease.holderNodeId,
+        leaseId: lease.leaseId,
+        grantDigest: lease.grantDigest,
+      },
+      mutation,
+    });
+    const [initialRestartDenial, failbackRestartDenial] = await Promise.all([
+      baseRestartProbe({ databaseUrl: options.aPostgresUrl, lease: aGrant,
+        headKeyId: keyIds.aHead, headPrivateKey: material.aHead.privateKey,
+        mutation: { tumblerId: 'T15', counter: 7 } }),
+      baseRestartProbe({ databaseUrl: options.bPostgresUrl, lease: activationLeaseGrant,
+        headKeyId: keyIds.bHead, headPrivateKey: material.bHead.privateKey,
+        mutation: { tumblerId: 'T16', counter: 8 } }),
+    ]);
+
     const redisRecord = await redis.get(redisKey);
     if (redisRecord === null) throw new Error('TSK Redis authority record disappeared');
     const redisAuthority = Object.freeze({ key: redisKey,
@@ -1916,6 +2023,7 @@ export async function runTskLiveComposition(rawOptions) {
       }),
       recoveredSite: Object.freeze({
         handoff: recoveredForward,
+        restartDenial: recoveredForward.restartDenial,
         staleCredentialDenied: staleRecoveredCredentialDenied,
         sourceCredentialRevocation: recoveredCredentialRevocation,
         credential: Object.freeze({
@@ -1924,6 +2032,13 @@ export async function runTskLiveComposition(rawOptions) {
           proof: recoveredCredential.proof,
           publicCredential: recoveredCredential.publicCredential,
         }),
+      }),
+      restartDenials: Object.freeze({
+        initial: initialRestartDenial,
+        failback: failbackRestartDenial,
+        repeatForward: repeatForward.restartDenial,
+        repeatFailback: repeatReturn.restartDenial,
+        recoveredSite: recoveredForward.restartDenial,
       }),
       returnCommandId,
       systemIds,

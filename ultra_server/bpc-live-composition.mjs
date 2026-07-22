@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { createHash, createHmac, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { execFileSync, fork } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -273,6 +275,52 @@ function mutationTicketSigner(bpc, secret, keyring) {
       ].join('|')).digest('hex');
     },
   };
+}
+
+async function proveStaleBpcWriterDeniedAfterRestart(config) {
+  const directory = await mkdtemp(path.join(tmpdir(), 'bpc-stale-restart-'));
+  const configPath = path.join(directory, 'input.json');
+  await writeFile(configPath, JSON.stringify(config), { encoding: 'utf8', mode: 0o600 });
+  const startedAt = Date.now();
+  try {
+    return await new Promise((resolvePromise, rejectPromise) => {
+      const child = fork(new URL('./bpc-stale-writer-worker.mjs', import.meta.url),
+        [configPath], {
+          cwd: new URL('.', import.meta.url),
+          stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+          windowsHide: true,
+          execArgv: process.execArgv.filter((arg) => !arg.startsWith('--input-type')),
+        });
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        rejectPromise(new Error('stale BPC restart probe timed out'));
+      }, 30_000);
+      let evidence = null;
+      let stderr = '';
+      child.stderr?.setEncoding('utf8');
+      child.stderr?.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-2_000); });
+      child.once('message', (message) => {
+        if (message?.kind === 'stale-bpc-writer-denied') evidence = message;
+      });
+      child.once('error', (error) => {
+        clearTimeout(timer);
+        rejectPromise(error);
+      });
+      child.once('close', (code, signal) => {
+        clearTimeout(timer);
+        if (code !== 0 || signal || !evidence || evidence.pid === process.pid) {
+          rejectPromise(new Error(
+            `stale BPC restart probe failed (code=${code}, signal=${signal ?? 'none'}): ${stderr.trim()}`,
+          ));
+          return;
+        }
+        resolvePromise(Object.freeze({ processRestarted: true,
+          childPid: evidence.pid, denied: true, rtoMs: Date.now() - startedAt }));
+      });
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 function makePool(connectionString, max = 5) {
@@ -1442,6 +1490,70 @@ export async function runBpcLiveComposition(options) {
     try { await repeatStoreA.set(pair(60)); } catch { staleA5WriterDenied = true; }
     assert.equal(staleA5WriterDenied, true,
       'revoked epoch-5 A remained writable after recovered-site activation');
+    const restartProbe = ({ database, grant, redisRecord, activationDigest,
+      nodeKeyId, nodePrivateKey, authoritySystemId, number }) =>
+      proveStaleBpcWriterDeniedAfterRestart({
+        bpcDistFile: path.join(path.resolve(options.bpcRoot),
+          'packages', 'server', 'dist', 'index.js'),
+        runtimeUrl: runtimeUrl(database, runtimePassword),
+        controlUrl: postgresUrls[2],
+        redisUrls,
+        redisKey: `bpc:enterprise28:${streamId}`,
+        publicKeys: {
+          [KEY_IDS.guard]: guardPublic.export({ type: 'spki', format: 'pem' }).toString(),
+          [KEY_IDS.source]: sourcePublic.export({ type: 'spki', format: 'pem' }).toString(),
+          [KEY_IDS.nodeA]: nodeAPublic.export({ type: 'spki', format: 'pem' }).toString(),
+          [KEY_IDS.nodeB]: nodeBPublic.export({ type: 'spki', format: 'pem' }).toString(),
+        },
+        nodeKeyId,
+        nodePrivateKey: nodePrivateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+        sealKeyId: KEY_IDS.seal,
+        sealKey: sealKey.toString('base64'),
+        mutationKeyId: KEY_IDS.mutation,
+        mutationSecret: mutationSecret.toString('base64'),
+        streamId,
+        fenceToken: String(grant.epoch),
+        fence: {
+          streamId,
+          epoch: grant.epoch,
+          holderNodeId: grant.holderNodeId,
+          authoritySystemId,
+          nodeCredentialKeyId: nodeKeyId,
+          leaseId: grant.leaseId,
+          grantDigest: grant.grantDigest,
+          redisClaimDigest: bpc.redisFenceRecordDigest(redisRecord),
+          maxClockSkewMs: 25,
+          maxTransactionDurationMs: grant.maxTransactionDurationMs,
+          ...(activationDigest ? { activationDigest } : {}),
+        },
+        pair: pair(number),
+      });
+    const [initialRestartDenial, failbackRestartDenial,
+      repeatForwardRestartDenial, repeatFailbackRestartDenial,
+      recoveredRestartDenial] = await Promise.all([
+      restartProbe({ database: postgresUrls[0], grant: grantA, redisRecord: redisA,
+        nodeKeyId: KEY_IDS.nodeA, nodePrivateKey: nodeAPrivate,
+        authoritySystemId: idA, number: 61 }),
+      restartProbe({ database: postgresUrls[1], grant: grantB, redisRecord: redisB,
+        activationDigest: activeCutoverReceipt.stateDigestSigned,
+        nodeKeyId: KEY_IDS.nodeB, nodePrivateKey: nodeBPrivate,
+        authoritySystemId: idB, number: 62 }),
+      restartProbe({ database: databaseUrl(postgresUrls[0], failbackDatabase),
+        grant: grantA3, redisRecord: redisA3,
+        activationDigest: failbackActiveCutoverReceipt.stateDigestSigned,
+        nodeKeyId: KEY_IDS.nodeA, nodePrivateKey: nodeAPrivate,
+        authoritySystemId: idA, number: 63 }),
+      restartProbe({ database: databaseUrl(postgresUrls[1], repeatBDatabase),
+        grant: grantB4, redisRecord: redisB4,
+        activationDigest: repeatForwardActive.stateDigestSigned,
+        nodeKeyId: KEY_IDS.nodeB, nodePrivateKey: nodeBPrivate,
+        authoritySystemId: idB, number: 64 }),
+      restartProbe({ database: databaseUrl(postgresUrls[0], repeatADatabase),
+        grant: grantA5, redisRecord: redisA5,
+        activationDigest: repeatReturnActive.stateDigestSigned,
+        nodeKeyId: KEY_IDS.nodeA, nodePrivateKey: nodeAPrivate,
+        authoritySystemId: idA, number: 65 }),
+    ]);
 
     return deepFreeze({
       protocolCommit: actualCommit,
@@ -1510,11 +1622,19 @@ export async function runBpcLiveComposition(options) {
         importedSequence: snapshotA5.manifest.finalSequence,
         firstMutationSequence: recoveredFirstMutationSequence,
         staleSourceWriterDenied: staleA5WriterDenied,
+        restartDenial: recoveredRestartDenial,
         readinessAttestation: structuredClone(recoveredReadiness),
         activeCutoverReceipt: structuredClone(recoveredActive),
         snapshotManifest: structuredClone(snapshotA5.manifest),
         rpo: 0,
         rtoMs: Date.now() - recoveredStartedAt,
+      },
+      restartDenials: {
+        initial: initialRestartDenial,
+        failback: failbackRestartDenial,
+        repeatForward: repeatForwardRestartDenial,
+        repeatFailback: repeatFailbackRestartDenial,
+        recoveredSite: recoveredRestartDenial,
       },
       readinessAttestation: structuredClone(readinessAttestation),
       activeCutoverReceipt: structuredClone(activeCutoverReceipt),
