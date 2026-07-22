@@ -51,8 +51,8 @@ failback evidence is a failure.
 | Network/split brain | Live Redis master isolation; old master refuses writes, surviving quorum promotes, healed node converges |
 | Redis loss | Abrupt master loss with Sentinel quorum and enforced replica acknowledgement |
 | Database recovery | Exact promoted PostgreSQL `SIGKILL`/restart plus destructive Enterprise-table rebuild from signed state |
-| Protocol failback | Governed BPC A -> B -> A and TSK A -> B -> A return-authority drills; TSK also passed across Spark-1/Spark-2; a real-PostgreSQL Enterprise A -> B -> A mechanism test passes with synthetic signed protocol inputs, while exact completed-authority composition remains open |
-| Same principal | Pair and agent identity remain unchanged across the protocol failover/failback and the real-PostgreSQL Enterprise A -> B -> A mechanism test |
+| Protocol failback | Governed BPC, TSK, and Enterprise authorities complete two A -> B -> A cycles on six distinct PostgreSQL systems plus real Redis; each Enterprise transition consumes the exact pinned protocol artifacts |
+| Same principal | Pair and agent identity remain unchanged across both complete protocol and Enterprise failover/failback cycles while fresh target credentials are reprovisioned at each authority epoch |
 | Old writer fencing | BPC and TSK pre-commit authority checks deny the prior authority after promotion/restart/heal |
 | Tamper/gap/replay/rollback | Component and Enterprise drills reject each class before readiness or mutation |
 | Secret custody | State transport strips TSK and idempotency secrets; each target requires fresh governed reprovisioning |
@@ -76,7 +76,7 @@ exports, independently countersigns, imports, reprovisions a fresh target
 credential, verifies readiness, preserves the principal, and reports data-loss
 RPO zero. That mechanism test uses synthetic signed protocol evidence and a
 callback writable assertion. It therefore does not establish exact completed
-BPC/TSK Enterprise failback composition, stale-B fencing, or repeated cycles.
+BPC/TSK Enterprise failback composition or repeated same-principal cycles. Stale-site restart/partition-heal fencing remains a separate partial gate.
 Previously redacted idempotency results remain redacted; they are not re-hashed
 as ordinary responses. Readiness is granted only after the new credential
 binding and authority digest agree. Separate-host execution is evidenced by the
