@@ -161,11 +161,12 @@ export function validateLiveProtocolComposition(bpc, tsk, commandId) {
   assert.equal(tsk.returnSourceActivation.n, tsk.n + 1);
   assert.equal(tsk.returnSourceActivation.activationGrantDigest,
     tsk.returnActivationLeaseGrant.grantDigest);
-  assert.equal(tsk.redisAuthority.record.commandId, tsk.returnCommandId);
+  assert.equal(tsk.redisAuthority.record.commandId,
+    tsk.repeatedCycle.failback.commandId);
   assert.equal(tsk.redisAuthority.record.fenceEpoch,
-    tsk.returnActivationLeaseGrant.leaseEpoch);
+    tsk.repeatedCycle.failback.activationLease.leaseEpoch);
   assert.equal(tsk.redisAuthority.record.nodeId,
-    tsk.returnActivationLeaseGrant.holderNodeId);
+    tsk.repeatedCycle.failback.activationLease.holderNodeId);
   assert.equal(tsk.redisAuthority.record.active, true);
   assert.equal(tsk.publicCredential.status, 'active');
   assert.match(tsk.publicCredential.publicMapDigest, DIGEST);

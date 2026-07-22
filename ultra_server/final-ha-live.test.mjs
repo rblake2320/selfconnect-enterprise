@@ -31,7 +31,7 @@ test('live composition requires exact command binding, independent systems, and 
     returnActivationLeaseGrant: { leaseEpoch: 2, commandId: 'return-promote-live-1',
       holderNodeId: 'return-a', grantDigest: 'c'.repeat(64) },
     returnSourceActivation: { n: 5, activationGrantDigest: 'c'.repeat(64) },
-    redisAuthority: { record: { commandId: 'return-promote-live-1', fenceEpoch: 2,
+    redisAuthority: { record: { commandId: 'promote-live-1-cycle-2-failback', fenceEpoch: 4,
       nodeId: 'return-a', active: true } },
     staleCredentialWriterDenied: true,
     staleReturnedCredentialWriterDenied: true,
@@ -56,7 +56,8 @@ test('live composition requires exact command binding, independent systems, and 
       forward: { sourceEpoch: 2, targetEpoch: 3, staleWriterDenied: true,
         commandId: 'promote-live-1-cycle-2-forward' },
       failback: { sourceEpoch: 3, targetEpoch: 4, staleWriterDenied: true,
-        commandId: 'promote-live-1-cycle-2-failback' },
+        commandId: 'promote-live-1-cycle-2-failback',
+        activationLease: { leaseEpoch: 4, holderNodeId: 'return-a' } },
     },
     repeatForwardCredential: {
       leaseGrant: { leaseEpoch: 3 },
