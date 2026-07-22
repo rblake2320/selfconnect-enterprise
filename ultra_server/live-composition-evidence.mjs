@@ -431,7 +431,7 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
     'importedManifestDigest', 'readyManifestDigest', 'sourceManifestDigest',
     'targetClientId', 'targetSystemId',
   ]);
-  assert.equal(resync.enterprise.targetSystemId, evidence.systems.bpc.promotedB);
+  assert.equal(resync.enterprise.targetSystemId, evidence.systems.enterprise.target);
   assert.equal(resync.enterprise.sourceManifestDigest,
     evidence.artifacts.enterpriseRepeatForwardManifest);
   assert.equal(resync.enterprise.importedManifestDigest,
