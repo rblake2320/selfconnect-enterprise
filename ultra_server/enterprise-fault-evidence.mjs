@@ -17,6 +17,21 @@ function sha256(value) {
 }
 
 function publicEvidence(result) {
+  const restarts = Object.fromEntries(RESTART_CUTS.map((cut) => {
+    const probe = result.enterprise.faults.staleCompletionRestarts[cut];
+    return [cut, {
+      processRestarted: probe.processRestarted,
+      childPid: probe.childPid,
+      denied: probe.denied,
+      denialCode: probe.denialCode,
+      noCommittedEffect: probe.noCommittedEffect,
+      authorityStateDigest: probe.authorityStateDigest,
+      rtoMs: probe.rtoMs,
+    }];
+  }));
+  const child = result.enterprise.faults.childProcessSigkill;
+  const restore = result.enterprise.faults.destructiveRestore;
+  const database = result.enterprise.faults.databaseSigkill;
   return {
     schemaVersion: 2,
     kind: 'enterprise-same-authority-fault-acceptance',
@@ -24,7 +39,25 @@ function publicEvidence(result) {
     enterpriseManifestDigest: result.enterprise.manifestDigest,
     sourceSystemId: result.enterprise.sourceSystemId,
     targetSystemId: result.enterprise.targetSystemId,
-    faults: result.enterprise.faults,
+    faults: {
+      staleCompletionRestarts: restarts,
+      childProcessSigkill: {
+        fault: child.fault, resumed: child.resumed,
+        tornAuthorityRows: child.tornAuthorityRows, rpo: child.rpo, rtoMs: child.rtoMs,
+      },
+      destructiveRestore: {
+        fault: restore.fault, resumed: restore.resumed,
+        sameTargetSystemId: restore.sameTargetSystemId,
+        sameCredentialReceipt: restore.sameCredentialReceipt,
+        rpo: restore.rpo, rtoMs: restore.rtoMs,
+      },
+      databaseSigkill: {
+        fault: database.fault, resumed: database.resumed,
+        sameTargetSystemId: database.sameTargetSystemId,
+        sameCredentialReceipt: database.sameCredentialReceipt,
+        rpo: database.rpo, rtoMs: database.rtoMs,
+      },
+    },
   };
 }
 
@@ -40,6 +73,10 @@ export function validateEnterpriseFaultEvidence(evidence, expected = {}) {
     [...Object.keys(ALLOWED_FAULTS), 'staleCompletionRestarts'].sort());
   for (const [name, expectedFault] of Object.entries(ALLOWED_FAULTS)) {
     const fault = evidence.faults[name];
+    const exactKeys = name === 'childProcessSigkill'
+      ? ['fault', 'resumed', 'rpo', 'rtoMs', 'tornAuthorityRows']
+      : ['fault', 'resumed', 'rpo', 'rtoMs', 'sameCredentialReceipt', 'sameTargetSystemId'];
+    assert.deepEqual(Object.keys(fault).sort(), exactKeys.sort());
     assert.equal(fault?.fault, expectedFault);
     assert.equal(fault?.resumed, true);
     assert.equal(fault?.rpo, 0);
@@ -55,8 +92,15 @@ export function validateEnterpriseFaultEvidence(evidence, expected = {}) {
   const pids = new Set();
   for (const cut of RESTART_CUTS) {
     const probe = evidence.faults.staleCompletionRestarts[cut];
+    assert.deepEqual(Object.keys(probe).sort(), [
+      'authorityStateDigest', 'childPid', 'denialCode', 'denied',
+      'noCommittedEffect', 'processRestarted', 'rtoMs',
+    ]);
     assert.equal(probe.processRestarted, true);
     assert.equal(probe.denied, true);
+    assert.equal(probe.denialCode, 'import-binding-rejected');
+    assert.equal(probe.noCommittedEffect, true);
+    assert.match(probe.authorityStateDigest, DIGEST);
     assert.equal(Number.isSafeInteger(probe.childPid) && probe.childPid > 0, true);
     assert.equal(Number.isSafeInteger(probe.rtoMs) && probe.rtoMs >= 0, true);
     pids.add(probe.childPid);

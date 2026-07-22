@@ -53,7 +53,7 @@ failback evidence is a failure.
 | Database recovery | Exact promoted PostgreSQL `SIGKILL`/restart plus destructive Enterprise-table rebuild from signed state |
 | Protocol failback and recovery | Governed BPC, TSK, and Enterprise authorities complete two A -> B -> A cycles, then rebuild the exact stale B authorities and perform a third A -> B recovery on six distinct PostgreSQL systems plus real Redis; each Enterprise transition consumes the exact pinned protocol artifacts |
 | Same principal | Pair and agent identity remain unchanged across both complete protocol and Enterprise failover/failback cycles while fresh target credentials are reprovisioned at each authority epoch |
-| Old writer fencing | Five distinct restarted BPC child writers, five restarted TSK child writers, and five restarted Enterprise completion processes are denied across the five cuts; Redis partition/heal separately preserves the exact current authority tuple |
+| Old writer fencing | Five distinct restarted BPC child writers, five restarted TSK child writers, and five restarted Enterprise completion processes are denied across the five cuts. Each process requires the protocol-specific typed rejection and an unchanged SHA-256 digest of the exact authoritative rows before/after its attempted effect. Redis partition/heal separately preserves the exact current authority tuple. |
 | Tamper/gap/replay/rollback | Component and Enterprise drills reject each class before readiness or mutation |
 | Secret custody | State transport strips TSK and idempotency secrets; each target requires fresh governed reprovisioning |
 | RPO/RTO | Component drills print per-fault values; the final evidence retains only bounded lines and output hashes |

@@ -32,6 +32,8 @@ function result() {
           ['initial', 'failback', 'repeatForward', 'repeatFailback', 'recoveredSite']
             .map((name, index) => [name, {
               processRestarted: true, denied: true, childPid: 100 + index, rtoMs: 4,
+              denialCode: 'import-binding-rejected', noCommittedEffect: true,
+              authorityStateDigest: 'a'.repeat(64),
             }]),
         ),
       },

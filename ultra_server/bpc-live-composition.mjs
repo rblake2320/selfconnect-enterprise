@@ -308,14 +308,20 @@ async function proveStaleBpcWriterDeniedAfterRestart(config) {
       });
       child.once('close', (code, signal) => {
         clearTimeout(timer);
-        if (code !== 0 || signal || !evidence || evidence.pid === process.pid) {
+        if (code !== 0 || signal || !evidence || evidence.pid === process.pid ||
+            evidence.denialCode !== 'source-fence-rejected' ||
+            evidence.noCommittedEffect !== true ||
+            !/^[0-9a-f]{64}$/.test(evidence.authorityDigest)) {
           rejectPromise(new Error(
             `stale BPC restart probe failed (code=${code}, signal=${signal ?? 'none'}): ${stderr.trim()}`,
           ));
           return;
         }
         resolvePromise(Object.freeze({ processRestarted: true,
-          childPid: evidence.pid, denied: true, rtoMs: Date.now() - startedAt }));
+          childPid: evidence.pid, denied: true,
+          denialCode: evidence.denialCode, noCommittedEffect: true,
+          authorityStateDigest: evidence.authorityDigest,
+          rtoMs: Date.now() - startedAt }));
       });
     });
   } finally {
@@ -1490,9 +1496,10 @@ export async function runBpcLiveComposition(options) {
     try { await repeatStoreA.set(pair(60)); } catch { staleA5WriterDenied = true; }
     assert.equal(staleA5WriterDenied, true,
       'revoked epoch-5 A remained writable after recovered-site activation');
-    const restartProbe = ({ database, grant, redisRecord, activationDigest,
+    const restartProbe = ({ cut, database, grant, redisRecord, activationDigest,
       nodeKeyId, nodePrivateKey, authoritySystemId, number }) =>
       proveStaleBpcWriterDeniedAfterRestart({
+        cut,
         bpcDistFile: path.join(path.resolve(options.bpcRoot),
           'packages', 'server', 'dist', 'index.js'),
         runtimeUrl: runtimeUrl(database, runtimePassword),
@@ -1531,24 +1538,24 @@ export async function runBpcLiveComposition(options) {
     const [initialRestartDenial, failbackRestartDenial,
       repeatForwardRestartDenial, repeatFailbackRestartDenial,
       recoveredRestartDenial] = await Promise.all([
-      restartProbe({ database: postgresUrls[0], grant: grantA, redisRecord: redisA,
+      restartProbe({ cut: 'initial', database: postgresUrls[0], grant: grantA, redisRecord: redisA,
         nodeKeyId: KEY_IDS.nodeA, nodePrivateKey: nodeAPrivate,
         authoritySystemId: idA, number: 61 }),
-      restartProbe({ database: postgresUrls[1], grant: grantB, redisRecord: redisB,
+      restartProbe({ cut: 'failback', database: postgresUrls[1], grant: grantB, redisRecord: redisB,
         activationDigest: activeCutoverReceipt.stateDigestSigned,
         nodeKeyId: KEY_IDS.nodeB, nodePrivateKey: nodeBPrivate,
         authoritySystemId: idB, number: 62 }),
-      restartProbe({ database: databaseUrl(postgresUrls[0], failbackDatabase),
+      restartProbe({ cut: 'repeatForward', database: databaseUrl(postgresUrls[0], failbackDatabase),
         grant: grantA3, redisRecord: redisA3,
         activationDigest: failbackActiveCutoverReceipt.stateDigestSigned,
         nodeKeyId: KEY_IDS.nodeA, nodePrivateKey: nodeAPrivate,
         authoritySystemId: idA, number: 63 }),
-      restartProbe({ database: databaseUrl(postgresUrls[1], repeatBDatabase),
+      restartProbe({ cut: 'repeatFailback', database: databaseUrl(postgresUrls[1], repeatBDatabase),
         grant: grantB4, redisRecord: redisB4,
         activationDigest: repeatForwardActive.stateDigestSigned,
         nodeKeyId: KEY_IDS.nodeB, nodePrivateKey: nodeBPrivate,
         authoritySystemId: idB, number: 64 }),
-      restartProbe({ database: databaseUrl(postgresUrls[0], repeatADatabase),
+      restartProbe({ cut: 'recoveredSite', database: databaseUrl(postgresUrls[0], repeatADatabase),
         grant: grantA5, redisRecord: redisA5,
         activationDigest: repeatReturnActive.stateDigestSigned,
         nodeKeyId: KEY_IDS.nodeA, nodePrivateKey: nodeAPrivate,

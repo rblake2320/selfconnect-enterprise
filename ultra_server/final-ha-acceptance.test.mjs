@@ -136,11 +136,15 @@ function liveEvidence() {
       bpc: Object.fromEntries(
         ['initial', 'failback', 'repeatForward', 'repeatFailback', 'recoveredSite']
           .map((name, index) => [name, { processRestarted: true, denied: true,
+            denialCode: 'source-fence-rejected', noCommittedEffect: true,
+            authorityStateDigest: 'a'.repeat(64),
             childPid: 200 + index, rtoMs: 5 }]),
       ),
       tsk: Object.fromEntries(
         ['initial', 'failback', 'repeatForward', 'repeatFailback', 'recoveredSite']
           .map((name, index) => [name, { processRestarted: true, denied: true,
+            denialCode: 'source-fence-rejected', noCommittedEffect: true,
+            authorityStateDigest: 'b'.repeat(64),
             childPid: 300 + index, rtoMs: 6 }]),
       ),
     },

@@ -397,8 +397,12 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
   assert.equal(evidence.repeatedCycle.forward.rpo, 0);
   assert.equal(evidence.repeatedCycle.failback.bpcTargetEpoch,
     evidence.repeatedCycle.forward.bpcTargetEpoch + 1);
+  assert.equal(evidence.repeatedCycle.failback.bpcSourceEpoch,
+    evidence.repeatedCycle.forward.bpcTargetEpoch);
   assert.equal(evidence.repeatedCycle.failback.tskTargetEpoch,
     evidence.repeatedCycle.forward.tskTargetEpoch + 1);
+  assert.equal(evidence.repeatedCycle.failback.tskSourceEpoch,
+    evidence.repeatedCycle.forward.tskTargetEpoch);
   assert.equal(evidence.repeatedCycle.failback.sourceSystemId,
     evidence.systems.enterprise.target);
   assert.equal(evidence.repeatedCycle.failback.targetSystemId,
@@ -435,8 +439,16 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
     evidence.recoveredSite.tskCommandId);
   assert.equal(evidence.recoveredSite.bpcTargetEpoch,
     evidence.repeatedCycle.failback.bpcTargetEpoch + 1);
+  assert.equal(evidence.recoveredSite.bpcSourceEpoch,
+    evidence.repeatedCycle.failback.bpcTargetEpoch);
+  assert.equal(evidence.recoveredSite.bpcTargetEpoch,
+    evidence.recoveredSite.bpcSourceEpoch + 1);
   assert.equal(evidence.recoveredSite.tskTargetEpoch,
     evidence.repeatedCycle.failback.tskTargetEpoch + 1);
+  assert.equal(evidence.recoveredSite.tskSourceEpoch,
+    evidence.repeatedCycle.failback.tskTargetEpoch);
+  assert.equal(evidence.recoveredSite.tskTargetEpoch,
+    evidence.recoveredSite.tskSourceEpoch + 1);
   assert.equal(evidence.recoveredSite.enterpriseSourceEpoch,
     evidence.recoveredSite.tskTargetEpoch);
   assert.equal(evidence.recoveredSite.sourceSystemId,
@@ -461,6 +473,8 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
     enterpriseManifest: 'enterpriseRecoveredManifest',
     enterpriseCredentialReceipt: 'enterpriseRecoveredCredentialReceipt',
   };
+  assert.deepEqual(Object.keys(evidence.recoveredSite.artifacts).sort(),
+    Object.keys(recoveredArtifactBindings).sort());
   for (const [field, artifactName] of Object.entries(recoveredArtifactBindings)) {
     assert.equal(evidence.recoveredSite.artifacts[field],
       evidence.artifacts[artifactName]);
@@ -476,8 +490,15 @@ export function validateLiveCompositionEvidence(evidence, expected = {}) {
     const protocolPids = new Set();
     for (const cut of restartCuts) {
       const probe = probes[cut];
+      assert.deepEqual(Object.keys(probe).sort(), [
+        'authorityStateDigest', 'childPid', 'denialCode', 'denied',
+        'noCommittedEffect', 'processRestarted', 'rtoMs',
+      ]);
       assert.equal(probe.processRestarted, true);
       assert.equal(probe.denied, true);
+      assert.equal(probe.denialCode, 'source-fence-rejected');
+      assert.equal(probe.noCommittedEffect, true);
+      assert.match(probe.authorityStateDigest, DIGEST);
       assert.equal(Number.isSafeInteger(probe.childPid) && probe.childPid > 0, true);
       assert.equal(Number.isSafeInteger(probe.rtoMs) && probe.rtoMs >= 0, true);
       protocolPids.add(probe.childPid);

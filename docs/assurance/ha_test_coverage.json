@@ -242,7 +242,7 @@
         "repo:ultra_server/enterprise-live-handoff.mjs",
         "repo:ultra_server/live-composition-evidence.mjs"
       ],
-      "limitations": "Two complete A-to-B-to-A cycles plus an exact stale-B rebuild and governed A-to-B recovery pass locally under pinned BPC and TSK authorities on six distinct PostgreSQL systems plus real Redis. Fifteen distinct restarted child processes cover stale BPC writers, TSK writers, and Enterprise completions at all five cuts. Redis partition/heal is a separate current-authority fault axis rather than a claimed cross-product with every process probe. The exact hosted schema-v7 evidence artifact and independent review are not yet complete.",
+      "limitations": "Two complete A-to-B-to-A cycles plus an exact stale-B rebuild and governed A-to-B recovery pass locally under pinned BPC and TSK authorities on six distinct PostgreSQL systems plus real Redis. Fifteen distinct restarted child processes cover stale BPC writers, TSK writers, and Enterprise completions at all five cuts; each requires a protocol-specific typed denial and an unchanged before/after digest of the exact authoritative rows, so an error after a committed effect cannot count as a pass. Redis partition/heal is a separate current-authority fault axis rather than a claimed cross-product with every process probe. The exact hosted schema-v7 evidence artifact and independent review are not yet complete.",
       "closure": "Run the exact hosted six-PostgreSQL plus Redis Sentinel matrix, retain the schema-v7 secret-free evidence and schema-v2 restart-fault artifacts, and complete independent review before changing this level to PASS."
     },
     {

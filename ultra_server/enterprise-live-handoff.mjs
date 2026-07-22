@@ -117,7 +117,10 @@ async function proveStaleCompletionDeniedAfterRestart(config) {
       });
       child.once('close', (code, signal) => {
         clearTimeout(timer);
-        if (code !== 0 || signal || !evidence || evidence.pid === process.pid) {
+        if (code !== 0 || signal || !evidence || evidence.pid === process.pid ||
+            evidence.denialCode !== 'import-binding-rejected' ||
+            evidence.noCommittedEffect !== true ||
+            !/^[0-9a-f]{64}$/.test(evidence.authorityDigest)) {
           rejectPromise(new Error(
             `stale-completion restart probe failed (code=${code}, signal=${signal ?? 'none'})`,
           ));
@@ -127,6 +130,9 @@ async function proveStaleCompletionDeniedAfterRestart(config) {
           processRestarted: true,
           childPid: evidence.pid,
           denied: true,
+          denialCode: evidence.denialCode,
+          noCommittedEffect: true,
+          authorityStateDigest: evidence.authorityDigest,
           rtoMs: Date.now() - startedAt,
         }));
       });

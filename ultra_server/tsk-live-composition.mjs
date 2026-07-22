@@ -149,14 +149,20 @@ async function proveStaleTskWriterDeniedAfterRestart(config) {
       });
       child.once('close', (code, signal) => {
         clearTimeout(timer);
-        if (code !== 0 || signal || !evidence || evidence.pid === process.pid) {
+        if (code !== 0 || signal || !evidence || evidence.pid === process.pid ||
+            evidence.denialCode !== 'source-fence-rejected' ||
+            evidence.noCommittedEffect !== true ||
+            !/^[0-9a-f]{64}$/.test(evidence.authorityDigest)) {
           rejectPromise(new Error(
             `stale TSK restart probe failed (code=${code}, signal=${signal ?? 'none'}): ${stderr.trim()}`,
           ));
           return;
         }
         resolvePromise(Object.freeze({ processRestarted: true,
-          childPid: evidence.pid, denied: true, rtoMs: Date.now() - startedAt }));
+          childPid: evidence.pid, denied: true,
+          denialCode: evidence.denialCode, noCommittedEffect: true,
+          authorityStateDigest: evidence.authorityDigest,
+          rtoMs: Date.now() - startedAt }));
       });
     });
   } finally {
