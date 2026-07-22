@@ -289,6 +289,7 @@ def test_ha_test_coverage_never_hides_unexecuted_levels_as_passes() -> None:
         "29866745029",
         "29873592691",
         "29889970116",
+        "29892240715",
     }
     for receipt in ci_receipts:
         assert set(receipt) == {"run_id", "head_sha", "conclusion", "scope"}
@@ -310,7 +311,7 @@ def test_ha_test_coverage_never_hides_unexecuted_levels_as_passes() -> None:
         "authoritative-state-composition": "pass",
         "secret-reprovisioning": "partial",
         "replica-integrity-promotion-denial": "pass",
-        "old-writer-fencing": "partial",
+        "old-writer-fencing": "pass",
         "recovered-site-resync-before-write": "pass",
         "full-recovery-reconstitution": "partial",
         "backup-restore": "open",

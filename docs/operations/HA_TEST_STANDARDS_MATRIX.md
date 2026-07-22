@@ -40,10 +40,10 @@ authorized, certified, or compliant.
 | Authority composition | PASS | Exact completed BPC/TSK and Enterprise return composition; signed snapshot-after-fence saga, not cross-database atomic commit |
 | Secret reprovisioning | PARTIAL | Redacted real-PG transfer + fresh target credential pass; production custody ceremony remains |
 | Replica integrity denial | PASS | Stale/replay/tamper/gap/rollback denied in the named tested formats/topology |
-| Old-writer fencing | PARTIAL | Repeated exact Enterprise stale-source denial passes; restart-after-partition-heal denial remains |
-| Recovered-site resync | PARTIAL | Readiness gates pass; no recovered physical site has been returned to service |
+| Old-writer fencing | PASS | Twenty-five distinct restarted no-effect probes cover BPC, TSK, and Enterprise at all five cuts; BPC/TSK are denied again after real Redis partition/heal and Enterprise probes run after heal |
+| Recovered-site resync | PASS | The stale B authorities are rebuilt in place, independently attested, denied before convergence, and admitted only for exact first new-epoch mutations; this is logical/container recovery, not destroyed physical-site recovery |
 | Enterprise B -> A failback | PASS | Exact BPC/TSK artifacts, terminal source fence, stale-B denial, fresh reprovisioning, and idempotent retry pass for one cycle |
-| Repeated same-principal cycles | PARTIAL | Two exact local A -> B -> A cycles pass on six PostgreSQL systems plus Redis; hosted write-once evidence and independent review remain before PASS |
+| Repeated same-principal cycles | PASS | Two exact A -> B -> A cycles plus stale-site rebuild and governed A -> B recovery pass on six PostgreSQL systems plus Redis, with exact-head hosted evidence and independent review |
 | Monitoring and alerting | PARTIAL | Config/security tests pass; deployed fault-to-alert drill remains |
 | Immutable evidence | PARTIAL | Live S3 Object Lock proof exists; exact HA artifacts are not wired into it |
 | Key custody | PARTIAL | Role separation passes; production HSM/TPM custody ceremony remains |
