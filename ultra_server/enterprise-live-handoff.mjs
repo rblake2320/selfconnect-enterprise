@@ -438,6 +438,8 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       sourceCredentialRevocation,
       sourceCredential,
       sourceCredentialSecretDigest,
+      sourceCredentialProvenance,
+      sourceCredentialProvenanceSecretDigest,
       targetCredentialAuthority,
       targetCredentialProof,
       targetCredential,
@@ -461,8 +463,8 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
           expected: {
             agentId,
             pairId,
-            sourceClientId: sourceCredential.clientId,
-            sourceSecretDigest: sourceCredentialSecretDigest,
+            sourceClientId: sourceCredentialProvenance.clientId,
+            sourceSecretDigest: sourceCredentialProvenanceSecretDigest,
           },
           proof: sourceCredentialProof,
           terminalRevocation: sourceCredentialRevocation,
@@ -584,6 +586,9 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       sourceCredentialRevocation: composition.tsk.returnCredentialRevocation,
       sourceCredential: composition.tsk.publicCredentialReturn,
       sourceCredentialSecretDigest: composition.verifiedReturnCredential.secretDigest,
+      sourceCredentialProvenance: composition.tsk.publicCredentialTarget,
+      sourceCredentialProvenanceSecretDigest:
+        composition.verifiedTargetCredential.secretDigest,
       targetCredentialAuthority: composition.repeatForwardCredentialAuthority,
       targetCredentialProof: composition.tsk.repeatForwardCredential.proof,
       targetCredential: composition.tsk.repeatForwardCredential.publicCredential,
@@ -612,6 +617,9 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       sourceCredential: composition.tsk.repeatForwardCredential.publicCredential,
       sourceCredentialSecretDigest:
         composition.verifiedRepeatForwardCredential.secretDigest,
+      sourceCredentialProvenance: composition.tsk.publicCredentialReturn,
+      sourceCredentialProvenanceSecretDigest:
+        composition.verifiedReturnCredential.secretDigest,
       targetCredentialAuthority: composition.repeatReturnCredentialAuthority,
       targetCredentialProof: composition.tsk.repeatReturnCredential.proof,
       targetCredential: composition.tsk.repeatReturnCredential.publicCredential,
