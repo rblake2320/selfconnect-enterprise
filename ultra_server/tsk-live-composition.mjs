@@ -9,6 +9,10 @@ import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 import { Redis } from 'ioredis';
 
+import {
+  createCleanupTransfer,
+  runExhaustiveCleanup,
+} from './post-heal-probe-lifecycle.mjs';
 import { promotedTskCredentialLabel } from './promoted-tsk-authority.js';
 import { loadPromotedTskCredentialRuntime } from './promoted-tsk-runtime.js';
 
@@ -508,6 +512,7 @@ export async function runTskLiveComposition(rawOptions) {
   let protectedRuntimeDir;
   const repeatDatabases = [];
   const postHealRestartProbeConfigs = new Map();
+  const postHealCleanup = createCleanupTransfer();
 
   const createRepeatAuthority = async (adminPool, connectionString, databaseName) => {
     if (!/^[a-z][a-z0-9_]{0,62}$/.test(databaseName)) {
@@ -2159,7 +2164,7 @@ export async function runTskLiveComposition(rawOptions) {
         [...expectedCuts].sort());
       const cleanupEntries = repeatDatabases.map(({ adminUrl, databaseName }) =>
         Object.freeze({ adminUrl, databaseName }));
-      POST_HEAL_RESTART_PROBES.set(result, {
+      const lifecycle = {
         async run() {
           const evidence = {};
           for (const cut of expectedCuts) {
@@ -2170,7 +2175,9 @@ export async function runTskLiveComposition(rawOptions) {
           return Object.freeze(evidence);
         },
         async cleanup() {
-          for (const { adminUrl, databaseName } of cleanupEntries.reverse()) {
+          await runExhaustiveCleanup(cleanupEntries.map(({
+            adminUrl, databaseName,
+          }) => async () => {
             const cleanupPool = new pg.Pool({
               connectionString: adminUrl, max: 1, connectionTimeoutMillis: 10_000,
             });
@@ -2180,15 +2187,16 @@ export async function runTskLiveComposition(rawOptions) {
             } finally {
               await cleanupPool.end().catch(() => {});
             }
-          }
+          }), 'failed to clean one or more retained TSK authority databases');
         },
-      });
+      };
+      postHealCleanup.transfer(() => POST_HEAL_RESTART_PROBES.set(result, lifecycle));
     }
     return result;
   } finally {
     for (const entry of repeatDatabases.reverse()) {
       await entry.pool.end().catch(() => {});
-      if (!options.preservePostHealProbes) {
+      if (!postHealCleanup.transferred) {
         await entry.adminPool.query(
           `DROP DATABASE IF EXISTS ${entry.databaseName} WITH (FORCE)`,
         ).catch(() => {});

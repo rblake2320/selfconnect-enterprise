@@ -32,7 +32,7 @@
     "ha:state": "node independent-state-command.mjs",
     "ha:stream": "node ultra-state-stream-command.mjs",
     "test:ha-live": "node ha-live-conformance.mjs",
-    "test": "node --test agent-auth.test.mjs enterprise-fault-evidence.test.mjs final-ha-acceptance.test.mjs ha-controller.test.mjs independent-state-config.test.mjs monitoring-config.test.mjs monitoring-security.test.mjs package-content.test.mjs promoted-tsk-runtime.test.mjs recovery-token.test.mjs runtime-stores.test.mjs security-boundary.test.mjs spark2-host-drill.test.mjs ultra-redis-authority.test.mjs ultra-state-authority-config.test.mjs ultra-state-stream-config.test.mjs",
+    "test": "node --test agent-auth.test.mjs enterprise-fault-evidence.test.mjs final-ha-acceptance.test.mjs ha-controller.test.mjs independent-state-config.test.mjs monitoring-config.test.mjs monitoring-security.test.mjs package-content.test.mjs post-heal-probe-lifecycle.test.mjs promoted-tsk-runtime.test.mjs recovery-token.test.mjs runtime-stores.test.mjs security-boundary.test.mjs spark2-host-drill.test.mjs ultra-redis-authority.test.mjs ultra-state-authority-config.test.mjs ultra-state-stream-config.test.mjs",
     "test:independent-state": "node --test independent-state.test.mjs",
     "test:ultra-outbox": "node --test ultra-state-outbox.test.mjs",
     "test:final-ha-unit": "node --test final-ha-acceptance.test.mjs",

@@ -298,10 +298,16 @@ export async function runLiveProtocolComposition(env = process.env) {
       });
     }
   } catch (error) {
-    await Promise.allSettled([
+    const cleanup = await Promise.allSettled([
       bpc ? discardPostHealBpcRestartProbes(bpc) : Promise.resolve(),
       tsk ? discardPostHealTskRestartProbes(tsk) : Promise.resolve(),
     ]);
+    const cleanupFailures = cleanup.filter((outcome) => outcome.status === 'rejected')
+      .map((outcome) => outcome.reason);
+    if (cleanupFailures.length > 0) {
+      throw new AggregateError([error, ...cleanupFailures],
+        'protocol composition failed and retained-authority cleanup was incomplete');
+    }
     throw error;
   }
 

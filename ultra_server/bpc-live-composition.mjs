@@ -10,6 +10,11 @@ import { pathToFileURL } from 'node:url';
 import Redis from 'ioredis';
 import pg from 'pg';
 
+import {
+  createCleanupTransfer,
+  runExhaustiveCleanup,
+} from './post-heal-probe-lifecycle.mjs';
+
 const { Pool } = pg;
 
 const DEFAULT_STREAM_ID = 'bpc:enterprise:live/v1';
@@ -397,6 +402,7 @@ export async function runBpcLiveComposition(options) {
   const repeatADatabase = `bpc_repeat_a_${randomBytes(8).toString('hex')}`;
   const sealKey = randomBytes(32);
   const mutationSecret = randomBytes(32);
+  const postHealCleanup = createCleanupTransfer();
   const runtimePassword = randomBytes(24).toString('hex');
   const { publicKey: guardPublic, privateKey: guardPrivate } = generateKeyPairSync('ed25519');
   const { publicKey: sourcePublic, privateKey: sourcePrivate } = generateKeyPairSync('ed25519');
@@ -1678,7 +1684,7 @@ export async function runBpcLiveComposition(options) {
       },
     });
     if (options.preservePostHealProbes === true) {
-      POST_HEAL_RESTART_PROBES.set(result, {
+      const lifecycle = {
         async run() {
           const evidence = {};
           for (const [cut, config] of Object.entries(restartProbeConfigs)) {
@@ -1692,20 +1698,23 @@ export async function runBpcLiveComposition(options) {
           const cleanupA = makePool(postgresUrls[0], 1);
           const cleanupB = makePool(postgresUrls[1], 1);
           try {
-            await dropIsolatedDatabase(cleanupA, failbackDatabase);
-            await dropIsolatedDatabase(cleanupB, repeatBDatabase);
-            await dropIsolatedDatabase(cleanupA, repeatADatabase);
+            await runExhaustiveCleanup([
+              () => dropIsolatedDatabase(cleanupA, failbackDatabase),
+              () => dropIsolatedDatabase(cleanupB, repeatBDatabase),
+              () => dropIsolatedDatabase(cleanupA, repeatADatabase),
+            ], 'failed to clean one or more retained BPC authority databases');
           } finally {
             await Promise.allSettled([cleanupA.end(), cleanupB.end()]);
           }
         },
-      });
+      };
+      postHealCleanup.transfer(() => POST_HEAL_RESTART_PROBES.set(result, lifecycle));
     }
     return result;
   } finally {
     await Promise.allSettled(runtimePools.map((pool) => pool.end()));
     await Promise.allSettled(isolatedPools.map((pool) => pool.end()));
-    if (options.preservePostHealProbes !== true) {
+    if (!postHealCleanup.transferred) {
       await Promise.allSettled([
         dropIsolatedDatabase(poolA, failbackDatabase),
         dropIsolatedDatabase(poolB, repeatBDatabase),
