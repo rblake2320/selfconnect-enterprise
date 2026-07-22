@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "reviewed_at": "2026-07-21",
+  "reviewed_at": "2026-07-22",
   "scope": "SelfConnect Enterprise Ultra named controlled-deployment topology",
   "authoritative_open_work": "https://github.com/rblake2320/selfconnect-enterprise/issues/28",
   "standards": [
@@ -61,6 +61,12 @@
       "head_sha": "70430c5b61d36ddc576b9ddf0744bc16339753ba",
       "conclusion": "success",
       "scope": "Post-merge master exact BPC/TSK Enterprise B-to-A failback, stale-B denial, and full six-PostgreSQL plus Redis quorum/Sentinel matrix"
+    },
+    {
+      "run_id": "29889970116",
+      "head_sha": "560ad520e914b424492a9e10934c7064ea093464",
+      "conclusion": "success",
+      "scope": "PR 67 exact-head repeated same-principal recovery, stale-site resynchronization, 15 restarted no-effect probes, and full six-PostgreSQL plus Redis quorum/Sentinel matrix"
     }
   ],
   "levels": [
@@ -200,7 +206,7 @@
       "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29889970116"
     ],
     "limitations": "The hosted six-PostgreSQL plus Redis/Sentinel drill reuses the stale B PostgreSQL authorities, proves stale writes have no committed effect, imports and independently attests BPC/TSK/Enterprise state, and permits only the exact first new-epoch mutations. This is process/container and logical-authority recovery on one CI host, not recovery from destroyed physical storage or a multi-site disaster.",
-    "closure": "Closed by the exact schema-v7/schema-v2 evidence in hosted run 29889970116 and independent review of PR #67 head 560ad520e914b424492a9e10934c7064ea093464."
+    "closure": ""
     },
     {
       "id": "full-recovery-reconstitution",
@@ -245,7 +251,7 @@
       "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29889970116"
     ],
     "limitations": "Two complete A-to-B-to-A cycles plus an exact stale-B rebuild and governed A-to-B recovery pass under pinned BPC and TSK authorities on six distinct PostgreSQL systems plus real Redis. Fifteen distinct restarted child processes cover stale BPC writers, TSK writers, and Enterprise completions at all five cuts; each requires a protocol-specific typed denial and an unchanged before/after digest of the exact authoritative rows, so an error after a committed effect cannot count as a pass. Redis partition/heal remains a separate current-authority fault axis rather than a claimed cross-product with every process probe; that separate gap remains under old-writer-fencing.",
-    "closure": "Closed by the exact schema-v7/schema-v2 evidence in hosted run 29889970116 and independent review of PR #67 head 560ad520e914b424492a9e10934c7064ea093464."
+    "closure": ""
     },
     {
       "id": "monitoring-alerting",
