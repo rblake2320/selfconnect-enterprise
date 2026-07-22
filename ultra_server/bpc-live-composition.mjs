@@ -280,7 +280,7 @@ function makePool(connectionString, max = 5) {
   return pool;
 }
 
-async function awaitDatabaseClockAfter(pool, thresholdMs, timeoutMs = 15_000) {
+async function awaitDatabaseClockAfter(pool, thresholdMs, timeoutMs = 90_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const result = await pool.query(
