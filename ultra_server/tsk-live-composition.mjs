@@ -1425,7 +1425,7 @@ export async function runTskLiveComposition(rawOptions) {
       targetReceiptPrivateKey: material.bReceipt.privateKey,
       targetSigner: bSigner,
       targetLeaseChain: [activationLeaseGrant, bRevokedGrant],
-      handoffCommandId: `${commandId}-cycle-2-forward`,
+      handoffCommandId: `${commandId}-cycle-2-promote`,
       handoffTargetEpoch: returnTargetEpoch + 1,
       mutation: { tumblerId: 'T11', counter: 3 },
     });

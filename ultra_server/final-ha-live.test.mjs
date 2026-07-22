@@ -54,14 +54,14 @@ test('live composition requires exact command binding, independent systems, and 
       record: { mutation: { clientId: 'return-client' } } },
     repeatedCycle: {
       forward: { sourceEpoch: 2, targetEpoch: 3, staleWriterDenied: true,
-        commandId: 'promote-live-1-cycle-2-forward' },
+        commandId: 'promote-live-1-cycle-2-promote' },
       failback: { sourceEpoch: 3, targetEpoch: 4, staleWriterDenied: true,
         commandId: 'promote-live-1-cycle-2-failback',
         activationLease: { leaseEpoch: 4, holderNodeId: 'return-a' } },
     },
     repeatForwardCredential: {
       leaseGrant: { leaseEpoch: 3 },
-      proof: { commandId: 'promote-live-1-cycle-2-forward' },
+      proof: { commandId: 'promote-live-1-cycle-2-promote' },
     },
     repeatReturnCredential: {
       leaseGrant: { leaseEpoch: 4 },
