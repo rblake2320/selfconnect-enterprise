@@ -28,6 +28,7 @@ dev = [
 [project.scripts]
 scent = "enterprise.cli:main"
 scent-provenance-admin = "enterprise.provenance_admin:main"
+scent-acp = "enterprise.acp_entry:main"
 
 [tool.setuptools.packages.find]
 include = ["enterprise*", "experiments*"]

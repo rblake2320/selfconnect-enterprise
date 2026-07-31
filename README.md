@@ -21,6 +21,15 @@ This repository is not an IRS authorization, ATO, IATT, FIPS validation, or lega
 determination. Deployment claims require live conformance evidence and review in the actual
 system boundary.
 
+ACP broadens client interoperability; it does not replace the system's trust or
+actuation architecture. Terminal-as-medium injection remains the user-visible
+delivery path, BPC/TSK remain the core identity/trust protocols, and ACP actions
+must pass through the governed runtime.
+
+Workspace/community UI, channels, canvases, forge and Git hosting, repository
+workflows, and collaboration-suite features are deliberately out of scope—not
+unfinished SelfConnect modules. See [Product Scope Boundary](docs/PRODUCT_SCOPE_BOUNDARY.md).
+
 ---
 
 ## Module Surface
@@ -39,6 +48,11 @@ system boundary.
 | `enterprise/operator.py` | One-time context-bound approvals; SQLite WAL queue with non-authorizing audit-pending transitions for governed runtime |
 | `enterprise/approval_audit.py` | Idempotent signed-ledger transition lineage and bounded decision-proof/context digests |
 | `enterprise/control.py` | ControlPlane — pause / quarantine / revoke / kill_all state machine |
+| [`enterprise/delegation.py`](docs/DELEGATION_PROOFS.md) | Portable authority-signed delegation grants plus agent-signed action proofs; runtime enforcement and durable replay/revocation integration remain separate |
+| [`enterprise/acp_shim.py`](docs/ACP_SHIM.md) | ACP v1 governed-action shim with stdio JSON-RPC, exact signed-call binding, live revocation input, durable replay consumption, and a `GovernedRuntime`-only production backend |
+| [`enterprise/acp_auth.py`](docs/acp/REGISTRY_READINESS.md) | Possession-proof ACP terminal enrollment with public-only durable trust roots; registry publication remains on hold |
+| [`enterprise/nostr_export.py`](docs/NOSTR_EVIDENCE_EXPORT.md) | One-way NIP-01 signed-event export for verified evidence; never an authority or core transport |
+| [`enterprise/revocation.py`](docs/REVOCATION_LIFECYCLE.md) | Durable monotonic agent/grant revocation; agent replacement does not rotate the human owner trust root |
 | `enterprise/governed_runtime.py` | Mandatory enterprise composition for policy, approval, target binding, identity, and signed audit |
 | `enterprise/irs_evidence.py` | Structured IRS integration evidence records; not an IRS system-of-record submission |
 | `enterprise/uia_output.py` | Fail-closed UIA TextPattern output adapter used by governed MCP readback |

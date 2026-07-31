@@ -16,6 +16,15 @@ from types import SimpleNamespace
 import pytest
 
 from enterprise.approval_audit import DecisionProofVerification
+from enterprise.acp_shim import (
+    ACP_ACTION_SCHEMA,
+    ACPShim,
+    GovernedRuntimeBackend,
+    RevocationSnapshot,
+    SQLiteActionReplayStore,
+    acp_action_payload,
+)
+from enterprise.delegation import issue_delegation_grant, sign_delegated_action
 from enterprise.governed_runtime import GovernedRuntime, RuntimeConfigurationError
 from enterprise.identity import AgentIdentity
 from enterprise.policy import make_bundle
@@ -478,3 +487,262 @@ def test_government_profile_cannot_silently_use_dpapi_factory(tmp_path):
             identity_data_dir=identity_dir,
             profile="government",
         )
+
+
+def test_acp_cannot_bypass_governed_operator_approval(tmp_path):
+    identity_dir, policy_path, trust_root, actor_id = _signed_policy(tmp_path, require_approval=True)
+    router = _DeterministicRouter()
+    runtime = GovernedRuntime.from_signed_policy(
+        policy_path=policy_path,
+        trust_root_pub=trust_root,
+        agent_name="runtime-actor",
+        identity_data_dir=identity_dir,
+        ledger_path=tmp_path / "acp-runtime-ledger.jsonl",
+        approval_db_path=tmp_path / "acp-runtime-approvals.sqlite3",
+        router=router,
+        target_verifier=_target,
+        output_reader=lambda _hwnd: router.rendered,
+        decision_writer_verifier=_test_decision_verifier,
+    )
+    replay = SQLiteActionReplayStore(tmp_path / "acp-runtime-replay.sqlite3")
+    try:
+        lease = runtime.dispatcher.call_tool(
+            "sc_request_lease",
+            {"hwnd": 1234, "role": "sender", "agent_id": actor_id, "ttl_seconds": 300},
+        )
+        arguments = {
+            "lease_id": lease["result"]["lease_id"],
+            "hwnd": 1234,
+            "text": "must not bypass approval",
+            "classification": "CUI",
+        }
+        owner = AgentIdentity.init("acp-runtime-owner", data_dir=identity_dir)
+        author = AgentIdentity.init("acp-runtime-author", data_dir=identity_dir)
+        grant = issue_delegation_grant(
+            signer=owner,
+            issuer_principal="OWNER:RON",
+            subject_public_key=author.public_key_bytes,
+            allowed_actions=("sc_inject_text",),
+            target_constraints={},
+            governance_mode="enterprise",
+            classification_ceiling="CUI",
+            issued_at=1_000.0,
+            not_before=1_000.0,
+            expires_at=2_000.0,
+            revocation_epoch=0,
+            nonce="acp-runtime-approval",
+        )
+        shim = ACPShim(
+            backend=GovernedRuntimeBackend(runtime),
+            replay_store=replay,
+            issuer_resolver=lambda fingerprint: (
+                owner.public_key_bytes if fingerprint == grant.issuer_key_fingerprint else None
+            ),
+            revocation_provider=lambda: RevocationSnapshot(epoch=0),
+            clock=lambda: 1_500.0,
+        )
+        shim.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": 1, "clientCapabilities": {}},
+            }
+        )
+        session_id = shim.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/new",
+                "params": {"cwd": str(tmp_path.resolve()), "mcpServers": []},
+            }
+        )[0]["result"]["sessionId"]
+        payload = acp_action_payload(
+            session_id=session_id,
+            cwd=str(tmp_path.resolve()),
+            tool="sc_inject_text",
+            arguments=arguments,
+        )
+        proof = sign_delegated_action(
+            grant=grant,
+            agent_identity=author,
+            action_id="acp-runtime-action",
+            action="sc_inject_text",
+            target={},
+            payload=payload,
+            governance_mode="enterprise",
+            classification="CUI",
+            occurred_at=1_500.0,
+        )
+        response = shim.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {
+                                    "schema": ACP_ACTION_SCHEMA,
+                                    "tool": "sc_inject_text",
+                                    "arguments": arguments,
+                                    "delegationGrant": grant.to_dict(),
+                                    "actionProof": proof.to_dict(),
+                                }
+                            ),
+                        }
+                    ],
+                },
+            }
+        )[0]
+        assert response["error"] == {"code": -32011, "message": "governed backend rejected the action"}
+        assert router.rendered == "runtime prompt> "
+        assert replay.contains("acp-runtime-action")
+
+        approved_text = "exactly approved ACP payload"
+        approval_arguments = {
+            "lease_id": lease["result"]["lease_id"],
+            "hwnd": 1234,
+            "text": approved_text,
+            "classification": "CUI",
+        }
+        approval_context = runtime.dispatcher.approval_context_for(
+            lease["result"]["lease_id"],
+            approval_arguments,
+            action="sc_inject_text",
+        )
+        approval_id = runtime.operator_queue.submit(actor_id, "sc_inject_text", approval_context)
+        assert runtime.operator_queue.approve(
+            approval_id,
+            "operator-1",
+            operator_proof="test-proof",
+        )
+        approved_arguments = {**approval_arguments, "approval_id": approval_id}
+        approved_payload = acp_action_payload(
+            session_id=session_id,
+            cwd=str(tmp_path.resolve()),
+            tool="sc_inject_text",
+            arguments=approved_arguments,
+        )
+        approved_proof = sign_delegated_action(
+            grant=grant,
+            agent_identity=author,
+            action_id="acp-runtime-approved-action",
+            action="sc_inject_text",
+            target={},
+            payload=approved_payload,
+            governance_mode="enterprise",
+            classification="CUI",
+            occurred_at=1_500.0,
+        )
+        approved_messages = shim.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {
+                                    "schema": ACP_ACTION_SCHEMA,
+                                    "tool": "sc_inject_text",
+                                    "arguments": approved_arguments,
+                                    "delegationGrant": grant.to_dict(),
+                                    "actionProof": approved_proof.to_dict(),
+                                }
+                            ),
+                        }
+                    ],
+                },
+            }
+        )
+        assert approved_messages[-1]["result"] == {"stopReason": "end_turn"}
+        result = json.loads(approved_messages[0]["params"]["update"]["content"]["text"])
+        assert result["ok"] is True
+        assert result["result"]["governance"]["approval_mode"] == "human_approved"
+        assert router.rendered.endswith(approved_text)
+        assert replay.contains("acp-runtime-approved-action")
+
+        before_mismatch = router.rendered
+        approved_context_arguments = {
+            "lease_id": lease["result"]["lease_id"],
+            "hwnd": 1234,
+            "text": "operator approved this text",
+            "classification": "CUI",
+        }
+        mismatch_context = runtime.dispatcher.approval_context_for(
+            lease["result"]["lease_id"],
+            approved_context_arguments,
+            action="sc_inject_text",
+        )
+        mismatch_approval_id = runtime.operator_queue.submit(
+            actor_id,
+            "sc_inject_text",
+            mismatch_context,
+        )
+        assert runtime.operator_queue.approve(
+            mismatch_approval_id,
+            "operator-1",
+            operator_proof="test-proof",
+        )
+        substituted_arguments = {
+            **approved_context_arguments,
+            "text": "agent substituted different text",
+            "approval_id": mismatch_approval_id,
+        }
+        substituted_payload = acp_action_payload(
+            session_id=session_id,
+            cwd=str(tmp_path.resolve()),
+            tool="sc_inject_text",
+            arguments=substituted_arguments,
+        )
+        substituted_proof = sign_delegated_action(
+            grant=grant,
+            agent_identity=author,
+            action_id="acp-runtime-substituted-action",
+            action="sc_inject_text",
+            target={},
+            payload=substituted_payload,
+            governance_mode="enterprise",
+            classification="CUI",
+            occurred_at=1_500.0,
+        )
+        substituted_response = shim.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {
+                                    "schema": ACP_ACTION_SCHEMA,
+                                    "tool": "sc_inject_text",
+                                    "arguments": substituted_arguments,
+                                    "delegationGrant": grant.to_dict(),
+                                    "actionProof": substituted_proof.to_dict(),
+                                }
+                            ),
+                        }
+                    ],
+                },
+            }
+        )[0]
+        assert substituted_response["error"] == {
+            "code": -32011,
+            "message": "governed backend rejected the action",
+        }
+        assert router.rendered == before_mismatch
+        assert replay.contains("acp-runtime-substituted-action")
+    finally:
+        replay.close()
+        runtime.close()

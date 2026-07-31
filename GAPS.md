@@ -1,6 +1,6 @@
 # SelfConnect Enterprise — Complete Gap & Limitation Registry
 
-Last updated: 2026-07-15
+Last updated: 2026-07-31
 Scope: all known limitations across the full stack, regardless of severity or prior tracking status.  
 Rule: if a limitation is known, it is in this file the first time it is asked about, not when it becomes relevant to something else.
 
@@ -53,6 +53,39 @@ Rule: if a limitation is known, it is in this file the first time it is asked ab
 
 ---
 
+## Delegation Proofs
+
+| # | Gap | Impact | Effort | Status |
+|---|-----|--------|--------|--------|
+| DG-1 | Authorization and authorship existed as separate signed artifacts without one portable delegation chain | `enterprise/delegation.py` now provides an authority-signed exact-scope grant, an agent-signed action proof, and offline verification that binds the full keys, grant, action, target, payload digest, mode, classification, time, revocation checkpoint, and caller-supplied replay/revocation state. | Implemented + 22 real-signature adversarial tests | **CORE CONTRACT CLOSED IN CODE 2026-07-31** |
+| DG-2 | The portable delegation proof is not yet mandatory in `GovernedRuntime` or MCP/ACP adapters | Direct use of the new module proves a supplied grant/action pair but does not intercept execution. A later composition must verify before actuation, atomically consume the action ID, persist the proof/receipt, and fail closed on unavailable revocation state. | Runtime integration + durable state + composition tests | Open; do not claim runtime-wide delegation enforcement |
+| DG-3 | Classification authorization is exact-match in delegation v1 | The v1 verifier intentionally rejects a classification different from the grant ceiling rather than importing a mutable hierarchy into the portable proof contract. A hierarchy/compartment design requires canonical label semantics and downgrade tests. | Design decision | Open |
+| DG-4 | Portable revocation inputs lacked a durable lifecycle authority | `RevocationRegistry` now stores terminal agent/grant revocations with a monotonic epoch and supplies exact ACP snapshots. Agent revocation terminates its ACP session on the next presented action; a host-triggered refresh or bounded shared-SQLite watcher removes already-bound sessions while preserving the human owner trust root. | Implemented + 10 lifecycle/watcher and 2 ACP refresh cases | **LOCAL CORE CLOSED IN CODE 2026-07-31; HA/REMOTE PUSH OPEN** |
+
+---
+
+## Agent Client Protocol Shim
+
+| # | Gap | Impact | Effort | Status |
+|---|-----|--------|--------|--------|
+| ACP-1 | SelfConnect had no ACP boundary | `enterprise/acp_shim.py` now implements ACP v1 core initialization/session/prompt/cancel handling, stdio JSON-RPC, exact signed-call binding, live revocation input, durable replay consumption, agent/session revocation refresh, and a `GovernedRuntime`-only production backend. An end-to-end signed-policy test proves ACP cannot bypass required operator approval or route terminal text when approval is absent. | Implemented + 23 core/composition/refresh tests | **BOUNDED CORE CLOSED IN CODE 2026-07-31** |
+| ACP-2 | The shim is not a general coding-agent proxy or complete ACP implementation | It accepts strict governed-action envelopes rather than natural-language coding turns. MCP forwarding, session recovery/lifecycle extensions, filesystem/terminal callbacks, elicitation, media, modes, and configuration are unsupported. | Product/protocol expansion | Open; do not claim complete ACP conformance or registry eligibility |
+| ACP-3 | ACP authentication ceremony lacked a possession proof, executable setup path, and active-session revocation behavior | A capable client now receives the Preview terminal-auth method, `scent-acp --setup` requires typed confirmation and fresh-challenge key-possession proof, only the public trust root is stored, and serving fails closed without an active root. Deactivation denies and deletes existing sessions before prompt dispatch; re-enrollment cannot revive them. Local schema validation passed; real-client setup/reconnect acceptance is still absent. | Implemented + 14 auth/entry tests; client acceptance remains | **CORE CLOSED IN CODE 2026-07-31; INTEROP OPEN** |
+| ACP-4 | Synchronous stdio cannot interrupt an in-flight backend call | `session/cancel` marks the next turn cancelled. A call already executing cannot be interrupted until dispatch gains an async cancellation contract with safe effect semantics. | Async runtime + cancellation design | Open |
+| ACP-5 | No truthful registry distribution artifact exists | The registry requires a published `binary`, `npx`, or `uvx` distribution plus final metadata/icon. The local console entry point is not represented as a published package. A fail-closed preflight exists, but publication remains blocked on release artifacts and registry CI. | Packaging + external acceptance | **HOLD; DO NOT CLAIM REGISTRY ELIGIBILITY** |
+| ACP-6 | Ecosystem reach could be misread as authority to replace core protocols | ACP is only the client/session interoperability layer. It must continue to terminate in `GovernedRuntime`; terminal-as-medium injection remains the actuation path and BPC/TSK remain the identity/trust core. Any direct ACP-to-SDK/Win32 backend would violate the architecture. | Permanent architecture invariant | **GUARDRAIL — DO NOT REPLACE OR BYPASS** |
+
+---
+
+## Nostr Evidence Export
+
+| # | Gap | Impact | Effort | Status |
+|---|-----|--------|--------|--------|
+| NE-1 | Signed event interoperability existed only in external systems | `enterprise/nostr_export.py` now renders already-verified evidence into the exact NIP-01 event shape and ID serialization using a deployment-injected Schnorr signer. Its production path requires the canonical verifier-bound `LedgerObserver`, rejects unsafe mode, source tampering, and wrong-ledger verifiers before signing. It has no relay or import path and grants no authority. | Implemented + 13 structural/adversarial tests | **EXPORT CORE CLOSED IN CODE 2026-07-31** |
+| NE-2 | No production Nostr signer, kind allocation, or live relay acceptance exists | The repository verifies signer key/signature sizes and exact hashing but does not provide or validate secp256k1 custody, publish events, allocate a collision-safe application kind, or prove external relay acceptance/retention. | Deployment + interoperability test | Open; do not claim live Nostr integration |
+
+---
+
 ## SelfConnect Win32 SDK
 
 | # | Gap | Impact | Effort | Status |
@@ -77,6 +110,17 @@ Rule: if a limitation is known, it is in this file the first time it is asked ab
 | # | Gap | Impact | Effort | Status |
 |---|-----|--------|--------|--------|
 | DL-1 | Empty `distillation/` placeholder implied a capability that did not exist | The zero-byte top-level package was removed and parked. No model-extraction or distillation control is claimed. Add a new component only when a scoped requirement, enforcement point, threat model, and executable assertion exist. | False surface removed; capability not implemented | **PLACEHOLDER REMOVED 2026-07-15** |
+
+---
+
+## Deliberate Product Exclusions
+
+| # | Surface | Rationale | Status |
+|---|---------|-----------|--------|
+| PX-1 | Workspace/community UI, channels, DMs, reactions, presence, canvases, media rooms, and huddles | Collaboration presentation is not the governed-execution thesis and can remain in ACP clients or external systems. | **PERMANENTLY OUT OF SCOPE unless required by a named enforcement boundary** |
+| PX-2 | Forge, Git/repository hosting, patch review, merge workflows, issue tracking, CI orchestration, and release management | Mature external systems own these functions; duplicating them would expand scope without strengthening terminal actuation governance. | **PERMANENTLY OUT OF SCOPE unless required by a named enforcement boundary** |
+
+These are not implementation gaps. See [`docs/PRODUCT_SCOPE_BOUNDARY.md`](docs/PRODUCT_SCOPE_BOUNDARY.md).
 
 ---
 
