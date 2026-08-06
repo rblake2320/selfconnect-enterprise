@@ -25,6 +25,7 @@ from enterprise.operator import DurableOperatorQueue, _bind_system_denier
 from enterprise.policy import PolicyBundle, PolicyEnforcer
 from enterprise.runtime_ownership import RuntimeOwnershipLock
 from enterprise.runtime_lifetime import RuntimeLifetime
+from enterprise.agt_adapter import AGTCedarAdapter
 
 
 class RuntimeConfigurationError(RuntimeError):
@@ -67,6 +68,7 @@ class GovernedRuntime:
         profile: str = "enterprise",
         ledger_max_entries_per_segment: int = 100_000,
         ledger_max_bytes_per_segment: int = 128 * 1024 * 1024,
+        agt_manifest_path: Path | None = None,
     ) -> "GovernedRuntime":
         """Build a fail-closed runtime from an externally pinned policy root.
 
@@ -160,6 +162,11 @@ class GovernedRuntime:
                 output_reader=output_reader,
                 identity_type="dpapi",
                 runtime_lifetime=runtime_lifetime,
+                agt_policy_adapter=(
+                    AGTCedarAdapter.from_manifest(agt_manifest_path)
+                    if agt_manifest_path is not None
+                    else None
+                ),
             )
             return cls(
                 identity=identity,

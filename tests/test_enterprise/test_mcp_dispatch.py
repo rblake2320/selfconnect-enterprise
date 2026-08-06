@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from enterprise.cli import main
+from enterprise.agt_adapter import AGTCedarAdapter
 from enterprise.mcp_dispatch import MCPDispatcher, SchemaValidator
 from enterprise.mcp_tools import get_tool_registry
 from enterprise.operator import OperatorQueue
@@ -118,7 +119,12 @@ def verified_target(hwnd: int, **kwargs) -> dict:
             target["reasons"].append(f"{target_key} changed")
     return target
 
-def make_dispatcher(now_value: float = 1000.0, *, profile: str = "normal") -> MCPDispatcher:
+def make_dispatcher(
+    now_value: float = 1000.0,
+    *,
+    profile: str = "normal",
+    agt_policy_adapter=None,
+) -> MCPDispatcher:
     router = FakeRouter()
     return MCPDispatcher(
         profile=profile,
@@ -130,6 +136,7 @@ def make_dispatcher(now_value: float = 1000.0, *, profile: str = "normal") -> MC
         output_reader=lambda _hwnd: router.rendered,
         identity_type="dpapi",
         now=lambda: now_value,
+        agt_policy_adapter=agt_policy_adapter,
     )
 
 
@@ -155,6 +162,42 @@ def authority_records(dispatcher: MCPDispatcher) -> dict:
 
 
 class TestDispatcherCoverage:
+    def test_agt_transform_is_executed_and_effective_arguments_are_audited(self):
+        class TransformControl:
+            async def run_tool(self, _name, _args, execute, **_kwargs):
+                return SimpleNamespace(
+                    value=execute({"raw_text": "public", "injected_text": "public"})
+                )
+
+        dispatcher = make_dispatcher(agt_policy_adapter=AGTCedarAdapter(TransformControl()))
+        result = dispatcher.call_tool(
+            "sc_echo_filter", {"raw_text": "secret", "injected_text": "x"}
+        )
+
+        assert result["ok"] is True
+        assert result["result"]["classification"] == "echo_only"
+        expected = hashlib.sha256(
+            json.dumps(
+                {"raw_text": "public", "injected_text": "public"},
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        assert dispatcher.audit_events()[-1].details["argument_hash"] == expected
+
+    def test_agt_denial_prevents_handler_and_is_audited(self):
+        class DenyControl:
+            async def run_tool(self, _name, _args, _execute, **_kwargs):
+                raise RuntimeError("cedar denied pre_tool_call")
+
+        dispatcher = make_dispatcher(agt_policy_adapter=AGTCedarAdapter(DenyControl()))
+        result = dispatcher.call_tool(
+            "sc_echo_filter", {"raw_text": "secret", "injected_text": "x"}
+        )
+
+        assert result["ok"] is False
+        assert "cedar denied" in result["error"]
+        assert dispatcher.audit_events()[-1].ok is False
+
     def test_default_profile_is_enterprise_and_rejects_legacy_queue(self):
         with pytest.raises(ValueError, match="exact durable operator queue"):
             MCPDispatcher(operator_queue=OperatorQueue())

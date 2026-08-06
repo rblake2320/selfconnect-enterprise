@@ -52,6 +52,7 @@ from enterprise.acp_shim import (  # noqa: F401
     serve_stdio,
 )
 from enterprise.acp_auth import ACPTrustStore  # noqa: F401
+from enterprise.agt_adapter import AGTCedarAdapter, AGTConfigurationError  # noqa: F401
 from enterprise.egress_guard import EgressGuard  # noqa: F401
 from enterprise.export_guard import ExportGuard  # noqa: F401
 from enterprise.labels import (
@@ -124,6 +125,7 @@ from enterprise.identity_gate import (  # noqa: F401
     MODE_ENFORCE,
 )
 from enterprise.mcp_dispatch import MCPDispatcher, dispatch_tool, get_default_dispatcher  # noqa: F401
+from enterprise.mcp_governor import MCPGovernor  # noqa: F401
 from enterprise.irs_evidence import (  # noqa: F401
     HighImpactDetermination,
     IRSActionRecordKind,

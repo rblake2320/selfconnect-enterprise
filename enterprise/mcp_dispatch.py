@@ -372,6 +372,7 @@ class MCPDispatcher:
         now: Callable[[], float] = _now,
         runtime_lifetime: RuntimeLifetime | None = None,
         logical_target_resolver: LogicalTargetResolver | None = None,
+        agt_policy_adapter: Any | None = None,
     ) -> None:
         if profile not in _VALID_PROFILES:
             raise ValueError(f"profile must be one of {sorted(_VALID_PROFILES)}, got {profile!r}")
@@ -393,6 +394,11 @@ class MCPDispatcher:
         self._validator = SchemaValidator()
         self._target_verifier = target_verifier or self._load_target_verifier()
         self._logical_target_resolver = logical_target_resolver
+        if agt_policy_adapter is not None and not callable(
+            getattr(agt_policy_adapter, "run_tool_sync", None)
+        ):
+            raise ValueError("agt_policy_adapter must provide run_tool_sync()")
+        self._agt_policy_adapter = agt_policy_adapter
         self._router = router if router is not None else (
             ChannelRouter(target_verifier=self._target_verifier) if ChannelRouter else None
         )
@@ -457,7 +463,17 @@ class MCPDispatcher:
             if name not in self._handlers:
                 get_tool(name)  # raises useful KeyError text if not registered
             validated = self._validator.validate(name, args)
-            result = self._handlers[name](validated)
+            if self._agt_policy_adapter is None:
+                result = self._handlers[name](validated)
+            else:
+                agt_outcome = self._agt_policy_adapter.run_tool_sync(
+                    name,
+                    validated,
+                    self._handlers[name],
+                    snapshot={"selfconnect": {"profile": self.profile}},
+                )
+                result = agt_outcome.value
+                validated = agt_outcome.effective_arguments
             result.setdefault("profile", self.profile)
             self._record_audit(name, True, validated, result)
             return {"ok": True, "tool": name, "result": result}

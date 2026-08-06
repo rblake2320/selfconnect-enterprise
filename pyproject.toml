@@ -14,6 +14,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+agt = [
+    "agent-control-specification @ git+https://github.com/microsoft/agent-governance-toolkit.git@f4518335907fb244887053683a3d3db83613cc31#subdirectory=policy-engine/sdk/python ; python_version >= '3.11'",
+]
 dev = [
     "build>=1.2",
     "comtypes>=1.4; sys_platform == 'win32'",
@@ -29,6 +32,7 @@ dev = [
 scent = "enterprise.cli:main"
 scent-provenance-admin = "enterprise.provenance_admin:main"
 scent-acp = "enterprise.acp_entry:main"
+selfconnect-mcp-governor = "enterprise.mcp_governor_entry:main"
 
 [tool.setuptools.packages.find]
 include = ["enterprise*", "experiments*"]
