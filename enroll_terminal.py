@@ -49,9 +49,18 @@ def enroll(agent_name: str = AGENT_NAME, rotate: bool = False) -> dict:
     """Create or load the terminal identity and return the birth cert dict."""
     data_dir = _default_data_dir()
     agent_dir = data_dir / agent_name
+    identity_exists = (agent_dir / "identity.dpapi").exists()
+    certificate_exists = CERT_PATH.exists()
 
     prev_cert_hash = _load_prev_cert_hash()
-    reason = "rotation after accidental deletion" if rotate or CERT_PATH.exists() else "new enrollment"
+    if rotate:
+        reason = "explicit key rotation"
+    elif identity_exists and certificate_exists:
+        reason = "certificate refresh for existing identity"
+    elif identity_exists:
+        reason = "certificate recovery for existing identity"
+    else:
+        reason = "new enrollment"
 
     if rotate and agent_dir.exists():
         identity = AgentIdentity.init(agent_name, overwrite=True)
@@ -66,7 +75,8 @@ def enroll(agent_name: str = AGENT_NAME, rotate: bool = False) -> dict:
 
     ts = time.time()
     cert = {
-        "terminal_id":          socket.gethostname().lower() + "-" + str(os.getpid()),
+        "terminal_id":          identity.canonical_id,
+        "process_instance_id":  socket.gethostname().lower() + "-" + str(os.getpid()),
         "agent_id":             identity.agent_id,
         "parent_id":            "cc-windows-orchestrator",
         "bpc_public_key_fp":    fingerprint,
