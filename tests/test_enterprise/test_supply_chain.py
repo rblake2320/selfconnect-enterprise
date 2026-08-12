@@ -256,9 +256,10 @@ class TestDependencyAudit:
     """Run a bounded audit of this project's direct runtime dependencies.
 
     Two tiers:
-    - HARD GATE (test_direct_deps_no_known_cves): direct dependencies of
-      selfconnect-enterprise (cryptography, selfconnect) must have zero CVEs.
-      Fails the test run if any are found — blocks deployment.
+    - HARD GATE: the public, auditable direct dependency ``cryptography`` must
+      have zero CVEs. The VCS-only ``selfconnect`` dependency is expected to be
+      unavailable to PyPI/OSV package lookup; its immutable source integrity is
+      enforced by the separate SDK coherence gate, not misreported as a CVE scan.
     - INFORMATIONAL: prints the direct-dependency inventory for operator review.
 
     Why both: the custom named-version tests catch *known* bad actors instantly;
@@ -268,6 +269,8 @@ class TestDependencyAudit:
 
     # Direct dependencies declared in pyproject.toml
     DIRECT_DEPS = {"cryptography", "selfconnect"}
+    AUDITABLE_DIRECT_DEPS = {"cryptography"}
+    VCS_INTEGRITY_DEPS = {"selfconnect"}
     PIP_AUDIT_TIMEOUT_SECONDS = 30
     _pip_audit_cache: tuple[int, list] | None = None
 
@@ -341,9 +344,23 @@ class TestDependencyAudit:
                 f"timeout={self.PIP_AUDIT_TIMEOUT_SECONDS}s)"
             )
 
+        by_name = {dep.get("name", "").lower(): dep for dep in deps}
+        missing_auditable = self.AUDITABLE_DIRECT_DEPS - by_name.keys()
+        assert not missing_auditable, f"auditor omitted direct dependencies: {missing_auditable}"
+        skipped_auditable = {
+            name: by_name[name].get("skip_reason")
+            for name in self.AUDITABLE_DIRECT_DEPS
+            if by_name[name].get("skip_reason")
+        }
+        assert not skipped_auditable, f"auditable dependencies were skipped: {skipped_auditable}"
+        missing_integrity_only = self.VCS_INTEGRITY_DEPS - by_name.keys()
+        assert not missing_integrity_only, (
+            f"auditor omitted VCS integrity dependencies: {missing_integrity_only}"
+        )
+
         findings = [
             dep for dep in deps
-            if dep.get("name", "").lower() in self.DIRECT_DEPS and dep.get("vulns")
+            if dep.get("name", "").lower() in self.AUDITABLE_DIRECT_DEPS and dep.get("vulns")
         ]
 
         if findings:
