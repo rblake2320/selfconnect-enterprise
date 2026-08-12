@@ -22,7 +22,6 @@ from enterprise.acp_shim import (
     ACPShim,
     GovernedRuntimeBackend,
     RevocationSnapshot,
-    SQLiteActionReplayStore,
     acp_action_payload,
 )
 from enterprise.delegation import (
