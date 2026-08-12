@@ -526,9 +526,10 @@ class MCPDispatcher:
                     result = self.__handlers[name](validated)
             else:
                 if name in PROTECTED_DELEGATED_TOOLS:
-                    handler = lambda effective: self.__handlers[name](
-                        effective, authorization=authorization
-                    )
+                    def handler(effective):
+                        return self.__handlers[name](
+                            effective, authorization=authorization
+                        )
                 else:
                     handler = self.__handlers[name]
                 agt_outcome = self._agt_policy_adapter.run_tool_sync(
