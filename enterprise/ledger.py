@@ -50,12 +50,12 @@ New action strings (Tier 1+):
     "handshake_initiated"           — challenge-response started (Tier 2)
     "handshake_succeeded"           — challenge-response completed successfully (Tier 2)
     "handshake_rejected:{reason}"   — challenge-response failed (Tier 2)
-    "v1_peer_accepted_during_grace" — unsigned peer accepted while sunset not yet reached (Tier 2)
+    "v1_peer_accepted_during_grace" — historical only; current verifier rejects unsigned peers
     "v1_peer_rejected_at_sunset"    — unsigned peer rejected after sunset date (Tier 2)
     "key_rotation"                  — TPM key rotation transaction (Tier 2 + Tier 3)
     "mitigation_policy_applied"     — process hardening flags enabled (Tier 2)
     "birth_time_mismatch"           — per-message birth time validation failed (Tier 2)
-    "emergency_override_activated"  — a rollback override flag was set (any tier)
+    "emergency_override_activated"  — historical only; signature bypass is retired
 
 New action strings (Tier 3 — BPC+TSK ultra-gate):
     "ultra_gate_pass"               — injection authorized (full 7-layer or degraded level N)
