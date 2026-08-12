@@ -854,7 +854,9 @@ class TestKeyRecovery:
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {admin_token}",
-                **lifecycle_auth_headers(identity, payload),
+                **lifecycle_auth_headers(
+                    identity, payload, method="POST", path="/confirm-recovery"
+                ),
             },
             method="POST",
         )

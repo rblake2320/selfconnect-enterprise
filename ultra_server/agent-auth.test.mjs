@@ -10,19 +10,32 @@ import {
   signedAgentMaterial,
 } from './agent-auth.js';
 
-function signedRequest(body = { action: 'register' }, overrides = {}) {
+function signedRequest(
+  body = { action: 'register' },
+  overrides = {},
+  method = 'POST',
+  path = '/register-pair',
+) {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   const rawBody = Buffer.from(JSON.stringify(body));
   const publicDer = publicKey.export({ format: 'der', type: 'spki' });
   const publicRaw = publicDer.subarray(-32);
   const timestamp = String(Date.now() / 1000);
   const nonce = crypto.randomUUID();
-  const signature = sign(null, signedAgentMaterial(rawBody, timestamp, nonce), privateKey);
+  const aud = 'selfconnect-ultra-lifecycle-v1';
+  const signature = sign(
+    null,
+    signedAgentMaterial(rawBody, timestamp, nonce, method, path, aud),
+    privateKey,
+  );
   const auth = {
     agent_id: agentIdFromPublicKey(publicRaw),
     pubkey_hex: publicRaw.toString('hex'),
     ts: timestamp,
     nonce,
+    method,
+    path,
+    aud,
     sig: signature.toString('base64'),
     ...overrides,
   };
@@ -38,9 +51,11 @@ function responseCapture() {
   };
 }
 
-function requestCapture(rawBody, auth, authorization = '') {
+function requestCapture(rawBody, auth, authorization = '', method = 'POST', path = '/register-pair') {
   return {
     rawBody,
+    method,
+    path,
     get(name) {
       if (name.toLowerCase() === 'x-sc-agent-auth') return JSON.stringify(auth);
       if (name.toLowerCase() === 'authorization') return authorization;
@@ -117,6 +132,33 @@ test('agent id derivation matches the documented SHA-256 fingerprint', () => {
   const raw = Buffer.alloc(32, 0xab);
   const expected = `SC-${createHash('sha256').update(raw).digest('hex').slice(0, 8).toUpperCase()}`;
   assert.equal(agentIdFromPublicKey(raw), expected);
+});
+
+test('agent auth proof is domain and endpoint bound', async () => {
+  const signed = signedRequest({ action: 'register' });
+  for (const [method, path] of [
+    ['POST', '/provision-tsk'],
+    ['GET', '/register-pair'],
+  ]) {
+    const res = responseCapture();
+    await createAgentAuthMiddleware({ nonceStore: nonceStore() })(
+      requestCapture(signed.rawBody, signed.auth, '', method, path),
+      res,
+      () => assert.fail('redirected lifecycle proof accepted'),
+    );
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.payload.error, 'AGENT_AUTH_MALFORMED');
+  }
+
+  const altered = { ...signed.auth, aud: 'another-protocol' };
+  const res = responseCapture();
+  await createAgentAuthMiddleware({ nonceStore: nonceStore() })(
+    requestCapture(signed.rawBody, altered),
+    res,
+    () => assert.fail('cross-protocol proof accepted'),
+  );
+  assert.equal(res.statusCode, 401);
+  assert.equal(res.payload.error, 'AGENT_AUTH_MALFORMED');
 });
 
 test('colliding display ids retain distinct canonical authorization principals', () => {

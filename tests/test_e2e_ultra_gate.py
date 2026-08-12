@@ -500,7 +500,9 @@ class TestSignedLifecycleAuth:
         ).encode()
         headers = {
             "X-Idempotency-Key": idempotency_key,
-            **lifecycle_auth_headers(agent_identity, payload),
+            **lifecycle_auth_headers(
+                agent_identity, payload, method="POST", path="/provision-tsk"
+            ),
         }
         first_status, _ = self._request("/provision-tsk", payload, headers)
         assert first_status == 200
@@ -529,7 +531,9 @@ class TestSignedLifecycleAuth:
             payload,
             {
                 "X-Idempotency-Key": idempotency_key,
-                **lifecycle_auth_headers(agent_identity, payload),
+                **lifecycle_auth_headers(
+                    agent_identity, payload, method="POST", path="/provision-tsk"
+                ),
             },
         )
         assert status == 403
@@ -548,7 +552,11 @@ class TestSignedLifecycleAuth:
             separators=(",", ":"),
         ).encode()
         status, body = self._request(
-            "/confirm-recovery", payload, lifecycle_auth_headers(agent_identity, payload)
+            "/confirm-recovery",
+            payload,
+            lifecycle_auth_headers(
+                agent_identity, payload, method="POST", path="/confirm-recovery"
+            ),
         )
         assert status in (401, 503)
         assert body["error"] in ("ADMIN_AUTH_REQUIRED", "ADMIN_AUTH_UNCONFIGURED")

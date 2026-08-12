@@ -185,7 +185,7 @@ class UltraGate:
 
     # ── Lifecycle API auth (US-3 fix) ─────────────────────────────────────────
 
-    def _lifecycle_auth_headers(self, payload_bytes: bytes) -> dict[str, str]:
+    def _lifecycle_auth_headers(self, payload_bytes: bytes, path: str) -> dict[str, str]:
         """
         Build the ``X-SC-Agent-Auth`` header block for lifecycle API calls.
 
@@ -216,7 +216,9 @@ class UltraGate:
         """
         from enterprise.lifecycle_auth import lifecycle_auth_headers
 
-        return lifecycle_auth_headers(self.identity, payload_bytes)
+        return lifecycle_auth_headers(
+            self.identity, payload_bytes, method="POST", path=path
+        )
 
     def _register_bpc_pair(self) -> str:
         """POST /register-pair → returns pairId.
@@ -239,7 +241,7 @@ class UltraGate:
             "fingerprint": self._fingerprint,
             "idempotencyKey": idem_key,
         }).encode("utf-8")
-        auth_headers = self._lifecycle_auth_headers(payload)
+        auth_headers = self._lifecycle_auth_headers(payload, "/register-pair")
         req = urllib.request.Request(
             f"{self.server_url}/register-pair",
             data=payload,
@@ -274,7 +276,7 @@ class UltraGate:
             "requestorId": self.agent_id,
             "idempotencyKey": idem_key,
         }).encode("utf-8")
-        auth_headers = self._lifecycle_auth_headers(payload)
+        auth_headers = self._lifecycle_auth_headers(payload, "/provision-tsk")
         req = urllib.request.Request(
             f"{self.server_url}/provision-tsk",
             data=payload,
@@ -319,7 +321,7 @@ class UltraGate:
                     {"Authorization": f"Bearer {self._admin_token}"}
                     if self._admin_token else {}
                 ),
-                **self._lifecycle_auth_headers(payload),
+                **self._lifecycle_auth_headers(payload, "/resume-identity"),
             },
             method="POST",
         )
@@ -370,7 +372,7 @@ class UltraGate:
                     {"Authorization": f"Bearer {self._admin_token}"}
                     if self._admin_token else {}
                 ),
-                **self._lifecycle_auth_headers(prepare_payload),
+                **self._lifecycle_auth_headers(prepare_payload, "/rotate-tsk/prepare"),
             },
             method="POST",
         )
@@ -401,7 +403,7 @@ class UltraGate:
                     {"Authorization": f"Bearer {self._admin_token}"}
                     if self._admin_token else {}
                 ),
-                **self._lifecycle_auth_headers(commit_payload),
+                **self._lifecycle_auth_headers(commit_payload, "/rotate-tsk/commit"),
             },
             method="POST",
         )
@@ -437,7 +439,7 @@ class UltraGate:
             "agentId": self.agent_id,
             "idempotencyKey": idem_key,
         }).encode("utf-8")
-        auth_headers = self._lifecycle_auth_headers(payload)
+        auth_headers = self._lifecycle_auth_headers(payload, "/bind-identity")
         req = urllib.request.Request(
             f"{self.server_url}/bind-identity",
             data=payload,

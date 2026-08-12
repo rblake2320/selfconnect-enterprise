@@ -198,7 +198,9 @@ class RecoveryManager:
             "newPubHex": self._new_pub_hex,
             "challengeHash": challenge_hash,
         }, separators=(",", ":")).encode("utf-8")
-        auth_headers = lifecycle_auth_headers(identity, payload)
+        auth_headers = lifecycle_auth_headers(
+            identity, payload, method="POST", path="/confirm-recovery"
+        )
 
         req = urllib.request.Request(
             f"{self.server_url}/confirm-recovery",

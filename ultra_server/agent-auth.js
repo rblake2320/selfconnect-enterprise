@@ -8,6 +8,8 @@ import {
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 const AGENT_ID_PATTERN = /^SC-[0-9A-F]{8}$/;
 const NONCE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const LIFECYCLE_AUTH_DOMAIN = Buffer.from('selfconnect/ultra/agent-lifecycle-auth/v1\0', 'ascii');
+const LIFECYCLE_AUTH_AUDIENCE = 'selfconnect-ultra-lifecycle-v1';
 
 function reject(res, status, error) {
   return res.status(status).json({ ok: false, error });
@@ -21,10 +23,18 @@ export function canonicalAgentIdFromPublicKey(publicKey) {
   return `SCID-${createHash('sha256').update(publicKey).digest('hex')}`;
 }
 
-export function signedAgentMaterial(rawBody, timestamp, nonce) {
+export function signedAgentMaterial(rawBody, timestamp, nonce, method, path, audience) {
   return Buffer.concat([
+    LIFECYCLE_AUTH_DOMAIN,
+    Buffer.from(method, 'ascii'),
+    Buffer.from([0]),
+    Buffer.from(path, 'ascii'),
+    Buffer.from([0]),
+    Buffer.from(audience, 'ascii'),
+    Buffer.from([0]),
     createHash('sha256').update(rawBody).digest(),
     Buffer.from(timestamp, 'utf8'),
+    Buffer.from([0]),
     Buffer.from(nonce, 'utf8'),
   ]);
 }
@@ -51,12 +61,17 @@ export function createAgentAuthMiddleware({ nonceStore, windowMs = 30_000 }) {
         return reject(res, 401, 'AGENT_AUTH_MALFORMED');
       }
 
-      const { agent_id: agentId, pubkey_hex: pubHex, ts, nonce, sig } = auth;
+      const {
+        agent_id: agentId, pubkey_hex: pubHex, ts, nonce, method, path, aud, sig,
+      } = auth;
       if (
         typeof agentId !== 'string' || !AGENT_ID_PATTERN.test(agentId) ||
         typeof pubHex !== 'string' || !/^[0-9a-f]{64}$/i.test(pubHex) ||
         typeof ts !== 'string' || ts.length > 32 ||
         typeof nonce !== 'string' || !NONCE_PATTERN.test(nonce) ||
+        method !== 'POST' || method !== req.method ||
+        typeof path !== 'string' || path !== req.path || !path.startsWith('/') ||
+        aud !== LIFECYCLE_AUTH_AUDIENCE ||
         typeof sig !== 'string' || sig.length > 128
       ) {
         return reject(res, 401, 'AGENT_AUTH_MALFORMED');
@@ -85,7 +100,7 @@ export function createAgentAuthMiddleware({ nonceStore, windowMs = 30_000 }) {
       const rawBody = Buffer.isBuffer(req.rawBody) ? req.rawBody : Buffer.alloc(0);
       const spki = Buffer.concat([ED25519_SPKI_PREFIX, publicKey]);
       const key = createPublicKey({ key: spki, format: 'der', type: 'spki' });
-      const material = signedAgentMaterial(rawBody, ts, nonce);
+      const material = signedAgentMaterial(rawBody, ts, nonce, method, path, aud);
       if (!verifySignature(null, material, key, signature)) {
         return reject(res, 401, 'AGENT_AUTH_INVALID_SIGNATURE');
       }
