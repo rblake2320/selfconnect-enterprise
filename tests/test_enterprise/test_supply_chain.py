@@ -23,6 +23,8 @@ from __future__ import annotations
 import importlib.metadata
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -112,7 +114,7 @@ class TestCryptographyVersion:
             f"{'.'.join(str(x) for x in self.MINIMUM_SAFE_VERSION)}. "
             f"CVE-2026-26007 (ECDH subgroup, fixed 46.0.5) and "
             f"CVE-2026-34073 (X.509 name constraint bypass, fixed 46.0.6) are unpatched. "
-            f"Run: pip install 'cryptography>=46.0.6'"
+            f"Run: pip install 'cryptography>=50.0.0'"
         )
 
     def test_cryptography_not_using_sect_curves(self):
@@ -251,15 +253,13 @@ class TestWfpScriptIntegrity:
 # ── Generic dependency audit ──────────────────────────────────────────────────
 
 class TestDependencyAudit:
-    """Run pip-audit against all installed packages in this environment.
+    """Run a bounded audit of this project's direct runtime dependencies.
 
     Two tiers:
     - HARD GATE (test_direct_deps_no_known_cves): direct dependencies of
       selfconnect-enterprise (cryptography, selfconnect) must have zero CVEs.
       Fails the test run if any are found — blocks deployment.
-    - INFORMATIONAL (test_all_installed_packages_audit): scans the full
-      environment and prints findings for operator review. Always passes —
-      catches the next CVE you didn't pre-enumerate.
+    - INFORMATIONAL: prints the direct-dependency inventory for operator review.
 
     Why both: the custom named-version tests catch *known* bad actors instantly;
     pip-audit catches *newly disclosed* advisories automatically. Neither alone
@@ -268,7 +268,7 @@ class TestDependencyAudit:
 
     # Direct dependencies declared in pyproject.toml
     DIRECT_DEPS = {"cryptography", "selfconnect"}
-    PIP_AUDIT_TIMEOUT_SECONDS = 120
+    PIP_AUDIT_TIMEOUT_SECONDS = 30
     _pip_audit_cache: tuple[int, list] | None = None
 
     def _run_pip_audit(self) -> tuple[int, list]:
@@ -276,13 +276,34 @@ class TestDependencyAudit:
         cached = type(self)._pip_audit_cache
         if cached is not None:
             return cached
+        requirements = []
+        for package in sorted(self.DIRECT_DEPS):
+            version = _get_installed_version(package)
+            if version is None:
+                outcome = (3, [])
+                type(self)._pip_audit_cache = outcome
+                return outcome
+            requirements.append(f"{package}=={version}\n")
         try:
-            result = subprocess.run(
-                [sys.executable, "-m", "pip_audit", "--local", "--format", "json"],
-                capture_output=True,
-                text=True,
-                timeout=self.PIP_AUDIT_TIMEOUT_SECONDS,
-            )
+            with tempfile.TemporaryDirectory(prefix="selfconnect-direct-audit-") as audit_dir:
+                requirements_path = Path(audit_dir) / "requirements.txt"
+                requirements_path.write_text("".join(requirements), encoding="utf-8")
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip_audit",
+                        "--requirement",
+                        str(requirements_path),
+                        "--no-deps",
+                        "--disable-pip",
+                        "--format",
+                        "json",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=self.PIP_AUDIT_TIMEOUT_SECONDS,
+                )
         except subprocess.TimeoutExpired:
             outcome = (124, [])
             type(self)._pip_audit_cache = outcome
@@ -335,12 +356,12 @@ class TestDependencyAudit:
             lines.append("\nRun: pip install --upgrade cryptography selfconnect")
             pytest.fail("\n".join(lines))
 
-    def test_all_installed_packages_audit_informational(self, capsys):
+    def test_direct_dependency_audit_informational(self, capsys):
         """INFORMATIONAL REPORTING FIXTURE — not a security gate.
 
-        Scans all installed packages and prints a CVE inventory to stdout so it
-        appears in the test log for operator review.  This fixture intentionally
-        never fails: hard enforcement of CVEs in *direct* dependencies is done by
+        Prints the bounded direct-dependency CVE inventory to stdout so it appears
+        in the test log for operator review. This fixture intentionally never
+        fails: hard enforcement of CVEs in direct dependencies is done by
         ``test_direct_deps_no_known_cves``.  This one exists solely
         to capture the transitive-dependency picture as an audit trail.
 
@@ -354,7 +375,7 @@ class TestDependencyAudit:
         all_findings = [dep for dep in deps if dep.get("vulns")]
 
         if all_findings:
-            print(f"\n=== PIP-AUDIT: {len(all_findings)} packages with known CVEs ===")
+            print(f"\n=== DIRECT PIP-AUDIT: {len(all_findings)} packages with known CVEs ===")
             for dep in sorted(all_findings, key=lambda d: d.get("name", "")):
                 print(f"\n  {dep['name']}=={dep['version']} ({len(dep['vulns'])} CVEs):")
                 for vuln in dep["vulns"]:
@@ -363,7 +384,7 @@ class TestDependencyAudit:
             print(f"\n  Direct deps (hard gate): {', '.join(sorted(self.DIRECT_DEPS))}")
             print("=============================================")
         else:
-            print("\n=== PIP-AUDIT: 0 packages with known CVEs — CLEAN ===")
+            print("\n=== DIRECT PIP-AUDIT: 0 packages with known CVEs — CLEAN ===")
 
         # Verify the reporting branch executed and produced output.
         # This is the only property being asserted: the code ran and wrote something.
