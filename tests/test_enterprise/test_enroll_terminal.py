@@ -22,8 +22,15 @@ def _identity_storage(tmp_path):
 
 def test_enrollment_reason_and_terminal_identity_are_truthful_and_stable(tmp_path):
     data_dir, cert_path, *patchers = _identity_storage(tmp_path)
-    with patchers[0], patchers[1], patchers[2], patchers[3], patchers[4], patch.object(
-        enroll_terminal.os, "getpid", return_value=100
+    with (
+        patchers[0],
+        patchers[1],
+        patchers[2],
+        patchers[3],
+        patchers[4],
+        patch.object(enroll_terminal.os, "getpid", return_value=100),
+        patch.object(enroll_terminal.socket, "gethostname", return_value="seat-one"),
+        patch.dict(enroll_terminal.os.environ, {"USERNAME": "alice"}),
     ):
         initial, identity, _ = enroll_terminal.enroll("terminal-test")
         enroll_terminal.write_cert(initial)
@@ -42,14 +49,23 @@ def test_enrollment_reason_and_terminal_identity_are_truthful_and_stable(tmp_pat
     )
 
     data_dir, cert_path, *patchers = _identity_storage(tmp_path)
-    with patchers[0], patchers[1], patchers[2], patchers[3], patchers[4], patch.object(
-        enroll_terminal.os, "getpid", return_value=101
+    with (
+        patchers[0],
+        patchers[1],
+        patchers[2],
+        patchers[3],
+        patchers[4],
+        patch.object(enroll_terminal.os, "getpid", return_value=101),
+        patch.object(enroll_terminal.socket, "gethostname", return_value="seat-two"),
+        patch.dict(enroll_terminal.os.environ, {"USERNAME": "mallory"}),
     ):
         refreshed, _, _ = enroll_terminal.enroll("terminal-test")
 
     assert refreshed["reason"] == "certificate refresh for existing identity"
     assert refreshed["terminal_id"] == initial["terminal_id"]
     assert refreshed["process_instance_id"].endswith("-101")
+    assert refreshed["hostname"] != initial["hostname"]
+    assert refreshed["username"] != initial["username"]
 
 
 def test_explicit_rotation_is_not_reported_as_accidental_deletion(tmp_path):
@@ -61,4 +77,3 @@ def test_explicit_rotation_is_not_reported_as_accidental_deletion(tmp_path):
 
     assert rotated["reason"] == "explicit key rotation"
     assert rotated["terminal_id"] != initial["terminal_id"]
-
