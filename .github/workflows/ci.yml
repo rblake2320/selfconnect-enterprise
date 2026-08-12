@@ -13,6 +13,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
 
       - name: Validate GitHub Actions workflows
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml
@@ -37,6 +39,8 @@ jobs:
           pip install "pytest==9.1.1" "ruff>=0.4" "hypothesis>=6.0" "pip-audit>=2.7" pywin32 "cryptography>=48.0.1" comtypes "rich>=13.0"
           $portfolio = Get-Content portfolio-lock.json | ConvertFrom-Json
           $sdk = $portfolio.components.selfconnect
+          git submodule update --init --recursive
+          python -m tools.sdk_coherence --required-core-sha $sdk.commit
           pip install "selfconnect @ git+$($sdk.repository)@$($sdk.commit)"
           pip install -e . --no-deps
 
