@@ -54,6 +54,31 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260731-006 - Keep workspace and forge layers outside SelfConnect
+
+**Timestamp (UTC):** 2026-07-31T22:40:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** decision, documentation
+**Base commit:** `364dcd77af12c8d3b4e20a5f0463c01614a3fb99` plus the current uncommitted governed ACP work
+**Change reference:** working tree containing this entry
+**Why:** [WHY-20260731-006](WHY.md#why-20260731-006)
+**Parked records:** None
+
+**Changed:** Recorded that SelfConnect Enterprise reuses Buzz's separate-agent
+principal and access-removal concepts without absorbing workspace, community,
+forge, Git-hosting, or collaboration-product surfaces.
+
+**Reason:** Preserve SelfConnect's governed OS-terminal enforcement scope and
+avoid treating coarse membership as a substitute for signed delegation.
+
+**Full actions and links:** `WHY.md`, `docs/PRODUCT_SCOPE_BOUNDARY.md`,
+[Buzz security design](https://github.com/block/buzz/security), and
+[Buzz support](https://block.github.io/buzz/support.html).
+
+**Validation:** Documentation record schema and cross-reference tests.
+
+**Notes:** Documentation-only scope decision; no runtime behavior changed.
+
 ## LOG-20260731-005 - Add durable agent revocation without human replacement
 
 **Timestamp (UTC):** 2026-07-31T22:36:20Z
@@ -70,6 +95,10 @@ an explicit test that the enrolled human owner public key remains active.
 
 **Reason:** Compromised agents must be replaceable without forcing a human
 identity rotation or allowing an already-open ACP session to continue acting.
+
+**Full actions and links:** `enterprise/revocation.py`,
+`tests/test_enterprise/test_revocation.py`, `docs/REVOCATION_LIFECYCLE.md`, and
+[WHY-20260731-005](WHY.md#why-20260731-005).
 
 **Validation:** Revocation, ACP shim, and ACP authentication tests passed 36/36;
 Ruff, compilation, and diff checks passed.
@@ -97,6 +126,10 @@ rejects caller attempts to override authoritative export tags.
 evidence, but adopting its relay as the execution or trust substrate would
 replace SelfConnect's differentiated governance, BPC/TSK, ledger, and
 terminal-as-medium boundaries.
+
+**Full actions and links:** `enterprise/nostr_export.py`,
+`tests/test_enterprise/test_nostr_export.py`, `docs/NOSTR_EVIDENCE_EXPORT.md`,
+and [WHY-20260731-004](WHY.md#why-20260731-004).
 
 **Validation:** Nostr export tests passed 13/13; Ruff, compilation, and diff checks
 passed. No production Schnorr signer or live relay was exercised.

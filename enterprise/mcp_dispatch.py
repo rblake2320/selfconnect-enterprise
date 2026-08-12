@@ -28,9 +28,22 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from enterprise.control import ControlPlane
+from enterprise.delegation import (
+    AgentActionProof,
+    DelegatedActionReceipt,
+    DelegationGrant,
+    canonical_bytes,
+    payload_digest,
+    sign_delegated_receipt,
+    verify_delegated_action,
+    verify_delegated_receipt,
+    verify_historical_delegated_action,
+)
+from enterprise.identity import AgentIdentity
 from enterprise.logical_targets import LogicalTargetResolver
 from enterprise.mcp_tools import get_tool, get_tool_registry
 from enterprise.operator import DurableOperatorQueue, OperatorQueue
+from enterprise.protected_tools import PROTECTED_DELEGATED_TOOLS
 from enterprise.runtime_lifetime import RuntimeLifetime, governed_operation
 
 try:
@@ -73,14 +86,36 @@ _LEASE_TOOL_ROLES = MappingProxyType(
         "sc_read_output": frozenset({"sender", "receiver", "observer"}),
     }
 )
-
-
 class MCPDispatchError(RuntimeError):
     """Raised internally for validation or execution failures."""
 
 
 class MCPValidationError(MCPDispatchError):
     """Tool arguments did not match the registered schema."""
+
+
+@dataclass(frozen=True)
+class DelegationBoundary:
+    issuer_resolver: Callable[[str], bytes | None]
+    revocation_provider: Callable[[], Any]
+    replay_store: Any
+
+    def __post_init__(self) -> None:
+        if not callable(self.issuer_resolver) or not callable(self.revocation_provider):
+            raise ValueError("delegation trust and revocation providers must be callable")
+        required = ("claim", "begin", "finish", "get")
+        if any(not callable(getattr(self.replay_store, name, None)) for name in required):
+            raise ValueError(
+                "delegation replay store must provide claim(), begin(), finish(), and get()"
+            )
+
+
+@dataclass(frozen=True)
+class _VerifiedDelegatedCall:
+    grant: DelegationGrant
+    proof: AgentActionProof
+    payload: bytes
+    session_id: str
 
 
 @dataclass(frozen=True)
@@ -373,6 +408,8 @@ class MCPDispatcher:
         runtime_lifetime: RuntimeLifetime | None = None,
         logical_target_resolver: LogicalTargetResolver | None = None,
         agt_policy_adapter: Any | None = None,
+        delegation_identity: AgentIdentity | None = None,
+        delegation_boundary: DelegationBoundary | None = None,
     ) -> None:
         if profile not in _VALID_PROFILES:
             raise ValueError(f"profile must be one of {sorted(_VALID_PROFILES)}, got {profile!r}")
@@ -413,6 +450,8 @@ class MCPDispatcher:
         self._output_reader = output_reader or self._load_output_reader()
         self._identity_type = identity_type
         self._now = now
+        self._delegation_identity = delegation_identity
+        self.__delegation_boundary = delegation_boundary
         self._leases: dict[str, RuntimeLease] = {}
         self.__lease_authority_store = _LeaseAuthorityStore()
         self._audit: list[AuditEvent] = []
@@ -421,7 +460,7 @@ class MCPDispatcher:
         self._private_key = Ed25519PrivateKey.generate()
         self._public_key = self._private_key.public_key()
 
-        self._handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+        self.__handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "sc_inject_text": self._sc_inject_text,
             "sc_read_output": self._sc_read_output,
             "sc_verify_target": self._sc_verify_target,
@@ -446,7 +485,7 @@ class MCPDispatcher:
         }
 
         registered = {tool["name"] for tool in get_tool_registry()}
-        missing = registered - set(self._handlers)
+        missing = registered - set(self.__handlers)
         if missing:
             raise RuntimeError(f"MCP dispatcher missing handler(s): {sorted(missing)}")
 
@@ -458,18 +497,44 @@ class MCPDispatcher:
         reported as ``{"ok": False, "error": ...}`` rather than escaping to the
         caller.  Unknown tools still fail closed with the same envelope.
         """
+        return self.__execute_tool(name, arguments)
+
+    def __execute_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None,
+        *,
+        authorization: _VerifiedDelegatedCall | None = None,
+    ) -> dict[str, Any]:
         args = {} if arguments is None else arguments
         try:
-            if name not in self._handlers:
+            if (
+                self.profile in {"enterprise", "government"}
+                and name in PROTECTED_DELEGATED_TOOLS
+                and authorization is None
+            ):
+                raise MCPDispatchError(
+                    "final actuation requires an owner-signed delegation grant and agent-signed action proof"
+                )
+            if name not in self.__handlers:
                 get_tool(name)  # raises useful KeyError text if not registered
             validated = self._validator.validate(name, args)
             if self._agt_policy_adapter is None:
-                result = self._handlers[name](validated)
+                if name in PROTECTED_DELEGATED_TOOLS:
+                    result = self.__handlers[name](validated, authorization=authorization)
+                else:
+                    result = self.__handlers[name](validated)
             else:
+                if name in PROTECTED_DELEGATED_TOOLS:
+                    handler = lambda effective: self.__handlers[name](
+                        effective, authorization=authorization
+                    )
+                else:
+                    handler = self.__handlers[name]
                 agt_outcome = self._agt_policy_adapter.run_tool_sync(
                     name,
                     validated,
-                    self._handlers[name],
+                    handler,
                     snapshot={"selfconnect": {"profile": self.profile}},
                 )
                 result = agt_outcome.value
@@ -481,6 +546,295 @@ class MCPDispatcher:
             error = _bound_error(str(exc))
             self._record_audit(name, False, args if isinstance(args, dict) else {}, {"error": error})
             return {"ok": False, "tool": name, "error": error}
+
+    @governed_operation
+    def call_delegated_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        grant: DelegationGrant,
+        proof: AgentActionProof,
+        payload: bytes,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Verify, consume, actuate, and sign at the final MCP boundary."""
+        if self.__delegation_boundary is None or self._delegation_identity is None:
+            raise MCPDispatchError("delegation boundary is not configured")
+        try:
+            signed_call = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise MCPDispatchError("delegated call payload is not canonical JSON") from exc
+        if canonical_bytes(signed_call) != payload:
+            raise MCPDispatchError("delegated call payload is not canonical JSON")
+        if not isinstance(signed_call, dict) or signed_call.get("tool") != name:
+            raise MCPDispatchError("delegated payload does not bind the requested MCP tool")
+        if signed_call.get("arguments") != arguments or signed_call.get("sessionId") != session_id:
+            raise MCPDispatchError("delegated payload does not bind the MCP arguments and session")
+        try:
+            isolated_arguments = json.loads(canonical_bytes(signed_call["arguments"]).decode("utf-8"))
+            isolated_grant = DelegationGrant.from_dict(grant.to_dict())
+            isolated_proof = AgentActionProof.from_dict(proof.to_dict())
+        except (KeyError, TypeError, ValueError) as exc:
+            raise MCPDispatchError("delegated call contains invalid signed objects") from exc
+        if not isinstance(isolated_arguments, dict):
+            raise MCPDispatchError("delegated MCP arguments must be an object")
+        if isolated_proof.action != name:
+            raise MCPDispatchError("action proof does not name the requested MCP tool")
+        if isolated_proof.payload_sha256 != payload_digest(payload):
+            raise MCPDispatchError("action proof does not bind the delegated payload")
+        boundary = self.__delegation_boundary
+        issuer_key = boundary.issuer_resolver(isolated_grant.issuer_key_fingerprint)
+        if issuer_key is None:
+            raise MCPDispatchError("delegation issuer is not trusted")
+        if self._ledger is None:
+            raise MCPDispatchError("delegated actuation requires a persistent audit ledger")
+        ledger_ok, _count, _message = self._ledger.verify()
+        if not ledger_ok:
+            raise MCPDispatchError("delegated actuation audit ledger failed preflight verification")
+        historical_verification = verify_historical_delegated_action(
+            isolated_grant,
+            isolated_proof,
+            payload=payload,
+            trusted_issuer_public_key=issuer_key,
+        )
+        if not historical_verification.ok:
+            raise MCPDispatchError(
+                f"delegation denied: {historical_verification.reason}"
+            )
+        recovered = boundary.replay_store.get(isolated_proof.action_id)
+        if recovered and recovered.get("outcome") in {"succeeded", "failed"}:
+            if not (
+                recovered.get("grant_id") == isolated_grant.grant_id
+                and recovered.get("proof_id") == isolated_proof.proof_id
+                and recovered.get("session_id") == session_id
+                and recovered.get("receipt")
+                and recovered.get("result")
+            ):
+                raise MCPDispatchError("stored delegated completion tuple does not match")
+            try:
+                stored_result = dict(recovered["result"])
+                stored_receipt = DelegatedActionReceipt.from_dict(recovered["receipt"])
+                result_core = dict(stored_result)
+                result_core.pop("delegated_receipt", None)
+                receipt_check = verify_delegated_receipt(
+                    stored_receipt,
+                    expected_executor_public_key=self._delegation_identity.public_key_bytes,
+                    expected_grant_id=isolated_grant.grant_id,
+                    expected_proof_id=isolated_proof.proof_id,
+                    expected_action_id=isolated_proof.action_id,
+                    expected_action=name,
+                    expected_delegated_agent_id=isolated_proof.agent_id,
+                    expected_result_status=str(recovered["outcome"]),
+                    expected_target=isolated_proof.target,
+                    expected_result=result_core,
+                    expected_ledger_head=str(recovered.get("ledger_head", "")),
+                )
+            except (TypeError, ValueError) as exc:
+                raise MCPDispatchError("stored delegated completion receipt is invalid") from exc
+            if not receipt_check.ok:
+                raise MCPDispatchError(
+                    f"stored delegated completion receipt failed verification: {receipt_check.reason}"
+                )
+            if not self._ledger.contains_verified_hash(stored_receipt.ledger_head):
+                raise MCPDispatchError("stored receipt ledger head is not in the verified ledger")
+            if stored_result.get("delegated_receipt") != stored_receipt.to_dict():
+                raise MCPDispatchError("stored result and delegated receipt disagree")
+            return stored_result
+        revocations = boundary.revocation_provider()
+        try:
+            epoch = int(revocations.epoch)
+            revoked_grants = revocations.revoked_grant_ids
+            revoked_agents = revocations.revoked_agent_key_ids
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise MCPDispatchError("delegation revocation state is invalid") from exc
+        verification = verify_delegated_action(
+            isolated_grant,
+            isolated_proof,
+            now=self._now(),
+            payload=payload,
+            trusted_issuer_public_key=issuer_key,
+            revoked_grant_ids=revoked_grants,
+            revoked_agent_key_ids=revoked_agents,
+            minimum_revocation_epoch=epoch,
+        )
+        if not verification.ok:
+            raise MCPDispatchError(f"delegation denied: {verification.reason}")
+        canonical_target = self.delegation_target_for(name, isolated_arguments)
+        if isolated_proof.target != canonical_target:
+            raise MCPDispatchError("action proof target does not match the live lease binding")
+        if not boundary.replay_store.claim(
+            action_id=isolated_proof.action_id,
+            grant_id=isolated_grant.grant_id,
+            proof_id=isolated_proof.proof_id,
+            session_id=session_id,
+            consumed_at=self._now(),
+        ):
+            raise MCPDispatchError("delegation denied: action id has already been consumed")
+
+        authorization = _VerifiedDelegatedCall(
+            grant=isolated_grant,
+            proof=isolated_proof,
+            payload=bytes(payload),
+            session_id=str(session_id),
+        )
+        result = self.__execute_tool(
+            name, isolated_arguments, authorization=authorization
+        )
+        succeeded = bool(result.get("ok"))
+        ledger_ok, _count, _message = self._ledger.verify()
+        if not ledger_ok:
+            raise MCPDispatchError("delegated completion audit ledger failed verification")
+        ledger_head = self._ledger.head_hash()
+        receipt = sign_delegated_receipt(
+            grant=isolated_grant,
+            proof=isolated_proof,
+            agent_identity=self._delegation_identity,
+            result=result,
+            result_status="succeeded" if succeeded else "failed",
+            ledger_head=ledger_head,
+            issued_at=self._now(),
+        )
+        try:
+            result["delegated_receipt"] = receipt.to_dict()
+            boundary.replay_store.finish(
+                isolated_proof.action_id,
+                succeeded=succeeded,
+                receipt=receipt.to_dict(),
+                ledger_head=ledger_head,
+                result=result,
+            )
+        except Exception:
+            raise MCPDispatchError("delegation outcome could not be durably finalized")
+        return result
+
+    def _require_verified_delegated_call(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        authorization: _VerifiedDelegatedCall | None,
+    ) -> dict[str, Any]:
+        if self.profile not in {"enterprise", "government"}:
+            return json.loads(canonical_bytes(arguments).decode("utf-8"))
+        if authorization is None or self.__delegation_boundary is None:
+            raise MCPDispatchError("actuator has no verified delegation authorization")
+        if authorization.proof.action != name:
+            raise MCPDispatchError("delegated authorization names a different tool")
+        try:
+            signed = json.loads(authorization.payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise MCPDispatchError("delegated authorization payload is invalid") from exc
+        if canonical_bytes(signed) != authorization.payload or signed.get("arguments") != arguments:
+            raise MCPDispatchError("delegated authorization does not bind actuator arguments")
+        boundary = self.__delegation_boundary
+        issuer_key = boundary.issuer_resolver(authorization.grant.issuer_key_fingerprint)
+        if issuer_key is None:
+            raise MCPDispatchError("delegation issuer is not trusted")
+        revocations = boundary.revocation_provider()
+        checked = verify_delegated_action(
+            authorization.grant,
+            authorization.proof,
+            now=self._now(),
+            payload=authorization.payload,
+            trusted_issuer_public_key=issuer_key,
+            revoked_grant_ids=revocations.revoked_grant_ids,
+            revoked_agent_key_ids=revocations.revoked_agent_key_ids,
+            minimum_revocation_epoch=revocations.epoch,
+        )
+        if not checked.ok:
+            raise MCPDispatchError(f"delegation denied at actuator: {checked.reason}")
+        if authorization.proof.target != self.delegation_target_for(name, arguments):
+            raise MCPDispatchError("delegated authorization target changed before actuation")
+        if not boundary.replay_store.begin(
+            authorization.proof.action_id,
+            grant_id=authorization.grant.grant_id,
+            proof_id=authorization.proof.proof_id,
+            session_id=authorization.session_id,
+        ):
+            raise MCPDispatchError("delegated authorization is not admitted for one-shot actuation")
+        isolated = json.loads(canonical_bytes(arguments).decode("utf-8"))
+        if not isinstance(isolated, dict):
+            raise MCPDispatchError("actuator arguments must be an object")
+        return isolated
+
+    def delegation_target_for(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Derive the signed target solely from validated args and live lease authority."""
+        if name in _LEASE_TOOL_ROLES:
+            lease_id = str(arguments.get("lease_id", ""))
+            lease = self._require_lease(lease_id, int(arguments.get("hwnd", 0)), tool=name)
+            return self._lease_delegation_target(lease)
+        if name == "sc_revoke_lease":
+            lease = self._leases.get(str(arguments.get("lease_id", "")))
+            if lease is None:
+                raise MCPDispatchError("lease to revoke does not exist")
+            canonical = self.__lease_authority_store.verify(lease.lease_id, lease)
+            return self._lease_delegation_target(canonical)
+        if name == "sc_request_lease":
+            report = self._verify_live_target(int(arguments.get("hwnd", 0)))
+            target = self._report_delegation_target(report, hwnd=int(arguments["hwnd"]))
+            target.update({
+                "agent_id": str(arguments.get("agent_id", "")),
+                "role": str(arguments.get("role", "")),
+                "ttl_seconds": int(arguments.get("ttl_seconds", 300)),
+            })
+            return target
+        if name == "sc_request_target_lease":
+            if self._logical_target_resolver is None or self._target_verifier is None:
+                raise MCPDispatchError("logical target resolution is unavailable")
+            resolved = self._logical_target_resolver.resolve(
+                str(arguments.get("logical_target_id", "")),
+                role=str(arguments.get("role", "")),
+                target_verifier=self._target_verifier,
+            )
+            target = self._report_delegation_target(resolved.verifier_report(), hwnd=resolved.hwnd)
+            target.update({
+                "logical_target_id": resolved.logical_id,
+                "agent_id": str(arguments.get("agent_id", "")),
+                "role": str(arguments.get("role", "")),
+                "ttl_seconds": int(arguments.get("ttl_seconds", 300)),
+            })
+            return target
+        if name in {"sc_session_stamp", "sc_channel_route"}:
+            hwnd = int(arguments.get("hwnd", 0))
+            report = self._verify_live_target(hwnd)
+            target = self._report_delegation_target(report, hwnd=hwnd)
+            if name == "sc_session_stamp":
+                target["use_tpm"] = bool(arguments.get("use_tpm", False))
+            else:
+                target["preferred_channel"] = str(arguments.get("preferred_channel", "auto"))
+            return target
+        if name == "sc_identity_sign":
+            payload = bytes.fromhex(str(arguments.get("payload_hex", "")))
+            return {
+                "payload_sha256": hashlib.sha256(payload).hexdigest(),
+                "key_provider": str(arguments.get("key_provider", "software")),
+            }
+        raise MCPDispatchError(f"protected tool {name!r} has no canonical delegation target")
+
+    @staticmethod
+    def _report_delegation_target(report: dict[str, Any], *, hwnd: int) -> dict[str, Any]:
+        return {
+            "hwnd": hwnd,
+            "pid": int(report["pid"]),
+            "exe": str(report["exe"]),
+            "exe_path": str(report.get("exe_path", "")),
+            "class_name": str(report["class"]),
+            "title_sha256": _hash_text(str(report.get("title", ""))),
+            "logical_target_id": "",
+        }
+
+    @staticmethod
+    def _lease_delegation_target(lease: RuntimeLease) -> dict[str, Any]:
+        return {
+            "lease_id": lease.lease_id,
+            "hwnd": lease.hwnd,
+            "pid": lease.target_pid,
+            "exe": lease.target_exe,
+            "exe_path": lease.target_exe_path,
+            "class_name": lease.target_class,
+            "title_sha256": lease.target_title_hash,
+            "logical_target_id": lease.logical_target_id,
+        }
 
     def active_leases(self) -> list[RuntimeLease]:
         now = self._now()
@@ -868,7 +1222,10 @@ class MCPDispatcher:
     # Tool handlers
     # ------------------------------------------------------------------
 
-    def _sc_request_lease(self, args: dict[str, Any]) -> dict[str, Any]:
+    def _sc_request_lease(
+        self, args: dict[str, Any], *, authorization: _VerifiedDelegatedCall | None = None
+    ) -> dict[str, Any]:
+        args = self._require_verified_delegated_call("sc_request_lease", args, authorization)
         role = args.get("role")
         if role not in _VALID_LEASE_ROLES:
             raise MCPDispatchError(f"unknown lease role {role!r}")
@@ -880,7 +1237,10 @@ class MCPDispatcher:
             target=target,
         )
 
-    def _sc_request_target_lease(self, args: dict[str, Any]) -> dict[str, Any]:
+    def _sc_request_target_lease(
+        self, args: dict[str, Any], *, authorization: _VerifiedDelegatedCall | None = None
+    ) -> dict[str, Any]:
+        args = self._require_verified_delegated_call("sc_request_target_lease", args, authorization)
         role = args.get("role")
         if role not in _VALID_LEASE_ROLES:
             raise MCPDispatchError(f"unknown lease role {role!r}")
@@ -931,7 +1291,10 @@ class MCPDispatcher:
         self._control.register(lease.agent_id)
         return lease.to_dict(now)
 
-    def _sc_revoke_lease(self, args: dict[str, Any]) -> dict[str, Any]:
+    def _sc_revoke_lease(
+        self, args: dict[str, Any], *, authorization: _VerifiedDelegatedCall | None = None
+    ) -> dict[str, Any]:
+        args = self._require_verified_delegated_call("sc_revoke_lease", args, authorization)
         lease_id = args["lease_id"]
         lease = self._leases.get(lease_id)
         if lease is None:
@@ -984,7 +1347,10 @@ class MCPDispatcher:
             raise MCPDispatchError(str(exc)) from exc
         return canonical.to_dict(self._now())
 
-    def _sc_inject_text(self, args: dict[str, Any]) -> dict[str, Any]:
+    def _sc_inject_text(
+        self, args: dict[str, Any], *, authorization: _VerifiedDelegatedCall | None = None
+    ) -> dict[str, Any]:
+        args = self._require_verified_delegated_call("sc_inject_text", args, authorization)
         probe = _delivery_probe(args["text"])
         lease = self._require_lease(
             args["lease_id"],
@@ -1107,7 +1473,10 @@ class MCPDispatcher:
         self._read_snapshots[lease.lease_id] = confirmed_snapshot
         return data
 
-    def _sc_read_output(self, args: dict[str, Any]) -> dict[str, Any]:
+    def _sc_read_output(
+        self, args: dict[str, Any], *, authorization: _VerifiedDelegatedCall | None = None
+    ) -> dict[str, Any]:
+        args = self._require_verified_delegated_call("sc_read_output", args, authorization)
         lease = self._require_lease(
             args["lease_id"],
             int(args["hwnd"]),
@@ -1229,7 +1598,10 @@ class MCPDispatcher:
             data["etw"] = "SKIPPED"
         return data
 
-    def _sc_identity_sign(self, args: dict[str, Any]) -> dict[str, Any]:
+    def _sc_identity_sign(
+        self, args: dict[str, Any], *, authorization: _VerifiedDelegatedCall | None = None
+    ) -> dict[str, Any]:
+        args = self._require_verified_delegated_call("sc_identity_sign", args, authorization)
         if self.profile == "government" and args.get("key_provider", "software") != "tpm":
             raise MCPDispatchError(
                 "government profile requires a verified TPM platform claim alongside signing"
@@ -1298,7 +1670,10 @@ class MCPDispatcher:
             verified = False
         return {"verified": verified, "algorithm": "Ed25519"}
 
-    def _sc_session_stamp(self, args: dict[str, Any]) -> dict[str, Any]:
+    def _sc_session_stamp(
+        self, args: dict[str, Any], *, authorization: _VerifiedDelegatedCall | None = None
+    ) -> dict[str, Any]:
+        args = self._require_verified_delegated_call("sc_session_stamp", args, authorization)
         if self.profile == "government" and not bool(args.get("use_tpm", False)):
             raise MCPDispatchError(
                 "government profile requires TPM-backed session stamping"
@@ -1328,7 +1703,10 @@ class MCPDispatcher:
         stamp["stamp_hash"] = _hash_text(json.dumps(stamp, sort_keys=True))
         return stamp
 
-    def _sc_channel_route(self, args: dict[str, Any]) -> dict[str, Any]:
+    def _sc_channel_route(
+        self, args: dict[str, Any], *, authorization: _VerifiedDelegatedCall | None = None
+    ) -> dict[str, Any]:
+        args = self._require_verified_delegated_call("sc_channel_route", args, authorization)
         if self._router is None:
             raise MCPDispatchError("channel router unavailable")
         decision = self._router.classify(int(args["hwnd"]))
@@ -1465,6 +1843,7 @@ def dispatch_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[st
 __all__ = [
     "AuditEvent",
     "MCPDispatchError",
+    "DelegationBoundary",
     "MCPDispatcher",
     "MCPValidationError",
     "RuntimeLease",

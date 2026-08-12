@@ -19,7 +19,7 @@ from enterprise.acp_shim import (
     acp_action_payload,
     serve_stdio,
 )
-from enterprise.delegation import issue_delegation_grant, sign_delegated_action
+from enterprise.delegation import canonical_agent_id, issue_delegation_grant, sign_delegated_action
 from enterprise.identity import AgentIdentity
 
 
@@ -32,15 +32,40 @@ def _identity(tmp_path, name: str) -> AgentIdentity:
 
 
 class _Backend:
-    def __init__(self) -> None:
+    def __init__(self, replay: SQLiteActionReplayStore) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.fail = False
+        self.replay = replay
 
     def call_tool(self, name: str, arguments: dict) -> dict:
         self.calls.append((name, arguments))
         if self.fail:
             raise RuntimeError("backend failure")
         return {"ok": True, "tool": name}
+
+    def call_delegated_tool(self, name, arguments, *, grant, proof, payload, session_id):
+        if not self.replay.claim(
+            action_id=proof.action_id,
+            grant_id=grant.grant_id,
+            proof_id=proof.proof_id,
+            session_id=session_id,
+            consumed_at=1_600.0,
+        ):
+            raise RuntimeError("replay")
+        if not self.replay.begin(
+            proof.action_id,
+            grant_id=grant.grant_id,
+            proof_id=proof.proof_id,
+            session_id=session_id,
+        ):
+            raise RuntimeError("replay")
+        try:
+            result = self.call_tool(name, arguments)
+        except Exception:
+            self.replay.finish(proof.action_id, succeeded=False)
+            raise
+        self.replay.finish(proof.action_id, succeeded=True)
+        return result
 
 
 @dataclass
@@ -78,7 +103,7 @@ class _Harness:
             signer=owner,
             issuer_principal="OWNER:RON",
             subject_public_key=agent.public_key_bytes,
-            allowed_actions=("sc_inject_text",),
+            allowed_actions=("sc_policy_check",),
             target_constraints={},
             governance_mode="enterprise",
             classification_ceiling="UNCLASSIFIED",
@@ -91,7 +116,7 @@ class _Harness:
         payload = acp_action_payload(
             session_id=session_id,
             cwd="C:\\workspace",
-            tool="sc_inject_text",
+            tool="sc_policy_check",
             arguments=arguments,
             resource_links=resources,
         )
@@ -99,7 +124,7 @@ class _Harness:
             grant=grant,
             agent_identity=agent,
             action_id=action_id,
-            action="sc_inject_text",
+            action="sc_policy_check",
             target={},
             payload=payload,
             governance_mode="enterprise",
@@ -108,7 +133,7 @@ class _Harness:
         )
         envelope = {
             "schema": ACP_ACTION_SCHEMA,
-            "tool": "sc_inject_text",
+            "tool": "sc_policy_check",
             "arguments": arguments,
             "delegationGrant": grant.to_dict(),
             "actionProof": proof.to_dict(),
@@ -124,8 +149,8 @@ class _Harness:
 def harness(tmp_path):
     owner = _identity(tmp_path, "acp-owner")
     agent = _identity(tmp_path, "acp-agent")
-    backend = _Backend()
     replay = SQLiteActionReplayStore(tmp_path / "replay.sqlite3")
+    backend = _Backend(replay)
     revocations = [RevocationSnapshot(epoch=7)]
     shim = ACPShim(
         backend=backend,
@@ -169,7 +194,7 @@ def test_initialize_advertises_only_implemented_capabilities(tmp_path):
     owner = _identity(tmp_path, "init-owner")
     replay = SQLiteActionReplayStore(tmp_path / "init.sqlite3")
     shim = ACPShim(
-        backend=_Backend(),
+        backend=_Backend(replay),
         replay_store=replay,
         issuer_resolver=lambda _fingerprint: owner.public_key_bytes,
         revocation_provider=lambda: RevocationSnapshot(epoch=0),
@@ -189,7 +214,7 @@ def test_initialize_advertises_only_implemented_capabilities(tmp_path):
 def test_session_requires_initialize(tmp_path):
     replay = SQLiteActionReplayStore(tmp_path / "uninitialized.sqlite3")
     shim = ACPShim(
-        backend=_Backend(), replay_store=replay, issuer_resolver=lambda _key: None,
+        backend=_Backend(replay), replay_store=replay, issuer_resolver=lambda _key: None,
         revocation_provider=lambda: RevocationSnapshot(epoch=0), clock=lambda: 0.0,
     )
     response = shim.handle(
@@ -219,7 +244,7 @@ def test_valid_governed_action_dispatches_and_preserves_authorship(harness):
     assert evidence["authorization"] == "OWNER:RON"
     assert evidence["authorship"] == harness.agent.agent_id
     assert messages[1]["result"] == {"stopReason": "end_turn"}
-    assert harness.backend.calls == [("sc_inject_text", params["prompt"] and {"lease_id": "lease-1", "text": "Get-Date"})]
+    assert harness.backend.calls == [("sc_policy_check", params["prompt"] and {"lease_id": "lease-1", "text": "Get-Date"})]
     assert harness.replay.contains("action-001")
 
 
@@ -270,7 +295,8 @@ def test_revoked_grant_is_rejected(harness):
 
 def test_revoked_agent_is_rejected(harness):
     params, _grant, proof = harness.action_request()
-    harness.revocations[0] = RevocationSnapshot(epoch=7, revoked_agent_ids=frozenset({proof.agent_id}))
+    principal = canonical_agent_id(bytes.fromhex(proof.agent_public_key_hex))
+    harness.revocations[0] = RevocationSnapshot(epoch=7, revoked_agent_key_ids=frozenset({principal}))
     response = harness.request("session/prompt", params)[0]
     assert response["error"]["code"] == -32010
     assert "agent is revoked" in response["error"]["message"]
@@ -281,9 +307,10 @@ def test_revoked_agent_is_rejected(harness):
 def test_host_refresh_immediately_removes_session_bound_to_revoked_agent(harness):
     params, _grant, proof = harness.action_request(action_id="bind-session-agent")
     assert harness.request("session/prompt", params)[-1]["result"] == {"stopReason": "end_turn"}
+    principal = canonical_agent_id(bytes.fromhex(proof.agent_public_key_hex))
     harness.revocations[0] = RevocationSnapshot(
         epoch=8,
-        revoked_agent_ids=frozenset({proof.agent_id}),
+        revoked_agent_key_ids=frozenset({principal}),
     )
     assert harness.shim.refresh_revocations() == (harness.session_id,)
     response = harness.request(
@@ -366,6 +393,24 @@ def test_replay_consumption_survives_store_restart(tmp_path):
     assert second.contains("durable")
     assert not second.claim(action_id="durable", grant_id="g", proof_id="p", session_id="s", consumed_at=2.0)
     second.close()
+
+
+def test_replay_store_begin_is_one_shot_and_tuple_bound(tmp_path):
+    store = SQLiteActionReplayStore(tmp_path / "one-shot.sqlite3")
+    assert store.claim(
+        action_id="one-shot", grant_id="grant", proof_id="proof",
+        session_id="session", consumed_at=1.0,
+    )
+    assert not store.begin(
+        "one-shot", grant_id="wrong", proof_id="proof", session_id="session"
+    )
+    assert store.begin(
+        "one-shot", grant_id="grant", proof_id="proof", session_id="session"
+    )
+    assert not store.begin(
+        "one-shot", grant_id="grant", proof_id="proof", session_id="session"
+    )
+    store.close()
 
 
 def test_unknown_jsonrpc_fields_fail_closed(harness):

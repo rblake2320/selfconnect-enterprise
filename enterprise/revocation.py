@@ -8,12 +8,22 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _TARGET_TYPES = frozenset({"agent", "grant"})
+_CANONICAL_AGENT_PREFIX = "SCID-"
+
+
+def _validate_agent_principal(value: object) -> str:
+    if not isinstance(value, str) or not value.startswith(_CANONICAL_AGENT_PREFIX):
+        raise ValueError("agent revocation requires a canonical SCID principal")
+    digest = value[len(_CANONICAL_AGENT_PREFIX):]
+    if len(digest) not in (64, 96) or any(ch not in "0123456789abcdef" for ch in digest):
+        raise ValueError("agent revocation requires a canonical SCID principal")
+    return value
 
 
 @dataclass(frozen=True)
 class RevocationState:
     epoch: int
-    revoked_agent_ids: frozenset[str]
+    revoked_agent_key_ids: frozenset[str]
     revoked_grant_ids: frozenset[str]
 
 
@@ -44,9 +54,35 @@ class RevocationRegistry:
             ) STRICT
             """
         )
+        try:
+            self._reject_legacy_agent_rows()
+        except Exception:
+            self._connection.close()
+            raise
 
-    def revoke_agent(self, agent_id: str, *, operator_id: str, reason: str, revoked_at: float) -> int:
-        return self._revoke("agent", agent_id, operator_id, reason, revoked_at)
+    def _reject_legacy_agent_rows(self) -> None:
+        """Refuse an ambiguous 32-bit revocation instead of silently dropping it.
+
+        A legacy ``SC-XXXXXXXX`` row cannot be mapped to one public key after
+        the fact because more than one key may share that display identifier.
+        An operator must reconcile it using authoritative full-key evidence.
+        """
+        rows = self._connection.execute(
+            "SELECT target_id FROM revocation WHERE target_type = 'agent'"
+        ).fetchall()
+        for row in rows:
+            try:
+                _validate_agent_principal(row[0])
+            except ValueError as exc:
+                raise RuntimeError(
+                    "legacy or malformed agent revocation requires explicit full-key reconciliation"
+                ) from exc
+
+    def revoke_agent(self, canonical_agent_id: str, *, operator_id: str, reason: str, revoked_at: float) -> int:
+        """Revoke one full-key principal, never a collision-prone display ID."""
+        return self._revoke(
+            "agent", _validate_agent_principal(canonical_agent_id), operator_id, reason, revoked_at
+        )
 
     def revoke_grant(self, grant_id: str, *, operator_id: str, reason: str, revoked_at: float) -> int:
         return self._revoke("grant", grant_id, operator_id, reason, revoked_at)
@@ -93,11 +129,12 @@ class RevocationRegistry:
 
     def snapshot(self) -> RevocationState:
         with self._lock:
+            self._reject_legacy_agent_rows()
             epoch = int(self._connection.execute("SELECT epoch FROM revocation_meta WHERE singleton = 1").fetchone()[0])
             rows = self._connection.execute("SELECT target_type, target_id FROM revocation").fetchall()
         return RevocationState(
             epoch=epoch,
-            revoked_agent_ids=frozenset(target_id for target_type, target_id in rows if target_type == "agent"),
+            revoked_agent_key_ids=frozenset(target_id for target_type, target_id in rows if target_type == "agent"),
             revoked_grant_ids=frozenset(target_id for target_type, target_id in rows if target_type == "grant"),
         )
 
@@ -108,7 +145,7 @@ class RevocationRegistry:
         state = self.snapshot()
         return RevocationSnapshot(
             epoch=state.epoch,
-            revoked_agent_ids=state.revoked_agent_ids,
+            revoked_agent_key_ids=state.revoked_agent_key_ids,
             revoked_grant_ids=state.revoked_grant_ids,
         )
 

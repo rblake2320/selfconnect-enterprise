@@ -69,7 +69,7 @@ BPC_VERSION = "1.0"
 TSK_VERSION = "1"
 DEFAULT_SERVER_URL = "http://127.0.0.1:7777"
 NONCE_WINDOW_SEC = 120  # nonces older than this are rejected
-DEFAULT_MESH_SECRET = "SelfConnect-Mesh-Dev-Secret-2026!"  # override via %APPDATA%\SelfConnect\mesh.key
+DEFAULT_MESH_SECRET = "SelfConnect-Mesh-Dev-Secret-2026!"  # development only; production uses Credential Manager
 
 
 class InjectionDeniedError(Exception):
@@ -838,21 +838,20 @@ class UltraGate:
 
     @staticmethod
     def _load_mesh_secret() -> str:
-        """Load mesh secret from %APPDATA%\\SelfConnect\\mesh.key (if present).
+        """Load from Credential Manager; use the known default only in development."""
+        try:
+            from enterprise.windows_credentials import MESH_SECRET_TARGET, read_credential
 
-        Falls back to DEFAULT_MESH_SECRET for development environments.
-        The mesh.key file should be DPAPI-encrypted in production — this loader
-        reads the plaintext version only (bootstrap_mesh.py handles encryption).
-        """
-        appdata = os.environ.get("APPDATA", "")
-        if appdata:
-            key_file = os.path.join(appdata, "SelfConnect", "mesh.key")
-            if os.path.exists(key_file):
-                try:
-                    return open(key_file, encoding="utf-8").read().strip()
-                except Exception:
-                    pass
-        return DEFAULT_MESH_SECRET
+            stored = read_credential(MESH_SECRET_TARGET)
+            if stored:
+                return stored
+        except OSError as exc:
+            if os.environ.get("SELFCONNECT_ALLOW_INSECURE_DEV_SECRET") == "1":
+                return DEFAULT_MESH_SECRET
+            raise RuntimeError("mesh credential is unavailable") from exc
+        if os.environ.get("SELFCONNECT_ALLOW_INSECURE_DEV_SECRET") == "1":
+            return DEFAULT_MESH_SECRET
+        raise RuntimeError("mesh credential is not provisioned")
 
     # ── Status ────────────────────────────────────────────────────────────────
 

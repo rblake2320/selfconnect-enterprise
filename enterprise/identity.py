@@ -251,6 +251,11 @@ class AgentIdentity:
         return self._agent_id
 
     @property
+    def canonical_id(self) -> str:
+        """Full-key authorization principal; the short display ID is not one."""
+        return "SCID-" + hashlib.sha256(self._pub_raw).hexdigest()
+
+    @property
     def agent_name(self) -> str:
         """Logical name this identity was initialised under."""
         return self._agent_name

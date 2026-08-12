@@ -11,10 +11,14 @@ from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
 from enterprise.delegation import (
     AgentActionProof,
+    DelegatedActionReceipt,
     DelegationGrant,
+    canonical_agent_id,
     issue_delegation_grant,
     sign_delegated_action,
+    sign_delegated_receipt,
     verify_delegated_action,
+    verify_delegated_receipt,
 )
 from enterprise.identity import AgentIdentity
 
@@ -91,6 +95,37 @@ def test_valid_dual_signature_chain_verifies(proof_chain):
     assert result.reason == "ok"
     assert result.grant_id == grant.grant_id
     assert result.proof_id == proof.proof_id
+
+
+def test_receipt_rejects_self_asserted_untrusted_executor(proof_chain, tmp_path):
+    _owner, _agent, grant, proof = proof_chain
+    attacker = _identity(tmp_path, "receipt-attacker")
+    trusted = _identity(tmp_path, "receipt-trusted-executor")
+    result = {"ok": True, "result": {"value": 7}}
+    receipt = sign_delegated_receipt(
+        grant=grant,
+        proof=proof,
+        agent_identity=attacker,
+        result=result,
+        result_status="succeeded",
+        ledger_head="a" * 64,
+        issued_at=1_600.0,
+    )
+    verification = verify_delegated_receipt(
+        DelegatedActionReceipt.from_dict(receipt.to_dict()),
+        expected_executor_public_key=trusted.public_key_bytes,
+        expected_grant_id=grant.grant_id,
+        expected_proof_id=proof.proof_id,
+        expected_action_id=proof.action_id,
+        expected_action=proof.action,
+        expected_delegated_agent_id=proof.agent_id,
+        expected_result_status="succeeded",
+        expected_target=proof.target,
+        expected_result=result,
+        expected_ledger_head="a" * 64,
+    )
+    assert verification.ok is False
+    assert verification.reason == "receipt signer is not the trusted executor"
 
 
 def test_p384_authority_and_ed25519_agent_chain_verifies(tmp_path):
@@ -280,7 +315,7 @@ def test_revoked_grant_is_rejected(proof_chain):
 def test_revoked_agent_is_rejected(proof_chain):
     _owner, _agent, grant, proof = proof_chain
     result = verify_delegated_action(
-        grant, proof, now=1_600.0, revoked_agent_ids={proof.agent_id}
+        grant, proof, now=1_600.0, revoked_agent_key_ids={canonical_agent_id(bytes.fromhex(proof.agent_public_key_hex))}
     )
     assert result.ok is False
     assert "agent is revoked" in result.reason

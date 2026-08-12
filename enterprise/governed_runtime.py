@@ -21,6 +21,9 @@ from enterprise.control import ControlPlane
 from enterprise.identity import AgentIdentity
 from enterprise.ledger import ThreadSafeAgentLedger
 from enterprise.mcp_dispatch import MCPDispatcher
+from enterprise.mcp_dispatch import DelegationBoundary
+from enterprise.acp_shim import RevocationSnapshot, SQLiteActionReplayStore
+from enterprise.delegation import public_key_fingerprint
 from enterprise.operator import DurableOperatorQueue, _bind_system_denier
 from enterprise.policy import PolicyBundle, PolicyEnforcer
 from enterprise.runtime_ownership import RuntimeOwnershipLock
@@ -45,6 +48,7 @@ class GovernedRuntime:
     dispatcher: MCPDispatcher
     ownership_lock: RuntimeOwnershipLock
     runtime_lifetime: RuntimeLifetime
+    delegation_replay_store: SQLiteActionReplayStore
 
     @classmethod
     def from_signed_policy(
@@ -69,6 +73,9 @@ class GovernedRuntime:
         ledger_max_entries_per_segment: int = 100_000,
         ledger_max_bytes_per_segment: int = 128 * 1024 * 1024,
         agt_manifest_path: Path | None = None,
+        delegation_trust_roots: tuple[bytes, ...] | None = None,
+        delegation_revocation_provider: Callable[[], RevocationSnapshot] | None = None,
+        delegation_replay_db_path: Path | None = None,
     ) -> "GovernedRuntime":
         """Build a fail-closed runtime from an externally pinned policy root.
 
@@ -105,10 +112,22 @@ class GovernedRuntime:
             if approval_db_path is not None
             else resolved_ledger_path.with_suffix(resolved_ledger_path.suffix + ".approvals.sqlite3")
         )
+        trusted_delegation_keys = tuple(delegation_trust_roots or (trust_root_pub,))
+        trusted_delegation_by_fingerprint = {
+            public_key_fingerprint(key): bytes(key) for key in trusted_delegation_keys
+        }
+        resolved_delegation_replay_path = (
+            Path(delegation_replay_db_path)
+            if delegation_replay_db_path is not None
+            else resolved_approval_path.with_suffix(
+                resolved_approval_path.suffix + ".delegation.sqlite3"
+            )
+        )
         # Acquire stable path locks and reject identical/cross-linked resources
         # before either persistence constructor can open them.
         runtime_lifetime = RuntimeLifetime()
         ownership_lock = RuntimeOwnershipLock(resolved_ledger_path, resolved_approval_path)
+        delegation_replay_store: SQLiteActionReplayStore | None = None
         try:
             ledger = ThreadSafeAgentLedger(
                 identity,
@@ -151,6 +170,16 @@ class GovernedRuntime:
                 composition_monitor=composition_monitor,
                 ledger=ledger,
             )
+            delegation_replay_store = SQLiteActionReplayStore(resolved_delegation_replay_path)
+            delegation_boundary = DelegationBoundary(
+                issuer_resolver=lambda fingerprint: trusted_delegation_by_fingerprint.get(fingerprint),
+                revocation_provider=(
+                    delegation_revocation_provider
+                    if delegation_revocation_provider is not None
+                    else lambda: RevocationSnapshot(epoch=0)
+                ),
+                replay_store=delegation_replay_store,
+            )
             dispatcher = MCPDispatcher(
                 profile=profile,
                 router=router,
@@ -167,6 +196,8 @@ class GovernedRuntime:
                     if agt_manifest_path is not None
                     else None
                 ),
+                delegation_identity=identity,
+                delegation_boundary=delegation_boundary,
             )
             return cls(
                 identity=identity,
@@ -178,14 +209,18 @@ class GovernedRuntime:
                 dispatcher=dispatcher,
                 ownership_lock=ownership_lock,
                 runtime_lifetime=runtime_lifetime,
+                delegation_replay_store=delegation_replay_store,
             )
         except Exception:
             runtime_lifetime.close_and_drain()
+            if delegation_replay_store is not None:
+                delegation_replay_store.close()
             ownership_lock.close()
             raise
 
     def close(self) -> None:
         self.runtime_lifetime.close_and_drain()
+        self.delegation_replay_store.close()
         self.ownership_lock.close()
 
     def verify_audit(self) -> tuple[bool, int, str]:

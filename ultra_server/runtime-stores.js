@@ -11,8 +11,12 @@ CREATE TABLE IF NOT EXISTS ultra_identity_bindings (
   pair_id TEXT PRIMARY KEY,
   tsk_client_id TEXT NOT NULL,
   agent_id TEXT NOT NULL,
+  agent_public_key_hex TEXT NOT NULL DEFAULT '',
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE ultra_identity_bindings
+  ADD COLUMN IF NOT EXISTS agent_public_key_hex TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS ultra_idempotency (
   idempotency_key UUID PRIMARY KEY,
@@ -62,10 +66,12 @@ export class MemoryIdentityBindingStore {
   async compareAndSwap(pairId, expectedClientId, binding) {
     const current = this.bindings.get(pairId);
     if (!current) return 'missing';
-    if (current.tskClientId === binding.tskClientId && current.agentId === binding.agentId) {
+    if (current.tskClientId === binding.tskClientId && current.agentId === binding.agentId &&
+        current.agentPublicKeyHex === binding.agentPublicKeyHex) {
       return 'already';
     }
-    if (current.tskClientId !== expectedClientId || current.agentId !== binding.agentId) {
+    if (current.tskClientId !== expectedClientId || current.agentId !== binding.agentId ||
+        current.agentPublicKeyHex !== binding.agentPublicKeyHex) {
       return 'conflict';
     }
     this.bindings.set(pairId, { ...binding });
@@ -78,31 +84,37 @@ export class PgIdentityBindingStore {
   constructor(pool) { this.pool = pool; }
   async get(pairId) {
     const { rows } = await this.pool.query(
-      'SELECT tsk_client_id, agent_id FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
+      'SELECT tsk_client_id, agent_id, agent_public_key_hex FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
     );
-    return rows[0] ? { tskClientId: rows[0].tsk_client_id, agentId: rows[0].agent_id } : null;
+    return rows[0] ? {
+      tskClientId: rows[0].tsk_client_id,
+      agentId: rows[0].agent_id,
+      agentPublicKeyHex: rows[0].agent_public_key_hex,
+    } : null;
   }
   async set(pairId, binding) {
     await this.pool.query(
-      `INSERT INTO ultra_identity_bindings (pair_id, tsk_client_id, agent_id)
-       VALUES ($1,$2,$3)
+      `INSERT INTO ultra_identity_bindings (pair_id, tsk_client_id, agent_id, agent_public_key_hex)
+       VALUES ($1,$2,$3,$4)
        ON CONFLICT (pair_id) DO UPDATE SET
-         tsk_client_id=EXCLUDED.tsk_client_id, agent_id=EXCLUDED.agent_id, updated_at=NOW()`,
-      [pairId, binding.tskClientId, binding.agentId],
+         tsk_client_id=EXCLUDED.tsk_client_id, agent_id=EXCLUDED.agent_id,
+         agent_public_key_hex=EXCLUDED.agent_public_key_hex, updated_at=NOW()`,
+      [pairId, binding.tskClientId, binding.agentId, binding.agentPublicKeyHex],
     );
   }
   async compareAndSwap(pairId, expectedClientId, binding) {
     const updated = await this.pool.query(
       `UPDATE ultra_identity_bindings SET
          tsk_client_id=$3, updated_at=NOW()
-       WHERE pair_id=$1 AND tsk_client_id=$2 AND agent_id=$4
+       WHERE pair_id=$1 AND tsk_client_id=$2 AND agent_id=$4 AND agent_public_key_hex=$5
        RETURNING pair_id`,
-      [pairId, expectedClientId, binding.tskClientId, binding.agentId],
+      [pairId, expectedClientId, binding.tskClientId, binding.agentId, binding.agentPublicKeyHex],
     );
     if (updated.rows[0]) return 'updated';
     const current = await this.get(pairId);
     if (!current) return 'missing';
-    if (current.tskClientId === binding.tskClientId && current.agentId === binding.agentId) {
+    if (current.tskClientId === binding.tskClientId && current.agentId === binding.agentId &&
+        current.agentPublicKeyHex === binding.agentPublicKeyHex) {
       return 'already';
     }
     return 'conflict';

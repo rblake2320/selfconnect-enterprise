@@ -56,7 +56,7 @@ related records.
 **Status:** Accepted
 **Decision date (UTC):** 2026-07-31T22:40:00Z
 **Decision owner:** Repository owner
-**Action log:** Documentation-only scope decision in the working tree
+**Action log:** [LOG-20260731-006](LOG.md#log-20260731-006)
 **Parked records:** None
 **Source state:** `selfconnect-enterprise`, local branch
 `local/windows-tools-namespace-20260719`, working tree based on
@@ -84,7 +84,8 @@ an excluded surface is itself an unavoidable enforcement dependency.
 
 **Evidence and links:** [Product scope boundary](docs/PRODUCT_SCOPE_BOUNDARY.md),
 [Buzz security design](https://github.com/block/buzz/security), and
-[Buzz support](https://block.github.io/buzz/support.html).
+[Buzz support](https://block.github.io/buzz/support.html), plus
+[LOG-20260731-006](LOG.md#log-20260731-006).
 
 ## WHY-20260731-005 - Separate agent revocation from human identity lifecycle
 

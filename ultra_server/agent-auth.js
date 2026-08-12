@@ -17,6 +17,10 @@ export function agentIdFromPublicKey(publicKey) {
   return `SC-${createHash('sha256').update(publicKey).digest('hex').slice(0, 8).toUpperCase()}`;
 }
 
+export function canonicalAgentIdFromPublicKey(publicKey) {
+  return `SCID-${createHash('sha256').update(publicKey).digest('hex')}`;
+}
+
 export function signedAgentMaterial(rawBody, timestamp, nonce) {
   return Buffer.concat([
     createHash('sha256').update(rawBody).digest(),
@@ -90,7 +94,11 @@ export function createAgentAuthMiddleware({ nonceStore, windowMs = 30_000 }) {
         return reject(res, 409, 'AGENT_AUTH_REPLAY');
       }
 
-      req.scAgent = { agentId, publicKeyHex: pubHex.toLowerCase() };
+      req.scAgent = {
+        agentId,
+        canonicalId: canonicalAgentIdFromPublicKey(publicKey),
+        publicKeyHex: pubHex.toLowerCase(),
+      };
       return next();
     } catch (error) {
       console.error(JSON.stringify({

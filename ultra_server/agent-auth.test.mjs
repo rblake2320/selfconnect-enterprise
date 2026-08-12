@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import {
   agentIdFromPublicKey,
+  canonicalAgentIdFromPublicKey,
   createAdminAuthMiddleware,
   createAgentAuthMiddleware,
   signedAgentMaterial,
@@ -67,6 +68,10 @@ test('agent auth accepts a valid body-bound Ed25519 proof once', async () => {
   await createAgentAuthMiddleware({ nonceStore: nonceStore() })(req, res, () => { called = true; });
   assert.equal(called, true);
   assert.equal(req.scAgent.agentId, signed.auth.agent_id);
+  assert.equal(
+    req.scAgent.canonicalId,
+    canonicalAgentIdFromPublicKey(Buffer.from(signed.auth.pubkey_hex, 'hex')),
+  );
 });
 
 test('agent auth rejects replay', async () => {
@@ -112,6 +117,13 @@ test('agent id derivation matches the documented SHA-256 fingerprint', () => {
   const raw = Buffer.alloc(32, 0xab);
   const expected = `SC-${createHash('sha256').update(raw).digest('hex').slice(0, 8).toUpperCase()}`;
   assert.equal(agentIdFromPublicKey(raw), expected);
+});
+
+test('colliding display ids retain distinct canonical authorization principals', () => {
+  const left = Buffer.from('67bc101981dfd63eaf5af3c05448a9f8e40902ffe4d6c1d3813fad97f99c8b1f', 'hex');
+  const right = Buffer.from('3a1a9a9ab515f2baa029ee9df63f93cb65b97a446fb86b13da8824433bbb874b', 'hex');
+  assert.equal(agentIdFromPublicKey(left), agentIdFromPublicKey(right));
+  assert.notEqual(canonicalAgentIdFromPublicKey(left), canonicalAgentIdFromPublicKey(right));
 });
 
 test('admin auth fails closed and accepts only the exact bearer', () => {

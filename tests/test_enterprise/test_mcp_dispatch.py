@@ -229,7 +229,7 @@ class TestDispatcherCoverage:
     def test_every_registered_tool_has_runtime_handler(self):
         dispatcher = make_dispatcher()
         registered = {tool["name"] for tool in get_tool_registry()}
-        assert registered == set(dispatcher._handlers)
+        assert registered == set(dispatcher._MCPDispatcher__handlers)
 
     def test_unknown_tool_fails_closed(self):
         dispatcher = make_dispatcher()
@@ -1459,7 +1459,7 @@ class TestRuntimeTools:
         monkeypatch.setattr(dispatch_module, "create_tpm_platform_claim", lambda _nonce: claim)
         monkeypatch.setattr(dispatch_module, "verify_tpm_platform_claim", lambda _claim: True)
 
-        result = MCPDispatcher(profile="government", router=FakeRouter()).call_tool(
+        result = MCPDispatcher(profile="normal", router=FakeRouter()).call_tool(
             "sc_identity_sign",
             {"payload_hex": "aabbcc", "key_provider": "tpm"},
         )
@@ -1507,13 +1507,13 @@ class TestRuntimeTools:
         dispatcher = MCPDispatcher(profile="government", router=FakeRouter())
         result = dispatcher.call_tool("sc_identity_sign", {"payload_hex": "aabbcc"})
         assert result["ok"] is False
-        assert "requires a verified TPM platform claim" in result["error"]
+        assert "delegation grant" in result["error"]
 
     def test_government_profile_requires_tpm_session_stamp(self):
         dispatcher = MCPDispatcher(profile="government", router=FakeRouter())
         result = dispatcher.call_tool("sc_session_stamp", {"hwnd": 4444})
         assert result["ok"] is False
-        assert "requires TPM-backed session" in result["error"]
+        assert "delegation grant" in result["error"]
 
     def test_normal_profile_does_not_remove_lease_gate_from_enterprise_mcp(self):
         dispatcher = MCPDispatcher(profile="normal", router=FakeRouter())

@@ -20,6 +20,7 @@ from typing import Any, Iterable, Mapping
 from enterprise.identity import AgentIdentity
 
 SCHEMA_VERSION = "selfconnect.delegation.v1"
+RECEIPT_SCHEMA_VERSION = "selfconnect.delegated-result-receipt.v1"
 ED25519 = "ed25519"
 ECDSA_P384_SHA384 = "ecdsa-p384-sha384"
 _HEX = frozenset("0123456789abcdef")
@@ -44,6 +45,11 @@ def payload_digest(payload: bytes) -> str:
 def public_key_fingerprint(public_key: bytes) -> str:
     """Return a collision-resistant fingerprint for a principal public key."""
     return hashlib.sha256(bytes(public_key)).hexdigest()
+
+
+def canonical_agent_id(public_key: bytes) -> str:
+    """Full-key principal used for authorization and precise revocation."""
+    return "SCID-" + public_key_fingerprint(public_key)
 
 
 def _agent_id(public_key: bytes) -> str:
@@ -264,6 +270,170 @@ class DelegationVerification:
     agent_id: str = ""
 
 
+@dataclass(frozen=True)
+class DelegatedActionReceipt:
+    """Executing-agent signature over authorization, output, target, and ledger head."""
+
+    schema: str
+    receipt_id: str
+    grant_id: str
+    proof_id: str
+    action_id: str
+    delegated_agent_id: str
+    agent_id: str
+    agent_public_key_hex: str
+    action: str
+    target_sha256: str
+    result_sha256: str
+    result_status: str
+    ledger_head: str
+    issued_at: float
+    signature_algorithm: str
+    signature_hex: str = ""
+
+    def __post_init__(self) -> None:
+        if self.schema != RECEIPT_SCHEMA_VERSION:
+            raise ValueError("unsupported delegated receipt schema")
+        for name in (
+            "receipt_id", "action_id", "delegated_agent_id", "agent_id", "action", "result_status",
+        ):
+            _bounded_text(name, getattr(self, name))
+        for name in ("grant_id", "proof_id", "target_sha256", "result_sha256", "ledger_head"):
+            if not _valid_digest(getattr(self, name)):
+                raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+        if not _valid_time(self.issued_at):
+            raise ValueError("receipt timestamp must be finite")
+        if self.signature_algorithm != ED25519:
+            raise ValueError("delegated receipts require Ed25519")
+        try:
+            public_key = bytes.fromhex(self.agent_public_key_hex)
+            bytes.fromhex(self.signature_hex) if self.signature_hex else b""
+        except ValueError as exc:
+            raise ValueError("receipt key or signature encoding is invalid") from exc
+        if len(public_key) != 32 or self.agent_id != _agent_id(public_key):
+            raise ValueError("receipt signer identity does not match public key")
+
+    def unsigned_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value.pop("signature_hex", None)
+        return value
+
+    def signing_bytes(self) -> bytes:
+        return canonical_bytes(self.unsigned_dict())
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "DelegatedActionReceipt":
+        return cls(**dict(value))
+
+
+def sign_delegated_receipt(
+    *,
+    grant: DelegationGrant,
+    proof: AgentActionProof,
+    agent_identity: AgentIdentity,
+    result: Mapping[str, Any],
+    result_status: str,
+    ledger_head: str,
+    issued_at: float,
+) -> DelegatedActionReceipt:
+    """Sign the final result with the executing runtime identity."""
+    target_digest = _digest(_normalise_json_object("target", proof.target))
+    result_digest = _digest(dict(result))
+    receipt_id = _digest({
+        "grant_id": grant.grant_id,
+        "proof_id": proof.proof_id,
+        "action_id": proof.action_id,
+        "target_sha256": target_digest,
+        "result_sha256": result_digest,
+        "ledger_head": ledger_head,
+    })
+    receipt = DelegatedActionReceipt(
+        schema=RECEIPT_SCHEMA_VERSION,
+        receipt_id=receipt_id,
+        grant_id=grant.grant_id,
+        proof_id=proof.proof_id,
+        action_id=proof.action_id,
+        delegated_agent_id=proof.agent_id,
+        agent_id=agent_identity.agent_id,
+        agent_public_key_hex=agent_identity.public_key_bytes.hex(),
+        action=proof.action,
+        target_sha256=target_digest,
+        result_sha256=result_digest,
+        result_status=result_status,
+        ledger_head=ledger_head,
+        issued_at=issued_at,
+        signature_algorithm=ED25519,
+    )
+    return replace(receipt, signature_hex=agent_identity.sign(receipt.signing_bytes()).hex())
+
+
+def verify_delegated_receipt(
+    receipt: DelegatedActionReceipt,
+    *,
+    expected_executor_public_key: bytes,
+    expected_grant_id: str,
+    expected_proof_id: str,
+    expected_action_id: str,
+    expected_action: str,
+    expected_delegated_agent_id: str,
+    expected_result_status: str,
+    expected_target: Mapping[str, Any],
+    expected_result: Mapping[str, Any] | None = None,
+    expected_ledger_head: str | None = None,
+) -> DelegationVerification:
+    """Verify receipt authorship and optional result/ledger bindings."""
+    base = {
+        "grant_id": receipt.grant_id,
+        "proof_id": receipt.proof_id,
+        "agent_id": receipt.agent_id,
+    }
+
+    def fail(reason: str) -> DelegationVerification:
+        return DelegationVerification(False, reason, **base)
+
+    try:
+        public_key = bytes.fromhex(receipt.agent_public_key_hex)
+        signature = bytes.fromhex(receipt.signature_hex)
+    except ValueError:
+        return fail("receipt signature encoding is invalid")
+    if public_key != bytes(expected_executor_public_key):
+        return fail("receipt signer is not the trusted executor")
+    if receipt.agent_id != _agent_id(bytes(expected_executor_public_key)):
+        return fail("receipt executor identity does not match")
+    if receipt.grant_id != expected_grant_id or receipt.proof_id != expected_proof_id:
+        return fail("receipt authorization binding does not match")
+    if receipt.action_id != expected_action_id or receipt.action != expected_action:
+        return fail("receipt action binding does not match")
+    if receipt.delegated_agent_id != expected_delegated_agent_id:
+        return fail("receipt delegated-author binding does not match")
+    if receipt.result_status != expected_result_status:
+        return fail("receipt result status does not match")
+    if receipt.target_sha256 != _digest(_normalise_json_object("target", expected_target)):
+        return fail("receipt target digest does not match")
+    expected_receipt_id = _digest({
+        "grant_id": receipt.grant_id,
+        "proof_id": receipt.proof_id,
+        "action_id": receipt.action_id,
+        "target_sha256": receipt.target_sha256,
+        "result_sha256": receipt.result_sha256,
+        "ledger_head": receipt.ledger_head,
+    })
+    if receipt.receipt_id != expected_receipt_id:
+        return fail("receipt id does not match its bindings")
+    if not receipt.signature_hex or not _verify_signature(
+        receipt.signature_algorithm, public_key, receipt.signing_bytes(), signature
+    ):
+        return fail("receipt signature is invalid")
+    if expected_result is not None and receipt.result_sha256 != _digest(dict(expected_result)):
+        return fail("receipt result digest does not match")
+    if expected_ledger_head is not None and receipt.ledger_head != expected_ledger_head:
+        return fail("receipt ledger head does not match")
+    return DelegationVerification(True, "ok", **base)
+
+
 def issue_delegation_grant(
     *,
     signer: Any,
@@ -341,6 +511,7 @@ def verify_delegated_action(
     payload: bytes | None = None,
     trusted_issuer_public_key: bytes | None = None,
     revoked_grant_ids: Iterable[str] = (),
+    revoked_agent_key_ids: Iterable[str] = (),
     revoked_agent_ids: Iterable[str] = (),
     minimum_revocation_epoch: int = 0,
     seen_action_ids: Iterable[str] = (),
@@ -391,7 +562,10 @@ def verify_delegated_action(
         return fail("action time is outside the delegation verification window")
     if grant.grant_id in set(revoked_grant_ids):
         return fail("delegation grant is revoked")
-    if proof.agent_id in set(revoked_agent_ids):
+    # Compatibility callers may still use the old parameter name, but its
+    # values are full SCID principals now; a short display ID cannot revoke.
+    revoked_principals = set(revoked_agent_key_ids) | set(revoked_agent_ids)
+    if canonical_agent_id(agent_key) in revoked_principals:
         return fail("delegated agent is revoked")
     if grant.revocation_epoch < minimum_revocation_epoch:
         return fail("delegation revocation checkpoint is stale")
@@ -411,7 +585,31 @@ def verify_delegated_action(
     return DelegationVerification(True, "ok", **base)
 
 
+def verify_historical_delegated_action(
+    grant: DelegationGrant,
+    proof: AgentActionProof,
+    *,
+    payload: bytes | None = None,
+    trusted_issuer_public_key: bytes | None = None,
+) -> DelegationVerification:
+    """Authenticate an already-completed action without current-state checks.
+
+    Historical receipt recovery must still prove the owner's authority and the
+    delegated agent's authorship.  It deliberately evaluates the immutable
+    grant/proof pair at the proof's signed occurrence time, so later expiry or
+    revocation does not erase an authentic completion record.
+    """
+    return verify_delegated_action(
+        grant,
+        proof,
+        now=proof.occurred_at,
+        payload=payload,
+        trusted_issuer_public_key=trusted_issuer_public_key,
+    )
+
+
 __all__ = [
+    "DelegatedActionReceipt",
     "AgentActionProof",
     "DelegationGrant",
     "DelegationVerification",
@@ -419,9 +617,13 @@ __all__ = [
     "ED25519",
     "SCHEMA_VERSION",
     "canonical_bytes",
+    "canonical_agent_id",
     "issue_delegation_grant",
+    "sign_delegated_receipt",
+    "verify_delegated_receipt",
     "payload_digest",
     "public_key_fingerprint",
     "sign_delegated_action",
     "verify_delegated_action",
+    "verify_historical_delegated_action",
 ]

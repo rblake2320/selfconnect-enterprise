@@ -27,9 +27,11 @@ from typing import Any, Callable, Mapping, Protocol, TextIO
 from enterprise.delegation import (
     AgentActionProof,
     DelegationGrant,
+    canonical_agent_id,
     canonical_bytes,
     verify_delegated_action,
 )
+from enterprise.protected_tools import PROTECTED_DELEGATED_TOOLS
 from enterprise.acp_auth import ACPTrustStore
 
 ACP_PROTOCOL_VERSION = 1
@@ -70,6 +72,28 @@ class GovernedRuntimeBackend:
             raise RuntimeError("governed runtime denied the action")
         return result
 
+    def call_delegated_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        grant: DelegationGrant,
+        proof: AgentActionProof,
+        payload: bytes,
+        session_id: str,
+    ) -> dict[str, Any]:
+        result = self.__runtime.dispatcher.call_delegated_tool(
+            name,
+            arguments,
+            grant=grant,
+            proof=proof,
+            payload=payload,
+            session_id=session_id,
+        )
+        if not isinstance(result, dict) or "delegated_receipt" not in result:
+            raise RuntimeError("governed runtime returned no signed completion receipt")
+        return result
+
 
 @dataclass(frozen=True)
 class RevocationSnapshot:
@@ -77,7 +101,7 @@ class RevocationSnapshot:
 
     epoch: int
     revoked_grant_ids: frozenset[str] = frozenset()
-    revoked_agent_ids: frozenset[str] = frozenset()
+    revoked_agent_key_ids: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not isinstance(self.epoch, int) or self.epoch < 0:
@@ -117,10 +141,27 @@ class SQLiteActionReplayStore:
                 session_id TEXT NOT NULL,
                 consumed_at REAL NOT NULL,
                 outcome TEXT NOT NULL DEFAULT 'admitted'
-                    CHECK (outcome IN ('admitted', 'succeeded', 'failed'))
+                    CHECK (outcome IN ('admitted', 'succeeded', 'failed')),
+                receipt_json TEXT,
+                ledger_head TEXT,
+                result_json TEXT,
+                actuator_started INTEGER NOT NULL DEFAULT 0
+                    CHECK (actuator_started IN (0, 1))
             ) STRICT
             """
         )
+        existing_columns = {
+            str(row[1]) for row in self._connection.execute("PRAGMA table_info(acp_action_consumption)")
+        }
+        for column in ("receipt_json", "ledger_head", "result_json"):
+            if column not in existing_columns:
+                self._connection.execute(
+                    f"ALTER TABLE acp_action_consumption ADD COLUMN {column} TEXT"
+                )
+        if "actuator_started" not in existing_columns:
+            self._connection.execute(
+                "ALTER TABLE acp_action_consumption ADD COLUMN actuator_started INTEGER NOT NULL DEFAULT 0"
+            )
 
     def claim(
         self,
@@ -147,15 +188,48 @@ class SQLiteActionReplayStore:
             )
             return cursor.rowcount == 1
 
-    def finish(self, action_id: str, *, succeeded: bool) -> None:
+    def finish(
+        self,
+        action_id: str,
+        *,
+        succeeded: bool,
+        receipt: Mapping[str, Any] | None = None,
+        ledger_head: str = "",
+        result: Mapping[str, Any] | None = None,
+    ) -> None:
         outcome = "succeeded" if succeeded else "failed"
+        receipt_json = (
+            json.dumps(dict(receipt), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            if receipt is not None else None
+        )
+        result_json = (
+            json.dumps(dict(result), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            if result is not None else None
+        )
         with self._lock:
             cursor = self._connection.execute(
-                "UPDATE acp_action_consumption SET outcome = ? WHERE action_id = ? AND outcome = 'admitted'",
-                (outcome, action_id),
+                """
+                UPDATE acp_action_consumption
+                SET outcome = ?, receipt_json = ?, ledger_head = ?, result_json = ?
+                WHERE action_id = ? AND outcome = 'admitted' AND actuator_started = 1
+                """,
+                (outcome, receipt_json, ledger_head or None, result_json, action_id),
             )
             if cursor.rowcount != 1:
                 raise RuntimeError("replay-store action is missing or already finalized")
+
+    def begin(self, action_id: str, *, grant_id: str, proof_id: str, session_id: str) -> bool:
+        """Atomically admit exactly one final-actuator entry for the signed tuple."""
+        with self._lock:
+            cursor = self._connection.execute(
+                """
+                UPDATE acp_action_consumption SET actuator_started = 1
+                WHERE action_id = ? AND grant_id = ? AND proof_id = ? AND session_id = ?
+                  AND outcome = 'admitted' AND actuator_started = 0
+                """,
+                (action_id, grant_id, proof_id, session_id),
+            )
+            return cursor.rowcount == 1
 
     def contains(self, action_id: str) -> bool:
         with self._lock:
@@ -163,6 +237,28 @@ class SQLiteActionReplayStore:
                 "SELECT 1 FROM acp_action_consumption WHERE action_id = ?", (action_id,)
             ).fetchone()
             return row is not None
+
+    def get(self, action_id: str) -> dict[str, Any] | None:
+        """Return a durable consumption record, including any completion receipt."""
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT action_id, grant_id, proof_id, session_id, consumed_at, outcome,
+                       receipt_json, ledger_head, result_json, actuator_started
+                FROM acp_action_consumption WHERE action_id = ?
+                """,
+                (action_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "action_id": row[0], "grant_id": row[1], "proof_id": row[2],
+            "session_id": row[3], "consumed_at": row[4], "outcome": row[5],
+            "receipt": json.loads(row[6]) if row[6] else None,
+            "ledger_head": row[7] or "",
+            "result": json.loads(row[8]) if row[8] else None,
+            "actuator_started": bool(row[9]),
+        }
 
     def close(self) -> None:
         with self._lock:
@@ -233,7 +329,7 @@ class ACPShim:
         removed: list[str] = []
         with self._lock:
             for session_id, session in list(self._sessions.items()):
-                if session.agent_ids and session.agent_ids & revocations.revoked_agent_ids:
+                if session.agent_ids and session.agent_ids & revocations.revoked_agent_key_ids:
                     self._sessions.pop(session_id)
                     removed.append(session_id)
         return tuple(sorted(removed))
@@ -411,32 +507,63 @@ class ACPShim:
             payload=call_payload,
             trusted_issuer_public_key=issuer_key,
             revoked_grant_ids=revocations.revoked_grant_ids,
-            revoked_agent_ids=revocations.revoked_agent_ids,
+            revoked_agent_key_ids=revocations.revoked_agent_key_ids,
             minimum_revocation_epoch=revocations.epoch,
         )
         if not verification.ok:
-            if proof.agent_id in revocations.revoked_agent_ids:
+            if canonical_agent_id(bytes.fromhex(proof.agent_public_key_hex)) in revocations.revoked_agent_key_ids:
                 with self._lock:
                     self._sessions.pop(session.session_id, None)
             raise ACPShimError(-32010, f"delegation denied: {verification.reason}")
-        if not self._replay_store.claim(
-            action_id=proof.action_id,
-            grant_id=grant.grant_id,
-            proof_id=proof.proof_id,
-            session_id=session.session_id,
-            consumed_at=now,
+        if tool in PROTECTED_DELEGATED_TOOLS and type(self._backend) is not GovernedRuntimeBackend:
+            raise ACPShimError(-32011, "protected action requires the exact governed runtime backend")
+        delegated_call = getattr(self._backend, "call_delegated_tool", None)
+        if callable(delegated_call):
+            try:
+                result = delegated_call(
+                    tool,
+                    dict(arguments),
+                    grant=grant,
+                    proof=proof,
+                    payload=call_payload,
+                    session_id=session.session_id,
+                )
+            except Exception as exc:
+                if "already been consumed" in str(exc) or str(exc) == "replay":
+                    raise ACPShimError(-32010, "delegation denied: action id has already been consumed") from exc
+                raise ACPShimError(-32011, "governed backend rejected the action") from exc
+        elif tool not in PROTECTED_DELEGATED_TOOLS:
+            if not self._replay_store.claim(
+                action_id=proof.action_id,
+                grant_id=grant.grant_id,
+                proof_id=proof.proof_id,
+                session_id=session.session_id,
+                consumed_at=now,
+            ):
+                raise ACPShimError(-32010, "delegation denied: action id has already been consumed")
+            if not self._replay_store.begin(
+                proof.action_id,
+                grant_id=grant.grant_id,
+                proof_id=proof.proof_id,
+                session_id=session.session_id,
+            ):
+                raise ACPShimError(-32010, "delegation denied: action was not admitted for execution")
+            try:
+                result = self._backend.call_tool(tool, dict(arguments))
+            except Exception as exc:
+                self._replay_store.finish(proof.action_id, succeeded=False)
+                raise ACPShimError(-32011, "governed backend rejected the action") from exc
+            self._replay_store.finish(proof.action_id, succeeded=True)
+        else:
+            raise ACPShimError(-32011, "protected action requires a delegated backend")
+        if tool in PROTECTED_DELEGATED_TOOLS and (
+            not isinstance(result, dict) or not isinstance(result.get("delegated_receipt"), dict)
         ):
-            raise ACPShimError(-32010, "delegation denied: action id has already been consumed")
-        try:
-            result = self._backend.call_tool(tool, dict(arguments))
-        except Exception as exc:
-            self._replay_store.finish(proof.action_id, succeeded=False)
-            raise ACPShimError(-32011, "governed backend rejected the action") from exc
-        self._replay_store.finish(proof.action_id, succeeded=True)
+            raise ACPShimError(-32011, "protected action returned no signed completion receipt")
         with self._lock:
             current_session = self._sessions.get(session.session_id)
             if current_session is not None and current_session.agent_ids is not None:
-                current_session.agent_ids.add(proof.agent_id)
+                current_session.agent_ids.add(canonical_agent_id(bytes.fromhex(proof.agent_public_key_hex)))
         update = {
             "jsonrpc": JSONRPC_VERSION,
             "method": "session/update",
@@ -455,6 +582,7 @@ class ACPShim:
                             "agentId": proof.agent_id,
                             "authorization": grant.issuer_principal,
                             "authorship": proof.agent_id,
+                            "completionReceipt": result.get("delegated_receipt"),
                         }
                     },
                 },

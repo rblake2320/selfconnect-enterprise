@@ -488,6 +488,25 @@ class AgentLedger:
             )
         return total
 
+    def head_hash(self) -> str:
+        """Return the current canonical ledger-chain head hash."""
+        return self._load_last_hash()
+
+    def contains_verified_hash(self, expected_hash: str) -> bool:
+        """Return whether a digest is an entry hash in the verified chain."""
+        if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+            return False
+        valid, _count, _message, entries = self._verify_snapshot()
+        if not valid:
+            return False
+        for entry in entries:
+            unsigned = dict(entry)
+            unsigned.pop("sig", None)
+            encoded = json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+            if hashlib.sha256(encoded).hexdigest() == expected_hash:
+                return True
+        return expected_hash == GENESIS_HASH and not entries
+
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _load_last_seq(self) -> int:
@@ -661,6 +680,15 @@ class ThreadSafeAgentLedger(AgentLedger):
         """Thread-safe entry_count() — serialised through an RLock."""
         with self._lock:
             return super().entry_count()
+
+    def head_hash(self) -> str:
+        """Thread-safe current canonical ledger-chain head hash."""
+        with self._lock:
+            return super().head_hash()
+
+    def contains_verified_hash(self, expected_hash: str) -> bool:
+        with self._lock:
+            return super().contains_verified_hash(expected_hash)
 
     def find_entries_by_nested_value(
         self,

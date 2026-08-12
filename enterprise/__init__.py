@@ -37,11 +37,14 @@ from enterprise.approval_audit import (  # noqa: F401
 from enterprise.control import AgentControlRecord, ControlPlane  # noqa: F401
 from enterprise.delegation import (  # noqa: F401
     AgentActionProof,
+    DelegatedActionReceipt,
     DelegationGrant,
     DelegationVerification,
     issue_delegation_grant,
     sign_delegated_action,
+    sign_delegated_receipt,
     verify_delegated_action,
+    verify_delegated_receipt,
 )
 from enterprise.acp_shim import (  # noqa: F401
     ACPShim,
