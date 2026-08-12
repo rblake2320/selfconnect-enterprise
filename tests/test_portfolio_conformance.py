@@ -30,6 +30,15 @@ def test_repository_configuration_matches_portfolio_lock() -> None:
     assert report["errors"] == []
 
 
+def test_ci_executes_live_ultra_server_contract() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    package = __import__("json").loads(
+        (ROOT / "ultra_server" / "package.json").read_text(encoding="utf-8")
+    )
+    assert package["scripts"]["test:live"] == "node server.test.mjs"
+    assert workflow.count("npm run test:live") >= 2
+
+
 def test_component_checkout_must_match_commit_and_package_metadata(tmp_path: Path) -> None:
     component = tmp_path / "bpc"
     component.mkdir()

@@ -21,16 +21,24 @@ const publicRaw = publicDer.subarray(-32);
 const agentId = agentIdFromPublicKey(publicRaw);
 const agentPrincipal = canonicalAgentIdFromPublicKey(publicRaw);
 
-function agentHeaders(rawBody) {
+function agentHeaders(rawBody, path, method = 'POST') {
   const ts = String(Date.now() / 1000);
   const nonce = randomUUID();
-  const sig = sign(null, signedAgentMaterial(rawBody, ts, nonce), identity.privateKey);
+  const aud = 'selfconnect-ultra-lifecycle-v1';
+  const sig = sign(
+    null,
+    signedAgentMaterial(rawBody, ts, nonce, method, path, aud),
+    identity.privateKey,
+  );
   return {
     'X-SC-Agent-Auth': JSON.stringify({
       agent_id: agentId,
       pubkey_hex: publicRaw.toString('hex'),
       ts,
       nonce,
+      method,
+      path,
+      aud,
       sig: sig.toString('base64'),
     }),
   };
@@ -59,7 +67,7 @@ function p256Jwk() {
 async function signedPost(path, body, idempotencyKey, extraHeaders = {}) {
   const raw = Buffer.from(JSON.stringify(body));
   return request('POST', path, body, {
-    ...agentHeaders(raw),
+    ...agentHeaders(raw, path),
     ...(idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : {}),
     ...extraHeaders,
   });
@@ -125,14 +133,14 @@ if (status.body.runtimeMode === 'production') {
 }
 const registerRaw = Buffer.from(JSON.stringify(registerBody));
 const pair = await request('POST', '/register-pair', registerBody, {
-  ...agentHeaders(registerRaw),
+  ...agentHeaders(registerRaw, '/register-pair'),
   'X-Idempotency-Key': registerKey,
   ...admin,
 });
 assert(pair.status === 200 && pair.body.pairId, 'signed pair registration failed');
 await simulateCrashAfterSideEffect(registerKey);
 const pairRetry = await request('POST', '/register-pair', registerBody, {
-  ...agentHeaders(registerRaw),
+  ...agentHeaders(registerRaw, '/register-pair'),
   'X-Idempotency-Key': registerKey,
   ...admin,
 });
@@ -236,7 +244,7 @@ const recoveryWithoutAdmin = await signedPost('/confirm-recovery', recoveryBody)
 assert(recoveryWithoutAdmin.status === 401, 'recovery accepted without operator authorization');
 const recoveryRaw = Buffer.from(JSON.stringify(recoveryBody));
 const recovery = await request('POST', '/confirm-recovery', recoveryBody, {
-  ...agentHeaders(recoveryRaw),
+  ...agentHeaders(recoveryRaw, '/confirm-recovery'),
   ...admin,
 });
 assert(recovery.status === 200 && recovery.body.token, 'authorized recovery token issuance failed');

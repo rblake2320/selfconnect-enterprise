@@ -183,7 +183,10 @@ class TestUpdateHeartbeat:
             assert update_heartbeat(FAKE_HWND) is False
 
     def test_updates_hb_if_stamped(self):
-        with patch("enterprise.registry.get_agent_prop", return_value="agent-x"), \
+        def fake_get(_hwnd, key):
+            return "agent-x" if key == PROP_ID else ""
+
+        with patch("enterprise.registry.get_agent_prop", side_effect=fake_get), \
              patch("enterprise.registry.set_agent_prop", return_value=True) as mock_set:
             result = update_heartbeat(FAKE_HWND)
             assert result is True

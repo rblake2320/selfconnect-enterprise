@@ -75,6 +75,11 @@ PROP_BPC_PAIR  = "SCBPC"    # BPC pair ID assigned by Ultra Server e.g. "pair_a1
 PROP_TSK_CLIENT = "SCTSK"   # TSK client ID assigned by Ultra Server e.g. "tsk_a1b2c3d4e5f6g7h8"
 PROP_RECOVERY  = "SCRECOVERY"  # "1" during key recovery window (see key_recovery.py)
 
+# Process-local signer custody for refreshing the short-lived signed birth tag
+# alongside the ordinary heartbeat. The identity never enters window metadata.
+_birth_tag_signers: dict[int, object] = {}
+_birth_tag_signers_lock = threading.Lock()
+
 # ── Win32 structures for process identity binding ─────────────────────────────
 
 class FILETIME(ctypes.Structure):
@@ -251,6 +256,9 @@ def remove_agent_prop(hwnd: int, key: str) -> bool:
     atom = user32.RemovePropW(hwnd, key)
     if atom and atom != 0:
         ctypes.windll.kernel32.GlobalDeleteAtom(atom)
+    if key == PROP_ID:
+        with _birth_tag_signers_lock:
+            _birth_tag_signers.pop(hwnd, None)
     return True
 
 
@@ -280,7 +288,7 @@ def stamp_birth_tag(
         session:    Optional session label e.g. "session-16".
         identity:   Optional AgentIdentity.  When provided, also stamps SCID_SIG
                     and SCID_STS via enterprise.birth_tag_v2.  When absent, only
-                    the unsigned properties are stamped (v1 behavior, backward compat).
+                    the unsigned properties are stamped for observational use only.
 
     Returns:
         BirthTag dataclass representing the stamped certificate.
@@ -307,11 +315,16 @@ def stamp_birth_tag(
         from enterprise.birth_tag_v2 import stamp_signed_birth_tag
         try:
             stamp_signed_birth_tag(hwnd, identity, agent_id, pid, str(ctime), now)
-        except Exception:
+            with _birth_tag_signers_lock:
+                _birth_tag_signers[hwnd] = identity
+        except Exception as exc:
+            with _birth_tag_signers_lock:
+                _birth_tag_signers.pop(hwnd, None)
             _log.exception(
                 "stamp_birth_tag: SCID_SIG stamping failed for hwnd=%#010x — "
-                "unsigned tag still stamped (v1 fallback)", hwnd
+                "the tag is not eligible for authenticated discovery", hwnd
             )
+            raise RuntimeError("signed birth tag stamping failed") from exc
 
     return BirthTag(
         hwnd=hwnd,
@@ -333,9 +346,41 @@ def update_heartbeat(hwnd: int) -> bool:
     Call periodically (e.g. every 30s) to signal liveness to peers.
     Returns True if the SCID property exists (window was stamped).
     """
-    if not get_agent_prop(hwnd, PROP_ID):
+    agent_id = get_agent_prop(hwnd, PROP_ID)
+    if not agent_id:
         return False
-    return set_agent_prop(hwnd, PROP_HB, str(time.time()))
+    now = time.time()
+    if not set_agent_prop(hwnd, PROP_HB, str(now)):
+        return False
+
+    # Authenticated peers require a fresh SCID_SIG. Refresh it under the same
+    # process-held identity every heartbeat; never let a once-signed tag silently
+    # age into an unsigned/expired authorization state.
+    if get_agent_prop(hwnd, "SCID_SIG"):
+        with _birth_tag_signers_lock:
+            identity = _birth_tag_signers.get(hwnd)
+        if identity is None:
+            _log.error("cannot refresh signed birth tag for hwnd=%#x: signer unavailable", hwnd)
+            return False
+        from enterprise.birth_tag_v2 import stamp_signed_birth_tag
+
+        pid = get_agent_prop(hwnd, PROP_PID)
+        ctime = get_agent_prop(hwnd, PROP_CTIME)
+        born = get_agent_prop(hwnd, PROP_BORN)
+        try:
+            stamp_signed_birth_tag(
+                hwnd,
+                identity,
+                agent_id,
+                int(pid),
+                ctime,
+                float(born),
+                ts=now,
+            )
+        except (TypeError, ValueError, RuntimeError, OSError):
+            _log.exception("signed birth-tag refresh failed for hwnd=%#x", hwnd)
+            return False
+    return True
 
 
 def read_birth_tag(hwnd: int) -> Optional[BirthTag]:

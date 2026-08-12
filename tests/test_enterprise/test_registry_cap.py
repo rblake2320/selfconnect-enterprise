@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 from enterprise.birth_tag_v2 import PROP_SIG, PROP_STS
 from enterprise.discovery_config import MAX_CANDIDATES_PER_CYCLE, MAX_STAMPS_PER_PID
-from enterprise.registry import BirthTag, discover_mesh, stamp_birth_tag
+from enterprise.registry import BirthTag, discover_mesh, stamp_birth_tag, update_heartbeat
 
 
 # -- Helpers -------------------------------------------------------------------
@@ -286,8 +286,8 @@ class TestStampBirthTagSignedWiring:
         assert PROP_SIG not in stamped, "SCID_SIG should NOT be stamped without identity"
         assert PROP_STS not in stamped, "SCID_STS should NOT be stamped without identity"
 
-    def test_signing_failure_does_not_prevent_unsigned_tag(self):
-        """If signing fails, stamp_birth_tag still stamps unsigned tag (v1 fallback)."""
+    def test_signing_failure_is_not_reported_as_authenticated_tag(self):
+        """A requested signed tag fails closed when signing fails."""
         stamped: dict[str, str] = {}
 
         def fake_set(hwnd, key, value):
@@ -301,9 +301,39 @@ class TestStampBirthTagSignedWiring:
              patch("enterprise.registry.kernel32"), \
              patch("enterprise.registry.get_process_creation_time", return_value=132987654321), \
              patch("enterprise.registry.set_agent_prop", side_effect=fake_set):
-            tag = stamp_birth_tag(0xABC01234, "agent-x", "claude_code", "model-y", identity=identity)
+            import pytest
+
+            with pytest.raises(RuntimeError, match="signed birth tag stamping failed"):
+                stamp_birth_tag(
+                    0xABC01234, "agent-x", "claude_code", "model-y", identity=identity
+                )
 
         assert "SCID" in stamped
         assert "SCPID" in stamped
         assert PROP_SIG not in stamped
-        assert tag.agent_id == "agent-x"
+
+    def test_heartbeat_refreshes_short_lived_signed_birth_tag(self):
+        stamped: dict[str, str] = {}
+
+        def fake_set(hwnd, key, value):
+            stamped[key] = value
+            return True
+
+        def fake_get(hwnd, key):
+            return stamped.get(key, "")
+
+        identity = self._make_identity_mock()
+        with patch("enterprise.registry.user32"), \
+             patch("enterprise.registry.kernel32"), \
+             patch("enterprise.registry.get_process_creation_time", return_value=132987654321), \
+             patch("enterprise.registry.set_agent_prop", side_effect=fake_set), \
+             patch("enterprise.registry.get_agent_prop", side_effect=fake_get), \
+             patch("enterprise.registry.time.time", side_effect=[1000.0, 1000.0, 1030.0]):
+            stamp_birth_tag(
+                0xABC01234, "agent-x", "claude_code", "model-y", identity=identity
+            )
+            first_timestamp = stamped[PROP_STS]
+            assert update_heartbeat(0xABC01234) is True
+
+        assert float(stamped[PROP_STS]) > float(first_timestamp)
+        assert identity.sign.call_count == 2
