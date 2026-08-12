@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from typing import Optional
 
@@ -162,7 +163,7 @@ def verify_signed_birth_tag(
         hwnd:             Window handle to read properties from.
         public_key_bytes: Raw ed25519 public key bytes (32 bytes).
         max_age_seconds:  Maximum allowed age of the signed timestamp.
-                          Tier 2 enforces 60s; tests may pass 0.0 to skip.
+                          Must be positive; freshness cannot be disabled.
 
     Returns:
         (True, "ok") on success.
@@ -184,10 +185,19 @@ def verify_signed_birth_tag(
     except ValueError:
         return False, f"SCID_STS is not a float: {sts_str!r}"
 
-    if max_age_seconds > 0:
-        age = time.time() - ts
-        if age > max_age_seconds:
-            return False, f"SCID_SIG expired: age={age:.1f}s > {max_age_seconds}s"
+    if (
+        isinstance(max_age_seconds, bool)
+        or not isinstance(max_age_seconds, (int, float))
+        or not math.isfinite(float(max_age_seconds))
+        or float(max_age_seconds) <= 0
+    ):
+        return False, "SCID_SIG freshness window is invalid"
+    current = time.time()
+    if not math.isfinite(ts) or ts > current + 5.0:
+        return False, "SCID_SIG timestamp is in the future"
+    age = current - ts
+    if age > float(max_age_seconds):
+        return False, f"SCID_SIG expired: age={age:.1f}s > {max_age_seconds}s"
 
     agent_id = get_agent_prop(hwnd, "SCID")
     pid_str  = get_agent_prop(hwnd, "SCPID")

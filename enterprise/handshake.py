@@ -475,7 +475,7 @@ class HandshakeInitiator:
         if btag_sig_hex and pub_bytes:
             from enterprise.birth_tag_v2 import verify_signed_birth_tag
             ok_btag, btag_reason = verify_signed_birth_tag(
-                peer.hwnd, pub_bytes, max_age_seconds=0.0
+                peer.hwnd, pub_bytes, max_age_seconds=60.0
             )
             if not ok_btag:
                 return HandshakeResult(
