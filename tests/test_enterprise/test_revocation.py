@@ -18,11 +18,20 @@ def _principal(seed: str) -> str:
     return "SCID-" + (seed * 64)[:64]
 
 
-def test_known_short_display_id_collision_has_distinct_revocation_principals():
+def test_known_short_display_id_collision_has_distinct_revocation_principals(tmp_path):
     left = bytes.fromhex("67bc101981dfd63eaf5af3c05448a9f8e40902ffe4d6c1d3813fad97f99c8b1f")
     right = bytes.fromhex("3a1a9a9ab515f2baa029ee9df63f93cb65b97a446fb86b13da8824433bbb874b")
     assert hashlib.sha256(left).hexdigest()[:8] == hashlib.sha256(right).hexdigest()[:8]
-    assert "SCID-" + hashlib.sha256(left).hexdigest() != "SCID-" + hashlib.sha256(right).hexdigest()
+    left_principal = "SCID-" + hashlib.sha256(left).hexdigest()
+    right_principal = "SCID-" + hashlib.sha256(right).hexdigest()
+    assert left_principal != right_principal
+
+    registry = RevocationRegistry(tmp_path / "collision.sqlite3")
+    registry.revoke_agent(left_principal, operator_id="OP", reason="compromise", revoked_at=1.0)
+    state = registry.snapshot()
+    assert left_principal in state.revoked_agent_key_ids
+    assert right_principal not in state.revoked_agent_key_ids
+    registry.close()
 
 
 def test_legacy_short_agent_revocation_fails_closed_on_upgrade(tmp_path):
