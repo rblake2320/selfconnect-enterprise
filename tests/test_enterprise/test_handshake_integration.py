@@ -126,9 +126,6 @@ class TestRealCryptoRoundTrip:
                 initiator.handle_response(FAKE_PEER_HWND, response)
             return True
 
-        def fake_get_prop(hwnd, key):
-            return ""  # no SCID_SIG — v1 peer path
-
         from enterprise.registry import BirthTag
         peer = BirthTag(
             hwnd=FAKE_PEER_HWND,
@@ -142,6 +139,29 @@ class TestRealCryptoRoundTrip:
             os_create_time=132987654321,
             session="",
         )
+
+        from enterprise.birth_tag_v2 import _build_payload
+        btag_ts = time.time()
+        btag_sig = peer_identity.sign(
+            _build_payload(
+                peer.agent_id,
+                peer.pid,
+                str(peer.os_create_time),
+                peer.born,
+                btag_ts,
+            )
+        ).hex()
+        prop_store = {
+            "SCID_SIG": btag_sig,
+            "SCID_STS": str(btag_ts),
+            "SCID": peer.agent_id,
+            "SCPID": str(peer.pid),
+            "SCCTIME": str(peer.os_create_time),
+            "SCBORN": str(peer.born),
+        }
+
+        def fake_get_prop(hwnd, key):
+            return prop_store.get(key, "")
 
         with patch("enterprise.registry.send_data", side_effect=fake_send_data), \
              patch("enterprise.registry.get_agent_prop", side_effect=fake_get_prop):

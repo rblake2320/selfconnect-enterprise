@@ -212,7 +212,7 @@ class TestHandshakeInitiator:
         return _make_identity(tmp_path, "peer-responder")
 
     def _simulate_handshake(self, tmp_path, corrupt_sig=False, wrong_nonce=False,
-                             no_btag_sig=True, timeout=False):
+                             no_btag_sig=False, timeout=False):
         """Run a full mock handshake cycle and return the HandshakeResult."""
         peer_identity = self._make_responder_identity(tmp_path)
         peer = _make_birth_tag(FAKE_PEER_HWND, agent_id="agent-peer")
@@ -240,8 +240,28 @@ class TestHandshakeInitiator:
                 initiator.handle_response(FAKE_PEER_HWND, response)
             return True
 
+        from enterprise.birth_tag_v2 import _build_payload
+        btag_ts = time.time()
+        btag_sig = peer_identity.sign(
+            _build_payload(
+                peer.agent_id,
+                peer.pid,
+                str(peer.os_create_time),
+                peer.born,
+                btag_ts,
+            )
+        ).hex()
+        prop_store = {
+            "SCID_SIG": "" if no_btag_sig else btag_sig,
+            "SCID_STS": str(btag_ts),
+            "SCID": peer.agent_id,
+            "SCPID": str(peer.pid),
+            "SCCTIME": str(peer.os_create_time),
+            "SCBORN": str(peer.born),
+        }
+
         def fake_get_prop(hwnd, key):
-            return ""  # no SCID_SIG = v1 peer
+            return prop_store.get(key, "")
 
         with patch("enterprise.registry.send_data", side_effect=fake_send_data), \
              patch("enterprise.registry.get_agent_prop", side_effect=fake_get_prop):
@@ -253,6 +273,11 @@ class TestHandshakeInitiator:
         assert result.reason == "ok"
         assert result.peer is not None
         assert result.peer.agent_id == "agent-peer"
+
+    def test_missing_birth_tag_signature_is_rejected(self, tmp_path):
+        result = self._simulate_handshake(tmp_path, no_btag_sig=True)
+        assert result.ok is False
+        assert "missing SCID_SIG" in result.reason
 
     def test_fails_on_nonce_mismatch(self, tmp_path):
         result = self._simulate_handshake(tmp_path, wrong_nonce=True)

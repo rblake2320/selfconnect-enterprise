@@ -472,22 +472,31 @@ class HandshakeInitiator:
         pub_bytes = bytes.fromhex(pub_hex) if pub_hex else b""
 
         btag_sig_hex = get_agent_prop(peer.hwnd, "SCID_SIG")
-        if btag_sig_hex and pub_bytes:
-            from enterprise.birth_tag_v2 import verify_signed_birth_tag
-            ok_btag, btag_reason = verify_signed_birth_tag(
-                peer.hwnd, pub_bytes, max_age_seconds=60.0
+        if not btag_sig_hex:
+            return HandshakeResult(
+                agent_id=peer.agent_id,
+                hwnd=peer.hwnd,
+                ok=False,
+                reason="birth-tag signature cross-check failed: missing SCID_SIG property",
             )
-            if not ok_btag:
-                return HandshakeResult(
-                    agent_id=peer.agent_id,
-                    hwnd=peer.hwnd,
-                    ok=False,
-                    reason=f"birth-tag signature cross-check failed: {btag_reason}",
-                )
-        elif not btag_sig_hex:
-            _log.warning(
-                "v1_peer_accepted_during_grace agent=%s hwnd=%#x",
-                peer.agent_id, peer.hwnd,
+        if not pub_bytes:
+            return HandshakeResult(
+                agent_id=peer.agent_id,
+                hwnd=peer.hwnd,
+                ok=False,
+                reason="birth-tag signature cross-check failed: missing peer public key",
+            )
+
+        from enterprise.birth_tag_v2 import verify_signed_birth_tag
+        ok_btag, btag_reason = verify_signed_birth_tag(
+            peer.hwnd, pub_bytes, max_age_seconds=60.0
+        )
+        if not ok_btag:
+            return HandshakeResult(
+                agent_id=peer.agent_id,
+                hwnd=peer.hwnd,
+                ok=False,
+                reason=f"birth-tag signature cross-check failed: {btag_reason}",
             )
 
         _log.info(
