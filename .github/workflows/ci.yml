@@ -36,7 +36,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --upgrade pip
-          pip install "pytest==9.1.1" "ruff>=0.4" "hypothesis>=6.0" "pip-audit>=2.7" pywin32 "cryptography>=48.0.1" comtypes "rich>=13.0"
+          pip install "pytest==9.1.1" "ruff>=0.4" "hypothesis>=6.0" "pip-audit>=2.7" pywin32 "cryptography>=50.0.0" comtypes "rich>=13.0"
           $portfolio = Get-Content portfolio-lock.json | ConvertFrom-Json
           $sdk = $portfolio.components.selfconnect
           git submodule update --init --recursive
@@ -49,6 +49,31 @@ jobs:
 
       - name: Unit tests and result policy
         run: python -I -c "import runpy; runpy.run_path('tools/ci_test_gate.py', run_name='__main__')"
+
+  runtime-ownership-posix:
+    name: POSIX runtime ownership
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install bounded test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pytest==9.1.1" "cryptography>=50.0.0"
+          pip install -e . --no-deps
+
+      - name: Run POSIX-only ownership and replacement tests
+        run: |
+          python -m pytest -q --tb=short \
+            tests/test_enterprise/test_runtime_ownership.py::test_permissive_lock_directory_is_rejected \
+            tests/test_enterprise/test_runtime_ownership.py::test_wrong_owner_lock_directory_is_rejected \
+            tests/test_enterprise/test_runtime_ownership.py::test_precreated_symlink_lock_file_is_rejected \
+            tests/test_enterprise/test_runtime_ownership.py::test_replaced_lock_file_during_binding_is_rejected
 
   ultra-contract-windows:
     name: Ultra live contract (Windows)
@@ -110,7 +135,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --upgrade pip
-          pip install "pytest>=8" "cryptography>=48.0.1" pywin32
+          pip install "pytest>=8" "cryptography>=50.0.0" pywin32
           pip install -e . --no-deps
 
       - name: Run live Node and Python contracts
@@ -241,6 +266,19 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      postgres_b:
+        image: postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ultra
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ultra"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
       redis:
         image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
         ports:
@@ -306,10 +344,18 @@ jobs:
           npm ci --prefix ultra_server
           npm test --prefix ultra_server
 
+      - name: Run independent-state handoff against separate PostgreSQL authorities
+        env:
+          ULTRA_TEST_POSTGRES_URL_A: postgresql://postgres:postgres@127.0.0.1:5432/ultra
+          ULTRA_TEST_POSTGRES_URL_B: postgresql://postgres:postgres@127.0.0.1:5433/ultra
+        run: |
+          npm run test:independent-state --prefix ultra_server
+          npm run test:ultra-outbox --prefix ultra_server
+
       - name: Install Python contract dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "pytest>=8" "cryptography>=48.0.1"
+          pip install "pytest>=8" "cryptography>=50.0.0"
           pip install -e . --no-deps
 
       - name: Start production sidecar
@@ -415,7 +461,26 @@ jobs:
           )
 
           export DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/ultra_ha'
-          export REDIS_URL='redis://127.0.0.1:6379/1'
+          sentinel_dir="$(dirname "$GITHUB_WORKSPACE")/tsk-protocol/ci/redis-sentinel"
+          docker compose -f "$sentinel_dir/docker-compose.yml" -p ultra-ha-sentinel down -v --remove-orphans || true
+          docker compose -f "$sentinel_dir/docker-compose.yml" -p ultra-ha-sentinel up -d
+          for _ in $(seq 1 60); do
+            replicas="$(docker exec ultra-ha-sentinel-sentinel-1-1 redis-cli -p 26379 sentinel master tskmaster 2>/dev/null | awk '/num-slaves/{getline; print}' | tr -d '\r' || echo 0)"
+            [ "${replicas:-0}" -ge 2 ] && break
+            sleep 1
+          done
+          [ "${replicas:-0}" -ge 2 ]
+          for _ in $(seq 1 30); do
+            replicated="$(docker exec ultra-ha-sentinel-redis-master-1 redis-cli WAIT 1 1000 2>/dev/null | tr -d '\r' || echo 0)"
+            [ "${replicated:-0}" -ge 1 ] && break
+            sleep 1
+          done
+          [ "${replicated:-0}" -ge 1 ]
+          export ULTRA_HA_REDIS_SENTINELS='127.0.0.1:26379,127.0.0.1:26380,127.0.0.1:26381'
+          export ULTRA_HA_REDIS_MASTER_NAME='tskmaster'
+          export ULTRA_HA_REDIS_NATMAP='172.28.7.10:6379=127.0.0.1:6390,172.28.7.11:6379=127.0.0.1:6391,172.28.7.12:6379=127.0.0.1:6392'
+          export ULTRA_HA_REDIS_WAIT_REPLICAS='1'
+          export ULTRA_HA_REDIS_WAIT_TIMEOUT_MS='3000'
           export ULTRA_HA_ENABLED='true'
           export ULTRA_HA_MAX_COMMAND_AGE_MS='60000'
           export ULTRA_HA_MAX_LEASE_MS='300000'
@@ -461,7 +526,7 @@ jobs:
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             "$ULTRA_PRIMARY_URL/ready")" = '503'
 
-          redis_container="$(docker ps --filter publish=6379 --format '{{.ID}}' | head -n 1)"
+          redis_container='ultra-ha-sentinel-redis-master-1'
           test -n "$redis_container"
           docker pause "$redis_container" >/dev/null
           ready_code="$(curl --max-time 5 --silent --output /dev/null --write-out '%{http_code}' \
@@ -485,10 +550,218 @@ jobs:
           cat "$RUNNER_TEMP/ultra.stdout.log" 2>/dev/null || true
           cat "$RUNNER_TEMP/ultra.stderr.log" 2>/dev/null || true
           test ! -f "$RUNNER_TEMP/ultra.pid" || kill "$(cat "$RUNNER_TEMP/ultra.pid")" 2>/dev/null || true
-          redis_container="$(docker ps --filter publish=6379 --format '{{.ID}}' | head -n 1 || true)"
-          test -z "$redis_container" || docker unpause "$redis_container" >/dev/null 2>&1 || true
+          docker unpause ultra-ha-sentinel-redis-master-1 >/dev/null 2>&1 || true
           cat "$RUNNER_TEMP/ultra-primary.log" 2>/dev/null || true
           cat "$RUNNER_TEMP/ultra-replica.log" 2>/dev/null || true
           test ! -f "$RUNNER_TEMP/ultra-primary.pid" || kill "$(cat "$RUNNER_TEMP/ultra-primary.pid")" 2>/dev/null || true
           test ! -f "$RUNNER_TEMP/ultra-replica.pid" || kill "$(cat "$RUNNER_TEMP/ultra-replica.pid")" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/ultra-ha-state.json"
+          sentinel_dir="$(dirname "$GITHUB_WORKSPACE")/tsk-protocol/ci/redis-sentinel"
+          docker compose -f "$sentinel_dir/docker-compose.yml" -p ultra-ha-sentinel down -v --remove-orphans || true
+
+  ultra-final-ha-acceptance:
+    name: Ultra final HA acceptance (6 PG + Redis quorum/Sentinel)
+    runs-on: ubuntu-latest
+    services:
+      postgres_a:
+        image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+        env:
+          POSTGRES_USER: bpc_test
+          POSTGRES_PASSWORD: bpc-test-only-password
+          POSTGRES_DB: bpc_test
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U bpc_test -d bpc_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      postgres_b:
+        image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+        env:
+          POSTGRES_USER: bpc_test
+          POSTGRES_PASSWORD: bpc-test-only-password
+          POSTGRES_DB: bpc_test
+        ports: [5433:5432]
+        options: >-
+          --health-cmd "pg_isready -U bpc_test -d bpc_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      postgres_control:
+        image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+        env:
+          POSTGRES_USER: bpc_test
+          POSTGRES_PASSWORD: bpc-test-only-password
+          POSTGRES_DB: bpc_test
+        ports: [5434:5432]
+        options: >-
+          --health-cmd "pg_isready -U bpc_test -d bpc_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      tsk_postgres_a:
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_USER: tsk_test
+          POSTGRES_PASSWORD: tsk-test-only-password
+          POSTGRES_DB: tsk_test
+        ports: [5442:5432]
+        options: >-
+          --health-cmd "pg_isready -U tsk_test -d tsk_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      tsk_postgres_b:
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_USER: tsk_test
+          POSTGRES_PASSWORD: tsk-test-only-password
+          POSTGRES_DB: tsk_test
+        ports: [5443:5432]
+        options: >-
+          --health-cmd "pg_isready -U tsk_test -d tsk_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      tsk_postgres_control:
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_USER: tsk_test
+          POSTGRES_PASSWORD: tsk-test-only-password
+          POSTGRES_DB: tsk_test
+        ports: [5444:5432]
+        options: >-
+          --health-cmd "pg_isready -U tsk_test -d tsk_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis_a:
+        image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+        ports: [6381:6379]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+      redis_b:
+        image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+        ports: [6382:6379]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+      redis_c:
+        image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+        ports: [6383:6379]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      BPC_TEST_POSTGRES_URL: postgresql://bpc_test:bpc-test-only-password@127.0.0.1:5432/bpc_test
+      BPC_TEST_POSTGRES_B_URL: postgresql://bpc_test:bpc-test-only-password@127.0.0.1:5433/bpc_test
+      BPC_TEST_POSTGRES_CONTROL_URL: postgresql://bpc_test:bpc-test-only-password@127.0.0.1:5434/bpc_test
+      BPC_TEST_REDIS_URLS: redis://127.0.0.1:6381/0,redis://127.0.0.1:6382/0,redis://127.0.0.1:6383/0
+      TSK_TEST_POSTGRES_URL_A: postgresql://tsk_test:tsk-test-only-password@127.0.0.1:5442/tsk_test
+      TSK_TEST_POSTGRES_URL_B: postgresql://tsk_test:tsk-test-only-password@127.0.0.1:5443/tsk_test
+      TSK_TEST_SOURCE_PG_URL_A: postgresql://tsk_test:tsk-test-only-password@127.0.0.1:5442/tsk_test
+      TSK_TEST_RECEIVER_PG_URL_B: postgresql://tsk_test:tsk-test-only-password@127.0.0.1:5443/tsk_test
+      TSK_TEST_CONTROL_PG_URL: postgresql://tsk_test:tsk-test-only-password@127.0.0.1:5444/tsk_test
+      TSK_TEST_REDIS_URL: redis://127.0.0.1:6381/1
+      ULTRA_HA_REDIS_SENTINELS: 127.0.0.1:26379,127.0.0.1:26380,127.0.0.1:26381
+      ULTRA_HA_REDIS_MASTER_NAME: tskmaster
+      ULTRA_HA_REDIS_NATMAP: 172.28.7.10:6379=127.0.0.1:6390,172.28.7.11:6379=127.0.0.1:6391,172.28.7.12:6379=127.0.0.1:6392
+      ULTRA_HA_REDIS_WAIT_REPLICAS: "1"
+      ULTRA_HA_REDIS_WAIT_TIMEOUT_MS: "3000"
+      ULTRA_TEST_POSTGRES_URL_A: postgresql://tsk_test:tsk-test-only-password@127.0.0.1:5442/tsk_test
+      ULTRA_TEST_POSTGRES_URL_B: postgresql://tsk_test:tsk-test-only-password@127.0.0.1:5443/tsk_test
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - name: Checkout exact reviewed protocol authorities
+        shell: bash
+        run: |
+          set -euo pipefail
+          deps_root="$(dirname "$GITHUB_WORKSPACE")"
+          bpc_commit="$(node -e 'const p=require("./portfolio-lock.json"); process.stdout.write(p.components["bpc-protocol"].commit)')"
+          tsk_commit="$(node -e 'const p=require("./portfolio-lock.json"); process.stdout.write(p.components["tsk-protocol"].commit)')"
+          git clone https://github.com/rblake2320/bpc-protocol.git "$deps_root/bpc-protocol"
+          git -C "$deps_root/bpc-protocol" checkout --detach "$bpc_commit"
+          git clone https://github.com/rblake2320/tsk-protocol.git "$deps_root/tsk-protocol"
+          git -C "$deps_root/tsk-protocol" checkout --detach "$tsk_commit"
+          npm ci --prefix "$deps_root/bpc-protocol"
+          npm run build --prefix "$deps_root/bpc-protocol"
+          npm ci --prefix "$deps_root/tsk-protocol"
+          npm run build --prefix "$deps_root/tsk-protocol"
+          npm ci --prefix ultra_server
+      - name: Configure durable BPC Redis quorum
+        shell: bash
+        run: |
+          cd "$(dirname "$GITHUB_WORKSPACE")/bpc-protocol"
+          node --input-type=module - <<'NODE'
+          import Redis from 'ioredis';
+          for (const port of [6381, 6382, 6383]) {
+            const client = new Redis(port, '127.0.0.1');
+            await client.config('SET', 'appendonly', 'yes');
+            await client.config('SET', 'appendfsync', 'always');
+            client.disconnect();
+          }
+          NODE
+      - name: Start the exact TSK Sentinel authority used by the handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          sentinel_dir="$(dirname "$GITHUB_WORKSPACE")/tsk-protocol/ci/redis-sentinel"
+          docker compose -f "$sentinel_dir/docker-compose.yml" -p tsk-sentinel down -v --remove-orphans || true
+          docker compose -f "$sentinel_dir/docker-compose.yml" -p tsk-sentinel up -d
+          for _ in $(seq 1 60); do
+            replicas="$(docker exec tsk-sentinel-sentinel-1-1 redis-cli -p 26379 sentinel master tskmaster 2>/dev/null | awk '/num-slaves/{getline; print}' | tr -d '\r' || echo 0)"
+            [ "${replicas:-0}" -ge 2 ] && break
+            sleep 1
+          done
+          [ "${replicas:-0}" -ge 2 ]
+          docker exec tsk-sentinel-redis-master-1 redis-cli WAIT 2 10000 >/dev/null
+      - name: Run direct reviewed BPC and TSK protocol composition
+        shell: bash
+        env:
+          BPC_LIVE_COMPOSITION_A_URL: ${{ env.BPC_TEST_POSTGRES_URL }}
+          BPC_LIVE_COMPOSITION_B_URL: ${{ env.BPC_TEST_POSTGRES_B_URL }}
+          BPC_LIVE_COMPOSITION_CONTROL_URL: ${{ env.BPC_TEST_POSTGRES_CONTROL_URL }}
+          BPC_LIVE_COMPOSITION_REDIS_URLS: ${{ env.BPC_TEST_REDIS_URLS }}
+          TSK_LIVE_COMPOSITION_A_URL: ${{ env.TSK_TEST_SOURCE_PG_URL_A }}
+          TSK_LIVE_COMPOSITION_B_URL: ${{ env.TSK_TEST_RECEIVER_PG_URL_B }}
+          TSK_LIVE_COMPOSITION_CONTROL_URL: ${{ env.TSK_TEST_CONTROL_PG_URL }}
+          TSK_TEST_SENTINELS: 127.0.0.1:26379,127.0.0.1:26380,127.0.0.1:26381
+          TSK_TEST_SENTINEL_MASTER: tskmaster
+          TSK_SENTINEL_NATMAP: 172.28.7.10:6379=127.0.0.1:6390,172.28.7.11:6379=127.0.0.1:6391,172.28.7.12:6379=127.0.0.1:6392
+          TSK_SENTINEL_NETWORK: tsk-sentinel_tsknet
+          TSK_SENTINEL_MASTER_CONTAINER: tsk-sentinel-redis-master-1
+          TSK_SENTINEL_REPLICA1_CONTAINER: tsk-sentinel-redis-replica-1-1
+          TSK_SENTINEL_REPLICA2_CONTAINER: tsk-sentinel-redis-replica-2-1
+          TSK_SAME_AUTHORITY_FAULTS: "1"
+          LIVE_COMPOSITION_COMBINED: "1"
+          ULTRA_FINAL_COMMAND_ID: enterprise28-promote-1
+          ULTRA_FINAL_EXPECTED_ENTERPRISE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE: ${{ runner.temp }}/ultra-live-composition-evidence.json
+          ULTRA_LIVE_FAULT_EVIDENCE_FILE: ${{ runner.temp }}/ultra-live-fault-evidence.json
+          BPC_PROTOCOL_ROOT: ${{ github.workspace }}/../bpc-protocol
+          TSK_PROTOCOL_ROOT: ${{ github.workspace }}/../tsk-protocol
+        run: |
+          set -euo pipefail
+          ULTRA_TEST_POSTGRES_B_CONTAINER="$(docker ps --filter publish=5443 --format '{{.ID}}')"
+          [ -n "$ULTRA_TEST_POSTGRES_B_CONTAINER" ]
+          export ULTRA_TEST_POSTGRES_B_CONTAINER
+          npm run test:protocol-composition --prefix ultra_server
+      - name: Run pinned final acceptance and create secret-free evidence
+        shell: bash
+        env:
+          BPC_PROTOCOL_ROOT: ${{ github.workspace }}/../bpc-protocol
+          TSK_PROTOCOL_ROOT: ${{ github.workspace }}/../tsk-protocol
+          ULTRA_FINAL_EXPECTED_ENTERPRISE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE: ${{ runner.temp }}/ultra-live-composition-evidence.json
+          ULTRA_LIVE_FAULT_EVIDENCE_FILE: ${{ runner.temp }}/ultra-live-fault-evidence.json
+          ULTRA_FINAL_EVIDENCE_FILE: ${{ runner.temp }}/ultra-final-ha-evidence.json
+        run: npm run test:final-ha --prefix ultra_server
+      - name: Upload immutable non-secret acceptance evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ultra-final-ha-evidence-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ultra-final-ha-evidence.json
+            ${{ runner.temp }}/ultra-live-fault-evidence.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Stop TSK Sentinel acceptance authority
+        if: always()
+        shell: bash
+        run: |
+          sentinel_dir="$(dirname "$GITHUB_WORKSPACE")/tsk-protocol/ci/redis-sentinel"
+          docker compose -f "$sentinel_dir/docker-compose.yml" -p tsk-sentinel down -v --remove-orphans || true

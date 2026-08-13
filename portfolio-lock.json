@@ -3,21 +3,21 @@
   "components": {
     "selfconnect": {
       "repository": "https://github.com/rblake2320/selfconnect.git",
-      "commit": "3b48fc6d456e13957366d2cdf6b2f3b62cea2280",
+      "commit": "e849934236a5ab2709534dbd913709014798b5f9",
       "package_name": "selfconnect",
       "package_version": "0.12.0",
       "manifest": "pyproject.toml"
     },
     "bpc-protocol": {
       "repository": "https://github.com/rblake2320/bpc-protocol.git",
-      "commit": "772271e174769f91a980cc3ee69a6eb9cc36bf39",
+      "commit": "aedf67b89574066e1df0575e68fdb58ea0dc9297",
       "package_name": "bpc-protocol",
       "package_version": "0.2.0",
       "manifest": "package.json"
     },
     "tsk-protocol": {
       "repository": "https://github.com/rblake2320/tsk-protocol.git",
-      "commit": "9cff3e25e2432797c454ad09b9dacbf7244e51af",
+      "commit": "20bf099e0b4f7479b93cf1d5e245b3f7c87e1675",
       "package_name": "tsk-protocol",
       "package_version": "0.1.0",
       "manifest": "package.json"

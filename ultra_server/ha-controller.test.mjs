@@ -205,6 +205,12 @@ test('every state-mutating HTTP route declares the HA writer boundary', async ()
     } else if (route.path === '/ha/command') {
       assert.equal(route.firstGuard, 'requireAdminAuth');
       assert.match(source, /app\.post\('\/ha\/command', requireAdminAuth, serializeHaTransition,/);
+    } else if (route.path === '/ha/reprovision-tsk') {
+      assert.equal(route.firstGuard, 'requireAdminAuth');
+      assert.match(
+        source,
+        /app\.post\('\/ha\/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromotionWriterLease,/,
+      );
     } else {
       assert.equal(
         route.firstGuard,
@@ -223,4 +229,25 @@ test('every state-mutating HTTP route declares the HA writer boundary', async ()
     /idempotencyStore\.withLock\(bpcActivityLock\(req\.params\.pairId\)/,
     'BPC lifecycle updates must share the per-pair activity lock',
   );
+  assert.match(source,
+    /promotedTskRuntime = await loadReloadablePromotedTskRuntime\(\s*process\.env\.ULTRA_TSK_AUTHORITY_CONFIG_FILE/,
+    'independent production must load the real promoted TSK authority or fail startup',
+  );
+  assert.match(source, /tskStore = promotedTskRuntime\.credentialStore/,
+    'all independent production TSK routes must use the promoted fenced authority');
+  assert.match(source, /completeImportedPromotedTskCredential\(/,
+    'reprovision must complete from a signed public authority proof');
+  assert.doesNotMatch(source, /completeImportedTskReprovision\(/,
+    'the legacy callback and secret-copy completion path must be unreachable');
+  assert.doesNotMatch(source, /targetMap = generateTumblerMap\(/,
+    'the Enterprise HTTP route must not mint its own TSK credential');
+  assert.match(source,
+    /promotedTskRuntime\.withRuntime\(async \(authority\) =>/,
+    'provisioning and proof completion must capture one authority across reload');
+  assert.match(source, /process\.on\('SIGHUP'/,
+    'production must expose an operating-system governed renewal signal');
+  assert.match(source, /loadUltraRedisAuthorityConfig\(process\.env/,
+    'production must parse the governed Redis Sentinel authority');
+  assert.match(source, /redisAuthorityConfig\.durability \?\? undefined/,
+    'the Ultra writer fence must receive the configured WAIT durability policy');
 });

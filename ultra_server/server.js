@@ -29,6 +29,20 @@ import {
 import { enforceBpcAuthorization } from './security-boundary.js';
 import { UltraHaController, loadUltraHaConfig } from './ha-controller.js';
 import {
+  PgNonceTombstoneStore,
+  ULTRA_INDEPENDENT_STATE_SCHEMA,
+  assertIndependentStateReady,
+  completeImportedPromotedTskCredential,
+  independentStateAllowsWrites,
+  loadIndependentStateRuntimeConfig,
+  readImportedTskReprovision,
+} from './independent-state.js';
+import { loadReloadablePromotedTskRuntime } from './promoted-tsk-runtime.js';
+import {
+  createUltraRedisClient,
+  loadUltraRedisAuthorityConfig,
+} from './ultra-redis-authority.js';
+import {
   createMetricsAuthMiddleware,
   metricAuthFailureLabel,
   metricMethodLabel,
@@ -44,6 +58,7 @@ import {
   ULTRA_PG_SCHEMA,
   initializePgSchemas,
 } from './runtime-stores.js';
+import { loadGovernedUltraStateAuthority } from './ultra-state-authority-config.js';
 
 // ── BPC imports ───────────────────────────────────────────────────────────────
 import {
@@ -54,7 +69,7 @@ import {
   MemoryNonceBackend,
   MemoryAnomalyStore,
   PgPairStore,
-  PG_SCHEMA,
+  BPC_PAIR_PG_SCHEMA,
   RedisAnomalyStore,
   RedisNonceStore,
   RedisRateLimiter,
@@ -105,6 +120,8 @@ if (!['development', 'production'].includes(RUNTIME_MODE)) {
   throw new Error('ULTRA_RUNTIME_MODE must be development or production');
 }
 const HA_CONFIG = loadUltraHaConfig(process.env, RUNTIME_MODE);
+const INDEPENDENT_CONFIG = loadIndependentStateRuntimeConfig(process.env, HA_CONFIG, RUNTIME_MODE);
+const HA_STATE_MODE = INDEPENDENT_CONFIG.mode;
 
 // Operator authorization is separate from the per-agent Ed25519 proof.
 // LIFECYCLE_SECRET remains a development compatibility alias only.
@@ -133,6 +150,9 @@ let nonceBackendType;
 let rateLimiter;
 let ipRateLimiter;
 let haController = null;
+let independentStateReady = null;
+let runtimePgPool = null;
+let promotedTskRuntime = null;
 
 const RATE_LIMIT_WINDOW_MS = parseInt(process.env.BPC_RATE_LIMIT_WINDOW_MS ?? '60000', 10);
 const IP_RATE_LIMIT = parseInt(process.env.BPC_IP_RATE_LIMIT ?? '200', 10);
@@ -148,12 +168,12 @@ for (const [name, value] of [
 if (RUNTIME_MODE === 'production') {
   const required = [
     'DATABASE_URL',
-    'REDIS_URL',
     'ULTRA_ADMIN_TOKEN',
     'ULTRA_METRICS_TOKEN',
     'ULTRA_RECOVERY_HMAC_KEY',
   ];
   const missing = required.filter((name) => !process.env[name]);
+  if (!process.env.REDIS_URL && !process.env.ULTRA_HA_REDIS_SENTINELS) missing.push('REDIS_URL or ULTRA_HA_REDIS_SENTINELS');
   if (missing.length > 0) throw new Error(`production mode missing required settings: ${missing.join(', ')}`);
   if (Buffer.byteLength(process.env.ULTRA_ADMIN_TOKEN, 'utf8') < 32) {
     throw new Error('ULTRA_ADMIN_TOKEN must contain at least 32 bytes in production');
@@ -174,24 +194,29 @@ if (RUNTIME_MODE === 'production') {
   }
   const [{ Pool }, { default: Redis }] = await Promise.all([import('pg'), import('ioredis')]);
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  runtimePgPool = pool;
   await pool.query('SELECT 1');
-  await initializePgSchemas(pool, PG_SCHEMA, ULTRA_PG_SCHEMA);
+  await initializePgSchemas(
+    pool,
+    BPC_PAIR_PG_SCHEMA,
+    ULTRA_PG_SCHEMA,
+    ...(HA_STATE_MODE === 'independent' ? [ULTRA_INDEPENDENT_STATE_SCHEMA] : []),
+  );
 
-  const redisClient = new Redis(process.env.REDIS_URL, {
-    lazyConnect: true,
-    ...(HA_CONFIG.enabled ? {
-      commandTimeout: 2_000,
-      enableOfflineQueue: false,
-      maxRetriesPerRequest: 1,
-    } : {}),
+  const redisAuthorityConfig = loadUltraRedisAuthorityConfig(process.env, {
+    haEnabled: HA_CONFIG.enabled,
   });
+  const redisClient = createUltraRedisClient(Redis, redisAuthorityConfig);
   await redisClient.connect();
   pairStore = new PgPairStore(pool);
   anomalyStore = new RedisAnomalyStore(redisClient, 'ultra:anomaly:');
-  nonceBackend = new RedisNonceStore(redisClient, 'ultra:nonce:');
-  const pgTskStore = new PgTumblerStore(pool);
+  nonceBackend = HA_STATE_MODE === 'independent'
+    ? null
+    : new RedisNonceStore(redisClient, 'ultra:nonce:');
   if (HA_CONFIG.enabled) {
-    const fenceStore = new RedisFencingStore(redisClient, HA_CONFIG.fenceKey);
+    const fenceStore = new RedisFencingStore(
+      redisClient, HA_CONFIG.fenceKey, redisAuthorityConfig.durability ?? undefined,
+    );
     haController = new UltraHaController({
       clusterId: HA_CONFIG.clusterId,
       fenceStore,
@@ -202,13 +227,34 @@ if (RUNTIME_MODE === 'production') {
       nodeId: HA_CONFIG.nodeId,
       role: HA_CONFIG.role,
     });
-    tskStore = new FencedTumblerStore(pgTskStore, haController);
-  } else {
-    tskStore = pgTskStore;
   }
-  identityBinding = new PgIdentityBindingStore(pool);
-  idempotencyStore = new PgIdempotencyStore(pool);
-  nonceBackendType = 'redis';
+  if (HA_STATE_MODE === 'independent') {
+    promotedTskRuntime = await loadReloadablePromotedTskRuntime(
+      process.env.ULTRA_TSK_AUTHORITY_CONFIG_FILE,
+    );
+    tskStore = promotedTskRuntime.credentialStore;
+  } else {
+    const pgTskStore = new PgTumblerStore(pool);
+    tskStore = HA_CONFIG.enabled
+      ? new FencedTumblerStore(pgTskStore, haController)
+      : pgTskStore;
+  }
+  if (INDEPENDENT_CONFIG.expected) {
+    independentStateReady = await assertIndependentStateReady(pool, INDEPENDENT_CONFIG.expected);
+  }
+  if (HA_STATE_MODE === 'independent' && INDEPENDENT_CONFIG.expected) {
+    const authority = await loadGovernedUltraStateAuthority(
+      pool, process.env.ULTRA_STATE_AUTHORITY_CONFIG_FILE,
+    );
+    identityBinding = authority.identityBinding;
+    idempotencyStore = authority.idempotencyStore;
+    nonceBackend = authority.nonceBackend;
+  } else {
+    identityBinding = new PgIdentityBindingStore(pool);
+    idempotencyStore = new PgIdempotencyStore(pool);
+    if (HA_STATE_MODE === 'independent') nonceBackend = new PgNonceTombstoneStore(pool);
+  }
+  nonceBackendType = HA_STATE_MODE === 'independent' ? 'postgresql-ha' : 'redis';
   ipRateLimiter = new RedisRateLimiter(redisClient, IP_RATE_LIMIT, RATE_LIMIT_WINDOW_MS, 'ultra:rate:ip:');
   rateLimiter = new RedisRateLimiter(redisClient, PAIR_RATE_LIMIT, RATE_LIMIT_WINDOW_MS, 'ultra:rate:pair:');
 } else {
@@ -293,7 +339,7 @@ function waitForResponse(res, next) {
   });
 }
 
-function haLockMiddleware({ lockMode, requireWriter }) {
+function haLockMiddleware({ lockMode, requireWriter, requireIndependentReady = true }) {
   return function fencedHaBoundary(req, res, next) {
     if (!HA_CONFIG.enabled) return next();
     const withLock = lockMode === 'shared'
@@ -301,6 +347,12 @@ function haLockMiddleware({ lockMode, requireWriter }) {
       : idempotencyStore.withLock.bind(idempotencyStore);
     void withLock(HA_CONFIG.advisoryLockKey, async () => {
       if (requireWriter) {
+        if (requireIndependentReady && !independentStateAllowsWrites(HA_STATE_MODE, independentStateReady)) {
+          return res.status(503).json({
+            ok: false,
+            error: 'ULTRA_INDEPENDENT_STATE_NOT_READY',
+          });
+        }
         const writable = await haController.assertWritable({
           minRemainingMs: HA_CONFIG.minLeaseRemainingMs,
         });
@@ -328,6 +380,9 @@ function haLockMiddleware({ lockMode, requireWriter }) {
 }
 
 const requireWriterLease = haLockMiddleware({ lockMode: 'shared', requireWriter: true });
+const requirePromotionWriterLease = haLockMiddleware({
+  lockMode: 'shared', requireWriter: true, requireIndependentReady: false,
+});
 const serializeHaTransition = haLockMiddleware({ lockMode: 'exclusive', requireWriter: false });
 
 async function claimIdempotency(req, res, operation) {
@@ -536,6 +591,7 @@ function bpcActivityLock(pairId) {
 // Ed25519 public key authenticated by agent-auth.js.
 function bindingOwnedBy(binding, scAgent) {
   return Boolean(binding) && binding.agentId === scAgent.agentId &&
+    binding.canonicalId === scAgent.canonicalId &&
     binding.agentPublicKeyHex === scAgent.publicKeyHex;
 }
 
@@ -654,7 +710,8 @@ app.post('/rotate-tsk/commit', requireWriterLease, ...registrationGuards, async 
     const swap = await identityBinding.compareAndSwap(
       pairId,
       oldClientId,
-      { tskClientId: newClientId, agentId, agentPublicKeyHex: req.scAgent.publicKeyHex },
+      { tskClientId: newClientId, agentId, canonicalId: req.scAgent.canonicalId,
+        agentPublicKeyHex: req.scAgent.publicKeyHex },
     );
     if (swap === 'missing' || swap === 'conflict') {
       return res.status(409).json({ ok: false, error: 'ROTATION_BINDING_CONFLICT' });
@@ -718,6 +775,7 @@ app.post('/bind-identity', requireWriterLease, requireAgentAuth, async (req, res
       await identityBinding.set(pairId, {
         tskClientId,
         agentId,
+        canonicalId: req.scAgent.canonicalId,
         agentPublicKeyHex: req.scAgent.publicKeyHex,
       });
       console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'identity_bound', pairId, clientId: tskClientId }));
@@ -887,6 +945,126 @@ app.post('/ha/command', requireAdminAuth, serializeHaTransition, async (req, res
   return res.status(outcome.status).json(outcome.result);
 });
 
+async function reloadPromotedTskAuthority(trigger) {
+  if (HA_STATE_MODE !== 'independent' || !promotedTskRuntime) {
+    throw new Error('promoted TSK authority reload is unavailable');
+  }
+  const refreshed = await promotedTskRuntime.reload();
+  console.log(JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level: 'INFO',
+    event: 'ha_tsk_authority_reloaded',
+    trigger,
+    grantSeq: refreshed.grantSeq,
+    grantDigest: refreshed.grantDigest,
+    leaseExpiresAtMs: refreshed.leaseExpiresAtMs,
+  }));
+  return refreshed;
+}
+
+// Governed online lease renewal. The manager blocks new operations, drains
+// in-flight operations, verifies a strictly newer signed grant for the exact
+// same authority, swaps atomically, and closes the old authority pool.
+app.post('/ha/reload-tsk-authority', requireWriterLease, requireAdminAuth, requirePromotionWriterLease, async (_req, res) => {
+  try {
+    return res.json({ ok: true, ...(await reloadPromotedTskAuthority('admin')) });
+  } catch {
+    return res.status(409).json({ ok: false, error: 'TSK_AUTHORITY_RELOAD_FAILED' });
+  }
+});
+
+// A promoted independent site cannot reuse source-held TSK shared secrets.
+// This separately operator+agent authorized ceremony creates a fresh target
+// credential on the real fenced TSK authority and records only its signed
+// public proof with the imported Enterprise binding. The shared secret is
+// returned only to the separately operator+agent authenticated caller and is
+// never persisted in the Enterprise authority.
+app.post('/ha/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromotionWriterLease, async (req, res) => {
+    try {
+      if (HA_STATE_MODE !== 'independent' || !runtimePgPool || !INDEPENDENT_CONFIG.expected) {
+        return res.status(409).json({ ok: false, error: 'ULTRA_INDEPENDENT_REPROVISION_DISABLED' });
+      }
+      const { clusterId, commandId, sourceEpoch, pairId, sourceClientId, agentId } = req.body ?? {};
+      const expected = INDEPENDENT_CONFIG.expected;
+      if (agentId !== req.scAgent.agentId || clusterId !== expected.clusterId ||
+          commandId !== expected.commandId || sourceEpoch !== expected.sourceEpoch ||
+          typeof pairId !== 'string' || typeof sourceClientId !== 'string') {
+        return res.status(400).json({ ok: false, error: 'INVALID_TSK_REPROVISION_REQUEST' });
+      }
+      const pending = await readImportedTskReprovision(runtimePgPool, { clusterId, pairId });
+      if (!pending || pending.agentId !== agentId ||
+          pending.canonicalId !== req.scAgent.canonicalId ||
+          pending.agentPublicKeyHex !== req.scAgent.publicKeyHex ||
+          pending.sourceClientId !== sourceClientId) {
+        return res.status(409).json({ ok: false, error: 'TSK_REPROVISION_BINDING_MISMATCH' });
+      }
+      if (!promotedTskRuntime || !pending.sourceSecretDigest) {
+        return res.status(409).json({ ok: false, error: 'TSK_PROMOTED_AUTHORITY_UNAVAILABLE' });
+      }
+      const { provisioned, receipt } = await promotedTskRuntime.withRuntime(async (authority) => {
+        const provisioned = await authority.provision({
+          agentId: pending.agentId,
+          agentPublicKeyHex: pending.agentPublicKeyHex,
+          canonicalId: pending.canonicalId,
+          commandId,
+          pairId,
+          sourceClientId,
+          sourceSecretDigest: pending.sourceSecretDigest,
+        });
+        const receipt = await completeImportedPromotedTskCredential(
+          runtimePgPool,
+          authority.authorityCapability,
+          {
+            advisoryLockKey: HA_CONFIG.advisoryLockKey,
+            agentId,
+            agentPublicKeyHex: pending.agentPublicKeyHex,
+            canonicalId: pending.canonicalId,
+            clusterId,
+            commandId,
+            pairId,
+            sourceClientId,
+            sourceSecretDigest: pending.sourceSecretDigest,
+            sourceEpoch,
+            targetProof: provisioned.targetProof,
+          },
+        );
+        return { provisioned, receipt };
+      });
+      if (!receipt.idempotent) cTskProvisions.inc();
+      console.log(JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'INFO',
+        event: 'ha_tsk_reprovisioned',
+        agentId,
+        canonicalId: pending.canonicalId,
+        pairId,
+        sourceClientId,
+        targetClientId: provisioned.targetClientId,
+        receiptDigest: receipt.receiptDigest,
+        idempotent: receipt.idempotent,
+      }));
+      independentStateReady = await assertIndependentStateReady(runtimePgPool, expected).catch(() => null);
+      return res.json({
+        ok: true,
+        clientId: provisioned.targetClientId,
+        sharedSecret: provisioned.sharedSecret,
+        provisionPayload: provisioned.provisionPayload,
+        receipt,
+      });
+    } catch (error) {
+      console.error(JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'ERROR',
+        event: 'ha_tsk_reprovision_error',
+        // The provisioning path handles a one-time shared secret. Never emit
+        // exception text here because a driver or dependency may include
+        // request parameters in it.
+        errorClass: typeof error?.name === 'string' ? error.name : 'Error',
+      }));
+      return res.status(409).json({ ok: false, error: 'TSK_REPROVISION_FAILED' });
+    }
+});
+
 app.get('/ha/status', requireAdminAuth, async (_req, res) => {
   if (!HA_CONFIG.enabled) return res.json({ ok: true, enabled: false });
   return res.json({ ok: true, enabled: true, ...(await haController.snapshot()) });
@@ -909,6 +1087,14 @@ app.get('/ready', async (_req, res) => {
   });
   if (!writable.ok) {
     return res.status(503).json({ ok: false, haEnabled: true, writable: false, error: 'ULTRA_WRITER_FENCED' });
+  }
+  if (HA_STATE_MODE === 'independent' && !independentStateReady) {
+    return res.status(503).json({
+      ok: false,
+      haEnabled: true,
+      writable: false,
+      error: 'ULTRA_INDEPENDENT_STATE_NOT_ATTESTED',
+    });
   }
   return res.json({
     ok: true,
@@ -1033,6 +1219,7 @@ app.get('/status', requireAdminAuth, async (req, res) => {
       nonceBackend: nonceBackendType,
       runtimeMode:  RUNTIME_MODE,
       ha,
+      haStateMode: HA_STATE_MODE,
       keyRotation: {
         adminVerificationKeys: [ADMIN_TOKEN, ADMIN_TOKEN_PREVIOUS].filter(Boolean).length,
         recoveryVerificationKeys: recoveryKeyring.verificationKeys.size,
@@ -1081,4 +1268,15 @@ app.listen(PORT, '127.0.0.1', () => {
       stores: ['postgresql-pair', 'postgresql-tumbler', 'postgresql-binding', 'postgresql-idempotency', 'redis-nonce', 'redis-anomaly'],
     }));
   }
+});
+
+process.on('SIGHUP', () => {
+  void reloadPromotedTskAuthority('SIGHUP').catch(() => {
+    console.error(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'ERROR',
+      event: 'ha_tsk_authority_reload_failed',
+      trigger: 'SIGHUP',
+    }));
+  });
 });

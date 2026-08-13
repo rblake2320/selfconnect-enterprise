@@ -8,7 +8,7 @@ version = "1.2.3"
 description = "Enterprise AI agent infrastructure on Win32 — built on SelfConnect SDK"
 requires-python = ">=3.10"
 dependencies = [
-    "selfconnect @ git+https://github.com/rblake2320/selfconnect.git@3b48fc6d456e13957366d2cdf6b2f3b62cea2280",
+    "selfconnect @ git+https://github.com/rblake2320/selfconnect.git@e849934236a5ab2709534dbd913709014798b5f9",
     "cryptography>=50.0.0",
     "pywin32>=306; sys_platform == 'win32'",
 ]

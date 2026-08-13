@@ -363,7 +363,7 @@ def test_tpm_probe_fails_closed_when_claim_verification_fails(monkeypatch):
     monkeypatch.setattr(mod, "create_tpm_platform_claim", lambda _nonce: created)
     monkeypatch.setattr(mod, "verify_tpm_platform_claim", lambda _result: False)
 
-    probe = mod.tpm_probe()
+    probe = mod.tpm_probe(backend="legacy")
 
     assert probe["supported"] is False
     assert probe["verified"] is False
@@ -382,11 +382,66 @@ def test_tpm_probe_reports_verified_platform_claim_without_identity_binding(monk
     monkeypatch.setattr(mod, "create_tpm_platform_claim", lambda _nonce: created)
     monkeypatch.setattr(mod, "verify_tpm_platform_claim", lambda _result: True)
 
-    probe = mod.tpm_probe()
+    probe = mod.tpm_probe(backend="legacy")
 
     assert probe["supported"] is True
     assert probe["verified"] is True
     assert probe["identity_key_bound"] is False
+
+
+def test_sdk_probe_requires_an_operator_pinned_public_key(monkeypatch):
+    import enterprise.tpm_attestation as mod
+
+    monkeypatch.delenv("SELFCONNECT_TPM_PUBLIC_KEY_SHA256", raising=False)
+    probe = mod.tpm_probe()
+
+    assert probe["supported"] is False
+    assert probe["verified"] is False
+    assert probe["error"] == "SELFCONNECT_TPM_PUBLIC_KEY_SHA256 is not configured"
+
+
+def test_sdk_probe_verifies_and_consumes_nonce(monkeypatch, tmp_path):
+    import sc_tpm_attestation as sdk
+    import enterprise.tpm_attestation as mod
+
+    key_digest = "a" * 64
+    artifact = {
+        "claim_b64u": "Y2xhaW0",
+        "public_key_blob_b64u": "cHVibGlj",
+    }
+    monkeypatch.setenv("SELFCONNECT_TPM_PUBLIC_KEY_SHA256", key_digest)
+    monkeypatch.setattr(mod.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(sdk, "issue_platform_attestation", lambda nonce, key_name: artifact)
+    seen = {}
+
+    def verify(item, nonce, *, expected_public_key_sha256, replay_store):
+        seen.update(
+            item=item,
+            nonce=nonce,
+            expected=expected_public_key_sha256,
+            replay_path=replay_store.path,
+        )
+        return {
+            "claim_sha256": "b" * 64,
+            "nonce_sha256": "c" * 64,
+            "public_key_sha256": key_digest,
+            "pcr_mask": 0xFFFFFF,
+            "pcr_algorithm": 11,
+            "pcr_values_sha256": "d" * 64,
+            "replay_checked": True,
+        }
+
+    monkeypatch.setattr(sdk, "verify_and_consume", verify)
+    probe = mod.tpm_probe()
+
+    assert probe["supported"] is True
+    assert probe["verified"] is True
+    assert probe["platform_key_bound"] is True
+    assert probe["manufacturer_chain_verified"] is False
+    assert probe["claim_size"] == len(b"claim")
+    assert seen["expected"] == key_digest
+    assert seen["item"] is artifact
+    assert seen["replay_path"] == tmp_path / ".selfconnect" / "enterprise_tpm_nonces.json"
 
 
 # ---------------------------------------------------------------------------

@@ -267,6 +267,16 @@
       "tier": "description"
     },
     {
+      "id": "ULTRA-HA-FINAL-001",
+      "title": "Named multi-authority Ultra HA topology passes final acceptance",
+      "scope": "Exact portfolio-locked Enterprise, BPC, and TSK commits over three BPC PostgreSQL authorities, two Ultra/TSK PostgreSQL authorities, one TSK control PostgreSQL authority, BPC Redis quorum, and TSK Redis Sentinel topology",
+      "assertion": "Run ultra_server/final-ha-acceptance.mjs with all fail-not-skip database and Redis endpoints and an unused evidence path.",
+      "expected": "All eight direct-authority, failover/failback, process-loss, authenticated-delivery, Sentinel-crash, and live-partition steps emit their required evidence; RPO is zero for the tested recoverable faults; the old writer remains fenced; the same principal returns to the recovered authority; and a secret-free evidence artifact is created once.",
+      "evidence": "Pinned hosted CI logs, uploaded ultra-final-ha-evidence JSON and artifact digest, exact portfolio lock, LOG/WHY record, and independent review of the exact pull-request head",
+      "blind_spots": "This establishes only the recorded controlled-deployment topology. It does not establish an ATO, compliance certification, legal admissibility, provider WORM retention, independent physical failure domains, or availability outside the named environment.",
+      "tier": "description"
+    },
+    {
       "id": "ULTRA-HA-SHARED-001",
       "title": "Shared-state Ultra nodes enforce one fail-closed writer fence",
       "scope": "Two production Ultra Node processes on different ports sharing one PostgreSQL database and one Redis fencing authority",

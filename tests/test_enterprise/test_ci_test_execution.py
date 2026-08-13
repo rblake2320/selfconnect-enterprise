@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 from tools.ci_test_gate import (
@@ -22,7 +23,12 @@ CI_RUNNER = ROOT / "tools" / "ci_test_gate.py"
 
 def test_workflow_has_one_dedicated_test_entrypoint() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
-    test_job = workflow.split("  test:\n", 1)[1].split("  ultra-contract-windows:\n", 1)[0]
+    test_job = workflow.split("  test:\n", 1)[1].split(
+        "  runtime-ownership-posix:\n", 1
+    )[0]
+    posix_job = workflow.split("  runtime-ownership-posix:\n", 1)[1].split(
+        "  ultra-contract-windows:\n", 1
+    )[0]
     isolated_entrypoint = (
         "run: python -I -c \"import runpy; "
         "runpy.run_path('tools/ci_test_gate.py', run_name='__main__')\""
@@ -38,6 +44,23 @@ def test_workflow_has_one_dedicated_test_entrypoint() -> None:
         "shell=True",
     ):
         assert bypass not in test_job
+    assert posix_job.count("python -m pytest") == 1
+    for nodeid in (
+        "test_permissive_lock_directory_is_rejected",
+        "test_wrong_owner_lock_directory_is_rejected",
+        "test_precreated_symlink_lock_file_is_rejected",
+        "test_replaced_lock_file_during_binding_is_rejected",
+    ):
+        assert posix_job.count(nodeid) == 1
+
+
+def test_ci_never_installs_below_the_declared_cryptography_floor() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    requirements = re.findall(r'cryptography>=(\d+(?:\.\d+){0,2})', workflow)
+
+    assert requirements
+    assert all(int(version.split(".", 1)[0]) >= 50 for version in requirements)
+    assert "cryptography>=48" not in workflow
 
 
 def test_runner_invokes_pytest_once_without_shell_or_summary_parsing() -> None:
@@ -76,7 +99,7 @@ def test_runner_invokes_pytest_once_without_shell_or_summary_parsing() -> None:
 
 
 def test_collection_and_conftest_inputs_are_pinned() -> None:
-    assert EXPECTED_COLLECTION_COUNT == 1_749
+    assert EXPECTED_COLLECTION_COUNT == 1_752
     assert len(EXPECTED_COLLECTION_SHA256) == 64
     assert len(TRUSTED_CONFTEST_SHA256) == 64
 

@@ -97,6 +97,112 @@
   MCP regressions pass 324/324. Evidence:
   [LOG-20260731-001](LOG.md#log-20260731-001), rationale:
   [WHY-20260731-001](WHY.md#why-20260731-001).
+### Independent runtime authority selection
+
+- Independent promoted nodes now require an exact file-backed source-authority
+  descriptor and select the governed replicated identity, idempotency, and nonce
+  adapters instead of their legacy direct-DML stores.
+- Unpromoted independent nodes remain read-only and cannot cross the existing
+  writer-readiness gate.
+
+### In-transaction Ultra source fencing
+
+- Composed TSK's signed source-lease capability directly into the BPC durable
+  outbox pre-commit boundary for Ultra identity, idempotency, and nonce state.
+- Added a real PostgreSQL race proving a lease revoked after DML but before
+  commit rolls back both the authority mutation and its outbox record.
+
+### Authenticated stream process
+
+- Added a shipped receiver service and bounded publisher command for the Ultra
+  independent-state outbox. Both require file-held keys and schema attestation;
+  remote plaintext transport is refused.
+
+### Authenticated Ultra state transport
+
+- Added production composition factories for the Ultra ordered publisher and
+  receiver over the BPC authenticated HTTP transport. Receiver decisions are
+  Ed25519-signed over the exact record and receiver identity; request replay is
+  rejected by the durable PostgreSQL nonce authority. Evidence:
+  [LOG-20260720-008](LOG.md#log-20260720-008), rationale:
+  [WHY-20260720-008](WHY.md#why-20260720-008).
+
+### Transactional Ultra state outbox
+
+- Added BPC-contract-backed durable outbox adapters for Enterprise identity
+  bindings, idempotency state, and PostgreSQL nonce tombstones. Each authority
+  mutation and its ordered replication record now share one serializable
+  transaction; secret-bearing responses become deterministic reprovision
+  tombstones before leaving the source. Evidence: [LOG-20260720-007](LOG.md#log-20260720-007),
+  rationale: [WHY-20260720-007](WHY.md#why-20260720-007), recovery:
+  [PARK-20260720-007](PARKED.md#park-20260720-007).
+
+### Compiled independent-state schema authority
+
+- Every independent-state transaction now pins `public`, holds `ACCESS SHARE`
+  locks on all six governed tables, and verifies their full live PostgreSQL
+  catalog against a compiled SHA-256 manifest. Added/removed columns,
+  constraints, indexes, triggers, policies, RLS flags, or relation properties
+  fail closed before state access. Evidence: [LOG-20260720-006](LOG.md#log-20260720-006),
+  rationale: [WHY-20260720-006](WHY.md#why-20260720-006), recovery:
+  [PARK-20260720-006](PARKED.md#park-20260720-006).
+
+### Independent-state writer admission
+
+- Production HA writer routes now fail closed with
+  `ULTRA_INDEPENDENT_STATE_NOT_READY` until the exact imported-state authority
+  has passed startup attestation. A Redis writer lease alone cannot authorize
+  a site whose Enterprise state is absent or unverified. Evidence:
+  [LOG-20260720-004](LOG.md#log-20260720-004), rationale:
+  [WHY-20260720-004](WHY.md#why-20260720-004).
+
+### Target-only TSK credential reprovisioning
+
+- Independent-state manifest v2 now proves every imported identity had an
+  active owned TSK credential while transferring no TSK shared secret.
+- Import clears target credential state and creates durable reprovision
+  obligations. The node remains unwritable until an operator+agent authorized,
+  writer-fenced ceremony generates a fresh target-only credential and
+  atomically rebinds each identity. Evidence:
+  [LOG-20260720-005](LOG.md#log-20260720-005), rationale:
+  [WHY-20260720-005](WHY.md#why-20260720-005), recovery:
+  [PARK-20260720-005](PARKED.md#park-20260720-005).
+
+### Independent Ultra state handoff foundation
+
+- Added a custody-separated, dual-signed A-to-B handoff for Enterprise-owned
+  identity bindings, completed idempotency tombstones, and durable replay-nonce
+  hashes. The manifest binds the exact BPC and TSK promotion receipt digests.
+- Independent mode now uses PostgreSQL as the nonce authority and refuses
+  tamper, rollback, same-epoch forks, in-flight work, same-database targets, and
+  secret-bearing response export. This is a mechanism slice toward issue #28,
+  not its site-availability acceptance. Evidence: [LOG-20260720-003](LOG.md#log-20260720-003),
+  rationale: [WHY-20260720-003](WHY.md#why-20260720-003), recovery:
+  [PARK-20260720-003](PARKED.md#park-20260720-003).
+
+### Completed protocol HA foundations
+
+- Advanced the immutable BPC and TSK pins to their exact green masters after
+  their independent-state promotion, partition, crash-recovery, and durability
+  acceptance work completed. This makes those reviewed mechanisms available to
+  the Enterprise Ultra composition without reimplementing them here.
+- This dependency advance alone does not close Enterprise issue #28; Ultra must
+  still compose the authorities and pass its own named topology drill. Evidence:
+  [LOG-20260720-002](LOG.md#log-20260720-002), rationale:
+  [WHY-20260720-002](WHY.md#why-20260720-002), recovery:
+  [PARK-20260720-002](PARKED.md#park-20260720-002).
+
+### Pinned TPM platform attestation
+
+- Advanced the SelfConnect SDK pin to `787a6b88` and made its operator-pinned,
+  non-exportable PCP identity-key quote verifier the default Enterprise TPM
+  probe. The legacy CNG probe remains explicitly selectable for compatibility.
+- Recorded a redacted live PASS for nonce, PCR 0-23, signature, and durable
+  replay verification. Manufacturer/EK-chain trust, remote enrollment, and the
+  separate DPAPI agent-signing key remain outside the claim. Evidence:
+  [LOG-20260720-001](LOG.md#log-20260720-001), rationale:
+  [WHY-20260720-001](WHY.md#why-20260720-001), recovery:
+  [PARK-20260720-001](PARKED.md#park-20260720-001).
 
 ### Immutable logical target leases
 

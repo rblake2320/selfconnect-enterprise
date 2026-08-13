@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-07-21T20:35:22.609Z",
+  "scope": "separate-physical-host-same-lan",
+  "exclusions": [
+    "separate-site",
+    "independent-power-domain",
+    "independent-network-domain"
+  ],
+  "commits": {
+    "enterprise": "03add3ecbb3ff6939b6a09491cb751242e5483bd",
+    "tsk": "20bf099e0b4f7479b93cf1d5e245b3f7c87e1675"
+  },
+  "hostAdmissionDigest": "4cdc122be5c7a431d4e4b98086d9df54fdbe0dc8bf9393032f22a3a3732a49bc",
+  "commandId": "spark2-admission-03add3e",
+  "topology": {
+    "identityBasis": "distinct-ssh-ed25519-host-keys-with-strict-live-observation",
+    "sourceHost": "spark-3cdf",
+    "controlHost": "spark-3cdf",
+    "targetHost": "spark-3173",
+    "sourceSshHostKeyDigest": "f8862446dc8abd0760fd6677b3eaba7f74a8aff14d0eca1bce7d994e436b91b0",
+    "targetSshHostKeyDigest": "ee0ed1a521e4904b6cc55e848c4dcccba8beb9d9da87208c3a9ee7e4575739be",
+    "machineIdDistinct": false,
+    "postgresSystemIds": {
+      "sourceA": "7664860993977270305",
+      "receiverB": "7664860268000567330",
+      "control": "7664860993991704610"
+    }
+  },
+  "outcome": {
+    "dataLossRpo": 0,
+    "durationMs": 31279,
+    "initialSequence": 4,
+    "promotedSequence": 5,
+    "returnedSequence": 6,
+    "staleSourceWriterDenied": true,
+    "staleTargetWriterDenied": true,
+    "returnReceiptDigest": "50a90c0efd8a515126d31758b6f26203cbd1ca9c86e47fd341eb086e758c8d9c",
+    "returnLeaseDigest": "6727f45d835b83bb6720a311d1d1fc2aac124ccd30f448e6aed04e409eb44887",
+    "redisAuthorityDigest": "205f38cf29e9ff2e8534eb467e7886a021449bb6c35a6558f23d4a111c6946aa"
+  }
+}

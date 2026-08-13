@@ -1,0 +1,363 @@
+{
+  "schema_version": 2,
+  "reviewed_at": "2026-07-22",
+  "scope": "SelfConnect Enterprise Ultra named controlled-deployment topology",
+  "authoritative_open_work": "https://github.com/rblake2320/selfconnect-enterprise/issues/28",
+  "standards": [
+    {
+      "id": "NIST-SP-800-53-5.1-CP-4",
+      "title": "Contingency Plan Testing",
+      "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+    },
+    {
+      "id": "NIST-SP-800-34r1",
+      "title": "Contingency Planning Guide for Federal Information Systems",
+      "url": "https://csrc.nist.gov/pubs/sp/800/34/r1/upd1/final"
+    },
+    {
+      "id": "REDIS-SENTINEL",
+      "title": "High availability with Redis Sentinel",
+      "url": "https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/"
+    },
+    {
+      "id": "POSTGRESQL-HA",
+      "title": "PostgreSQL High Availability, Load Balancing, and Replication",
+      "url": "https://www.postgresql.org/docs/current/high-availability.html"
+    }
+  ],
+  "skip_groups": [
+    {
+      "id": "generic-windows-ultra-unavailable",
+      "count": 34,
+      "reason": "The isolated generic Windows test job deliberately does not start Ultra Server on localhost:7777.",
+      "substitute": "The same live contract tests run against a started Ultra Server in the dedicated Windows live-contract job and against the production PostgreSQL-backed job.",
+      "non_equivalence": "A skip in the generic job is not itself evidence; only the dedicated jobs' real executions support the live-contract claims.",
+      "closure": "Keep every node ID and skip reason allowlisted, and require the dedicated live jobs to pass on the exact commit."
+    },
+    {
+      "id": "generic-windows-posix-semantics",
+      "count": 4,
+      "reason": "Windows cannot execute POSIX owner, mode, no-follow symlink, and replace-open-file semantics.",
+      "substitute": "The four exact skipped node IDs run without skips in the dedicated ubuntu-latest POSIX runtime-ownership job.",
+      "non_equivalence": "Windows DACL, reparse-point, and handle-retarget tests remain separate because POSIX results do not prove Windows semantics and Windows results do not prove POSIX semantics.",
+      "closure": "Keep the dedicated POSIX and Windows-native tests green on the exact commit."
+    }
+  ],
+  "ci_receipts": [
+    {
+      "run_id": "29866460441",
+      "head_sha": "5aeb5243f142f827c77a5c38467f96075456b78c",
+      "conclusion": "success",
+      "scope": "PR 50 exact-head two-host Spark acceptance and full repository matrix"
+    },
+    {
+      "run_id": "29866745029",
+      "head_sha": "197fedc3ccc70f0ea3a36f13479f8eadb4c121ad",
+      "conclusion": "success",
+      "scope": "Post-merge master full matrix including live Ultra, production durability, and final HA acceptance"
+    },
+    {
+      "run_id": "29873592691",
+      "head_sha": "70430c5b61d36ddc576b9ddf0744bc16339753ba",
+      "conclusion": "success",
+      "scope": "Post-merge master exact BPC/TSK Enterprise B-to-A failback, stale-B denial, and full six-PostgreSQL plus Redis quorum/Sentinel matrix"
+    },
+    {
+      "run_id": "29889970116",
+      "head_sha": "560ad520e914b424492a9e10934c7064ea093464",
+      "conclusion": "success",
+      "scope": "PR 67 exact-head repeated same-principal recovery, stale-site resynchronization, 15 restarted no-effect probes, and full six-PostgreSQL plus Redis quorum/Sentinel matrix"
+    },
+    {
+      "run_id": "29892240715",
+      "head_sha": "3e8e461d654fb0f5a41e6b25b0f8c3409fd27357",
+      "conclusion": "success",
+      "scope": "PR 68 exact-head post-partition-heal BPC/TSK stale-writer denial, 25 total restarted no-effect probes, and full six-PostgreSQL plus Redis quorum/Sentinel matrix"
+    }
+  ],
+  "levels": [
+    {
+      "id": "process-loss",
+      "status": "pass",
+      "requirement": "Interrupt live cutover processes before and after durable boundaries and resume without torn or duplicate state.",
+      "evidence": [
+        "repo:docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#acceptance-matrix",
+        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866745029"
+      ],
+      "limitations": "Pass applies to the named child-process and database-process faults, not loss of an operating-system host.",
+      "closure": ""
+    },
+    {
+      "id": "database-process-loss",
+      "status": "pass",
+      "requirement": "Lose and restart the promoted PostgreSQL process and verify identity, readiness, and committed authority state.",
+      "evidence": [
+        "repo:docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#acceptance-matrix",
+        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866745029"
+      ],
+      "limitations": "This is PostgreSQL process/container loss and restart, not destruction of the host or storage volume.",
+      "closure": ""
+    },
+    {
+      "id": "redis-functional-failover",
+      "status": "pass",
+      "requirement": "Crash and isolate the active Redis master; require quorum promotion, monotonic fencing, old-master denial, and convergence after heal.",
+      "evidence": [
+        "repo:docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#acceptance-matrix",
+        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866745029"
+      ],
+      "limitations": "All three Redis data nodes and Sentinels ran on one hosted runner, so this proves failover semantics but not independent infrastructure failure domains.",
+      "closure": ""
+    },
+    {
+      "id": "redis-independent-failure-domains",
+      "status": "open",
+      "requirement": "Place at least three Sentinel instances on computers or virtual machines expected to fail independently.",
+      "evidence": ["standard:REDIS-SENTINEL"],
+      "limitations": "The hosted quorum uses separate containers on one runner; Spark-1/Spark-2 currently provide only two physical hosts and the Spark-2 Redis target is not a quorum member.",
+      "closure": "Provision a third independent host or VM failure domain, distribute Redis/Sentinel members, then repeat crash, partition, heal, rollback, and monotonic-epoch drills."
+    },
+    {
+      "id": "cross-host-handoff",
+      "status": "pass",
+      "requirement": "Execute the governed TSK A-to-B-to-A lifecycle on distinct admitted physical hosts with independent PostgreSQL state authorities.",
+      "evidence": [
+        "repo:docs/operations/SPARK2_HOST_ACCEPTANCE.md",
+        "artifact:docs/verification/spark2-host-evidence-03add3e.json",
+        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866460441"
+      ],
+      "limitations": "Spark-1 and Spark-2 are on the same LAN. Source and control PostgreSQL authorities share Spark-1.",
+      "closure": ""
+    },
+    {
+      "id": "cross-host-service-network-partition",
+      "status": "partial",
+      "requirement": "Disrupt the live inter-host target service path, prove fail-closed behavior with no evidence artifact, heal, and reconverge.",
+      "evidence": [
+        "repo:docs/operations/HA_TEST_STANDARDS_MATRIX.md#real-cross-host-partition-observation",
+        "drill:sha256:0bcb4038a5dc4d2fd3627c01fc92e11e6b7052913be9abfdf0f2e261620af8aa"
+      ],
+      "limitations": "The real service path was disconnected and refused the run; heal reached PostgreSQL in 557 ms and the full handoff completed in 33942 ms. The fault transcript is operator-observed rather than a committed machine-produced fault receipt, and this is not loss of the host network or LAN.",
+      "closure": "Automate the disconnect/refusal/no-receipt/heal sequence with write-once secret-free evidence and independent review; separately execute a network-domain/site isolation test on suitable infrastructure."
+    },
+    {
+      "id": "whole-host-loss",
+      "status": "open",
+      "requirement": "Interrupt an entire admitted authority host and recover or fail over without relying on processes that remain alive on that host.",
+      "evidence": ["repo:docs/operations/SPARK2_HOST_ACCEPTANCE.md#boundary"],
+      "limitations": "Spark-2 hosts unrelated owner workloads. Stopping its acceptance PostgreSQL or network does not equal power loss or chassis loss, and those substitutes are not presented as equivalent.",
+      "closure": "Move the acceptance target to a dedicated host or obtain an approved maintenance window, then power off or hard-reset that host and retain measured recovery evidence."
+    },
+    {
+      "id": "alternate-site",
+      "status": "open",
+      "requirement": "Test recovery and operations at an alternate processing site separated from the primary site hazards.",
+      "evidence": ["standard:NIST-SP-800-53-5.1-CP-4", "standard:NIST-SP-800-34r1"],
+      "limitations": "Both Sparks are on the same LAN and no independent geography, power, or network provider is admitted. Containers, VMs, and port blocks on this LAN cannot prove a site boundary.",
+      "closure": "Provision an actual alternate site or cloud region with independent power/network, admit its identities, and run full interruption, recovery, failback, and accessibility exercises there."
+    },
+    {
+      "id": "authoritative-state-composition",
+      "status": "pass",
+      "requirement": "Couple each authoritative BPC pair, TSK credential, identity-binding, idempotency, and applicable nonce mutation to its durable replication transaction, then compose the cross-authority handoff through exact signed receipts.",
+      "evidence": [
+        "issue:https://github.com/rblake2320/selfconnect-enterprise/issues/28",
+        "repo:docs/operations/ULTRA_INDEPENDENT_STATE_HA.md#governed-ultra-source-authority",
+        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29873592691"
+      ],
+      "limitations": "Pass is bounded to the signed snapshot-after-fence saga on the named six-PostgreSQL plus Redis quorum/Sentinel topology. Each authority commits through its own reviewed transaction and exact signed receipt; this is not a claim of simultaneous cross-database atomic commit.",
+      "closure": ""
+    },
+    {
+      "id": "secret-reprovisioning",
+      "status": "partial",
+      "requirement": "Strip secrets from replicated state and require a separately authorized target credential unseal or reprovisioning ceremony before readiness.",
+      "evidence": [
+        "repo:docs/operations/ULTRA_INDEPENDENT_STATE_HA.md",
+        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866745029"
+      ],
+      "limitations": "Real PostgreSQL tests prove redacted export and fresh target credential reprovisioning, but no controlled production key-custody/unseal ceremony with independent operator authorization has been executed and retained.",
+      "closure": "Execute the production custody ceremony using separately controlled identities, prove readiness refusal before reprovisioning, retain only secret-free evidence, and independently review the result."
+    },
+    {
+      "id": "replica-integrity-promotion-denial",
+      "status": "pass",
+      "requirement": "Deny stale, replayed, tampered, gapped, and rolled-back replicas before promotion, readiness, or mutation.",
+      "evidence": [
+        "repo:docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#acceptance-matrix",
+        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866745029"
+      ],
+      "limitations": "Pass is bounded to the signed component and Enterprise state formats and the named hosted topology; it is not evidence for an untested storage or site implementation.",
+      "closure": ""
+    },
+    {
+      "id": "old-writer-fencing",
+      "status": "pass",
+      "requirement": "Keep the prior writer fenced through restart and partition healing, including the Enterprise completed-authority path.",
+      "evidence": [
+        "repo:docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#acceptance-matrix",
+        "artifact:docs/verification/spark2-host-evidence-03add3e.json",
+        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29873592691",
+        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29892240715"
+      ],
+      "limitations": "Twenty-five distinct restarted processes cover BPC, TSK, and Enterprise at all five cuts. BPC and TSK are denied both before and after the real Redis partition/heal; Enterprise probes run after heal. Every probe requires protocol-specific typed denial and an unchanged exact-authority digest. Evidence is one-host container/process topology and does not claim destroyed physical-site or catastrophic source-volume-loss recovery.",
+      "closure": ""
+    },
+  {
+    "id": "recovered-site-resync-before-write",
+    "status": "pass",
+      "requirement": "Reconcile a recovered old authority and prevent it from writing until full verified convergence under a newer epoch.",
+      "evidence": [
+        "repo:docs/operations/ULTRA_INDEPENDENT_STATE_HA.md#governed-ultra-source-authority",
+      "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866745029",
+      "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29889970116"
+    ],
+    "limitations": "The hosted six-PostgreSQL plus Redis/Sentinel drill reuses the stale B PostgreSQL authorities, proves stale writes have no committed effect, imports and independently attests BPC/TSK/Enterprise state, and permits only the exact first new-epoch mutations. This is process/container and logical-authority recovery on one CI host, not recovery from destroyed physical storage or a multi-site disaster.",
+    "closure": ""
+    },
+    {
+      "id": "full-recovery-reconstitution",
+      "status": "partial",
+      "requirement": "Recover the system to a known state, validate integrity, and resume governed operations.",
+      "evidence": [
+        "repo:docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#acceptance-matrix",
+        "repo:docs/operations/ULTRA_DISASTER_RECOVERY.md",
+        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866745029"
+      ],
+      "limitations": "The drill performs signed Enterprise-state rebuild and exact PostgreSQL restart on the promoted authority. It does not restore a full deployment from independent backups at an alternate site.",
+      "closure": "Restore PostgreSQL, Redis policy state, identity recovery material, and provenance evidence into an isolated independent deployment; validate all authority identities and record recovery point/time."
+    },
+    {
+      "id": "backup-restore",
+      "status": "open",
+      "requirement": "Restore protected backups into an isolated environment and verify application, identity, transaction, and evidence continuity.",
+      "evidence": ["repo:docs/operations/ULTRA_DISASTER_RECOVERY.md#isolated-restore-drill", "standard:NIST-SP-800-34r1"],
+      "limitations": "A reviewed runbook exists, but no retained artifact proves the complete isolated backup restore procedure has run end to end.",
+      "closure": "Run the documented isolated restore using real backup media and separate recovery identities; retain secret-free hashes, RPO/RTO, integrity results, and destruction evidence."
+    },
+    {
+      "id": "enterprise-failback",
+      "status": "pass",
+      "requirement": "Return Enterprise-owned identity, idempotency, nonce, and credential-binding authority from B to A under a new epoch while the old B writer remains fenced.",
+      "evidence": [
+        "repo:ultra_server/independent-state.test.mjs",
+        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29873592691"
+      ],
+      "limitations": "One exact A-to-B-to-A Enterprise cycle passes on the named topology with completed BPC/TSK artifacts, terminal source fencing, independently countersigned state, fresh target credential reprovisioning, stale-B protocol and completion denial, idempotent retry, and measured data-loss RPO zero. Repeated cycles, host/site loss, and production custody remain separate matrix levels.",
+      "closure": ""
+    },
+  {
+    "id": "repeated-same-principal-failover",
+    "status": "pass",
+      "requirement": "Repeat primary/replica failover and failback while preserving the same bound principal and monotonically advancing authority.",
+      "evidence": [
+        "repo:ultra_server/bpc-live-composition.mjs",
+        "repo:ultra_server/tsk-live-composition.mjs",
+        "repo:ultra_server/enterprise-live-handoff.mjs",
+      "repo:ultra_server/live-composition-evidence.mjs",
+      "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29889970116",
+      "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29892240715"
+    ],
+    "limitations": "Two complete A-to-B-to-A cycles plus an exact stale-B rebuild and governed A-to-B recovery pass under pinned BPC and TSK authorities on six distinct PostgreSQL systems plus real Redis. Twenty-five distinct restarted processes cover BPC, TSK, and Enterprise at all five cuts; BPC and TSK are denied again after the real Redis partition/heal and Enterprise probes run after heal. Each probe requires a protocol-specific typed denial and an unchanged exact-authority digest, so an error after a committed effect cannot count as a pass. Evidence remains process/container and logical-authority recovery on one CI host, not destroyed physical-site recovery.",
+    "closure": ""
+    },
+    {
+      "id": "monitoring-alerting",
+      "status": "partial",
+      "requirement": "Detect, alert, and retain operator-visible evidence for authority loss, replication lag, denied promotion, stale writers, and recovery failure.",
+      "evidence": [
+        "repo:ultra_server/monitoring-config.test.mjs",
+        "repo:ultra_server/monitoring-security.test.mjs",
+        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866745029"
+      ],
+      "limitations": "Monitoring configuration and security tests pass, but an independently observed deployment alerting drill for the exact multi-host topology has not run.",
+      "closure": "Deploy the approved monitors and alert routes, inject each named fault, prove timely delivery and acknowledgement, and retain bounded incident evidence."
+    },
+    {
+      "id": "immutable-evidence-deployment",
+      "status": "partial",
+      "requirement": "Retain acceptance and incident evidence in an immutable or equivalently governed store outside the faulted system.",
+      "evidence": [
+        "artifact:docs/ato/WORM_LIVE_AWS_PROOF_2026-06-21.json",
+        "repo:docs/ato/WORM_LIVE_AWS_PROOF_2026-06-21.md",
+        "repo:docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#evidence-boundary"
+      ],
+      "limitations": "A real S3 Object Lock COMPLIANCE-mode run proved remote retention, readback, stable seal indexing, and conflicting-root rejection. The exact HA acceptance and incident artifacts are not yet routed through that sink, and ongoing custody/legal-hold operations are not established.",
+      "closure": "Route the exact HA acceptance and incident artifacts into the reviewed immutable sink, then exercise retention/deletion denial, recovery access, and continuing custody operations."
+    },
+    {
+      "id": "key-custody",
+      "status": "partial",
+      "requirement": "Protect signing, recovery, and reprovisioning keys with reviewed separation, rotation, revocation, backup, and recovery controls.",
+      "evidence": [
+        "repo:docs/operations/ULTRA_INDEPENDENT_STATE_HA.md",
+        "repo:docs/operations/ULTRA_DISASTER_RECOVERY.md"
+      ],
+      "limitations": "The code enforces separate key roles and rejects private material in verifier paths, but the acceptance topology uses file-held test keys rather than an independently operated HSM/TPM custody service and ceremony.",
+      "closure": "Provision production custody identities, exercise rotation/revocation/recovery with dual control, and retain non-secret attestation and audit evidence."
+    },
+    {
+      "id": "independent-security-review",
+      "status": "partial",
+      "requirement": "Obtain independent security review of the exact deployment topology and its retained evidence, not only source components.",
+      "evidence": [
+        "repo:docs/operations/SPARK2_HOST_ACCEPTANCE.md#verification-performed",
+        "review:https://github.com/rblake2320/selfconnect-enterprise/pull/50#issuecomment-5039068722"
+      ],
+      "limitations": "PR 50 received independent adversarial review of the exact two-host TSK slice. The complete Enterprise/BPC/TSK/Redis/restore topology has not received an independent deployment review.",
+      "closure": "After the full topology and remaining drills exist, provide its manifests, receipts, custody boundary, and failure evidence to an independent reviewer and resolve all findings."
+    },
+    {
+      "id": "rpo-rto-objectives",
+      "status": "partial",
+      "requirement": "Measure recovery outcomes and compare them with approved recovery point and recovery time objectives.",
+      "evidence": [
+        "repo:docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#acceptance-matrix",
+        "repo:docs/operations/SPARK2_HOST_ACCEPTANCE.md#verification-performed",
+        "standard:POSTGRESQL-HA"
+      ],
+      "limitations": "The tests measure RPO/RTO or elapsed time for named faults, but no owner-approved business impact analysis or production SLO defines the required targets. Asynchronous or catastrophic source-storage loss is not claimed as RPO zero.",
+      "closure": "Approve workload-specific RPO/RTO targets, encode technical acceptance thresholds, and demonstrate them across process, database, Redis, host, network, restore, and alternate-site exercises."
+    },
+    {
+      "id": "cp4-related-plan-coordination",
+      "status": "open",
+      "requirement": "Coordinate contingency testing with related organizational plans and responsible roles rather than exercising the technical system in isolation.",
+      "evidence": ["standard:NIST-SP-800-53-5.1-CP-4"],
+      "limitations": "Repository runbooks and tests do not prove coordination with business continuity, incident response, crisis communications, or external service-provider plans.",
+      "closure": "Name plan owners and dependencies, conduct a coordinated exercise, retain approvals and observations, and feed corrective actions back into each affected plan."
+    },
+    {
+      "id": "cp4-automated-testing",
+      "status": "partial",
+      "requirement": "Use automation to execute contingency tests, collect results, and prevent unevidenced success claims where technically feasible.",
+      "evidence": [
+        "standard:NIST-SP-800-53-5.1-CP-4",
+        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866745029",
+        "artifact:docs/verification/spark2-host-evidence-03add3e.json"
+      ],
+      "limitations": "Hosted component and two-host handoff tests are automated, but the cross-host partition was operator-driven and whole-host, alternate-site, restore, alerting, and custody exercises are not automated.",
+      "closure": "Automate all safe fault and evidence steps; for destructive or operator-controlled steps, automate admission, timestamps, assertions, receipt creation, and post-condition verification."
+    },
+    {
+      "id": "cp4-self-challenge",
+      "status": "partial",
+      "requirement": "Exercise self-challenge and adversarial scenarios that attempt to invalidate contingency assumptions and success signals.",
+      "evidence": [
+        "standard:NIST-SP-800-53-5.1-CP-4",
+        "repo:docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md#acceptance-matrix",
+        "ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866745029"
+      ],
+      "limitations": "Tamper, replay, rollback, gap, split-brain, crash, and false-success paths are challenged in CI, but the full alternate-site, custody, monitoring, restore, and human-response assumptions have not been independently challenged.",
+      "closure": "Run a controlled red-team/tabletop exercise against the complete topology and operational plans, including false telemetry, partial restore, credential loss, delayed detection, and failed alternate-site access."
+    },
+    {
+      "id": "integration-test-skips",
+      "status": "pass",
+      "requirement": "Execute database-dependent Ultra integration tests with real PostgreSQL rather than treating local skips as passing evidence.",
+      "evidence": ["ci:https://github.com/rblake2320/selfconnect-enterprise/actions/runs/29866745029"],
+      "limitations": "The generic Windows suite has 38 explicit environment/OS skips. The authoritative production job separately ran the database-dependent Ultra suite 65/65, independent-state suite 2/2, and Ultra outbox suite 1/1 with zero skips; no claim is made that the entire Python suite has zero skips.",
+      "closure": ""
+    }
+  ]
+}

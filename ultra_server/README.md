@@ -117,6 +117,26 @@ and provenance gap recorded as US-6.
 
 ## Conformance
 
+### Independent-state stream process
+
+The authenticated replication process is separate from the identity sidecar.
+It never creates schemas, streams, fence rows, or keys. After the governed
+provisioning ceremony, run it under a supervisor:
+
+```powershell
+$env:DATABASE_URL = 'postgresql://runtime@127.0.0.1/ultra_b'
+npm run ha:stream -- receiver C:\secure\ultra-receiver.json
+
+$env:DATABASE_URL = 'postgresql://runtime@127.0.0.1/ultra_a'
+npm run ha:stream -- publish-once C:\secure\ultra-publisher.json
+```
+
+The JSON descriptors contain file paths, not inline secrets. The built-in
+receiver binds loopback only for placement behind a TLS/mTLS proxy. The
+publisher permits plaintext only to loopback and requires HTTPS remotely.
+`publish-once` can be invoked repeatedly: verified acknowledgements advance the
+durable checkpoint, while transient failures leave records available to retry.
+
 ```powershell
 npm ci
 npm test

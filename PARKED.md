@@ -91,6 +91,262 @@ sources, limitations, and all related records.
 
 ## Register
 
+## PARK-20260720-007 - Snapshot-only Ultra mutation tail
+
+**Status:** Parked
+**Category:** security property
+**Former location:** `ultra_server/runtime-stores.js`, production PostgreSQL
+stores
+**Source commit:** `0bafcfcb085315024470e942bbb9d2124f8fe869`
+**Affected paths:** Enterprise identity bindings, idempotency records, nonce
+tombstones, independent-state handoff, tests, and CI
+**Action log:** [LOG-20260720-007](LOG.md#log-20260720-007)
+**Why changed:** [WHY-20260720-007](WHY.md#why-20260720-007)
+**Parked by:** commit containing this record
+
+**Former wording:** Enterprise state changed only in its authority tables and
+was transferred at the next governed snapshot; no transaction-bound ordered
+tail existed for those mutations.
+
+**Recovery source:** The source commit and its signed Git history.
+
+**Reason parked:** A source loss between snapshots can leave committed state
+without a corresponding receiver record.
+
+**Replacement:** Strict Ultra mutation adapters using BPC's durable PostgreSQL
+outbox and receiver checkpoint.
+
+**Restore when:** Only for isolated shared-state compatibility testing with
+independent multi-site claims disabled.
+
+**Restore procedure:** Check out the source commit in a disposable worktree,
+use one shared PostgreSQL authority, and do not describe it as independent HA.
+
+**Validation after restore:** Confirm the legacy runtime-store suite, then
+return to the transactional outbox before independent deployment.
+
+**Recovery rehearsal:** Not rehearsed; restoration removes ordered tail
+replication.
+
+**Restoration risks:** Non-zero unreplicated mutation tail and inconsistent
+receiver state after source loss.
+
+**Evidence and links:** [LOG-20260720-007](LOG.md#log-20260720-007) and
+Enterprise issue #28.
+
+## PARK-20260720-006 - Unattested independent-state catalog
+
+**Status:** Parked
+**Category:** security property
+**Former location:** `ultra_server/independent-state.js`, transaction entry
+**Source commit:** `4f6212a4328ed34c34a314411fde41d6f6f7a843`
+**Affected paths:** independent-state export, import, nonce authority,
+reprovision, readiness, tests, and operations runbook
+**Action log:** [LOG-20260720-006](LOG.md#log-20260720-006)
+**Why changed:** [WHY-20260720-006](WHY.md#why-20260720-006)
+**Parked by:** commit containing this record
+
+**Former wording:** Independent-state transactions trusted table names and row
+contracts without proving the live PostgreSQL catalog matched the reviewed DDL.
+
+**Recovery source:** The source commit and its signed Git history.
+
+**Reason parked:** A partial restore or DDL mutation could weaken authority
+semantics without changing signed row payloads.
+
+**Replacement:** Compiled full-catalog SHA-256 attestation plus transaction-held
+`ACCESS SHARE` locks over all governed relations.
+
+**Restore when:** Only in an isolated forensic reproduction with independent
+HA mode disabled.
+
+**Restore procedure:** Check out the source commit in a disposable worktree and
+use disposable databases. Do not connect the resulting server to production.
+
+**Validation after restore:** Demonstrate that an added catalog column is not
+rejected, then return to the compiled-pin implementation.
+
+**Recovery rehearsal:** Not rehearsed; restoration weakens the authority gate.
+
+**Restoration risks:** Schema drift, partial-restore acceptance, and authority
+semantics that differ from reviewed code.
+
+**Evidence and links:** [LOG-20260720-006](LOG.md#log-20260720-006) and
+Enterprise issue #28.
+
+## PARK-20260720-005 - Manifest v1 credential omission
+
+**Status:** Parked
+**Category:** security property
+**Former location:** `ultra_server/independent-state.js`, manifest format
+`selfconnect-ultra-independent-state-v1`
+**Source commit:** `e4cfbd635490b3dc6898ce71b2cbccaebef80bfd`
+**Affected paths:** independent-state schema, export, import, readiness, server
+promotion operations, tests, and runbook
+**Action log:** [LOG-20260720-005](LOG.md#log-20260720-005)
+**Why changed:** [WHY-20260720-005](WHY.md#why-20260720-005)
+**Parked by:** commit containing this record
+
+**Former wording:** Manifest v1 transferred identity bindings without proving
+or recreating the TSK credential authority referenced by those bindings.
+
+**Recovery source:** The source commit and its signed Git history.
+
+**Reason parked:** A promoted node could have an attested binding whose TSK
+credential was missing or stale, while source shared secrets were deliberately
+excluded from the handoff.
+
+**Replacement:** Manifest v2 credential ownership inventory plus durable,
+target-only reprovision obligations and the governed reprovision endpoint.
+
+**Restore when:** Only for offline forensic reproduction with independent mode
+disabled.
+
+**Restore procedure:** Check out the source commit in an isolated worktree,
+use disposable databases, and do not expose the resulting server to traffic.
+
+**Validation after restore:** Reproduce the v1 omission test, then return to v2
+and run the full independent-state drill.
+
+**Recovery rehearsal:** Not rehearsed.
+
+**Restoration risks:** Missing authentication state, stale target credentials,
+and an incorrect readiness decision.
+
+**Evidence and links:** [LOG-20260720-005](LOG.md#log-20260720-005),
+[WHY-20260720-005](WHY.md#why-20260720-005), and Enterprise issue #28.
+
+## PARK-20260720-003 - Shared Redis replay authority and fresh-only restart call
+
+**Status:** Parked
+**Category:** security property
+**Former location:** `ultra_server/server.js`, replay nonce selection and
+PostgreSQL schema initialization
+**Source commit:** `1d4931eeac788ad678af6292c2ffe70de2be7679`
+**Affected paths:** `ultra_server/server.js`, `ultra_server/storage.js`,
+`ultra_server/independent-state.js`, and production HA configuration
+**Action log:** [LOG-20260720-003](LOG.md#log-20260720-003)
+**Why changed:** [WHY-20260720-003](WHY.md#why-20260720-003)
+**Parked by:** commit containing this record
+
+**Former wording:** Independent and shared deployments both used Redis replay
+nonces, and startup repeatedly executed BPC's fresh-install-only `PG_SCHEMA`.
+
+**Recovery source:** `ultra_server/server.js` at the source commit.
+
+**Reason parked:** Independent mode requires replay tombstones to move with its
+authoritative PostgreSQL state. The newly pinned BPC `PG_SCHEMA` is deliberately
+fresh-only and cannot be invoked on every restart.
+
+**Replacement:** `PgNonceTombstoneStore` in independent mode and exact
+`BPC_PAIR_PG_SCHEMA` compatibility initialization.
+
+**Restore when:** Only after reproducing an incompatibility in shared mode;
+never as an independent-state HA configuration.
+
+**Restore procedure:** Set `ULTRA_HA_STATE_MODE=shared`, revert the
+implementation commit containing LOG-20260720-003, and retain the restart
+regression while investigating the incompatibility.
+
+**Validation after restore:** Run `npm test --prefix ultra_server`, the
+production restart job, and the independent-state drill as applicable.
+
+**Recovery rehearsal:** Not rehearsed. The former shared mode remains covered,
+but restoring the detected fresh-schema restart defect is not acceptable.
+
+**Restoration risks:** Replay tombstones would no longer follow an independent
+PostgreSQL authority, and repeated fresh-only DDL would break restart.
+
+**Evidence and links:** [LOG-20260720-003](LOG.md#log-20260720-003),
+[WHY-20260720-003](WHY.md#why-20260720-003), draft PR #40, and Enterprise
+issue #28.
+
+## PARK-20260720-002 - Pre-completion BPC and TSK protocol pins
+
+**Status:** Parked
+**Category:** dependency configuration
+**Source repository:** `selfconnect-enterprise`
+**Former location:** `portfolio-lock.json`, BPC and TSK component commit fields
+**Source commit:** `9e69c6eaff0b7ca522a808075daea6bf41b592ad`
+**Affected paths:** `portfolio-lock.json`
+**Action log:** [LOG-20260720-002](LOG.md#log-20260720-002)
+**Why changed:** [WHY-20260720-002](WHY.md#why-20260720-002)
+**Parked by:** commit containing this record
+
+**Former wording:** `"commit":
+"772271e174769f91a980cc3ee69a6eb9cc36bf39"` for BPC and `"commit":
+"9cff3e25e2432797c454ad09b9dacbf7244e51af"` for TSK.
+
+**Recovery source:** `portfolio-lock.json` at the source commit.
+
+**Reason parked:** Those pins predate the completed protocol HA foundations
+needed by Enterprise issue #28.
+
+**Replacement:** BPC `aedf67b89574066e1df0575e68fdb58ea0dc9297`
+and TSK `00e7457f4ca19435794b3e876a37bd7f90b99317`.
+
+**Restore when:** Only for a reproduced compatibility defect, with the HA
+composition kept disabled and the regression retained.
+
+**Restore procedure:** Revert the two commit fields, rerun portfolio
+conformance and the complete pinned protocol plus Ultra suites, and record a new
+decision.
+
+**Validation after restore:** The same hosted matrix required for the advance.
+
+**Recovery rehearsal:** Not rehearsed.
+
+**Restoration risks:** Removes the reviewed HA authorities required for the
+independent-state composition.
+
+**Evidence and links:** [LOG-20260720-002](LOG.md#log-20260720-002),
+[WHY-20260720-002](WHY.md#why-20260720-002), and Enterprise issue #28.
+
+## PARK-20260720-001 - Legacy Enterprise TPM probe default
+
+**Status:** Parked
+**Category:** security property
+**Former location:** `enterprise/tpm_attestation.py:tpm_probe`
+**Source commit:** `2e617ebb1d6955ac42523774a739b7e7206c4ca6`
+**Affected paths:** `enterprise/tpm_attestation.py`, SDK pin and TPM evidence docs
+**Action log:** [LOG-20260720-001](LOG.md#log-20260720-001)
+**Why changed:** [WHY-20260720-001](WHY.md#why-20260720-001)
+**Parked by:** commit containing this entry
+
+**Former wording:** The no-argument `tpm_probe()` created an ephemeral ECDSA
+provider key and used the local `NCryptVerifyClaim` path. On the tested host it
+returned an honest NA with `NCryptCreateClaim -> 0x80090026`.
+
+**Recovery source:** Git commit `2e617ebb`, path
+`enterprise/tpm_attestation.py`. The implementation remains callable as
+`tpm_probe(backend="legacy")` for bounded compatibility tests.
+
+**Reason parked:** The legacy path used a separate partial verifier and the wrong
+key composition, causing `0x80090026` on a host with working TPM platform claims.
+
+**Replacement:** The default probe uses SelfConnect's provisioned PCP identity
+key, operator-pinned public digest, strict quote verifier, and durable nonce
+replay store.
+
+**Restore when:** The pinned SDK cannot be deployed and the legacy path has been
+independently upgraded to equivalent key pinning, parsing, and replay controls.
+
+**Restore procedure:** Change the `tpm_probe` default to `legacy`, keep the SDK
+backend available, then regenerate a dated live evidence artifact without
+rewriting the July PASS record.
+
+**Validation after restore:** Run the focused TPM suite, full Enterprise suite,
+portfolio conformance, and a live nonce/PCR/signature/replay drill.
+
+**Recovery rehearsal:** The legacy compatibility backend is covered by focused
+tests; changing the public default back has not been rehearsed.
+
+**Restoration risks:** Restoring the old default can recreate a false hardware
+NA and loses the canonical strict quote parser and durable replay control.
+
+**Evidence and links:** SelfConnect PR #30, ecosystem issue #3, and
+`docs/ato/TPM_LIVE_PROBE_2026-07-20.*`.
+
 ## PARK-20260718-006 - Historical participant, executor, and bridge expansion
 
 **Status:** Parked

@@ -1,0 +1,148 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import test from 'node:test';
+
+import {
+  runLiveEnterpriseAcceptance,
+  validateLiveProtocolComposition,
+} from './final-ha-live.mjs';
+import { writeEnterpriseFaultEvidence } from './enterprise-fault-evidence.mjs';
+import { writeLiveCompositionEvidence } from './live-composition-evidence.mjs';
+
+test('live composition requires exact command binding, independent systems, and stale denial', () => {
+  const commandId = 'promote-live-1';
+  const agentPublicKeyHex = 'a'.repeat(64);
+  const fingerprint = createHash('sha256').update(
+    Buffer.from(agentPublicKeyHex, 'hex'),
+  ).digest('hex');
+  const agentIdentity = {
+    agentId: `SC-${fingerprint.slice(0, 8).toUpperCase()}`,
+    agentPublicKeyHex,
+    canonicalId: `SCID-${fingerprint}`,
+  };
+  const bpc = {
+    readinessAttestation: { commandId, targetEpoch: 2 }, staleWriterDenied: true,
+    failback: { targetSystemId: '1', targetEpoch: 3, staleBWriterDenied: true,
+      priorAuthoritiesReset: false, sourcePostgresSystemReused: true },
+    repeatedCycle: {
+      forward: { targetEpoch: 4 },
+      failback: { targetEpoch: 5 },
+    },
+    recoveredSite: { commandId: 'promote-live-1-recovered-site-promote',
+      targetEpoch: 6, staleDatabaseReused: true, firstMutationSequence: 1 },
+    systemIds: { sourceA: '1', promotedB: '2', control: '3' },
+  };
+  const tsk = {
+    agentIdentity,
+    sourceCredentialProof: { ...agentIdentity },
+    bFinalizedReceipt: { commandId }, activationLeaseGrant: { commandId },
+    staleWriterDenied: true, n: 4, nextSequence: 5,
+    staleTargetWriterDenied: true, returnSequence: 6,
+    returnFrozenReceipt: { n: 5 },
+    returnCommandId: 'return-promote-live-1',
+    returnFinalizedReceipt: { n: 5, epoch: 1, bKeyId: 'return-a', bSystemId: '4',
+      commandId: 'return-promote-live-1' },
+    returnActivationLeaseGrant: { leaseEpoch: 2, commandId: 'return-promote-live-1',
+      holderNodeId: 'return-a', grantDigest: 'c'.repeat(64) },
+    returnSourceActivation: { n: 5, activationGrantDigest: 'c'.repeat(64) },
+    redisAuthority: { record: { commandId: 'promote-live-1-recovered-site-promote',
+      fenceEpoch: 5, nodeId: 'recovered-b', active: true } },
+    staleCredentialWriterDenied: true,
+    staleReturnedCredentialWriterDenied: true,
+    publicCredential: { status: 'active', publicMapDigest: 'a'.repeat(64) },
+    publicCredentialSource: { clientId: 'source-client', publicMapDigest: 'b'.repeat(64) },
+    publicCredentialTarget: { clientId: 'target-client', publicMapDigest: 'a'.repeat(64) },
+    publicCredentialReturn: { clientId: 'return-client', publicMapDigest: 'd'.repeat(64),
+      secretDigest: 'e'.repeat(64) },
+    targetCredentialProof: {
+      ...agentIdentity,
+      commandId,
+      record: { mutation: { clientId: 'target-client' } },
+    },
+    credentialSourceRevocation: { commandId },
+    credentialActivationLeaseGrant: { commandId },
+    targetCredentialRevocation: { commandId: 'return-promote-live-1',
+      leaseStatus: 'revoked' },
+    returnCredentialActivationLeaseGrant: { commandId: 'return-promote-live-1',
+      leaseEpoch: 2 },
+    returnCredentialProof: { ...agentIdentity, commandId: 'return-promote-live-1',
+      record: { mutation: { clientId: 'return-client' } } },
+    repeatedCycle: {
+      forward: { sourceEpoch: 2, targetEpoch: 3, staleWriterDenied: true,
+        commandId: 'promote-live-1-cycle-2-promote' },
+      failback: { sourceEpoch: 3, targetEpoch: 4, staleWriterDenied: true,
+        commandId: 'promote-live-1-cycle-2-failback',
+        activationLease: { leaseEpoch: 4, holderNodeId: 'return-a' } },
+    },
+    recoveredSite: {
+      handoff: { sourceEpoch: 4, targetEpoch: 5, staleWriterDenied: true,
+        commandId: 'promote-live-1-recovered-site-promote',
+        activationLease: { leaseEpoch: 5, holderNodeId: 'recovered-b' } },
+      staleCredentialDenied: true,
+      credential: { proof: { ...agentIdentity } },
+    },
+    repeatForwardCredential: {
+      leaseGrant: { leaseEpoch: 3 },
+      proof: { ...agentIdentity, commandId: 'promote-live-1-cycle-2-promote' },
+    },
+    repeatReturnCredential: {
+      leaseGrant: { leaseEpoch: 4 },
+      proof: { ...agentIdentity, commandId: 'promote-live-1-cycle-2-failback' },
+    },
+    staleRepeatForwardCredentialDenied: true,
+    staleRepeatReturnCredentialDenied: true,
+    systemIds: { sourceA: '4', receiverB: '5', control: '6' },
+  };
+  assert.equal(validateLiveProtocolComposition(bpc, tsk, commandId), true);
+  assert.throws(() => validateLiveProtocolComposition(
+    bpc, { ...tsk, staleWriterDenied: false }, commandId,
+  ));
+  assert.throws(() => validateLiveProtocolComposition(
+    bpc, { ...tsk, systemIds: { sourceA: '4', receiverB: '2', control: '6' } }, commandId,
+  ));
+  assert.throws(() => validateLiveProtocolComposition(
+    bpc, { ...tsk, targetCredentialProof: {
+      ...tsk.targetCredentialProof, canonicalId: `SCID-${'0'.repeat(64)}`,
+    } }, commandId,
+  ));
+  assert.throws(() => validateLiveProtocolComposition(
+    bpc, { ...tsk, targetCredentialProof: {
+      ...tsk.targetCredentialProof, agentPublicKeyHex: 'b'.repeat(64),
+    } }, commandId,
+  ));
+});
+
+test('directly composes exact reviewed live BPC and TSK artifacts', {
+  skip: process.env.LIVE_COMPOSITION_COMBINED !== '1',
+  timeout: 600_000,
+}, async () => {
+  const result = await runLiveEnterpriseAcceptance();
+  assert.equal(result.bpc.readinessAttestation.commandId, result.commandId);
+  assert.equal(result.tsk.bFinalizedReceipt.commandId, result.commandId);
+  assert.equal(result.tsk.activationLeaseGrant.commandId, result.commandId);
+  assert.equal(result.bpc.staleWriterDenied, true);
+  assert.equal(result.tsk.staleWriterDenied, true);
+  assert.equal(result.tsk.staleTargetWriterDenied, true);
+  assert.equal(result.tsk.returnSequence, result.tsk.n + 2);
+  assert.equal(result.enterprise.rpo, 0);
+  assert.equal(result.enterprise.copiedTargetCredentialRows, 0);
+  assert.equal(result.enterprise.targetClientId, result.tsk.publicCredentialTarget.clientId);
+  assert.equal(result.enterprise.failback.targetClientId,
+    result.tsk.publicCredentialReturn.clientId);
+  assert.equal(result.enterprise.failback.staleBProtocolWriterDenied, true);
+  assert.equal(result.enterprise.repeatedCycle.forward.targetClientId,
+    result.tsk.repeatForwardCredential.publicCredential.clientId);
+  assert.equal(result.enterprise.repeatedCycle.forward.staleSourceCompletionDenied, true);
+  assert.equal(result.enterprise.repeatedCycle.failback.targetClientId,
+    result.tsk.repeatReturnCredential.publicCredential.clientId);
+  assert.equal(result.enterprise.repeatedCycle.failback.staleSourceCompletionDenied, true);
+  assert.equal(result.enterprise.recoveredSite.targetClientId,
+    result.tsk.recoveredSite.credential.publicCredential.clientId);
+  assert.equal(result.enterprise.recoveredSite.staleSourceCompletionDenied, true);
+  if (process.env.ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE) {
+    await writeLiveCompositionEvidence(process.env.ULTRA_LIVE_COMPOSITION_EVIDENCE_FILE, result);
+  }
+  if (process.env.ULTRA_LIVE_FAULT_EVIDENCE_FILE) {
+    await writeEnterpriseFaultEvidence(process.env.ULTRA_LIVE_FAULT_EVIDENCE_FILE, result);
+  }
+});

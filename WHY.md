@@ -297,6 +297,410 @@ stronger substitution, expiry, revocation, replay, and payload tests.
 **Evidence and links:** `enterprise/delegation.py`,
 `tests/test_enterprise/test_delegation.py`, [GAPS.md](GAPS.md), and
 [LOG-20260731-001](LOG.md#log-20260731-001).
+## WHY-20260720-012 - Make the portfolio-locked fault matrix the completion gate
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-21T03:30:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-012](LOG.md#log-20260720-012)
+**Parked records:** None
+**Source state:** `selfconnect-enterprise`, `feat/28-final-acceptance`, based on
+`f7bd914c3c6fd7ab5c0cee34c75574e609aac47a`
+
+**Decision:** Close the engineering acceptance only when one fail-closed
+orchestrator verifies the exact Enterprise, BPC, and TSK commits and the full
+named fault/failback matrix emits its expected evidence.
+
+**Why:** Running strong component suites independently can conceal a stale
+portfolio pin, omitted fault, or one-way recovery path. The final gate must
+bind exact code identities and require semantic results, not merely exit zero.
+
+**Alternatives considered:** Treating prior green component CI as completion
+was rejected because it did not prove same-principal failback. Reimplementing
+BPC or TSK fault logic in Enterprise was rejected because it would duplicate
+reviewed security authorities. A generic plugin surface was rejected because
+it could accept an unreviewed substitute.
+
+**Consequences:** Final acceptance takes longer and requires Docker plus three
+PostgreSQL authorities. In return, a pin mismatch, missing marker, process
+failure, timeout, output overflow, stale writer, secret leak, or topology fault
+fails the gate. Repeated failback also exposed and fixed redaction-marker drift
+that one-way handoff could not detect.
+
+**Rollback conditions:** Replace the orchestrator only with an equal or
+stronger gate that retains exact pins, direct completed authorities,
+same-principal failover/failback, real process/network/Redis faults, bounded
+secret-free evidence, and the explicit claim exclusions.
+
+**Evidence and links:** [LOG-20260720-012](LOG.md#log-20260720-012),
+`docs/operations/ULTRA_FINAL_HA_ACCEPTANCE.md`, the control catalog, hosted CI,
+and Enterprise issue #28.
+
+## WHY-20260720-011 - Forbid the legacy Ultra store fallback after promotion
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T22:18:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-011](LOG.md#log-20260720-011)
+**Parked records:** None
+**Source state:** `selfconnect-enterprise`, `origin/master`,
+`5b4f962cd4164e78209d9bf50bce838c83c0104c`
+
+**Decision:** A promoted independent runtime must load and attest the exact
+source-authority descriptor before it constructs writable Ultra-owned stores.
+
+**Why:** Selecting a legacy store after promotion bypasses transactional outbox
+replication and the source lease even when both mechanisms exist. Startup is the
+right fail-closed composition boundary.
+
+**Alternatives considered:** Optional feature flags were rejected because they
+permit accidental downgrade. Requiring source authority on an unpromoted
+standby was rejected because that node is intentionally non-writable and may
+not yet have a lease.
+
+**Consequences:** Promoted nodes require an operator-provisioned descriptor and
+public verification key files. Standbys can start without them but remain
+blocked from every writer route by the imported-state readiness gate.
+
+**Rollback conditions:** Restore legacy runtime selection only for shared-state
+mode or a demonstrably read-only standby; never for an attested promoted site.
+
+**Evidence and links:** [LOG-20260720-011](LOG.md#log-20260720-011),
+`ultra_server/ultra-state-authority-config.test.mjs`, the real outbox drill, and
+`docs/operations/ULTRA_INDEPENDENT_STATE_HA.md`.
+
+## WHY-20260720-010 - Recheck the source lease at the commit boundary
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T22:12:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-010](LOG.md#log-20260720-010)
+**Parked records:** None
+**Source state:** `selfconnect-enterprise`, `origin/master`,
+`f49cfb1da95dbb3a578a3944a113eb871330e1ce`
+
+**Decision:** Reuse TSK's signed source-lease capability as the BPC outbox
+pre-commit check for every replicated Ultra authority mutation.
+
+**Why:** A middleware or Redis-only precheck leaves a check-to-commit window.
+The source PostgreSQL lease row is the transaction-local authority: revoke
+conflicts with in-flight readers, and a revoke observed before commit forces the
+serializable mutation to fail closed.
+
+**Alternatives considered:** A new Enterprise lease format was rejected as
+duplicative and harder to audit. A pre-request check was rejected because it
+cannot govern the later database commit.
+
+**Consequences:** Independent Ultra writers must possess a real, database-bound
+TSK readiness capability and refresh it on a signed lease renewal. Revoked or
+changed grants roll back application DML and outbox state together.
+
+**Rollback conditions:** Replace this composition only if the replacement
+retains an unforgeable capability and an equal or stronger in-transaction,
+pre-commit stale-writer denial.
+
+**Evidence and links:** [LOG-20260720-010](LOG.md#log-20260720-010),
+`ultra_server/ultra-state-outbox.test.mjs`, and the pinned TSK source-fence
+contract.
+
+## WHY-20260720-009 - Separate the stream process from the identity sidecar
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T22:05:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-009](LOG.md#log-20260720-009)
+**Parked records:** None
+**Source state:** `selfconnect-enterprise`, `origin/master`,
+`2a2f20e60ee70e4cb3fe91daaaad327165af9e38`
+
+**Decision:** Operate replication through a dedicated receiver service and a
+bounded publisher invocation instead of hiding an ungoverned background loop in
+the identity HTTP process.
+
+**Why:** Separate processes make database identity, key custody, restart
+behavior, and supervision explicit. Refusing auto-provisioning and plaintext
+remote transport prevents convenience startup from silently redefining the
+reviewed authority boundary.
+
+**Alternatives considered:** An implicit background loop in `server.js` was
+rejected because it couples identity-service availability and replication
+lifecycle. Inline key material and automatic schema provisioning were rejected
+because they weaken custody and migration review.
+
+**Consequences:** Operators must provision the schema and stream beforehand and
+supervise repeated publisher invocations. Remote deployments must place the
+loopback receiver behind authenticated TLS/mTLS.
+
+**Rollback conditions:** Replace the commands only with a service manager or
+integrated runtime that preserves the same schema attestation, file-held key
+custody, endpoint restrictions, and durable retry behavior.
+
+**Evidence and links:** [LOG-20260720-009](LOG.md#log-20260720-009),
+`ultra_server/ultra-state-outbox.test.mjs`, and
+`docs/operations/ULTRA_INDEPENDENT_STATE_HA.md`.
+
+## WHY-20260720-008 - Require authenticated decision-bound delivery
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T22:00:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-008](LOG.md#log-20260720-008)
+**Parked records:** None
+**Source state:** Enterprise master at `d036645a71bd84de482b60f625eb76ca4e56d27d`
+
+**Decision:** Compose the Enterprise stream with BPC's bounded HMAC HTTP
+transport and durable replay store, then require an Ed25519 receipt binding the
+exact record, decision, key, and expected receiver identity before source ACK.
+
+**Why:** TLS location or HTTP success alone does not prove that the authorized
+receiver durably applied a particular record. A replayable or decision-unbound
+ACK can drop unapplied authority state.
+
+**Alternatives considered:** Plain JSON POST (rejected as unauthenticated and
+replayable); trust HTTP 200 (rejected because transport completion is not
+durable ownership); HMAC-only inner receipt (rejected because receiver custody
+would be indistinguishable from shared transport-key custody).
+
+**Consequences:** Transport has separate request, response-envelope, and
+receiver-signing authorities. Network ambiguity leaves the source row unacked;
+receiver idempotency makes a later redelivery safe.
+
+**Rollback conditions:** Replace only with a transport that preserves bounded
+raw-body authentication, durable nonce replay rejection, request-attempt-bound
+responses, expected-receiver signatures, and record/decision binding.
+
+**Evidence and links:** `ultra_server/ultra-state-outbox.test.mjs`,
+[LOG-20260720-008](LOG.md#log-20260720-008), and Enterprise issue #28.
+
+## WHY-20260720-007 - Reuse the reviewed durable-outbox contract
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T21:50:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-007](LOG.md#log-20260720-007)
+**Parked records:** [PARK-20260720-007](PARKED.md#park-20260720-007)
+**Source state:** Enterprise master at `0bafcfcb085315024470e942bbb9d2124f8fe869`
+
+**Decision:** Represent each Enterprise-owned mutation as a strict,
+secret-stripped record in the existing BPC PostgreSQL outbox and apply it with
+the existing independent receiver checkpoint.
+
+**Why:** BPC already proves transaction-bound append, sequence allocation,
+backpressure, fence equality, digest recomputation, ordered apply, durable
+duplicate classification, and rollback. A second Enterprise protocol would
+duplicate the highest-risk correctness machinery.
+
+**Alternatives considered:** Periodic snapshot only (rejected because it has an
+unbounded unreplicated tail between freezes); best-effort change events
+(rejected because commit and event can diverge); copy TSK secrets in mutations
+(rejected; promoted targets use the existing reprovision ceremony).
+
+**Consequences:** Identity, idempotency, and nonce mutations gain an ordered
+tail. Secret-bearing source responses are represented on the receiver by a
+stable `SECRET_REPROVISION_REQUIRED` result. Runtime composition must provision
+the stream and select these adapters explicitly.
+
+**Rollback conditions:** Replace only if the alternative preserves atomic
+source mutation+append, bounded admission, secret stripping, ordered atomic
+apply, and durable duplicate/fork detection.
+
+**Evidence and links:** `ultra_server/ultra-state-outbox.test.mjs`,
+[LOG-20260720-007](LOG.md#log-20260720-007), and Enterprise issue #28.
+
+## WHY-20260720-006 - Treat the live catalog as authority
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T21:37:43Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-006](LOG.md#log-20260720-006)
+**Parked records:** [PARK-20260720-006](PARKED.md#park-20260720-006)
+**Source state:** Enterprise master at `4f6212a4328ed34c34a314411fde41d6f6f7a843`
+
+**Decision:** Compare the live full catalog to a source-compiled manifest at
+the start of every independent-state transaction and retain relation locks
+through commit.
+
+**Why:** Data signatures and authority digests do not detect a missing CHECK,
+changed index, injected trigger, disabled RLS setting, or partial schema
+restore. Checking without holding a lock leaves a DDL time-of-check/time-of-use
+window.
+
+**Alternatives considered:** Startup-only attestation (rejected because drift
+after startup remains usable); trust-on-first-use or an environment override
+(rejected because it can bless attacker-modified DDL); migration-version only
+(rejected because a version stamp does not prove the catalog).
+
+**Consequences:** Authority operations pay several catalog reads and table
+locks. Intentional DDL is an explicit offline migration and reviewed re-pin.
+Application byte ordering makes the digest independent of database collation.
+
+**Rollback conditions:** Replace only with a stronger compiled schema
+capability that provides at least the same catalog coverage and transaction
+stability. Do not return to version-only or startup-only trust.
+
+**Evidence and links:** `ultra_server/independent-state.test.mjs`,
+[LOG-20260720-006](LOG.md#log-20260720-006), and Enterprise issue #28.
+
+## WHY-20260720-005 - Regenerate TSK secrets at the promoted authority
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T21:25:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-005](LOG.md#log-20260720-005)
+**Parked records:** [PARK-20260720-005](PARKED.md#park-20260720-005)
+**Source state:** Enterprise master at `e27784fee6623844883a90e882830c991815d005`
+
+**Decision:** Bind non-secret credential ownership metadata into manifest v2,
+then require a fresh target-only TSK credential and atomic identity rebind
+before imported-state readiness can authorize writes.
+
+**Why:** Copying a TSK shared secret into a durable handoff violates the stated
+secret-stripping boundary. Omitting credential state without a readiness gate
+creates bindings that cannot authenticate and permits stale target credentials
+to survive a site transition.
+
+**Alternatives considered:** Copy encrypted or plaintext source secrets
+(rejected as retained secret transfer); treat missing maps as an operator note
+(rejected as unenforced); retain target maps (rejected as stale authority).
+
+**Consequences:** Promotion includes a bounded per-identity reprovision step.
+The endpoint returns the fresh secret only under both operator and agent auth,
+and signed/audit receipts contain only a public-map digest.
+
+**Rollback conditions:** Restore v1 only in shared-state mode after disabling
+independent promotion. Never treat a v1 head as credential-complete.
+
+**Evidence and links:** `ultra_server/independent-state.test.mjs`,
+[LOG-20260720-005](LOG.md#log-20260720-005), and Enterprise issue #28.
+
+## WHY-20260720-004 - Imported authority is a writer prerequisite
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T21:14:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-004](LOG.md#log-20260720-004)
+**Parked records:** None
+**Source state:** Enterprise master at `e4cfbd635490b3dc6898ce71b2cbccaebef80bfd`
+
+**Decision:** Require a successful independent-state authority attestation in
+the common writer middleware before consulting the ordinary HA writer fence.
+
+**Why:** Readiness is not merely a monitoring signal. Allowing writes while it
+is false could create a fresh, incomplete authority after promotion and make a
+later import conflict with locally-created state.
+
+**Alternatives considered:** Rely on operators to wait for `/ready` (rejected
+as advisory rather than enforced); require the check on each route separately
+(rejected because a future route could omit it).
+
+**Consequences:** An independent-mode node without all promotion pins remains
+available for out-of-process import tooling but cannot serve mutations.
+
+**Rollback conditions:** Only if independent-state mode is removed entirely;
+never while its readiness contract remains supported.
+
+**Evidence and links:** `ultra_server/independent-state-config.test.mjs`,
+[LOG-20260720-004](LOG.md#log-20260720-004), and Enterprise issue #28.
+
+## WHY-20260720-003 - Move replay authority and bounded Enterprise state together
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T20:51:24Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-003](LOG.md#log-20260720-003)
+**Parked records:** [PARK-20260720-003](PARKED.md#park-20260720-003)
+**Source state:** draft PR #40 at `1d4931ee`
+
+**Decision:** In independent mode, use PostgreSQL nonce tombstones and transfer
+them atomically with Ultra identity/idempotency state under a source+guard
+signed manifest bound to exact BPC and TSK promotion receipts.
+
+**Why:** Redis-only nonce data can roll back or disappear independently during
+a site transition. Copying raw nonces or secret-bearing idempotent responses
+would create a new disclosure path. A signed bounded snapshot with hashes only,
+secret reprovision tombstones, independent database identity, and monotonic
+import head provides a small fail-closed Enterprise composition layer.
+
+**Alternatives considered:** Treat Redis as durable authority (rejected for
+independent-site rollback); copy secret responses (rejected); reimplement BPC
+or TSK state (rejected because their reviewed authorities already own it).
+
+**Consequences:** Promotion needs separate source and guard custody steps and a
+secret reprovision ceremony. Large state is bounded and currently O(N). Full
+site acceptance remains separate.
+
+**Rollback conditions:** Restore the shared-state behavior if the independent
+mode fails its named topology drill, while retaining issue #28 as open.
+
+**Evidence and links:** `ultra_server/independent-state.test.mjs`,
+`docs/operations/ULTRA_INDEPENDENT_STATE_HA.md`, draft PR #40.
+
+## WHY-20260720-002 - Compose reviewed protocol authorities instead of cloning them
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T20:40:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-002](LOG.md#log-20260720-002)
+**Parked records:** [PARK-20260720-002](PARKED.md#park-20260720-002)
+**Source state:** `selfconnect-enterprise` master at `9e69c6ea`
+
+**Decision:** Pin the completed BPC and TSK HA masters before implementing the
+Enterprise independent-state Ultra composition.
+
+**Why:** Both protocol repositories now own and test their authority-specific
+transaction, replication, import, fencing, and recovery invariants. Copying
+those mechanisms into Enterprise would create divergent security code and make
+the higher-level proof weaker.
+
+**Alternatives considered:** Keep the older pins and implement a parallel Ultra
+replication protocol; rejected as duplication. Treat protocol acceptance as
+automatic Enterprise acceptance; rejected because Ultra still owns composition,
+identity binding, runtime routing, and topology claims.
+
+**Consequences:** Enterprise can build on reviewed public APIs, but newer pins
+may expose compatibility regressions that must fail hosted CI before any
+composition proceeds.
+
+**Rollback conditions:** Restore the prior exact pins if a reproduced protocol
+compatibility defect cannot be corrected without weakening a verified contract.
+
+**Evidence and links:** [LOG-20260720-002](LOG.md#log-20260720-002),
+Enterprise issue #28, and the exact BPC/TSK commit identities above.
+
+## WHY-20260720-001 - Reuse one verified TPM quote authority
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-20T20:20:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260720-001](LOG.md#log-20260720-001)
+**Parked records:** [PARK-20260720-001](PARKED.md#park-20260720-001)
+**Source state:** `selfconnect-enterprise` master at `2e617ebb`
+
+**Decision:** Use the pinned SelfConnect TPM module as the default Enterprise
+platform-attestation mechanism. Require an operator-configured public-key digest
+and keep the former probe only as an explicit legacy backend.
+
+**Why:** The SDK path has real hardware evidence, verifies the quote signature,
+PCR selection and digest, verifier nonce, and durable replay state. Maintaining a
+second incomplete parser in Enterprise would recreate divergence and had already
+produced a false unsupported diagnosis on this host.
+
+**Alternatives considered:** Patch only the old `NCryptCreateClaim` call; rejected
+because it would retain a second parser and replay policy. Trust the public-key
+digest carried by the artifact; rejected because that permits key substitution.
+Automatically overwrite or reprovision the production key; rejected because key
+replacement is an operator-governed lifecycle action.
+
+**Consequences:** Enterprise now fails closed when the key digest is not pinned
+and obtains the full local mechanism proof when it is configured. The ordinary
+DPAPI agent-signing key remains separate from the platform quote.
+
+**Rollback conditions:** Restore the legacy backend as default only if the pinned
+SDK dependency cannot be deployed and the legacy path is independently upgraded
+to equivalent key pinning, quote parsing, and replay controls.
+
+**Evidence and links:** `enterprise/tpm_attestation.py`, focused tests,
+`docs/ato/TPM_LIVE_PROBE_2026-07-20.*`, SelfConnect PR #30, ecosystem issue #3.
 
 ## WHY-20260718-006 - Alias only the hardened lease path
 

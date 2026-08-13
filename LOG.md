@@ -241,6 +241,378 @@ recorder had no live immutable replication sink configured.
 **Notes:** This slice is transport-neutral and non-mutating. It does not yet
 make delegation proofs mandatory in `GovernedRuntime`, persist replay
 consumption, or supply a durable revocation authority.
+## LOG-20260720-012 - Compose final multi-authority Ultra HA acceptance
+
+**Timestamp (UTC):** 2026-07-21T03:30:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** production acceptance implementation and evidence
+**Base commit:** `f7bd914c3c6fd7ab5c0cee34c75574e609aac47a`
+**Change reference:** commit containing this entry; Enterprise issue #28
+**Why:** [WHY-20260720-012](WHY.md#why-20260720-012)
+**Parked records:** None
+
+**Changed:** Pinned the completed TSK credential authority, added a bounded
+final-acceptance orchestrator, added a same-principal A -> B -> A failback, and
+added a dedicated three-PostgreSQL/Redis-quorum/Sentinel hosted job with a
+secret-free evidence artifact.
+
+**Reason:** Component success and one-way handoff were insufficient evidence
+for the named Enterprise topology. Completion requires the exact authorities,
+faults, recovery, reprovisioning, and failback to pass as one fail-closed gate.
+
+**Full actions and links:** `ultra_server/final-ha-acceptance.mjs`, its unit
+test, `ultra_server/independent-state.test.mjs`, the final HA runbook, the
+control catalog, `portfolio-lock.json`, hosted CI, and Enterprise issue #28.
+
+**Validation:** Unit tests validate the immutable step plan, exact pins, and
+semantic evidence markers. Real acceptance runs BPC and TSK completed
+authorities, process SIGKILL, source activation, Enterprise authenticated
+delivery and failback, Redis Sentinel master loss, and a live split-brain
+partition. Hosted evidence records full output hashes and bounded RPO/RTO lines.
+
+**Notes:** Acceptance is limited to the exact recorded topology and commits.
+External authorization, certification, legal, and provider-retention claims
+remain outside this engineering result.
+
+## LOG-20260720-011 - Select governed stores on promoted independent runtimes
+
+**Timestamp (UTC):** 2026-07-20T22:18:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** production runtime integration
+**Base commit:** `5b4f962cd4164e78209d9bf50bce838c83c0104c`
+**Change reference:** commit containing this entry
+**Why:** [WHY-20260720-011](WHY.md#why-20260720-011)
+**Parked records:** None
+
+**Changed:** Added a strict file-backed authority descriptor loader and made a
+promoted independent server select the governed replicated Ultra stores.
+
+**Reason:** A proven factory that production never selected left the legacy
+direct-DML path reachable in the exact topology the factory was built to guard.
+
+**Full actions and links:** `ultra_server/ultra-state-authority-config.js`,
+`ultra_server/server.js`, `.env.example`, tests, and the operations runbook.
+
+**Validation:** Unit tests reject descriptor drift and bounds violations. The
+real two-PostgreSQL drill loads the public key and descriptor from files, mints
+the database-bound capability, and exercises the governed adapters.
+
+**Boundary:** The BPC pair registry and TSK credential store remain separate
+authority-composition work. Multi-site fault and restore evidence remains
+tracked in Enterprise issue 28.
+
+## LOG-20260720-010 - Fence Ultra mutations inside their source transaction
+
+**Timestamp (UTC):** 2026-07-20T22:12:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security implementation and verification
+**Base commit:** `f49cfb1da95dbb3a578a3944a113eb871330e1ce`
+**Change reference:** commit containing this entry
+**Why:** [WHY-20260720-010](WHY.md#why-20260720-010)
+**Parked records:** None
+
+**Changed:** Added `createGovernedUltraStateAuthority`, binding the BPC atomic
+outbox to TSK's signed, capability-scoped source lease and pre-commit check.
+
+**Reason:** HTTP writer admission and Redis checks alone cannot prevent a stale
+independent PostgreSQL authority from committing after its lease changes.
+
+**Full actions and links:** `ultra_server/ultra-state-outbox.js`, its real
+two-PostgreSQL drill, and the independent-state operations runbook.
+
+**Validation:** The drill installs and attests a real Ed25519-signed TSK lease,
+commits five governed records, revokes the lease between application DML and
+pre-commit validation, and proves the raced DML/outbox append rolled back.
+
+**Boundary:** BPC pair and TSK credential runtime stores still require their
+own completed-authority composition. Full site failover evidence remains in
+Enterprise issue 28.
+
+## LOG-20260720-009 - Ship the authenticated stream process boundary
+
+**Timestamp (UTC):** 2026-07-20T22:05:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation and verification
+**Base commit:** `2a2f20e60ee70e4cb3fe91daaaad327165af9e38`
+**Change reference:** commit containing this entry
+**Why:** [WHY-20260720-009](WHY.md#why-20260720-009)
+**Parked records:** None
+
+**Changed:** Added a shipped receiver service and bounded publisher command
+that open independently attested PostgreSQL authorities, load transport and
+Ed25519 keys from files, and compose the authenticated Ultra state stream.
+
+**Reason:** The reviewed transport factories were not yet reachable through a
+supported production process, so deployment could not exercise them without
+custom glue.
+
+**Full actions and links:** `ultra_server/ultra-state-stream-command.mjs`,
+`ultra_server/ultra-state-outbox.test.mjs`, the Ultra Server README, and the
+independent-state operations runbook.
+
+**Validation:** The real two-PostgreSQL drill now starts the shipped receiver as
+a child process, drains through a separate publisher process over HTTP, verifies
+five signed acknowledgements, and proves the receiver state and durable source
+ACKs. The ordinary Ultra unit and package-content suites also pass.
+
+**Boundary:** The built-in listener is loopback-only and remote publisher URLs
+must use HTTPS. Site availability and failover evidence remain tracked in
+Enterprise issue 28.
+
+## LOG-20260720-008 - Compose authenticated Ultra outbox transport
+
+**Timestamp (UTC):** 2026-07-20T22:00:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security, implementation, test, documentation
+**Base commit:** `d036645a71bd84de482b60f625eb76ca4e56d27d`
+**Change reference:** commit containing this entry; Enterprise issue #28
+**Why:** [WHY-20260720-008](WHY.md#why-20260720-008)
+**Parked records:** None
+
+**Changed:** Added Ultra publisher/receiver factories over BPC's authenticated
+HTTP transport, durable PostgreSQL request-nonce authority, and receiver-bound
+Ed25519 decision receipts.
+
+**Reason:** A transactionally durable row is not replicated until an
+authenticated receiver applies it and the source verifies a decision-bound
+acknowledgement. An in-process receiver test does not establish that hop.
+
+**Full actions and links:** `ultra_server/ultra-state-outbox.js`, its real HTTP
+and two-PostgreSQL test, and Enterprise issue #28.
+
+**Validation:** The real drill opened a loopback TCP listener, authenticated
+and replay-protected each request, applied five records on the independent
+authority, verified receiver-bound Ed25519 acknowledgements, durably ACKed all
+five source rows, rejected a correctly-signed wrong-receiver receipt, and
+classified redelivery `duplicate-ok`.
+
+**Notes:** Loopback CI proves the protocol composition, not site network
+availability. Deployment topology, process operation, and site fault evidence
+remain tracked in issue 28.
+
+## LOG-20260720-007 - Couple Ultra mutations to a durable outbox
+
+**Timestamp (UTC):** 2026-07-20T21:50:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security, implementation, test, documentation
+**Base commit:** `0bafcfcb085315024470e942bbb9d2124f8fe869`
+**Change reference:** commit containing this entry; Enterprise issue #28
+**Why:** [WHY-20260720-007](WHY.md#why-20260720-007)
+**Parked records:** [PARK-20260720-007](PARKED.md#park-20260720-007)
+
+**Changed:** Added strict Ultra mutation sanitization, replicated identity,
+idempotency, and nonce stores, and an independent receiver applier on the
+reviewed BPC durable-outbox/checkpoint contract.
+
+**Reason:** Snapshot handoff freezes a bounded authority, but mutations made
+between snapshots need an atomic ordered replication record. Writing data and
+a later best-effort record can lose or invent the standby tail.
+
+**Full actions and links:** `ultra_server/ultra-state-outbox.js`, its real
+two-authority test, package boundary, hosted CI wiring, and Enterprise issue
+#28.
+
+**Validation:** Local Ultra tests passed 36/36 with two named PostgreSQL skips.
+The fail-not-skip outbox drill passed against two distinct PostgreSQL 17
+authorities: five in-order records, independent atomic apply, duplicate-ok,
+secret stripping, rollback after append, and stale-fence rollback.
+
+**Notes:** This slice provides the Enterprise mutation adapters and receiver.
+Production server selection, transport/publisher operation, upstream BPC/TSK
+authority selection, and the full site fault matrix remain subsequent work in
+issue 28.
+
+## LOG-20260720-006 - Pin the independent-state PostgreSQL catalog
+
+**Timestamp (UTC):** 2026-07-20T21:37:43Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security, implementation, test, documentation
+**Base commit:** `4f6212a4328ed34c34a314411fde41d6f6f7a843`
+**Change reference:** commit containing this entry; Enterprise issue #28
+**Why:** [WHY-20260720-006](WHY.md#why-20260720-006)
+**Parked records:** [PARK-20260720-006](PARKED.md#park-20260720-006)
+
+**Changed:** Added a compiled full-catalog manifest for all six Enterprise
+independent-state tables and made every owned state transaction attest it while
+holding catalog-stabilizing table locks.
+
+**Reason:** Signed row contents cannot establish authority if a restore omits,
+alters, or weakens the schema that enforces those rows.
+
+**Full actions and links:** `ultra_server/independent-state.js`,
+`ultra_server/independent-state.test.mjs`,
+`docs/operations/ULTRA_INDEPENDENT_STATE_HA.md`, and Enterprise issue #28.
+
+**Validation:** The Ultra unit suite passed 36/36 with two named PostgreSQL
+environment skips. The fail-not-skip two-authority PostgreSQL drill passed
+2/2, including exact-pin agreement on both systems, live `ALTER TABLE` drift
+rejection, and refusal by an ordinary nonce-authority operation under drift.
+
+**Notes:** The pin targets the repository's PostgreSQL 17 production image and
+`public` schema. Intentional schema migration requires an offline reviewed
+re-pin; the serving role must not hold DDL privileges.
+
+## LOG-20260720-005 - Add target-only TSK reprovision ceremony
+
+**Timestamp (UTC):** 2026-07-20T21:25:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security, implementation, test, documentation
+**Base commit:** `e27784fee6623844883a90e882830c991815d005`
+**Change reference:** commit containing this entry; Enterprise issue #28
+**Why:** [WHY-20260720-005](WHY.md#why-20260720-005)
+**Parked records:** [PARK-20260720-005](PARKED.md#park-20260720-005)
+
+**Changed:** Advanced the independent-state manifest to v2, validated that
+every imported binding owns an active TSK credential, cleared target-held
+credentials during import, recorded durable reprovision obligations, and added
+the dual-authorized `/ha/reprovision-tsk` ceremony.
+
+**Reason:** Identity bindings alone are not usable authority. Their TSK shared
+secrets cannot be copied in the signed handoff and must be regenerated at the
+target before the promoted node serves mutations.
+
+**Full actions and links:** `ultra_server/independent-state.js`,
+`ultra_server/server.js`, the real PostgreSQL handoff drill,
+`docs/operations/ULTRA_INDEPENDENT_STATE_HA.md`, and Enterprise issue #28.
+
+**Validation:** Local Ultra tests passed 36/36 with two named PostgreSQL skips;
+the fail-not-skip two-authority drill passed with credential absence,
+reprovision, atomic rebind, idempotent retry, and readiness checks. Hosted
+exact-head evidence is required before merge.
+
+**Notes:** The response returns the new secret only to the already-required
+operator+agent authorized caller. Logs and receipts remain non-secret.
+
+## LOG-20260720-004 - Fail closed before independent-state readiness
+
+**Timestamp (UTC):** 2026-07-20T21:14:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** security, implementation, test
+**Base commit:** `e4cfbd635490b3dc6898ce71b2cbccaebef80bfd`
+**Change reference:** commit containing this entry; Enterprise issue #28
+**Why:** [WHY-20260720-004](WHY.md#why-20260720-004)
+**Parked records:** None
+
+**Changed:** Added independent-state readiness to the common HA writer
+middleware before the ordinary Redis fence check. All state-mutating routes
+therefore refuse admission until the exact imported authority is attested.
+
+**Reason:** `/ready` was fail-closed, but writer middleware could still admit a
+request in independent mode when no promotion pins had been loaded.
+
+**Full actions and links:** `ultra_server/server.js`,
+`ultra_server/independent-state-config.test.mjs`, and Enterprise issue #28.
+
+**Validation:** `npm test --prefix ultra_server` passed 36/36 with two named
+PostgreSQL environment skips. Hosted exact-head evidence is required before
+merge.
+
+**Notes:** This closes writer admission only. It does not close issue #28 or
+establish multi-site availability.
+
+## LOG-20260720-003 - Add independent Ultra state handoff foundation
+
+**Timestamp (UTC):** 2026-07-20T20:51:24Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, security, test, documentation
+**Base commit:** `1d4931eeac788ad678af6292c2ffe70de2be7679`
+**Change reference:** commit containing this entry; draft PR #40; Enterprise issue #28
+**Why:** [WHY-20260720-003](WHY.md#why-20260720-003)
+**Parked records:** [PARK-20260720-003](PARKED.md#park-20260720-003)
+
+**Changed:** Added `ultra_server/independent-state.js`, its custody-separated
+CLI, PostgreSQL schemas, production replay-nonce selection, fail-closed runtime
+readiness binding, two-authority CI drill, and the independent-state runbook.
+Also replaced repeated use of BPC's deliberately fresh-only `PG_SCHEMA` with
+the exact idempotent `BPC_PAIR_PG_SCHEMA` compatibility DDL.
+
+**Reason:** Completed BPC/TSK authorities did not cover Enterprise-owned
+identity, idempotency, or request-replay state, and the new BPC fresh-install
+guard correctly made Ultra's former restart behavior fail.
+
+**Full actions and links:** `ultra_server/independent-state.js`,
+`ultra_server/independent-state-command.mjs`, the independent-state tests and
+runbook, draft PR #40, and Enterprise issue #28.
+
+**Validation:** Local Node suite passed 35/35 with two named PostgreSQL
+environment skips. The fail-not-skip independent-state drill passed against
+two digest-pinned PostgreSQL 17.5 containers with distinct
+`pg_control_system()` identifiers. The exact pinned BPC package started,
+stopped, and restarted over the same database after the schema fix. Hosted CI
+run 29778730680 passed all four required jobs on PR head `741c05e`, including
+1,751 collected Python tests, the Windows live contract, and the production
+PostgreSQL/Redis durability job.
+
+**Notes:** Issue #28 remains open for full BPC/TSK runtime composition,
+site/Redis/host fault injection, restore/resync/failback, key ceremony,
+monitoring, and measured RPO/RTO.
+
+## LOG-20260720-002 - Adopt completed BPC and TSK HA foundations
+
+**Timestamp (UTC):** 2026-07-20T20:40:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, dependency, test
+**Base commit:** `9e69c6eaff0b7ca522a808075daea6bf41b592ad`
+**Change reference:** commit containing this entry; Enterprise issue #28
+**Why:** [WHY-20260720-002](WHY.md#why-20260720-002)
+**Parked records:** [PARK-20260720-002](PARKED.md#park-20260720-002)
+
+**Changed:** Advanced `portfolio-lock.json` from BPC `772271e1` to
+`aedf67b8` and from TSK `9cff3e25` to `00e7457f`, retaining full immutable
+commit identities.
+
+**Reason:** The prior pins predated the merged production PostgreSQL
+transactors, durable application-level replication, authenticated transport,
+fenced promotion, receiver import, Sentinel/quorum, partition, and crash drills
+needed as reviewed foundations for Enterprise independent-state composition.
+
+**Full actions and links:** `portfolio-lock.json`, BPC master
+`aedf67b89574066e1df0575e68fdb58ea0dc9297`, TSK master
+`00e7457f4ca19435794b3e876a37bd7f90b99317`, and Enterprise issue #28.
+
+**Validation:** Portfolio conformance, both pinned protocol suites, Ultra unit
+and live contract suites, and the hosted PostgreSQL/Redis durability job attach
+to the resulting commit.
+
+**Notes:** A compatible pin is a prerequisite, not an Enterprise multi-site HA
+claim. Ultra composition and its own acceptance drill remain required.
+
+## LOG-20260720-001 - Compose the verified TPM platform quote path
+
+**Timestamp (UTC):** 2026-07-20T20:20:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, test, evidence, documentation
+**Base commit:** `2e617ebb1d6955ac42523774a739b7e7206c4ca6`
+**Change reference:** commit containing this entry; ecosystem issue #3
+**Why:** [WHY-20260720-001](WHY.md#why-20260720-001)
+**Parked records:** [PARK-20260720-001](PARKED.md#park-20260720-001)
+
+**Changed:** Advanced the pinned SelfConnect SDK to `787a6b88`, made the
+operator-pinned SelfConnect TPM quote verifier the default `tpm_probe` backend,
+retained the prior CNG path as an explicit compatibility backend, added negative
+and composition tests, and recorded a new redacted live PASS artifact.
+
+**Reason:** The historical probe used an ephemeral ECDSA provider key and called
+the platform-claim API without the provisioned PCP identity-key authority. It
+therefore continued to report `0x80090026` on a host that can produce a valid
+platform quote. The SDK now owns the exercised key provisioning and strict quote
+parser, avoiding a second security implementation.
+
+**Full actions and links:** Updated `portfolio-lock.json`, `pyproject.toml`,
+`enterprise/tpm_attestation.py`, focused tests, the ATO evidence index, and the
+dated redacted evidence artifacts. Related work: SelfConnect PR #30 and
+selfconnect-ecosystem issue #3.
+
+**Validation:** `33 passed` for the focused TPM suite; Ruff passed; portfolio
+conformance passed; the live probe returned supported/verified/replay-checked
+true with PCR mask `0x00FFFFFF`. The full suite passed 1,713 tests with the
+reviewed 1,751-test collection identity
+`d2517b086dc44aa2e6e6f5ac6fe7903a5520969e168a4a30598502d74212c3fd`;
+hosted CI evidence attaches to the change commit.
+
+**Notes:** This is local mechanism evidence. Manufacturer/EK trust, remote
+enrollment/revocation, agent-signing-key binding, assessment, and authorization
+remain separate.
 
 ## LOG-20260718-006 - Resolve immutable aliases into governed terminal leases
 
