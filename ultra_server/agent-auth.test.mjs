@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
-import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
 import test from 'node:test';
+
+import { buildAgentHeaders } from '../tools/ultra_rotation_conformance.mjs';
 
 import {
   agentIdFromPublicKey,
@@ -87,6 +89,78 @@ test('agent auth accepts a valid body-bound Ed25519 proof once', async () => {
     req.scAgent.canonicalId,
     canonicalAgentIdFromPublicKey(Buffer.from(signed.auth.pubkey_hex, 'hex')),
   );
+});
+
+test('lifecycle signer contract requires domain-bound method, path, and audience', () => {
+  const rawBody = Buffer.from('{"action":"recover"}');
+  const timestamp = '1700000000';
+  const nonce = '00000000-0000-4000-8000-000000000000';
+  assert.throws(
+    () => signedAgentMaterial(rawBody, timestamp, nonce),
+    { name: 'TypeError' },
+  );
+  assert.notDeepEqual(
+    signedAgentMaterial(
+      rawBody,
+      timestamp,
+      nonce,
+      'POST',
+      '/confirm-recovery',
+      'selfconnect-ultra-lifecycle-v1',
+    ),
+    signedAgentMaterial(
+      rawBody,
+      timestamp,
+      nonce,
+      'POST',
+      '/register-pair',
+      'selfconnect-ultra-lifecycle-v1',
+    ),
+  );
+});
+
+test('rotation conformance emits and signs the exact recovery endpoint context', () => {
+  const identity = generateKeyPairSync('ed25519');
+  const publicDer = identity.publicKey.export({ format: 'der', type: 'spki' });
+  const publicRaw = publicDer.subarray(-32);
+  const rawBody = Buffer.from('{"agentName":"rotation-test"}');
+  const headers = buildAgentHeaders(
+    rawBody,
+    identity,
+    publicRaw,
+    'POST',
+    '/confirm-recovery',
+  );
+  const auth = JSON.parse(headers['X-SC-Agent-Auth']);
+  assert.equal(auth.method, 'POST');
+  assert.equal(auth.path, '/confirm-recovery');
+  assert.equal(auth.aud, 'selfconnect-ultra-lifecycle-v1');
+  const signature = Buffer.from(auth.sig, 'base64');
+  assert.equal(
+    verify(
+      null,
+      signedAgentMaterial(rawBody, auth.ts, auth.nonce, auth.method, auth.path, auth.aud),
+      identity.publicKey,
+      signature,
+    ),
+    true,
+  );
+  for (const [body, method, path, audience] of [
+    [Buffer.from('{"agentName":"tampered"}'), auth.method, auth.path, auth.aud],
+    [rawBody, 'PATCH', auth.path, auth.aud],
+    [rawBody, auth.method, '/register-pair', auth.aud],
+    [rawBody, auth.method, auth.path, 'wrong-audience'],
+  ]) {
+    assert.equal(
+      verify(
+        null,
+        signedAgentMaterial(body, auth.ts, auth.nonce, method, path, audience),
+        identity.publicKey,
+        signature,
+      ),
+      false,
+    );
+  }
 });
 
 test('agent auth rejects replay', async () => {
