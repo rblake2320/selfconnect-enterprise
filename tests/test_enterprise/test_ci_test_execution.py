@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 from tools.ci_test_gate import (
@@ -99,8 +101,34 @@ def test_runner_invokes_pytest_once_without_shell_or_summary_parsing() -> None:
 
 
 def test_collection_and_conftest_inputs_are_pinned() -> None:
-    assert EXPECTED_COLLECTION_COUNT == 1_752
+    assert EXPECTED_COLLECTION_COUNT == 1_895
     assert len(EXPECTED_COLLECTION_SHA256) == 64
+
+
+def test_ultra_conformance_import_is_platform_safe() -> None:
+    code = """
+import sys
+sys.platform = 'linux'
+from enterprise import identity
+from enterprise.ultra_gate import UltraGate
+assert identity.crypt32 is None
+try:
+    identity._dpapi_encrypt(b'test')
+except OSError as exc:
+    assert 'unavailable' in str(exc)
+else:
+    raise AssertionError('non-Windows DPAPI must fail closed')
+assert UltraGate.__name__ == 'UltraGate'
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
     assert len(TRUSTED_CONFTEST_SHA256) == 64
 
 
