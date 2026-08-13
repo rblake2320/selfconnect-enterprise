@@ -108,16 +108,48 @@ def test_collection_and_conftest_inputs_are_pinned() -> None:
 def test_ultra_conformance_import_is_platform_safe() -> None:
     code = """
 import sys
+import tempfile
+from pathlib import Path
 sys.platform = 'linux'
 from enterprise import identity
+from enterprise.identity import AgentIdentity
 from enterprise.ultra_gate import UltraGate
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 assert identity.crypt32 is None
-try:
-    identity._dpapi_encrypt(b'test')
-except OSError as exc:
-    assert 'unavailable' in str(exc)
-else:
-    raise AssertionError('non-Windows DPAPI must fail closed')
+for operation in (
+    lambda: identity._dpapi_encrypt(b'test'),
+    lambda: identity._dpapi_decrypt(b'test'),
+):
+    try:
+        operation()
+    except OSError as exc:
+        assert 'unavailable' in str(exc)
+    else:
+        raise AssertionError('non-Windows DPAPI must fail closed')
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    try:
+        AgentIdentity.init('posix-init', data_dir=root)
+    except OSError as exc:
+        assert 'unavailable' in str(exc)
+    else:
+        raise AssertionError('non-Windows persistent init must fail closed')
+    assert not (root / 'posix-init' / 'identity.dpapi').exists()
+    assert not (root / 'posix-init' / 'identity.pub').exists()
+    planted = root / 'posix-load'
+    planted.mkdir()
+    (planted / 'identity.dpapi').write_bytes(b'not-dpapi')
+    try:
+        AgentIdentity.load('posix-load', data_dir=root)
+    except OSError as exc:
+        assert 'unavailable' in str(exc)
+    else:
+        raise AssertionError('non-Windows persistent load must fail closed')
+private_key = Ed25519PrivateKey.generate()
+ephemeral = AgentIdentity(private_key, private_key.public_key(), 'posix-test-only')
+message = b'posix-test-proof'
+assert ephemeral.verify(message, ephemeral.sign(message), ephemeral.public_key_bytes)
+assert ephemeral.canonical_id.startswith('SCID-')
 assert UltraGate.__name__ == 'UltraGate'
 """
     result = subprocess.run(
