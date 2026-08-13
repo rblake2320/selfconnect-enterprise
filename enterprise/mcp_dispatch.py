@@ -47,7 +47,7 @@ from enterprise.protected_tools import PROTECTED_DELEGATED_TOOLS
 from enterprise.runtime_lifetime import RuntimeLifetime, governed_operation
 
 try:
-    from experiments.win32_probe.channel_router import (
+    from enterprise_experiments.win32_probe.channel_router import (
         ChannelRouter,
         ChannelRoutingError,
         TargetBinding,
@@ -999,7 +999,7 @@ class MCPDispatcher:
     @staticmethod
     def _load_target_verifier() -> Callable[..., dict[str, Any]] | None:
         try:
-            from experiments.win32_probe.target_guard import verify_target
+            from enterprise_experiments.win32_probe.target_guard import verify_target
         except Exception:  # noqa: BLE001
             return None
         return verify_target
@@ -1549,7 +1549,7 @@ class MCPDispatcher:
 
     def _run_target_guard(self, args: dict[str, Any]) -> dict[str, Any]:
         try:
-            from experiments.win32_probe.target_guard import verify_target
+            from enterprise_experiments.win32_probe.target_guard import verify_target
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "available": False, "reason": f"target guard unavailable: {exc}"}
         report = verify_target(

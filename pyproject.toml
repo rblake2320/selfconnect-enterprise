@@ -36,7 +36,7 @@ scent-acp = "enterprise.acp_entry:main"
 selfconnect-mcp-governor = "enterprise.mcp_governor_entry:main"
 
 [tool.setuptools.packages.find]
-include = ["enterprise*", "experiments*"]
+include = ["enterprise*", "enterprise_experiments*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

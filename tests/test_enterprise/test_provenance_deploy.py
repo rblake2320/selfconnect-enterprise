@@ -37,7 +37,7 @@ def _write_bound_wheel(
     dist_info = f"{normalized}-{project['version']}.dist-info"
     members = {
         source.relative_to(ROOT).as_posix(): source.read_bytes()
-        for package in ("enterprise", "experiments")
+        for package in ("enterprise", "enterprise_experiments")
         for source in (ROOT / package).rglob("*.py")
     }
     members.update({
@@ -87,12 +87,12 @@ def test_packaged_win32_probes_declare_runtime_dependencies_and_package_imports(
     assert "comtypes>=1.4; sys_platform == 'win32'" in dependencies
 
     target_guard_load = ast.parse(
-        (ROOT / "experiments" / "win32_probe" / "target_guard_load_test.py").read_text(
+        (ROOT / "enterprise_experiments" / "win32_probe" / "target_guard_load_test.py").read_text(
             encoding="utf-8"
         )
     )
     chained_channel = ast.parse(
-        (ROOT / "experiments" / "win32_probe" / "chained_channel.py").read_text(
+        (ROOT / "enterprise_experiments" / "win32_probe" / "chained_channel.py").read_text(
             encoding="utf-8"
         )
     )
@@ -105,6 +105,26 @@ def test_packaged_win32_probes_declare_runtime_dependencies_and_package_imports(
     assert {"target_guard", "named_pipe_identity", "tpm_identity", "uia_textpattern"} <= (
         relative_imports
     )
+
+
+def test_enterprise_wheel_owns_no_core_wheel_paths():
+    """Installing or uninstalling either distribution must not alter the other."""
+    sdk_root = ROOT / "sdk"
+    core_config = tomllib.loads((sdk_root / "pyproject.toml").read_text(encoding="utf-8"))
+    core_includes = core_config["tool"]["hatch"]["build"]["targets"]["wheel"]["include"]
+    core_paths: set[str] = set()
+    for pattern in core_includes:
+        for candidate in sdk_root.glob(pattern):
+            if candidate.is_file():
+                core_paths.add(candidate.relative_to(sdk_root).as_posix())
+
+    enterprise_paths = {
+        source.relative_to(ROOT).as_posix()
+        for package in ("enterprise", "enterprise_experiments")
+        for source in (ROOT / package).rglob("*.py")
+    }
+    overlap = sorted(core_paths & enterprise_paths)
+    assert overlap == [], f"Core and Enterprise wheels both own: {overlap}"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="PowerShell deployment contract")

@@ -57,7 +57,7 @@ if _WIN32_AVAILABLE:
     # (e.g. the experiments tree is not on sys.path) we fall back to opening
     # ncrypt.dll ourselves.
     try:
-        from experiments.win32_probe.tpm_identity import (  # type: ignore[import]
+        from enterprise_experiments.win32_probe.tpm_identity import (  # type: ignore[import]
             BCRYPT,
             MS_PLATFORM,
             NCRYPT,

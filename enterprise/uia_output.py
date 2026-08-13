@@ -18,7 +18,7 @@ def read_terminal_text(hwnd: int) -> str:
     as a successful read containing no output.
     """
     try:
-        from experiments.win32_probe.uia_textpattern import (
+        from enterprise_experiments.win32_probe.uia_textpattern import (
             get_uia,
             read_text,
             text_element,

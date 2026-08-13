@@ -1,4 +1,4 @@
-"""Load test: 10 rapid sequential connections on the DACL-guarded named pipe.
+"""Enterprise load test for the DACL-guarded named pipe.
 
 What this verifies:
   1. Each iteration creates a fresh pipe instance, connects one client,
@@ -12,7 +12,7 @@ Exit codes:
   3 = one or more iterations FAIL
 
 Run:
-  PYTHONUTF8=1 C:/Python312/python.exe experiments/win32_probe/named_pipe_load_test.py
+  PYTHONUTF8=1 C:/Python312/python.exe enterprise_experiments/win32_probe/named_pipe_load_test.py
 """
 from __future__ import annotations
 

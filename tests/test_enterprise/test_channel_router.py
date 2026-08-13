@@ -1,4 +1,4 @@
-"""Tests for experiments/win32_probe/channel_router.py."""
+"""Tests for enterprise_experiments/win32_probe/channel_router.py."""
 from __future__ import annotations
 
 import hashlib
@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from experiments.win32_probe.channel_router import (
+from enterprise_experiments.win32_probe.channel_router import (
     BROWSER_CLASSES,
     TERMINAL_CLASSES,
     MAX_PAYLOAD_LENGTH,
@@ -67,10 +67,10 @@ class TestClassify:
     def test_terminal_class_routes_to_wm_char(self):
         router = ChannelRouter()
         with (
-            patch("experiments.win32_probe.channel_router._get_window_class",
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class",
                   return_value="CASCADIA_HOSTING_WINDOW_CLASS"),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=1234),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=1234),
         ):
             decision = router.classify(1001)
         assert decision.channel == ChannelType.WM_CHAR
@@ -79,10 +79,10 @@ class TestClassify:
     def test_browser_class_routes_to_uia(self):
         router = ChannelRouter()
         with (
-            patch("experiments.win32_probe.channel_router._get_window_class",
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class",
                   return_value="Chrome_WidgetWin_1"),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value="Chrome"),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=5678),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value="Chrome"),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=5678),
         ):
             decision = router.classify(2002)
         assert decision.channel == ChannelType.UIA
@@ -90,10 +90,10 @@ class TestClassify:
     def test_unknown_class_is_denied(self):
         router = ChannelRouter()
         with (
-            patch("experiments.win32_probe.channel_router._get_window_class",
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class",
                   return_value="SomeRandomWidget_XYZ"),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value="Unknown"),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=999),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value="Unknown"),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=999),
         ):
             decision = router.classify(3003)
         assert decision.channel == ChannelType.DENY
@@ -102,9 +102,9 @@ class TestClassify:
     def test_empty_class_is_denied(self):
         router = ChannelRouter()
         with (
-            patch("experiments.win32_probe.channel_router._get_window_class", return_value=""),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value=""),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=0),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class", return_value=""),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value=""),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=0),
         ):
             decision = router.classify(4004)
         assert decision.channel == ChannelType.DENY
@@ -112,10 +112,10 @@ class TestClassify:
     def test_classify_records_decision(self):
         router = ChannelRouter()
         with (
-            patch("experiments.win32_probe.channel_router._get_window_class",
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class",
                   return_value="ConsoleWindowClass"),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value="cmd"),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=111),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value="cmd"),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=111),
         ):
             router.classify(5005)
         assert len(router.last_decisions()) == 1
@@ -123,10 +123,10 @@ class TestClassify:
     def test_console_window_class_routes_to_wm_char(self):
         router = ChannelRouter()
         with (
-            patch("experiments.win32_probe.channel_router._get_window_class",
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class",
                   return_value="ConsoleWindowClass"),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value="cmd"),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=200),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value="cmd"),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=200),
         ):
             decision = router.classify(6006)
         assert decision.channel == ChannelType.WM_CHAR
@@ -149,11 +149,11 @@ class TestRoute:
         router = ChannelRouter(target_verifier=accept_binding)
         with (
             patch(
-                "experiments.win32_probe.channel_router._get_window_class",
+                "enterprise_experiments.win32_probe.channel_router._get_window_class",
                 return_value="CASCADIA_HOSTING_WINDOW_CLASS",
             ),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value=title),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=4242),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value=title),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=4242),
             patch.object(router, "_inject_wm_char", return_value=True) as inject,
         ):
             receipt = router.route(8006, "hello", expected_binding=binding)
@@ -177,14 +177,14 @@ class TestRoute:
         )
         with (
             patch(
-                "experiments.win32_probe.channel_router._get_window_class",
+                "enterprise_experiments.win32_probe.channel_router._get_window_class",
                 return_value="CASCADIA_HOSTING_WINDOW_CLASS",
             ),
             patch(
-                "experiments.win32_probe.channel_router._get_window_title",
+                "enterprise_experiments.win32_probe.channel_router._get_window_title",
                 return_value="Replacement Terminal",
             ),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=5252),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=5252),
             patch.object(router, "_inject_wm_char") as inject,
         ):
             with pytest.raises(ChannelRoutingError, match="pid changed at final boundary"):
@@ -195,10 +195,10 @@ class TestRoute:
     def test_route_denied_raises_channel_routing_error(self):
         router = ChannelRouter()
         with (
-            patch("experiments.win32_probe.channel_router._get_window_class",
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class",
                   return_value="RandomUnknownClass"),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value="?"),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=0),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value="?"),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=0),
         ):
             with pytest.raises(ChannelRoutingError):
                 router.route(7007, "hello")
@@ -211,10 +211,10 @@ class TestRoute:
     def test_route_returns_action_receipt(self):
         router = ChannelRouter()
         with (
-            patch("experiments.win32_probe.channel_router._get_window_class",
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class",
                   return_value="CASCADIA_HOSTING_WINDOW_CLASS"),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
             patch.object(router, "_inject_wm_char", return_value=True),
         ):
             receipt = router.route(8008, "hello world")
@@ -230,10 +230,10 @@ class TestRoute:
         text = "test injection"
         expected_hash = hashlib.sha256(text.encode()).hexdigest()
         with (
-            patch("experiments.win32_probe.channel_router._get_window_class",
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class",
                   return_value="CASCADIA_HOSTING_WINDOW_CLASS"),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
             patch.object(router, "_inject_wm_char", return_value=True),
         ):
             receipt = router.route(9009, text)
@@ -243,10 +243,10 @@ class TestRoute:
         import uuid
         router = ChannelRouter()
         with (
-            patch("experiments.win32_probe.channel_router._get_window_class",
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class",
                   return_value="CASCADIA_HOSTING_WINDOW_CLASS"),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
             patch.object(router, "_inject_wm_char", return_value=True),
         ):
             receipt = router.route(1111, "ping")
@@ -255,10 +255,10 @@ class TestRoute:
     def test_inject_error_does_not_raise_from_route(self):
         router = ChannelRouter()
         with (
-            patch("experiments.win32_probe.channel_router._get_window_class",
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class",
                   return_value="CASCADIA_HOSTING_WINDOW_CLASS"),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
             patch.object(router, "_inject_wm_char", side_effect=RuntimeError("win32 error")),
         ):
             receipt = router.route(2222, "hello")
@@ -299,18 +299,18 @@ class TestRoute:
             )
 
         with (
-            patch("experiments.win32_probe.channel_router._WIN32_AVAILABLE", True),
-            patch("experiments.win32_probe.channel_router._get_window_class", side_effect=class_for),
+            patch("enterprise_experiments.win32_probe.channel_router._WIN32_AVAILABLE", True),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class", side_effect=class_for),
             patch(
-                "experiments.win32_probe.channel_router.win32gui.EnumChildWindows",
+                "enterprise_experiments.win32_probe.channel_router.win32gui.EnumChildWindows",
                 side_effect=enumerate_child,
             ),
             patch(
-                "experiments.win32_probe.channel_router.win32api.PostMessage",
+                "enterprise_experiments.win32_probe.channel_router.win32api.PostMessage",
                 side_effect=lambda *args: posted.append(args),
             ),
             patch(
-                "experiments.win32_probe.channel_router.win32gui.GetParent",
+                "enterprise_experiments.win32_probe.channel_router.win32gui.GetParent",
                 side_effect=lambda hwnd: 111 if hwnd == 222 else 0,
             ),
         ):
@@ -347,9 +347,9 @@ class TestRoute:
             callback(222, context)
 
         with (
-            patch("experiments.win32_probe.channel_router._WIN32_AVAILABLE", True),
+            patch("enterprise_experiments.win32_probe.channel_router._WIN32_AVAILABLE", True),
             patch(
-                "experiments.win32_probe.channel_router._get_window_class",
+                "enterprise_experiments.win32_probe.channel_router._get_window_class",
                 side_effect=lambda hwnd: (
                     "CASCADIA_HOSTING_WINDOW_CLASS"
                     if hwnd == 111
@@ -357,10 +357,10 @@ class TestRoute:
                 ),
             ),
             patch(
-                "experiments.win32_probe.channel_router.win32gui.EnumChildWindows",
+                "enterprise_experiments.win32_probe.channel_router.win32gui.EnumChildWindows",
                 side_effect=enumerate_child,
             ),
-            patch("experiments.win32_probe.channel_router.win32api.PostMessage") as post,
+            patch("enterprise_experiments.win32_probe.channel_router.win32api.PostMessage") as post,
         ):
             with pytest.raises(ChannelRoutingError, match="pid changed"):
                 router._inject_wm_char(111, "A", expected_binding=binding)
@@ -392,9 +392,9 @@ class TestRoute:
             callback(222, context)
 
         with (
-            patch("experiments.win32_probe.channel_router._WIN32_AVAILABLE", True),
+            patch("enterprise_experiments.win32_probe.channel_router._WIN32_AVAILABLE", True),
             patch(
-                "experiments.win32_probe.channel_router._get_window_class",
+                "enterprise_experiments.win32_probe.channel_router._get_window_class",
                 side_effect=lambda hwnd: (
                     "CASCADIA_HOSTING_WINDOW_CLASS"
                     if hwnd == 111
@@ -402,11 +402,11 @@ class TestRoute:
                 ),
             ),
             patch(
-                "experiments.win32_probe.channel_router.win32gui.EnumChildWindows",
+                "enterprise_experiments.win32_probe.channel_router.win32gui.EnumChildWindows",
                 side_effect=enumerate_child,
             ),
-            patch("experiments.win32_probe.channel_router.win32gui.GetParent", return_value=0),
-            patch("experiments.win32_probe.channel_router.win32api.PostMessage") as post,
+            patch("enterprise_experiments.win32_probe.channel_router.win32gui.GetParent", return_value=0),
+            patch("enterprise_experiments.win32_probe.channel_router.win32api.PostMessage") as post,
         ):
             with pytest.raises(ChannelRoutingError, match="not descended"):
                 router._inject_wm_char(111, "A", expected_binding=binding)
@@ -424,15 +424,15 @@ class TestRoute:
             return None
 
         with (
-            patch("experiments.win32_probe.channel_router._WIN32_AVAILABLE", True),
+            patch("enterprise_experiments.win32_probe.channel_router._WIN32_AVAILABLE", True),
             patch(
-                "experiments.win32_probe.channel_router._get_window_class",
+                "enterprise_experiments.win32_probe.channel_router._get_window_class",
                 return_value="ConsoleWindowClass",
             ),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value="cmd"),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=4242),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value="cmd"),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=4242),
             patch(
-                "experiments.win32_probe.channel_router.win32api.PostMessage",
+                "enterprise_experiments.win32_probe.channel_router.win32api.PostMessage",
                 side_effect=fail_after_first_post,
             ),
         ):
@@ -448,13 +448,13 @@ class TestRoute:
     def test_windows_terminal_without_input_site_fails_closed(self):
         router = ChannelRouter()
         with (
-            patch("experiments.win32_probe.channel_router._WIN32_AVAILABLE", True),
+            patch("enterprise_experiments.win32_probe.channel_router._WIN32_AVAILABLE", True),
             patch(
-                "experiments.win32_probe.channel_router._get_window_class",
+                "enterprise_experiments.win32_probe.channel_router._get_window_class",
                 return_value="CASCADIA_HOSTING_WINDOW_CLASS",
             ),
-            patch("experiments.win32_probe.channel_router.win32gui.EnumChildWindows"),
-            patch("experiments.win32_probe.channel_router.win32api.PostMessage") as post,
+            patch("enterprise_experiments.win32_probe.channel_router.win32gui.EnumChildWindows"),
+            patch("enterprise_experiments.win32_probe.channel_router.win32api.PostMessage") as post,
         ):
             assert router._inject_wm_char(111, "A") is False
         post.assert_not_called()
@@ -528,10 +528,10 @@ class TestPayloadValidation:
         router = ChannelRouter()
         exact = "A" * MAX_PAYLOAD_LENGTH
         with (
-            patch("experiments.win32_probe.channel_router._get_window_class",
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class",
                   return_value="CASCADIA_HOSTING_WINDOW_CLASS"),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
             patch.object(router, "_inject_wm_char", return_value=True),
         ):
             receipt = router.route(8008, exact)
@@ -544,10 +544,10 @@ class TestLeaseIdValidation:
     def test_empty_string_lease_id_raises(self):
         router = ChannelRouter()
         with (
-            patch("experiments.win32_probe.channel_router._get_window_class",
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class",
                   return_value="CASCADIA_HOSTING_WINDOW_CLASS"),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
         ):
             with pytest.raises(ValueError, match="empty"):
                 router.route(8008, "hello", lease_id="")
@@ -555,10 +555,10 @@ class TestLeaseIdValidation:
     def test_whitespace_lease_id_raises(self):
         router = ChannelRouter()
         with (
-            patch("experiments.win32_probe.channel_router._get_window_class",
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class",
                   return_value="CASCADIA_HOSTING_WINDOW_CLASS"),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
         ):
             with pytest.raises(ValueError, match="empty"):
                 router.route(8008, "hello", lease_id="   ")
@@ -567,10 +567,10 @@ class TestLeaseIdValidation:
         """None lease_id is valid (unauthenticated path, if policy allows)."""
         router = ChannelRouter()
         with (
-            patch("experiments.win32_probe.channel_router._get_window_class",
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class",
                   return_value="CASCADIA_HOSTING_WINDOW_CLASS"),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
             patch.object(router, "_inject_wm_char", return_value=True),
         ):
             receipt = router.route(8008, "hello", lease_id=None)
@@ -579,10 +579,10 @@ class TestLeaseIdValidation:
     def test_valid_lease_id_passes_through(self):
         router = ChannelRouter()
         with (
-            patch("experiments.win32_probe.channel_router._get_window_class",
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_class",
                   return_value="CASCADIA_HOSTING_WINDOW_CLASS"),
-            patch("experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
-            patch("experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_title", return_value="Terminal"),
+            patch("enterprise_experiments.win32_probe.channel_router._get_window_pid", return_value=1000),
             patch.object(router, "_inject_wm_char", return_value=True),
         ):
             receipt = router.route(8008, "hello", lease_id="lease-abc-123")
@@ -600,11 +600,11 @@ class TestThreadSafety:
         def classify_once(hwnd: int) -> None:
             try:
                 with (
-                    patch("experiments.win32_probe.channel_router._get_window_class",
+                    patch("enterprise_experiments.win32_probe.channel_router._get_window_class",
                           return_value="ConsoleWindowClass"),
-                    patch("experiments.win32_probe.channel_router._get_window_title",
+                    patch("enterprise_experiments.win32_probe.channel_router._get_window_title",
                           return_value="term"),
-                    patch("experiments.win32_probe.channel_router._get_window_pid",
+                    patch("enterprise_experiments.win32_probe.channel_router._get_window_pid",
                           return_value=hwnd),
                 ):
                     router.classify(hwnd)

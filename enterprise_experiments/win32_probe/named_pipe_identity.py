@@ -1,4 +1,4 @@
-"""POC: OS-enforced caller identity over a DACL-guarded named pipe.
+"""Enterprise POC: OS-enforced identity over a guarded named pipe.
 
 enterprise/transport.py uses WM_COPYDATA (caller-supplied *sender HWND*). This probe
 demonstrates the complementary primitive: a named pipe created with an explicit DACL,
@@ -12,7 +12,7 @@ IPC boundary is established by the Windows access-control layer (the pipe ACL + 
 impersonated token), so an agent cannot spoof a different identity at the application
 level. This is the distinction DoD/IL5 reviewers recognize during an ATO.
 
-Run:  python experiments/win32_probe/named_pipe_identity.py
+Run:  python enterprise_experiments/win32_probe/named_pipe_identity.py
 Exit: 0 = PASS (server read OS-verified client SID), 3 = FAIL
 """
 from __future__ import annotations

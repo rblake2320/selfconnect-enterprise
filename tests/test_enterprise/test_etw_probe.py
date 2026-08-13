@@ -1,4 +1,4 @@
-"""Tests for experiments/win32_probe/etw_probe.py — ETW terminal monitoring."""
+"""Tests for enterprise_experiments/win32_probe/etw_probe.py — ETW terminal monitoring."""
 from __future__ import annotations
 
 import ctypes
@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from experiments.win32_probe.etw_probe import (
+from enterprise_experiments.win32_probe.etw_probe import (
     CONSOLE_HOST_PROVIDER_GUID,
     CONSOLE_HOST_PROVIDER_GUID_ALT,
     EVENT_TRACE_PROPERTIES,
@@ -73,7 +73,7 @@ class TestEtwConsoleSession:
 
     def test_open_requires_elevation(self):
         session = EtwConsoleSession()
-        with patch("experiments.win32_probe.etw_probe._is_elevated", return_value=False):
+        with patch("enterprise_experiments.win32_probe.etw_probe._is_elevated", return_value=False):
             with pytest.raises(PermissionError, match="elevation"):
                 session.open()
 
@@ -107,8 +107,8 @@ class TestEtwConsoleSession:
             return 0  # ERROR_SUCCESS
 
         with (
-            patch("experiments.win32_probe.etw_probe._is_elevated", return_value=True),
-            patch("experiments.win32_probe.etw_probe._advapi32") as mock_adv,
+            patch("enterprise_experiments.win32_probe.etw_probe._is_elevated", return_value=True),
+            patch("enterprise_experiments.win32_probe.etw_probe._advapi32") as mock_adv,
         ):
             mock_adv.StartTraceW.side_effect = _fake_start_trace
             mock_adv.EnableTrace.return_value = 0
@@ -119,7 +119,7 @@ class TestEtwConsoleSession:
     def test_close_calls_stop_trace_when_open(self):
         session = EtwConsoleSession()
         session._session_handle = 999
-        with patch("experiments.win32_probe.etw_probe._advapi32") as mock_adv:
+        with patch("enterprise_experiments.win32_probe.etw_probe._advapi32") as mock_adv:
             mock_adv.StopTraceW.return_value = 0
             session.close()
             assert mock_adv.StopTraceW.called

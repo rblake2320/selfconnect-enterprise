@@ -1,4 +1,4 @@
-"""channel_router.py — Governed channel router for SelfConnect Enterprise.
+"""Enterprise channel_router.py — governed channel router.
 
 Routes an HWND to the correct channel type under policy enforcement:
   - Terminal windows → WM_CHAR PostMessage (ConPTY-safe, background-safe)
@@ -319,7 +319,7 @@ class ChannelRouter:
         verifier = self._target_verifier
         if verifier is None:
             try:
-                from experiments.win32_probe.target_guard import verify_target
+                from enterprise_experiments.win32_probe.target_guard import verify_target
             except Exception as exc:  # noqa: BLE001
                 raise ChannelRoutingError(
                     f"Final target verification unavailable for HWND {hwnd}: {exc}"
@@ -403,7 +403,7 @@ class ChannelRouter:
         verifier = self._target_verifier
         if verifier is None:
             try:
-                from experiments.win32_probe.target_guard import verify_target
+                from enterprise_experiments.win32_probe.target_guard import verify_target
             except Exception as exc:  # noqa: BLE001
                 raise ChannelRoutingError(f"InputSite verifier unavailable: {exc}") from exc
             verifier = verify_target

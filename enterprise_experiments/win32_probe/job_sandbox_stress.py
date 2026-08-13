@@ -1,4 +1,4 @@
-"""CRUCIBLE stress test: job_sandbox.py — ACTIVE_PROCESS race and KILL_ON_JOB_CLOSE.
+"""Enterprise CRUCIBLE stress test for the job sandbox.
 
 The race under test
 -------------------
@@ -41,7 +41,7 @@ Output schema (TEST_RESULT_SCHEMA)
 }
 
 Run:
-  PYTHONUTF8=1 C:/Python312/python.exe experiments/win32_probe/job_sandbox_stress.py
+  PYTHONUTF8=1 C:/Python312/python.exe enterprise_experiments/win32_probe/job_sandbox_stress.py
 """
 from __future__ import annotations
 

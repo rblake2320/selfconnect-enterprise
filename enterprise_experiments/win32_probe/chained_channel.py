@@ -1,4 +1,4 @@
-"""chained_channel.py — a bounded local composition experiment.
+"""Enterprise chained_channel.py — a bounded local composition experiment.
 
 One experimental loop binding three locally exercised legs:
   READ      : UIA TextChanged on a terminal text surface -> delta   (uia_textpattern)
@@ -17,7 +17,7 @@ Why this differs from the selfconnect-repo draft (see REVIEW_chained_channel.md)
     not remote attestation or a production identity-binding protocol
   - uses the exercised GetModule / comtypes-handler / 64-bit-handle paths (no ABI truncation)
 
-Run:  python experiments/win32_probe/chained_channel.py
+Run:  python enterprise_experiments/win32_probe/chained_channel.py
 Exit: 0 = CHAIN COMPLETE (all four legs), 1 = a leg failed
 """
 from __future__ import annotations

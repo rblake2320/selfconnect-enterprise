@@ -1,4 +1,4 @@
-"""target_guard.py — verify a window is a SAFE injection target BEFORE writing to it.
+"""Enterprise target guard for safe window injection.
 
 Lesson from the 2026-06-16 Notepad overwrite: an allow-flag answers "may I write?" but
 NOT "am I writing to the RIGHT window?". This verifies the live target first.
