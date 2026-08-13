@@ -22,12 +22,20 @@ import {
 import { Pool } from 'pg';
 
 import { ULTRA_INDEPENDENT_STATE_SCHEMA } from './independent-state.js';
-import { ULTRA_PG_SCHEMA, initializePgSchemas } from './runtime-stores.js';
+import {
+  ULTRA_PG_SCHEMA,
+  identityPrincipalsFromPublicKeyHex,
+  initializePgSchemas,
+} from './runtime-stores.js';
 import { loadGovernedUltraStateAuthority } from './ultra-state-authority-config.js';
 import {
   createUltraStateHttpReceiver,
   signUltraStateAck,
+  ultraStateMutationSanitizer,
 } from './ultra-state-outbox.js';
+
+const COLLIDING_KEY_A = 'b71042b79f8a5b631eab1a0bf9eeb716506cc4021101190b54e9bc9058058b69';
+const COLLIDING_KEY_B = '92abf75c9884799c19a780015345a8cce5ae56c2791ad5771d79969125c15b3f';
 
 const urlA = process.env.ULTRA_TEST_POSTGRES_URL_A;
 const urlB = process.env.ULTRA_TEST_POSTGRES_URL_B;
@@ -57,7 +65,13 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
   const pairId = `pair-${randomUUID()}`;
   const oldClientId = `client-${randomUUID()}`;
   const newClientId = `client-${randomUUID()}`;
-  const agentId = `agent-${randomUUID()}`;
+  const agentPublicKeyHex = COLLIDING_KEY_A;
+  const { agentId, canonicalId } = identityPrincipalsFromPublicKeyHex(agentPublicKeyHex);
+  const owner = { agentId, canonicalId, agentPublicKeyHex };
+  const collider = {
+    ...identityPrincipalsFromPublicKeyHex(COLLIDING_KEY_B),
+    agentPublicKeyHex: COLLIDING_KEY_B,
+  };
   const idemKey = randomUUID();
   const nonceValue = `nonce-${randomUUID()}`;
   const nonceHash = createHash('sha256').update(nonceValue, 'utf8').digest('hex');
@@ -105,10 +119,30 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
     const { outbox, identityBinding: bindings, idempotencyStore: idempotency,
       nonceBackend: nonces } = authority;
 
-    await bindings.set(pairId, { tskClientId: oldClientId, agentId });
+    await bindings.set(pairId, { tskClientId: oldClientId, ...owner });
     assert.equal(await bindings.compareAndSwap(
-      pairId, oldClientId, { tskClientId: newClientId, agentId },
+      pairId, oldClientId, { tskClientId: newClientId, ...owner },
     ), 'updated');
+    assert.equal(collider.agentId, owner.agentId);
+    assert.notEqual(collider.canonicalId, owner.canonicalId);
+    assert.equal(await bindings.compareAndSwap(
+      pairId, newClientId, { tskClientId: `client-${randomUUID()}`, ...collider },
+    ), 'conflict');
+    assert.throws(
+      () => ultraStateMutationSanitizer.sanitize({
+        kind: 'ultra.binding.set.v2', pairId: `pair-${randomUUID()}`,
+        tskClientId: `client-${randomUUID()}`, ...owner,
+        canonicalId: collider.canonicalId,
+      }),
+      /does not match/,
+    );
+    assert.throws(
+      () => ultraStateMutationSanitizer.sanitize({
+        kind: 'ultra.binding.set.v1', pairId: `pair-${randomUUID()}`,
+        tskClientId: `client-${randomUUID()}`, agentId,
+      }),
+      /unsupported/,
+    );
     assert.deepEqual(await idempotency.claim(idemKey, 'credential-op', agentId), { kind: 'claimed' });
     const sourceResponse = { ok: true, sharedSecret: 'source-only-secret' };
     const completion = idempotency.complete(idemKey, sourceResponse);
@@ -137,8 +171,8 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
       await outbox.appendInTx(tx, {
         streamId, fenceToken: 1n,
         rawMutation: {
-          kind: 'ultra.binding.set.v1', pairId: `pair-${randomUUID()}`,
-          tskClientId: `client-${randomUUID()}`, agentId,
+          kind: 'ultra.binding.set.v2', pairId: `pair-${randomUUID()}`,
+          tskClientId: `client-${randomUUID()}`, ...owner,
         },
       });
       throw new Error('simulated authoritative mutation failure');
@@ -235,9 +269,15 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
     )).rows[0].count), 5);
     assert.equal(await receiverRuntime.checkpoint.verifyAndApplyDelivered(records[4]), 'duplicate-ok');
     const bindingB = (await b.query(
-      'SELECT tsk_client_id,agent_id FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
+      `SELECT tsk_client_id,agent_id,canonical_id,agent_public_key_hex
+         FROM ultra_identity_bindings WHERE pair_id=$1`, [pairId],
     )).rows[0];
-    assert.deepEqual(bindingB, { tsk_client_id: newClientId, agent_id: agentId });
+    assert.deepEqual(bindingB, {
+      tsk_client_id: newClientId,
+      agent_id: agentId,
+      canonical_id: canonicalId,
+      agent_public_key_hex: agentPublicKeyHex,
+    });
     const idemB = (await b.query(
       'SELECT state,response FROM ultra_idempotency WHERE idempotency_key=$1', [idemKey],
     )).rows[0];
@@ -256,13 +296,16 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
     const preCommitPairId = `pair-${randomUUID()}`;
     await assert.rejects(outbox.withOutboxTx(async (tx, exec) => {
       const mutation = {
-        kind: 'ultra.binding.set.v1', pairId: preCommitPairId,
-        tskClientId: `client-${randomUUID()}`, agentId,
+        kind: 'ultra.binding.set.v2', pairId: preCommitPairId,
+        tskClientId: `client-${randomUUID()}`, ...owner,
       };
       await outbox.appendInTx(tx, { streamId, fenceToken: 1n, rawMutation: mutation });
       await exec.query(
-        'INSERT INTO ultra_identity_bindings(pair_id,tsk_client_id,agent_id) VALUES($1,$2,$3)',
-        [mutation.pairId, mutation.tskClientId, mutation.agentId],
+        `INSERT INTO ultra_identity_bindings
+           (pair_id,tsk_client_id,agent_id,canonical_id,agent_public_key_hex)
+         VALUES($1,$2,$3,$4,$5)`,
+        [mutation.pairId, mutation.tskClientId, mutation.agentId, mutation.canonicalId,
+          mutation.agentPublicKeyHex],
       );
       // The lease changes after the authoritative DML but before the outbox
       // pre-commit gate. The entire source transaction must roll back.
@@ -274,7 +317,7 @@ test('Ultra authority mutations commit with secret-stripped ordered outbox recor
       'SELECT 1 FROM ultra_identity_bindings WHERE pair_id=$1', [preCommitPairId],
     )).rowCount, 0);
     await assert.rejects(
-      bindings.set(`pair-${randomUUID()}`, { tskClientId: `client-${randomUUID()}`, agentId }),
+      bindings.set(`pair-${randomUUID()}`, { tskClientId: `client-${randomUUID()}`, ...owner }),
       /source lease is revoked|grant digest/i,
     );
     assert.equal(Number((await a.query(

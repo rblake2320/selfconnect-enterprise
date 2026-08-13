@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import ast
+import re
+import subprocess
+import sys
 from pathlib import Path
 
 from tools.ci_test_gate import (
@@ -53,6 +56,15 @@ def test_workflow_has_one_dedicated_test_entrypoint() -> None:
         assert posix_job.count(nodeid) == 1
 
 
+def test_ci_never_installs_below_the_declared_cryptography_floor() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    requirements = re.findall(r'cryptography>=(\d+(?:\.\d+){0,2})', workflow)
+
+    assert requirements
+    assert all(int(version.split(".", 1)[0]) >= 50 for version in requirements)
+    assert "cryptography>=48" not in workflow
+
+
 def test_runner_invokes_pytest_once_without_shell_or_summary_parsing() -> None:
     source = CI_RUNNER.read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -89,8 +101,66 @@ def test_runner_invokes_pytest_once_without_shell_or_summary_parsing() -> None:
 
 
 def test_collection_and_conftest_inputs_are_pinned() -> None:
-    assert EXPECTED_COLLECTION_COUNT == 1_752
+    assert EXPECTED_COLLECTION_COUNT == 1_895
     assert len(EXPECTED_COLLECTION_SHA256) == 64
+
+
+def test_ultra_conformance_import_is_platform_safe() -> None:
+    code = """
+import sys
+import tempfile
+from pathlib import Path
+sys.platform = 'linux'
+from enterprise import identity
+from enterprise.identity import AgentIdentity
+from enterprise.ultra_gate import UltraGate
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+assert identity.crypt32 is None
+for operation in (
+    lambda: identity._dpapi_encrypt(b'test'),
+    lambda: identity._dpapi_decrypt(b'test'),
+):
+    try:
+        operation()
+    except OSError as exc:
+        assert 'unavailable' in str(exc)
+    else:
+        raise AssertionError('non-Windows DPAPI must fail closed')
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    try:
+        AgentIdentity.init('posix-init', data_dir=root)
+    except OSError as exc:
+        assert 'unavailable' in str(exc)
+    else:
+        raise AssertionError('non-Windows persistent init must fail closed')
+    assert not (root / 'posix-init' / 'identity.dpapi').exists()
+    assert not (root / 'posix-init' / 'identity.pub').exists()
+    planted = root / 'posix-load'
+    planted.mkdir()
+    (planted / 'identity.dpapi').write_bytes(b'not-dpapi')
+    try:
+        AgentIdentity.load('posix-load', data_dir=root)
+    except OSError as exc:
+        assert 'unavailable' in str(exc)
+    else:
+        raise AssertionError('non-Windows persistent load must fail closed')
+private_key = Ed25519PrivateKey.generate()
+ephemeral = AgentIdentity(private_key, private_key.public_key(), 'posix-test-only')
+message = b'posix-test-proof'
+assert ephemeral.verify(message, ephemeral.sign(message), ephemeral.public_key_bytes)
+assert ephemeral.canonical_id.startswith('SCID-')
+assert UltraGate.__name__ == 'UltraGate'
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
     assert len(TRUSTED_CONFTEST_SHA256) == 64
 
 

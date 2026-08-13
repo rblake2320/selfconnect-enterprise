@@ -222,7 +222,7 @@ def test_path_acl_accepts_service_only_write_and_rejects_client_write(tmp_path):
             )
         descriptor = win32security.SECURITY_DESCRIPTOR()
         descriptor.SetSecurityDescriptorOwner(
-            win32security.ConvertStringSidToSid("S-1-5-32-544"),
+            service_sid_obj,
             False,
         )
         descriptor.SetSecurityDescriptorDacl(True, dacl, False)
@@ -238,6 +238,7 @@ def test_path_acl_accepts_service_only_write_and_rejects_client_write(tmp_path):
         service_sid=service_sid,
         client_sids=frozenset({client_sid}),
         service_requires_write=True,
+        allow_service_owner=True,
     )
     set_dacl(client_write=True)
     with pytest.raises(ProvenanceServiceConfigurationError, match="direct write authority"):
@@ -246,6 +247,7 @@ def test_path_acl_accepts_service_only_write_and_rejects_client_write(tmp_path):
             service_sid=service_sid,
             client_sids=frozenset({client_sid}),
             service_requires_write=True,
+            allow_service_owner=True,
         )
 
 

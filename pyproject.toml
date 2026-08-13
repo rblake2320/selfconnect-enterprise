@@ -8,12 +8,16 @@ version = "1.2.3"
 description = "Enterprise AI agent infrastructure on Win32 — built on SelfConnect SDK"
 requires-python = ">=3.10"
 dependencies = [
-    "selfconnect @ git+https://github.com/rblake2320/selfconnect.git@787a6b88d9ff4a79917ebba94bffc7fe38d700d2",
-    "cryptography>=48.0.1",
+    "selfconnect @ git+https://github.com/rblake2320/selfconnect.git@e849934236a5ab2709534dbd913709014798b5f9",
+    "cryptography>=50.0.0",
+    "comtypes>=1.4; sys_platform == 'win32'",
     "pywin32>=306; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
+agt = [
+    "agent-control-specification @ git+https://github.com/microsoft/agent-governance-toolkit.git@f4518335907fb244887053683a3d3db83613cc31#subdirectory=policy-engine/sdk/python ; python_version >= '3.11'",
+]
 dev = [
     "build>=1.2",
     "comtypes>=1.4; sys_platform == 'win32'",
@@ -21,16 +25,18 @@ dev = [
     "pip-audit>=2.7",
     "pytest>=8",
     "rich>=13.0",
-    "ruff>=0.4",
+    "ruff==0.14.8",
     "tomli>=2; python_version < '3.11'",
 ]
 
 [project.scripts]
 scent = "enterprise.cli:main"
 scent-provenance-admin = "enterprise.provenance_admin:main"
+scent-acp = "enterprise.acp_entry:main"
+selfconnect-mcp-governor = "enterprise.mcp_governor_entry:main"
 
 [tool.setuptools.packages.find]
-include = ["enterprise*", "experiments*"]
+include = ["enterprise*", "enterprise_experiments*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

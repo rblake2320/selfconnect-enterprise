@@ -13,6 +13,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
 
       - name: Validate GitHub Actions workflows
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml
@@ -34,9 +36,11 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --upgrade pip
-          pip install "pytest==9.1.1" "ruff>=0.4" "hypothesis>=6.0" "pip-audit>=2.7" pywin32 "cryptography>=48.0.1" comtypes "rich>=13.0"
+          pip install "pytest==9.1.1" "ruff==0.14.8" "hypothesis>=6.0" "pip-audit>=2.7" pywin32 "cryptography>=50.0.0" comtypes "rich>=13.0"
           $portfolio = Get-Content portfolio-lock.json | ConvertFrom-Json
           $sdk = $portfolio.components.selfconnect
+          git submodule update --init --recursive
+          python -m tools.sdk_coherence --required-core-sha $sdk.commit
           pip install "selfconnect @ git+$($sdk.repository)@$($sdk.commit)"
           pip install -e . --no-deps
 
@@ -60,7 +64,7 @@ jobs:
       - name: Install bounded test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "pytest==9.1.1" "cryptography>=48.0.1"
+          pip install "pytest==9.1.1" "cryptography>=50.0.0"
           pip install -e . --no-deps
 
       - name: Run POSIX-only ownership and replacement tests
@@ -131,7 +135,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --upgrade pip
-          pip install "pytest>=8" "cryptography>=48.0.1" pywin32
+          pip install "pytest>=8" "cryptography>=50.0.0" pywin32
           pip install -e . --no-deps
 
       - name: Run live Node and Python contracts
@@ -193,6 +197,57 @@ jobs:
               Write-Warning "Ultra Server stderr capture failed: $($_.Exception.Message)"
             }
           }
+
+  ultra-node-postgres:
+    name: Ultra Node stores (ephemeral PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ultra_node_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ultra_node_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # GitHub Actions service container only; never a shared or external DB.
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ultra_node_test
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - name: Checkout pinned protocol sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          deps_root="$(dirname "$GITHUB_WORKSPACE")"
+          bpc_commit="$(python -c 'import json; print(json.load(open("portfolio-lock.json"))["components"]["bpc-protocol"]["commit"])')"
+          tsk_commit="$(python -c 'import json; print(json.load(open("portfolio-lock.json"))["components"]["tsk-protocol"]["commit"])')"
+          git clone https://github.com/rblake2320/bpc-protocol.git "$deps_root/bpc-protocol"
+          git -C "$deps_root/bpc-protocol" checkout --detach "$bpc_commit"
+          git clone https://github.com/rblake2320/tsk-protocol.git "$deps_root/tsk-protocol"
+          git -C "$deps_root/tsk-protocol" checkout --detach "$tsk_commit"
+
+      - name: Run Ultra Node store tests against service PostgreSQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix "$(dirname "$GITHUB_WORKSPACE")/bpc-protocol"
+          npm run build --prefix "$(dirname "$GITHUB_WORKSPACE")/bpc-protocol"
+          npm ci --prefix "$(dirname "$GITHUB_WORKSPACE")/tsk-protocol"
+          npm run build --prefix "$(dirname "$GITHUB_WORKSPACE")/tsk-protocol"
+          npm ci --prefix ultra_server
+          npm test --prefix ultra_server
 
   ultra-production-restart:
     name: Ultra production durability (PostgreSQL + Redis)
@@ -300,7 +355,7 @@ jobs:
       - name: Install Python contract dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "pytest>=8" "cryptography>=48.0.1"
+          pip install "pytest>=8" "cryptography>=50.0.0"
           pip install -e . --no-deps
 
       - name: Start production sidecar

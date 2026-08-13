@@ -9,6 +9,10 @@ import uuid
 from typing import Protocol
 
 
+LIFECYCLE_AUTH_DOMAIN = b"selfconnect/ultra/agent-lifecycle-auth/v1\x00"
+LIFECYCLE_AUTH_AUDIENCE = "selfconnect-ultra-lifecycle-v1"
+
+
 class SigningIdentity(Protocol):
     agent_id: str
     public_key_bytes: bytes
@@ -16,11 +20,38 @@ class SigningIdentity(Protocol):
     def sign(self, data: bytes) -> bytes: ...
 
 
-def lifecycle_auth_headers(identity: SigningIdentity, payload: bytes) -> dict[str, str]:
-    """Return the exact Ed25519 proof expected by Ultra Server."""
+def lifecycle_auth_headers(
+    identity: SigningIdentity,
+    payload: bytes,
+    *,
+    method: str,
+    path: str,
+    audience: str = LIFECYCLE_AUTH_AUDIENCE,
+) -> dict[str, str]:
+    """Return an endpoint- and protocol-bound Ed25519 Ultra lifecycle proof."""
+    if method != "POST":
+        raise ValueError("Ultra lifecycle proofs require the exact POST method")
+    if not path.startswith("/") or "?" in path or "#" in path:
+        raise ValueError("Ultra lifecycle proof path must be an exact absolute path")
+    if audience != LIFECYCLE_AUTH_AUDIENCE:
+        raise ValueError("Ultra lifecycle proof audience is not supported")
     timestamp = str(time.time())
     nonce = str(uuid.uuid4())
-    material = hashlib.sha256(payload).digest() + timestamp.encode() + nonce.encode()
+    material = b"".join(
+        (
+            LIFECYCLE_AUTH_DOMAIN,
+            method.encode("ascii"),
+            b"\x00",
+            path.encode("ascii"),
+            b"\x00",
+            audience.encode("ascii"),
+            b"\x00",
+            hashlib.sha256(payload).digest(),
+            timestamp.encode("ascii"),
+            b"\x00",
+            nonce.encode("ascii"),
+        )
+    )
     signature = identity.sign(material)
     return {
         "X-SC-Agent-Auth": json.dumps(
@@ -29,6 +60,9 @@ def lifecycle_auth_headers(identity: SigningIdentity, payload: bytes) -> dict[st
                 "pubkey_hex": identity.public_key_bytes.hex(),
                 "ts": timestamp,
                 "nonce": nonce,
+                "method": method,
+                "path": path,
+                "aud": audience,
                 "sig": base64.b64encode(signature).decode("ascii"),
             },
             separators=(",", ":"),

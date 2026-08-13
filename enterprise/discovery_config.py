@@ -39,8 +39,17 @@ MAX_STAMPS_PER_PID: int = int(os.environ.get("SC_MAX_STAMPS_PER_PID", "4"))
 HANDSHAKE_BACKOFF_SEC: int = int(os.environ.get("SC_HANDSHAKE_BACKOFF_SEC", "60"))
 
 # ── BPC+TSK identity gate constants (Tier 3 — ultra-gate) ────────────────────
-# SC_IDENTITY_MODE: "bypass" (default) | "audit" | "enforce"
-IDENTITY_MODE_DEFAULT: str = os.environ.get("SC_IDENTITY_MODE", "bypass")
+# SC_IDENTITY_MODE: "audit" (default) | "enforce" | explicitly confirmed
+# "bypass".  The runtime identity gate performs the confirmation check; this
+# shared configuration surface must still reject misspellings instead of
+# silently exposing an unsafe string to downstream callers.
+_identity_mode = os.environ.get("SC_IDENTITY_MODE", "audit").strip().lower()
+if _identity_mode not in {"audit", "enforce", "bypass"}:
+    raise RuntimeError(
+        f"SC_IDENTITY_MODE={_identity_mode!r} is not a recognised mode "
+        "(expected 'audit', 'enforce', or explicitly confirmed 'bypass')"
+    )
+IDENTITY_MODE_DEFAULT: str = _identity_mode
 
 # Maximum time to wait for Ultra Server to respond (milliseconds).
 IDENTITY_BRIDGE_TIMEOUT_MS: int = int(os.environ.get("SC_IDENTITY_BRIDGE_TIMEOUT_MS", "500"))

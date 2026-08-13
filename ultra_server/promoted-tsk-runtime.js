@@ -20,7 +20,9 @@ import {
 import pg from 'pg';
 
 import {
+  PROMOTED_TSK_CREDENTIAL_PROOF_FORMAT,
   createPromotedTskAuthorityCapability,
+  promotedTskAgentIdentity,
   promotedTskCredentialLabel,
   verifyPromotedTskCredentialProof,
 } from './promoted-tsk-authority.js';
@@ -157,13 +159,15 @@ async function publicResolver(files) {
 
 function requiredBinding(input) {
   exact(input, [
-    'agentId', 'commandId', 'pairId', 'sourceClientId', 'sourceSecretDigest',
+    'agentId', 'agentPublicKeyHex', 'canonicalId', 'commandId', 'pairId',
+    'sourceClientId', 'sourceSecretDigest',
   ], 'promoted credential binding');
   if (typeof input.sourceSecretDigest !== 'string' || !HEX64.test(input.sourceSecretDigest)) {
     throw new Error('sourceSecretDigest invalid');
   }
+  const identity = promotedTskAgentIdentity(input, 'promoted credential binding');
   return Object.freeze({
-    agentId: id(input.agentId, 'agentId'),
+    ...identity,
     commandId: id(input.commandId, 'commandId'),
     pairId: id(input.pairId, 'pairId'),
     sourceClientId: id(input.sourceClientId, 'sourceClientId'),
@@ -192,8 +196,10 @@ export async function readPromotedTskCredentialProof(
     throw new Error('promoted credential ledger sequence invalid');
   }
   return Object.freeze({
-    format: 'selfconnect-promoted-tsk-credential-proof-v1',
+    format: PROMOTED_TSK_CREDENTIAL_PROOF_FORMAT,
     agentId: binding.agentId,
+    agentPublicKeyHex: binding.agentPublicKeyHex,
+    canonicalId: binding.canonicalId,
     pairId: binding.pairId,
     commandId: binding.commandId,
     activationLease: structuredClone(activationLease),
@@ -269,6 +275,8 @@ export function createPromotedTskCredentialRuntime({
         const verified = await verifyPromotedTskCredentialProof(
           authorityCapability, targetProof, {
             agentId: binding.agentId,
+            agentPublicKeyHex: binding.agentPublicKeyHex,
+            canonicalId: binding.canonicalId,
             pairId: binding.pairId,
             sourceClientId: binding.sourceClientId,
             sourceSecretDigest: binding.sourceSecretDigest,

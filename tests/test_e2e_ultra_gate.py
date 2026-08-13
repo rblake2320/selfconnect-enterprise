@@ -58,26 +58,31 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture(scope="module")
-def agent_identity(tmp_path_factory):
-    """Create a real AgentIdentity for the E2E test module."""
-    if os.name == "nt":
-        from enterprise.identity import AgentIdentity
-        data_dir = tmp_path_factory.mktemp("e2e_identity")
-        return AgentIdentity.init("e2e-test-agent", data_dir=data_dir)
+def _new_test_identity(agent_name, data_dir):
+    """Create a real AgentIdentity without weakening production key storage.
 
-    import hashlib
-    from types import SimpleNamespace
+    Windows exercises the production DPAPI path.  POSIX CI constructs the
+    same in-memory Ed25519 identity object directly because DPAPI is
+    intentionally unavailable there; no plaintext test key is persisted and
+    no environment switch can enable this path in production code.
+    """
+    from enterprise.identity import AgentIdentity
+
+    if os.name == "nt":
+        return AgentIdentity.init(agent_name, data_dir=data_dir)
+
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
     private_key = Ed25519PrivateKey.generate()
-    public_key_bytes = private_key.public_key().public_bytes_raw()
-    agent_id = "SC-" + hashlib.sha256(public_key_bytes).hexdigest()[:8].upper()
-    return SimpleNamespace(
-        _private_key=private_key,
-        public_key_bytes=public_key_bytes,
-        agent_id=agent_id,
-        sign=private_key.sign,
+    return AgentIdentity(private_key, private_key.public_key(), agent_name)
+
+
+@pytest.fixture(scope="module")
+def agent_identity(tmp_path_factory):
+    """Create a real AgentIdentity for the E2E test module."""
+    return _new_test_identity(
+        "e2e-test-agent",
+        tmp_path_factory.mktemp("e2e_identity"),
     )
 
 
@@ -274,7 +279,6 @@ class TestFullE2EFlow:
         This is the production scenario: agent A builds a request, agent B
         (acting as the receiving peer) verifies it via the server.
         """
-        from enterprise.identity import AgentIdentity
         from enterprise.ultra_gate import UltraGate
 
         dir_a = tmp_path / "agent_a"
@@ -282,8 +286,8 @@ class TestFullE2EFlow:
         dir_a.mkdir()
         dir_b.mkdir()
 
-        id_a = AgentIdentity.init("e2e-agent-a", data_dir=dir_a)
-        id_b = AgentIdentity.init("e2e-agent-b", data_dir=dir_b)
+        id_a = _new_test_identity("e2e-agent-a", dir_a)
+        id_b = _new_test_identity("e2e-agent-b", dir_b)
 
         gate_a = UltraGate(id_a, mesh_secret=TEST_MESH_SECRET, server_url=SERVER_URL)
         gate_b = UltraGate(id_b, mesh_secret=TEST_MESH_SECRET, server_url=SERVER_URL)
@@ -500,7 +504,9 @@ class TestSignedLifecycleAuth:
         ).encode()
         headers = {
             "X-Idempotency-Key": idempotency_key,
-            **lifecycle_auth_headers(agent_identity, payload),
+            **lifecycle_auth_headers(
+                agent_identity, payload, method="POST", path="/provision-tsk"
+            ),
         }
         first_status, _ = self._request("/provision-tsk", payload, headers)
         assert first_status == 200
@@ -529,7 +535,9 @@ class TestSignedLifecycleAuth:
             payload,
             {
                 "X-Idempotency-Key": idempotency_key,
-                **lifecycle_auth_headers(agent_identity, payload),
+                **lifecycle_auth_headers(
+                    agent_identity, payload, method="POST", path="/provision-tsk"
+                ),
             },
         )
         assert status == 403
@@ -548,7 +556,11 @@ class TestSignedLifecycleAuth:
             separators=(",", ":"),
         ).encode()
         status, body = self._request(
-            "/confirm-recovery", payload, lifecycle_auth_headers(agent_identity, payload)
+            "/confirm-recovery",
+            payload,
+            lifecycle_auth_headers(
+                agent_identity, payload, method="POST", path="/confirm-recovery"
+            ),
         )
         assert status in (401, 503)
         assert body["error"] in ("ADMIN_AUTH_REQUIRED", "ADMIN_AUTH_UNCONFIGURED")
@@ -575,10 +587,9 @@ class TestLiveBpcLockoutBoundary:
             return json.loads(response.read())
 
     def test_automatic_quarantine_cannot_become_shadow_authorization(self, tmp_path):
-        from enterprise.identity import AgentIdentity
         from enterprise.ultra_gate import UltraGate
 
-        identity = AgentIdentity.init("lockout-boundary-agent", data_dir=tmp_path)
+        identity = _new_test_identity("lockout-boundary-agent", tmp_path)
         gate = UltraGate(identity, mesh_secret=TEST_MESH_SECRET, server_url=SERVER_URL)
         gate.bootstrap()
 
@@ -616,10 +627,9 @@ class TestLiveTskRotation:
     """Exercise prepare, commit, revocation, retry, and restart resume live."""
 
     def test_rotation_survives_new_client_instance(self, tmp_path):
-        from enterprise.identity import AgentIdentity
         from enterprise.ultra_gate import UltraGate
 
-        identity = AgentIdentity.init("tsk-rotation-agent", data_dir=tmp_path)
+        identity = _new_test_identity("tsk-rotation-agent", tmp_path)
         gate = UltraGate(identity, mesh_secret=TEST_MESH_SECRET, server_url=SERVER_URL)
         gate.bootstrap()
         old_client_id = gate.tsk_state.client_id

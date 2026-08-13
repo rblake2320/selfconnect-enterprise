@@ -1,4 +1,4 @@
-"""POC: hardware-rooted agent identity via the TPM (Microsoft Platform Crypto Provider).
+"""Enterprise POC for Platform Crypto Provider identity.
 
 enterprise/crypto.py persists ECDSA P-384 keys in the *software* KSP
 ("Microsoft Software Key Storage Provider"). This probe swaps the provider to the
@@ -13,7 +13,7 @@ This probe is reduction-to-practice evidence for hardware-backed local signing.
 The ephemeral probe key is not the ordinary AgentIdentity/CngIdentity key and the
 probe does not establish remote attestation or deployed key custody.
 
-Run:  python experiments/win32_probe/tpm_identity.py
+Run:  python enterprise_experiments/win32_probe/tpm_identity.py
 Exit: 0 = PASS (hardware-backed), 1 = key worked but NOT hardware-backed,
       2 = TPM/provider unavailable (NA), 3 = FAIL
 """

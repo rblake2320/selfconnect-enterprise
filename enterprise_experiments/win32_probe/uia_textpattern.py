@@ -1,4 +1,4 @@
-"""Reusable UIA TextPattern read + TextChanged subscription.
+"""Enterprise UIA TextPattern read and TextChanged subscription.
 
 The read-channel path proven in uia_read.py, extracted for chained_channel.py (RMC).
 

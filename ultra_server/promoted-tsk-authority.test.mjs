@@ -18,11 +18,24 @@ import {
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 
+function agentIdentity(agentPublicKeyHex) {
+  const fingerprint = createHash('sha256').update(
+    Buffer.from(agentPublicKeyHex, 'hex'),
+  ).digest('hex');
+  return {
+    agentId: `SC-${fingerprint.slice(0, 8).toUpperCase()}`,
+    agentPublicKeyHex,
+    canonicalId: `SCID-${fingerprint}`,
+  };
+}
+
 function fixture() {
   const guard = generateKeyPairSync('ed25519');
   const head = generateKeyPairSync('ed25519');
   const commandId = 'cmd-promote-1';
-  const agentId = 'agent-1';
+  const identity = agentIdentity(
+    '67bc101981dfd63eaf5af3c05448a9f8e40902ffe4d6c1d3813fad97f99c8b1f',
+  );
   const pairId = 'pair-1';
   const streamId = 'credential-stream-1';
   const sourceSecretDigest = '1'.repeat(64);
@@ -38,7 +51,7 @@ function fixture() {
     prevGrantDigest: null,
   });
   const fullMap = generateTumblerMap({ keyLength: 64, minTumblers: 2, maxTumblers: 2 });
-  fullMap.label = promotedTskCredentialLabel({ commandId, pairId, agentId });
+  fullMap.label = promotedTskCredentialLabel({ commandId, pairId, ...identity });
   fullMap.status = 'active';
   const publicMap = clone(fullMap);
   delete publicMap.sharedSecret;
@@ -80,12 +93,14 @@ function fixture() {
   return {
     activationLease,
     capability: createPromotedTskAuthorityCapability({ activationLease, leaseResolver, headKeyResolver }),
-    expected: { agentId, pairId, sourceClientId: 'source-client-1', sourceSecretDigest },
+    expected: {
+      ...identity, pairId, sourceClientId: 'source-client-1', sourceSecretDigest,
+    },
     guard,
     head,
     proof: {
       format: PROMOTED_TSK_CREDENTIAL_PROOF_FORMAT,
-      agentId,
+      ...identity,
       pairId,
       commandId,
       activationLease,
@@ -100,7 +115,43 @@ test('verifies an exact promoted credential proof and returns only public bindin
   const verified = await verifyPromotedTskCredentialProof(value.capability, value.proof, value.expected);
   assert.equal(verified.targetClientId, value.proof.record.mutation.clientId);
   assert.equal(verified.activationGrantDigest, value.activationLease.grantDigest);
+  assert.equal(verified.agentId, value.expected.agentId);
+  assert.equal(verified.canonicalId, value.expected.canonicalId);
+  assert.equal(verified.agentPublicKeyHex, value.expected.agentPublicKeyHex);
   assert.equal(JSON.stringify(verified).includes('sharedSecret'), false);
+});
+
+test('identity triple rejects independent tampering and real short-id collisions', async () => {
+  const left = agentIdentity(
+    '67bc101981dfd63eaf5af3c05448a9f8e40902ffe4d6c1d3813fad97f99c8b1f',
+  );
+  const right = agentIdentity(
+    '3a1a9a9ab515f2baa029ee9df63f93cb65b97a446fb86b13da8824433bbb874b',
+  );
+  assert.equal(left.agentId, right.agentId, 'fixture must retain its real 32-bit collision');
+  assert.notEqual(left.canonicalId, right.canonicalId);
+  assert.notEqual(promotedTskCredentialLabel({
+    ...left, commandId: 'cmd-promote-1', pairId: 'pair-1',
+  }), promotedTskCredentialLabel({
+    ...right, commandId: 'cmd-promote-1', pairId: 'pair-1',
+  }));
+
+  const mutations = [
+    (value) => { value.proof.agentId = 'SC-00000000'; },
+    (value) => { value.proof.canonicalId = `SCID-${'0'.repeat(64)}`; },
+    (value) => { value.proof.agentPublicKeyHex = right.agentPublicKeyHex; },
+    (value) => { value.expected.agentId = 'SC-00000000'; },
+    (value) => { value.expected.canonicalId = `SCID-${'0'.repeat(64)}`; },
+    (value) => { value.expected.agentPublicKeyHex = right.agentPublicKeyHex; },
+    (value) => { Object.assign(value.proof, right); },
+  ];
+  for (const mutate of mutations) {
+    const value = fixture();
+    mutate(value);
+    await assert.rejects(
+      verifyPromotedTskCredentialProof(value.capability, value.proof, value.expected),
+    );
+  }
 });
 
 test('terminal credential revocation exactly continues the active promoted authority', () => {
@@ -155,8 +206,9 @@ test('capability is opaque and cannot be replaced with request callbacks or plai
 
 test('rejects mutation, lease, principal, freshness, and head-signature substitutions', async () => {
   const vectors = [
-    (v) => { v.proof.agentId = 'agent-2'; },
-    (v) => { v.proof.record.mutation.publicMap.label = 'agent-1'; },
+    (v) => { v.proof.format = 'selfconnect-promoted-tsk-credential-proof-v1'; },
+    (v) => { v.proof.agentId = 'SC-00000000'; },
+    (v) => { v.proof.record.mutation.publicMap.label = 'agent:SC-00000000'; },
     (v) => { v.proof.record.mutation.clientId = v.expected.sourceClientId; v.proof.record.mutation.tumblerId = v.expected.sourceClientId; v.proof.record.mutation.publicMap.clientId = v.expected.sourceClientId; },
     (v) => { v.proof.record.mutation.secretDigest = v.expected.sourceSecretDigest; },
     (v) => { v.proof.record.sourceEpoch = '3'; },
@@ -192,7 +244,7 @@ test('snapshots untrusted proof before awaiting head verification', async () => 
   value.proof.record.mutation.publicMap.label = 'evil';
   release();
   const verified = await pending;
-  assert.equal(verified.agentId, 'agent-1');
+  assert.equal(verified.agentId, value.expected.agentId);
   assert.equal(verify(null, Buffer.from(value.proof.head.headDigest, 'hex'), value.head.publicKey,
     Buffer.from(value.proof.head.signature, 'base64url')), true);
   void gate;

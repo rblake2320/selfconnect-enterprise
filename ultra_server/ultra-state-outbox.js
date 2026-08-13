@@ -15,6 +15,8 @@ import {
   requireSourceFenceReady,
 } from '@tsk/server';
 
+import { validateIdentityBinding } from './runtime-stores.js';
+
 const ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -246,15 +248,32 @@ function iso(value, name) {
 function sanitizeMutation(raw) {
   raw = jsonSnapshot(raw, 'Ultra state mutation');
   switch (raw.kind) {
-    case 'ultra.binding.set.v1':
-      exactKeys(raw, ['agentId', 'kind', 'pairId', 'tskClientId'], raw.kind);
+    case 'ultra.binding.set.v2': { // v1 omitted the full-key principal and is unsafe to replay
+      exactKeys(raw, [
+        'agentId', 'agentPublicKeyHex', 'canonicalId', 'kind', 'pairId', 'tskClientId',
+      ], raw.kind);
+      const binding = validateIdentityBinding({
+        tskClientId: id(raw.tskClientId, 'tskClientId'),
+        agentId: raw.agentId,
+        canonicalId: raw.canonicalId,
+        agentPublicKeyHex: raw.agentPublicKeyHex,
+      });
+      return { kind: raw.kind, pairId: id(raw.pairId, 'pairId'), ...binding };
+    }
+    case 'ultra.binding.swap.v2': { // ownership is immutable; only the credential may CAS
+      exactKeys(raw, [
+        'agentId', 'agentPublicKeyHex', 'canonicalId', 'expectedClientId', 'kind',
+        'pairId', 'tskClientId',
+      ], raw.kind);
+      const binding = validateIdentityBinding({
+        tskClientId: id(raw.tskClientId, 'tskClientId'),
+        agentId: raw.agentId,
+        canonicalId: raw.canonicalId,
+        agentPublicKeyHex: raw.agentPublicKeyHex,
+      });
       return { kind: raw.kind, pairId: id(raw.pairId, 'pairId'),
-        tskClientId: id(raw.tskClientId, 'tskClientId'), agentId: id(raw.agentId, 'agentId') };
-    case 'ultra.binding.swap.v1':
-      exactKeys(raw, ['agentId', 'expectedClientId', 'kind', 'pairId', 'tskClientId'], raw.kind);
-      return { kind: raw.kind, pairId: id(raw.pairId, 'pairId'),
-        expectedClientId: id(raw.expectedClientId, 'expectedClientId'),
-        tskClientId: id(raw.tskClientId, 'tskClientId'), agentId: id(raw.agentId, 'agentId') };
+        expectedClientId: id(raw.expectedClientId, 'expectedClientId'), ...binding };
+    }
     case 'ultra.idempotency.claim.v1':
       exactKeys(raw, ['agentId', 'idempotencyKey', 'kind', 'operation'], raw.kind);
       return { kind: raw.kind, idempotencyKey: uuid(raw.idempotencyKey, 'idempotencyKey'),
@@ -315,42 +334,65 @@ export class PgReplicatedIdentityBindingStore {
     id(pairId, 'pairId');
     return this.outbox.withOutboxTx(async (_tx, exec) => {
       const row = (await exec.query(
-        'SELECT tsk_client_id,agent_id FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
+        `SELECT tsk_client_id,agent_id,canonical_id,agent_public_key_hex
+           FROM ultra_identity_bindings WHERE pair_id=$1`, [pairId],
       )).rows[0];
-      return row ? { tskClientId: row.tsk_client_id, agentId: row.agent_id } : null;
+      return row ? validateIdentityBinding({
+        tskClientId: row.tsk_client_id,
+        agentId: row.agent_id,
+        canonicalId: row.canonical_id,
+        agentPublicKeyHex: row.agent_public_key_hex,
+      }) : null;
     });
   }
 
   async set(pairId, binding) {
-    const mutation = sanitizeMutation({ kind: 'ultra.binding.set.v1', pairId, ...binding });
+    const mutation = sanitizeMutation({ kind: 'ultra.binding.set.v2', pairId, ...binding });
     return this.outbox.withOutboxTx(async (tx, exec) => {
       await this.outbox.appendInTx(tx, { streamId: this.streamId, rawMutation: mutation, fenceToken: this.fenceToken });
-      await exec.query(
-        `INSERT INTO ultra_identity_bindings(pair_id,tsk_client_id,agent_id) VALUES($1,$2,$3)
-         ON CONFLICT(pair_id) DO UPDATE SET tsk_client_id=EXCLUDED.tsk_client_id,
-           agent_id=EXCLUDED.agent_id,updated_at=pg_catalog.clock_timestamp()`,
-        [mutation.pairId, mutation.tskClientId, mutation.agentId],
+      const inserted = await exec.query(
+        `INSERT INTO ultra_identity_bindings
+           (pair_id,tsk_client_id,agent_id,canonical_id,agent_public_key_hex)
+         VALUES($1,$2,$3,$4,$5) ON CONFLICT(pair_id) DO NOTHING`,
+        [mutation.pairId, mutation.tskClientId, mutation.agentId, mutation.canonicalId,
+          mutation.agentPublicKeyHex],
       );
+      if (inserted.rowCount === 1) return;
+      const current = (await exec.query(
+        `SELECT tsk_client_id,agent_id,canonical_id,agent_public_key_hex
+           FROM ultra_identity_bindings WHERE pair_id=$1 FOR UPDATE`, [mutation.pairId],
+      )).rows[0];
+      if (current?.tsk_client_id === mutation.tskClientId &&
+          current.agent_id === mutation.agentId && current.canonical_id === mutation.canonicalId &&
+          current.agent_public_key_hex === mutation.agentPublicKeyHex) return;
+      throw new ContractValidationError('identity binding set conflicts with existing owner');
     });
   }
 
   async compareAndSwap(pairId, expectedClientId, binding) {
     const mutation = sanitizeMutation({
-      kind: 'ultra.binding.swap.v1', pairId, expectedClientId, ...binding,
+      kind: 'ultra.binding.swap.v2', pairId, expectedClientId, ...binding,
     });
     return this.outbox.withOutboxTx(async (tx, exec) => {
       const current = (await exec.query(
-        'SELECT tsk_client_id,agent_id FROM ultra_identity_bindings WHERE pair_id=$1 FOR UPDATE',
+        `SELECT tsk_client_id,agent_id,canonical_id,agent_public_key_hex
+           FROM ultra_identity_bindings WHERE pair_id=$1 FOR UPDATE`,
         [mutation.pairId],
       )).rows[0];
       if (!current) return 'missing';
-      if (current.tsk_client_id === mutation.tskClientId && current.agent_id === mutation.agentId) return 'already';
-      if (current.tsk_client_id !== mutation.expectedClientId || current.agent_id !== mutation.agentId) return 'conflict';
+      if (current.tsk_client_id === mutation.tskClientId && current.agent_id === mutation.agentId &&
+          current.canonical_id === mutation.canonicalId &&
+          current.agent_public_key_hex === mutation.agentPublicKeyHex) return 'already';
+      if (current.tsk_client_id !== mutation.expectedClientId ||
+          current.agent_id !== mutation.agentId || current.canonical_id !== mutation.canonicalId ||
+          current.agent_public_key_hex !== mutation.agentPublicKeyHex) return 'conflict';
       await this.outbox.appendInTx(tx, { streamId: this.streamId, rawMutation: mutation, fenceToken: this.fenceToken });
       const updated = await exec.query(
         `UPDATE ultra_identity_bindings SET tsk_client_id=$2,updated_at=pg_catalog.clock_timestamp()
-         WHERE pair_id=$1 AND tsk_client_id=$3 AND agent_id=$4`,
-        [mutation.pairId, mutation.tskClientId, mutation.expectedClientId, mutation.agentId],
+         WHERE pair_id=$1 AND tsk_client_id=$3 AND agent_id=$4 AND canonical_id=$5
+           AND agent_public_key_hex=$6`,
+        [mutation.pairId, mutation.tskClientId, mutation.expectedClientId, mutation.agentId,
+          mutation.canonicalId, mutation.agentPublicKeyHex],
       );
       if (updated.rowCount !== 1) throw new ContractValidationError('identity binding CAS lost its row lock');
       return 'updated';
@@ -467,22 +509,38 @@ export class UltraStateMutationApplier {
     const mutation = sanitizeMutation(record.mutation);
     if (canonicalize(mutation) !== canonicalize(record.mutation)) throw new ContractValidationError('receiver mutation not exactly sanitized');
     switch (mutation.kind) {
-      case 'ultra.binding.set.v1':
-        await exec.query(
-          `INSERT INTO ultra_identity_bindings(pair_id,tsk_client_id,agent_id) VALUES($1,$2,$3)
-           ON CONFLICT(pair_id) DO UPDATE SET tsk_client_id=EXCLUDED.tsk_client_id,
-             agent_id=EXCLUDED.agent_id,updated_at=pg_catalog.clock_timestamp()`,
-          [mutation.pairId, mutation.tskClientId, mutation.agentId],
-        ); return;
-      case 'ultra.binding.swap.v1': {
+      case 'ultra.binding.set.v2': {
+        const result = await exec.query(
+          `INSERT INTO ultra_identity_bindings
+             (pair_id,tsk_client_id,agent_id,canonical_id,agent_public_key_hex)
+           VALUES($1,$2,$3,$4,$5) ON CONFLICT(pair_id) DO NOTHING`,
+          [mutation.pairId, mutation.tskClientId, mutation.agentId, mutation.canonicalId,
+            mutation.agentPublicKeyHex],
+        );
+        if (result.rowCount === 1) return;
         const row = (await exec.query(
-          'SELECT tsk_client_id,agent_id FROM ultra_identity_bindings WHERE pair_id=$1 FOR UPDATE', [mutation.pairId],
+          `SELECT tsk_client_id,agent_id,canonical_id,agent_public_key_hex
+             FROM ultra_identity_bindings WHERE pair_id=$1 FOR UPDATE`, [mutation.pairId],
         )).rows[0];
-        if (row?.tsk_client_id === mutation.tskClientId && row?.agent_id === mutation.agentId) return;
+        if (row?.tsk_client_id === mutation.tskClientId && row?.agent_id === mutation.agentId &&
+            row?.canonical_id === mutation.canonicalId &&
+            row?.agent_public_key_hex === mutation.agentPublicKeyHex) return;
+        throw new ContractValidationError('replica identity binding owner conflicts');
+      }
+      case 'ultra.binding.swap.v2': {
+        const row = (await exec.query(
+          `SELECT tsk_client_id,agent_id,canonical_id,agent_public_key_hex
+             FROM ultra_identity_bindings WHERE pair_id=$1 FOR UPDATE`, [mutation.pairId],
+        )).rows[0];
+        if (row?.tsk_client_id === mutation.tskClientId && row?.agent_id === mutation.agentId &&
+            row?.canonical_id === mutation.canonicalId &&
+            row?.agent_public_key_hex === mutation.agentPublicKeyHex) return;
         const result = await exec.query(
           `UPDATE ultra_identity_bindings SET tsk_client_id=$2,updated_at=pg_catalog.clock_timestamp()
-           WHERE pair_id=$1 AND tsk_client_id=$3 AND agent_id=$4`,
-          [mutation.pairId, mutation.tskClientId, mutation.expectedClientId, mutation.agentId],
+           WHERE pair_id=$1 AND tsk_client_id=$3 AND agent_id=$4 AND canonical_id=$5
+             AND agent_public_key_hex=$6`,
+          [mutation.pairId, mutation.tskClientId, mutation.expectedClientId, mutation.agentId,
+            mutation.canonicalId, mutation.agentPublicKeyHex],
         );
         if (result.rowCount !== 1) throw new ContractValidationError('replica identity binding precondition failed');
         return;

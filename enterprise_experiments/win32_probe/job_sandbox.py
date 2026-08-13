@@ -1,4 +1,4 @@
-"""POC (next-four #3): OS-backed agent containment via a Windows Job Object.
+"""Enterprise POC: OS-backed agent containment via a Windows Job Object.
 
 This is the containment the SCFH `ExecGuard` could NOT give (it was explicitly NO-GO):
 the OS — not the app — bounds the agent subprocess. We create a Job Object with hard
@@ -11,7 +11,7 @@ Limits set (all OS-enforced):
   - KILL_ON_JOB_CLOSE         (close the handle -> all members die — no orphans)
   - DIE_ON_UNHANDLED_EXCEPTION
 
-Run:  python experiments/win32_probe/job_sandbox.py
+Run:  python enterprise_experiments/win32_probe/job_sandbox.py
 Exit: 0 = PASS (contained + killed on close), 1 = partial, 3 = FAIL/unavailable
 """
 from __future__ import annotations

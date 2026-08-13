@@ -1,6 +1,6 @@
 # Ultra Final HA Acceptance
 
-**Scope:** the named controlled-deployment topology only  
+**Scope:** the named controlled-deployment topology only
 **Not established:** an ATO, compliance certification, legal admissibility, or
 availability outside the recorded topology. The hosted topology is one runner.
 The Spark-2 supplement in `SPARK2_HOST_ACCEPTANCE.md` establishes a

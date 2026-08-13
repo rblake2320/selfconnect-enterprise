@@ -123,7 +123,8 @@ async function stateSnapshot(pool, state) {
     ),
     pool.query('SELECT map FROM ultra_tumbler_maps WHERE client_id=$1', [state.tsk_client_id]),
     pool.query(
-      'SELECT pair_id, tsk_client_id, agent_id FROM ultra_identity_bindings WHERE pair_id=$1',
+      `SELECT pair_id, tsk_client_id, agent_id, canonical_id, agent_public_key_hex
+         FROM ultra_identity_bindings WHERE pair_id=$1`,
       [state.pair_id],
     ),
   ]);

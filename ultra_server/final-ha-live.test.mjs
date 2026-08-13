@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 import {
@@ -10,6 +11,15 @@ import { writeLiveCompositionEvidence } from './live-composition-evidence.mjs';
 
 test('live composition requires exact command binding, independent systems, and stale denial', () => {
   const commandId = 'promote-live-1';
+  const agentPublicKeyHex = 'a'.repeat(64);
+  const fingerprint = createHash('sha256').update(
+    Buffer.from(agentPublicKeyHex, 'hex'),
+  ).digest('hex');
+  const agentIdentity = {
+    agentId: `SC-${fingerprint.slice(0, 8).toUpperCase()}`,
+    agentPublicKeyHex,
+    canonicalId: `SCID-${fingerprint}`,
+  };
   const bpc = {
     readinessAttestation: { commandId, targetEpoch: 2 }, staleWriterDenied: true,
     failback: { targetSystemId: '1', targetEpoch: 3, staleBWriterDenied: true,
@@ -23,6 +33,8 @@ test('live composition requires exact command binding, independent systems, and 
     systemIds: { sourceA: '1', promotedB: '2', control: '3' },
   };
   const tsk = {
+    agentIdentity,
+    sourceCredentialProof: { ...agentIdentity },
     bFinalizedReceipt: { commandId }, activationLeaseGrant: { commandId },
     staleWriterDenied: true, n: 4, nextSequence: 5,
     staleTargetWriterDenied: true, returnSequence: 6,
@@ -43,6 +55,7 @@ test('live composition requires exact command binding, independent systems, and 
     publicCredentialReturn: { clientId: 'return-client', publicMapDigest: 'd'.repeat(64),
       secretDigest: 'e'.repeat(64) },
     targetCredentialProof: {
+      ...agentIdentity,
       commandId,
       record: { mutation: { clientId: 'target-client' } },
     },
@@ -52,7 +65,7 @@ test('live composition requires exact command binding, independent systems, and 
       leaseStatus: 'revoked' },
     returnCredentialActivationLeaseGrant: { commandId: 'return-promote-live-1',
       leaseEpoch: 2 },
-    returnCredentialProof: { commandId: 'return-promote-live-1',
+    returnCredentialProof: { ...agentIdentity, commandId: 'return-promote-live-1',
       record: { mutation: { clientId: 'return-client' } } },
     repeatedCycle: {
       forward: { sourceEpoch: 2, targetEpoch: 3, staleWriterDenied: true,
@@ -66,14 +79,15 @@ test('live composition requires exact command binding, independent systems, and 
         commandId: 'promote-live-1-recovered-site-promote',
         activationLease: { leaseEpoch: 5, holderNodeId: 'recovered-b' } },
       staleCredentialDenied: true,
+      credential: { proof: { ...agentIdentity } },
     },
     repeatForwardCredential: {
       leaseGrant: { leaseEpoch: 3 },
-      proof: { commandId: 'promote-live-1-cycle-2-promote' },
+      proof: { ...agentIdentity, commandId: 'promote-live-1-cycle-2-promote' },
     },
     repeatReturnCredential: {
       leaseGrant: { leaseEpoch: 4 },
-      proof: { commandId: 'promote-live-1-cycle-2-failback' },
+      proof: { ...agentIdentity, commandId: 'promote-live-1-cycle-2-failback' },
     },
     staleRepeatForwardCredentialDenied: true,
     staleRepeatReturnCredentialDenied: true,
@@ -85,6 +99,16 @@ test('live composition requires exact command binding, independent systems, and 
   ));
   assert.throws(() => validateLiveProtocolComposition(
     bpc, { ...tsk, systemIds: { sourceA: '4', receiverB: '2', control: '6' } }, commandId,
+  ));
+  assert.throws(() => validateLiveProtocolComposition(
+    bpc, { ...tsk, targetCredentialProof: {
+      ...tsk.targetCredentialProof, canonicalId: `SCID-${'0'.repeat(64)}`,
+    } }, commandId,
+  ));
+  assert.throws(() => validateLiveProtocolComposition(
+    bpc, { ...tsk, targetCredentialProof: {
+      ...tsk.targetCredentialProof, agentPublicKeyHex: 'b'.repeat(64),
+    } }, commandId,
   ));
 });
 

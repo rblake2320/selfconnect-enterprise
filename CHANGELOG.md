@@ -2,6 +2,101 @@
 
 ## Unreleased
 
+### Product-scope boundary
+
+- Recorded Buzz's separate agent-key and access-removal semantics as reference
+  patterns without claiming equivalence to SelfConnect's durable revocation.
+- Explicitly excluded workspace/community UI, channels, canvases, forge, Git
+  hosting, repository workflows, and collaboration-suite features. These are
+  deliberate non-goals, not open implementation gaps.
+
+### Durable agent revocation lifecycle
+
+- Added a durable monotonic agent/grant revocation registry with idempotent
+  terminal revocations and an exact ACP snapshot adapter.
+- Revoking an agent now causes its ACP session to be removed when it next
+  presents work, before backend dispatch. The enrolled human owner trust root
+  remains unchanged and can authorize a replacement agent.
+- ACP records verified agent/session bindings and exposes a host-callable
+  revocation refresh for immediate removal after an external registry update;
+  unavailable snapshot state fails explicitly.
+- Added a bounded local `RevocationWatcher` that detects monotonic epoch changes
+  across separate SQLite connections, applies each epoch once, reports bounded
+  health state, and stops cleanly.
+- Added 10 dedicated lifecycle/watcher cases plus ACP revocation/session coverage. The
+  registry is single-node state and does not replace BPC/TSK or `ControlPlane`.
+
+### Nostr-shaped evidence export
+
+- Added a one-way NIP-01 event exporter for already-verified SelfConnect
+  evidence. It computes the exact NIP-01 event ID serialization and requires an
+  injected x-only secp256k1 Schnorr signer rather than relabeling Ed25519/P-384
+  identities.
+- Added authoritative source-digest/schema tags, bounded canonical content,
+  reserved-tag rejection, and fail-closed source verification.
+- Added a production-oriented path bound to the canonical `LedgerObserver`; it
+  requires a configured ledger verifier and rejects unsafe-unverified mode
+  before rendering any events.
+- No relay client, event import, execution authority, core transport change, or
+  production signer is included. Nostr remains an export format only.
+
+### ACP v1 governed-action shim
+
+- Added a possession-proof terminal-authentication ceremony and the executable
+  `scent-acp --setup` path. Enrollment requires exact operator confirmation and
+  a fresh signed challenge, persists only the public owner trust root, and
+  gates new sessions when no active root exists. Emergency deactivation also
+  denies and deletes existing sessions before another prompt can dispatch;
+  re-enrollment requires creation of a fresh session.
+- Added a fail-closed registry-readiness preflight and documented the HOLD:
+  there is no published registry-supported distribution or real-client
+  setup/reconnect acceptance result, so no registry eligibility is claimed.
+- Added a transport-neutral ACP v1 core handler for `initialize`, `session/new`,
+  `session/prompt`, and `session/cancel`, plus newline-delimited JSON-RPC stdio.
+- Bound the exact ACP session, canonical working directory, tool, arguments,
+  and resource links to the agent-signed action proof. Free-form text is never
+  interpreted as authority.
+- Required a pinned owner key, live fail-closed revocation snapshot, and atomic
+  durable action-ID consumption before dispatch. Failed backend calls remain
+  consumed to avoid blind retries after ambiguous effects.
+- Added `GovernedRuntimeBackend`, which rejects non-canonical runtime types for
+  production dispatch and converts structured governed denials into ACP backend
+  rejection rather than a successful turn. Test backends remain injectable for
+  deterministic tests.
+- Added an end-to-end composition test proving a valid ACP delegation cannot
+  bypass a signed policy's operator-approval requirement: no terminal text is
+  routed and the denied action remains replay-consumed. Its positive pair proves
+  that a signed exact-context approval permits only the approved text and
+  returns `human_approved` governance evidence through ACP. An adversarial
+  approval-ID reuse with substituted text is denied before terminal routing.
+- Added 20 ACP/core governance tests, including argument/resource substitution,
+  untrusted owner, grant/agent revocation, unavailable revocation state,
+  concurrent/restart replay, backend ambiguity, cancellation, stdio framing,
+  parse errors, and direct-backend rejection. Authentication/entry/readiness
+  coverage adds 16 tests. The shim does not claim complete
+  ACP conformance, registry eligibility, MCP forwarding, or general coding-agent
+  proxy behavior. Evidence: [LOG-20260731-002](LOG.md#log-20260731-002),
+  rationale: [WHY-20260731-002](WHY.md#why-20260731-002).
+
+### Portable dual-signature delegation proofs
+
+- Added an authority-signed `DelegationGrant` that binds the full agent public
+  key, exact action scope, target constraints, governance mode, classification,
+  validity window, nonce, and revocation checkpoint.
+- Added an agent-signed `AgentActionProof` that binds the exact grant, action,
+  target, payload digest, mode, classification, and occurrence time while
+  preserving the agent as the author of the work.
+- Added a transport-neutral offline verifier for pinned issuer trust, both
+  signatures, scope, target, time, revocation, replay input, mode,
+  classification, and optional payload matching. The verifier is non-mutating;
+  durable revocation/replay storage and `GovernedRuntime` enforcement remain an
+  explicit integration gap.
+- Added 22 real-signature adversarial tests covering Ed25519 agent/authority
+  signatures and P-384 authority signatures. Targeted delegation validation passes
+  22/22; related identity, policy, approval, provenance, governed-runtime, and
+  MCP regressions pass 324/324. Evidence:
+  [LOG-20260731-001](LOG.md#log-20260731-001), rationale:
+  [WHY-20260731-001](WHY.md#why-20260731-001).
 ### Independent runtime authority selection
 
 - Independent promoted nodes now require an exact file-backed source-authority

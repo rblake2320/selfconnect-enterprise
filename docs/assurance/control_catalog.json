@@ -98,7 +98,7 @@
       "evidence": "Target-guard load-test output and the release conformance JSON report",
       "blind_spots": "Does not validate Authenticode signers or protect a compromised trusted binary, administrator, or kernel; unmapped terminal classes fail closed.",
       "tier": "release",
-      "command": ["{python}", "experiments/win32_probe/target_guard_load_test.py"]
+      "command": ["{python}", "enterprise_experiments/win32_probe/target_guard_load_test.py"]
     },
     {
       "id": "WIN32-LIVE-001",

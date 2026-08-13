@@ -19,6 +19,17 @@ import {
   parsePromotedTskRuntimeDescriptor,
 } from './promoted-tsk-runtime.js';
 
+function agentIdentity(agentPublicKeyHex) {
+  const fingerprint = createHash('sha256').update(
+    Buffer.from(agentPublicKeyHex, 'hex'),
+  ).digest('hex');
+  return {
+    agentId: `SC-${fingerprint.slice(0, 8).toUpperCase()}`,
+    agentPublicKeyHex,
+    canonicalId: `SCID-${fingerprint}`,
+  };
+}
+
 function descriptor() {
   return {
     activationLease: {
@@ -73,15 +84,18 @@ test('runtime rejects invalid authority handles and never accepts a callback aut
 });
 
 test('promoted label is stable per command and principal', () => {
+  const identity = agentIdentity(
+    '67bc101981dfd63eaf5af3c05448a9f8e40902ffe4d6c1d3813fad97f99c8b1f',
+  );
   const a = promotedTskCredentialLabel({
-    agentId: 'agent-1', pairId: 'pair-1', commandId: 'promote-2',
+    ...identity, pairId: 'pair-1', commandId: 'promote-2',
   });
   const b = promotedTskCredentialLabel({
-    agentId: 'agent-1', pairId: 'pair-1', commandId: 'promote-2',
+    ...identity, pairId: 'pair-1', commandId: 'promote-2',
   });
   assert.equal(a, b);
   assert.notEqual(a, promotedTskCredentialLabel({
-    agentId: 'agent-1', pairId: 'pair-1', commandId: 'promote-3',
+    ...identity, pairId: 'pair-1', commandId: 'promote-3',
   }));
 });
 
@@ -141,8 +155,11 @@ test('runtime creates one real credential and binds its payload to a signed publ
     authorityCapability, proofPool: ownerPool, credentialStore, activationLease,
     streamId: 'tsk:credential:b',
   });
+  const identity = agentIdentity(
+    '67bc101981dfd63eaf5af3c05448a9f8e40902ffe4d6c1d3813fad97f99c8b1f',
+  );
   const binding = {
-    agentId: 'agent-1', pairId: 'pair-1', commandId: 'promote-2',
+    ...identity, pairId: 'pair-1', commandId: 'promote-2',
     sourceClientId: 'source-client', sourceSecretDigest: 'f'.repeat(64),
   };
   const first = await runtime.provision(binding);
@@ -159,7 +176,28 @@ test('runtime creates one real credential and binds its payload to a signed publ
   assert.equal(JSON.stringify(first.provisionPayload).includes(first.sharedSecret), false);
   assert.equal(first.targetProof.record.mutation.publicMap.label,
     promotedTskCredentialLabel(binding));
+  assert.deepEqual({
+    agentId: first.targetProof.agentId,
+    agentPublicKeyHex: first.targetProof.agentPublicKeyHex,
+    canonicalId: first.targetProof.canonicalId,
+  }, identity);
   assert.ok(first.provisionPayload);
+  await assert.rejects(() => runtime.provision({
+    ...binding, canonicalId: `SCID-${'0'.repeat(64)}`,
+  }), /does not match/);
+  await assert.rejects(() => runtime.provision({
+    ...binding,
+    agentPublicKeyHex: '3a1a9a9ab515f2baa029ee9df63f93cb65b97a446fb86b13da8824433bbb874b',
+  }), /does not match/);
+
+  const colliderIdentity = agentIdentity(
+    '3a1a9a9ab515f2baa029ee9df63f93cb65b97a446fb86b13da8824433bbb874b',
+  );
+  assert.equal(colliderIdentity.agentId, identity.agentId);
+  const collider = await runtime.provision({ ...binding, ...colliderIdentity });
+  assert.equal(collider.created, true);
+  assert.notEqual(collider.targetClientId, first.targetClientId);
+  assert.equal(maps.size, 2);
   await assert.rejects(() => runtime.provision({ ...binding, commandId: 'promote-3' }),
     /activation lease/);
 });

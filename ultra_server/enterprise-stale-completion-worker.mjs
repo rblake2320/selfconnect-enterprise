@@ -21,10 +21,13 @@ async function authorityDigest() {
     `SELECT
        (SELECT coalesce(row_to_json(h)::text, 'null') FROM ultra_ha_import_head h WHERE cluster_id=$1) import_head,
        (SELECT coalesce(row_to_json(r)::text, 'null') FROM ultra_ha_tsk_reprovision r WHERE cluster_id=$1 AND pair_id=$2) reprovision,
-       (SELECT coalesce(row_to_json(b)::text, 'null') FROM ultra_identity_bindings b WHERE pair_id=$2 AND agent_id=$3) binding,
-       (SELECT count(*)::text FROM ultra_tumbler_maps WHERE client_id=$4) target_map_count`,
+       (SELECT coalesce(row_to_json(b)::text, 'null') FROM ultra_identity_bindings b
+         WHERE pair_id=$2 AND agent_id=$3 AND canonical_id=$4
+           AND agent_public_key_hex=$5) binding,
+       (SELECT count(*)::text FROM ultra_tumbler_maps WHERE client_id=$6) target_map_count`,
     [config.completion.clusterId, config.completion.pairId,
-      config.completion.agentId, config.proof.targetClientId],
+      config.completion.agentId, config.completion.canonicalId,
+      config.completion.agentPublicKeyHex, config.proof.targetClientId],
   );
   return createHash('sha256').update(JSON.stringify(rows[0])).digest('hex');
 }

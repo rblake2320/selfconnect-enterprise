@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, fork } from 'node:child_process';
-import { createPublicKey, generateKeyPairSync, randomUUID } from 'node:crypto';
+import { createHash, createPublicKey, generateKeyPairSync, randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -158,15 +158,22 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
   const guardSigning = generateKeyPairSync('ed25519');
   const clusterId = 'enterprise28-live-cluster';
   const pairId = composition.tsk.targetCredentialProof.pairId;
-  const agentId = composition.tsk.targetCredentialProof.agentId;
+  const { agentId, agentPublicKeyHex, canonicalId } = composition.tsk.agentIdentity;
+  assert.deepEqual({
+    agentId: composition.tsk.targetCredentialProof.agentId,
+    agentPublicKeyHex: composition.tsk.targetCredentialProof.agentPublicKeyHex,
+    canonicalId: composition.tsk.targetCredentialProof.canonicalId,
+  }, { agentId, agentPublicKeyHex, canonicalId });
   const sourceClientId = composition.tsk.publicCredentialSource.clientId;
   const sourceEpoch = composition.tsk.credentialActivationLeaseGrant.leaseEpoch;
   const advisoryLockKey = `enterprise28:${clusterId}:independent-state`;
   try {
     await Promise.all([resetUltra(a), resetUltra(b)]);
     await a.query(
-      'INSERT INTO ultra_identity_bindings(pair_id,tsk_client_id,agent_id) VALUES($1,$2,$3)',
-      [pairId, sourceClientId, agentId],
+      `INSERT INTO ultra_identity_bindings
+         (pair_id,tsk_client_id,agent_id,canonical_id,agent_public_key_hex)
+       VALUES($1,$2,$3,$4,$5)`,
+      [pairId, sourceClientId, agentId, canonicalId, agentPublicKeyHex],
     );
     const safeId = randomUUID();
     const secretId = randomUUID();
@@ -174,7 +181,7 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       `INSERT INTO ultra_idempotency(idempotency_key,operation,agent_id,state,response)
        VALUES($1,'status', $3,'complete',$4::jsonb),
              ($2,'provision-tsk',$3,'complete',$5::jsonb)`,
-      [safeId, secretId, agentId, JSON.stringify({ ok: true, value: 'preserved' }),
+      [safeId, secretId, canonicalId, JSON.stringify({ ok: true, value: 'preserved' }),
         JSON.stringify({ ok: true, credentialProvisionPayload: 'redact-at-export' })],
     );
     const protocolEvidence = {
@@ -194,6 +201,8 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
         authorityCapability: composition.sourceCredentialAuthority,
         expected: {
           agentId,
+          agentPublicKeyHex,
+          canonicalId,
           pairId,
           sourceClientId,
         },
@@ -255,9 +264,31 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       headKeyResolver,
     });
     const sourceSecretDigest = composition.verifiedSourceCredential.secretDigest;
+    const collisionKey = generateKeyPairSync('ed25519').publicKey;
+    const collisionPublicKeyHex = Buffer.from(
+      collisionKey.export({ format: 'jwk' }).x, 'base64url',
+    ).toString('hex');
+    const collisionCanonicalId = `SCID-${createHash('sha256').update(
+      Buffer.from(collisionPublicKeyHex, 'hex'),
+    ).digest('hex')}`;
+    await assert.rejects(() => completeImportedPromotedTskCredential(b, authority, {
+      advisoryLockKey,
+      agentId,
+      agentPublicKeyHex: collisionPublicKeyHex,
+      canonicalId: collisionCanonicalId,
+      clusterId,
+      commandId: composition.commandId,
+      pairId,
+      sourceClientId,
+      sourceEpoch,
+      sourceSecretDigest,
+      targetProof: composition.tsk.targetCredentialProof,
+    }), /does not match|principal binding mismatch|binding mismatch/);
     const reprovisioned = await completeImportedPromotedTskCredential(b, authority, {
       advisoryLockKey,
       agentId,
+      agentPublicKeyHex,
+      canonicalId,
       clusterId,
       commandId: composition.commandId,
       pairId,
@@ -273,7 +304,8 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       sourceEpoch,
     });
     const binding = (await b.query(
-      'SELECT pair_id,agent_id,tsk_client_id FROM ultra_identity_bindings WHERE pair_id=$1',
+      `SELECT pair_id,agent_id,canonical_id,agent_public_key_hex,tsk_client_id
+         FROM ultra_identity_bindings WHERE pair_id=$1`,
       [pairId],
     )).rows[0];
     const copiedTarget = Number((await b.query(
@@ -284,6 +316,7 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       `SELECT response FROM ultra_idempotency WHERE idempotency_key=$1`, [secretId],
     )).rows[0].response;
     assert.deepEqual(binding, { pair_id: pairId, agent_id: agentId,
+      canonical_id: canonicalId, agent_public_key_hex: agentPublicKeyHex,
       tsk_client_id: reprovisioned.targetClientId });
     assert.equal(copiedTarget, 0, 'promoted TSK secret/map must not be copied into Enterprise');
     assert.equal(redacted.error, 'SECRET_REPROVISION_REQUIRED');
@@ -309,6 +342,8 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
     const restoredProof = await completeImportedPromotedTskCredential(b, authority, {
       advisoryLockKey,
       agentId,
+      agentPublicKeyHex,
+      canonicalId,
       clusterId,
       commandId: composition.commandId,
       pairId,
@@ -327,7 +362,8 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
     assert.equal(restoredProof.targetClientId, reprovisioned.targetClientId);
     assert.equal(restoredProof.receiptDigest, reprovisioned.receiptDigest);
     const restoredBinding = (await b.query(
-      'SELECT pair_id,agent_id,tsk_client_id FROM ultra_identity_bindings WHERE pair_id=$1',
+      `SELECT pair_id,agent_id,canonical_id,agent_public_key_hex,tsk_client_id
+         FROM ultra_identity_bindings WHERE pair_id=$1`,
       [pairId],
     )).rows[0];
     assert.deepEqual(restoredBinding, binding);
@@ -373,6 +409,8 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       completion: {
         advisoryLockKey,
         agentId,
+        agentPublicKeyHex,
+        canonicalId,
         clusterId,
         commandId: composition.commandId,
         pairId,
@@ -410,6 +448,8 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
         proofKind: 'promoted',
         expected: {
           agentId,
+          agentPublicKeyHex,
+          canonicalId,
           pairId,
           sourceClientId,
           sourceSecretDigest,
@@ -450,6 +490,8 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       a, composition.returnCredentialAuthority, {
         advisoryLockKey,
         agentId,
+        agentPublicKeyHex,
+        canonicalId,
         clusterId,
         commandId: returnCommandId,
         pairId,
@@ -469,6 +511,8 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       a, composition.returnCredentialAuthority, {
         advisoryLockKey,
         agentId,
+        agentPublicKeyHex,
+        canonicalId,
         clusterId,
         commandId: returnCommandId,
         pairId,
@@ -484,6 +528,8 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       b, composition.returnCredentialAuthority, {
         advisoryLockKey,
         agentId,
+        agentPublicKeyHex,
+        canonicalId,
         clusterId,
         commandId: returnCommandId,
         pairId,
@@ -502,6 +548,8 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       completion: {
         advisoryLockKey,
         agentId,
+        agentPublicKeyHex,
+        canonicalId,
         clusterId,
         commandId: returnCommandId,
         pairId,
@@ -557,6 +605,8 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
           proofKind: 'promoted',
           expected: {
             agentId,
+            agentPublicKeyHex,
+            canonicalId,
             pairId,
             sourceClientId: sourceCredentialProvenance.clientId,
             sourceSecretDigest: sourceCredentialProvenanceSecretDigest,
@@ -592,6 +642,8 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       const completionInput = {
           advisoryLockKey,
           agentId,
+          agentPublicKeyHex,
+          canonicalId,
           clusterId,
           commandId: cycleCommandId,
           pairId,
@@ -613,14 +665,22 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
       assert.equal(imported.manifestDigest, bundle.manifestDigest);
       assert.equal(ready.manifestDigest, bundle.manifestDigest);
       const convergedBinding = (await targetPool.query(
-        'SELECT tsk_client_id FROM ultra_identity_bindings WHERE pair_id=$1',
+        `SELECT tsk_client_id,agent_id,canonical_id,agent_public_key_hex
+           FROM ultra_identity_bindings WHERE pair_id=$1`,
         [pairId],
       )).rows[0];
-      assert.equal(convergedBinding?.tsk_client_id, targetCredential.clientId);
+      assert.deepEqual(convergedBinding, {
+        tsk_client_id: targetCredential.clientId,
+        agent_id: agentId,
+        canonical_id: canonicalId,
+        agent_public_key_hex: agentPublicKeyHex,
+      });
       const retry = await completeImportedPromotedTskCredential(
         targetPool, targetCredentialAuthority, {
           advisoryLockKey,
           agentId,
+          agentPublicKeyHex,
+          canonicalId,
           clusterId,
           commandId: cycleCommandId,
           pairId,
@@ -637,6 +697,8 @@ export async function runEnterpriseLiveHandoff(composition, env = process.env) {
           sourcePool, targetCredentialAuthority, {
             advisoryLockKey,
             agentId,
+            agentPublicKeyHex,
+            canonicalId,
             clusterId,
             commandId: cycleCommandId,
             pairId,

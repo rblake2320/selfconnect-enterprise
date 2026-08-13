@@ -1,27 +1,43 @@
 import assert from 'node:assert/strict';
-import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
 import test from 'node:test';
+
+import { buildAgentHeaders } from '../tools/ultra_rotation_conformance.mjs';
 
 import {
   agentIdFromPublicKey,
+  canonicalAgentIdFromPublicKey,
   createAdminAuthMiddleware,
   createAgentAuthMiddleware,
   signedAgentMaterial,
 } from './agent-auth.js';
 
-function signedRequest(body = { action: 'register' }, overrides = {}) {
+function signedRequest(
+  body = { action: 'register' },
+  overrides = {},
+  method = 'POST',
+  path = '/register-pair',
+) {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   const rawBody = Buffer.from(JSON.stringify(body));
   const publicDer = publicKey.export({ format: 'der', type: 'spki' });
   const publicRaw = publicDer.subarray(-32);
   const timestamp = String(Date.now() / 1000);
   const nonce = crypto.randomUUID();
-  const signature = sign(null, signedAgentMaterial(rawBody, timestamp, nonce), privateKey);
+  const aud = 'selfconnect-ultra-lifecycle-v1';
+  const signature = sign(
+    null,
+    signedAgentMaterial(rawBody, timestamp, nonce, method, path, aud),
+    privateKey,
+  );
   const auth = {
     agent_id: agentIdFromPublicKey(publicRaw),
     pubkey_hex: publicRaw.toString('hex'),
     ts: timestamp,
     nonce,
+    method,
+    path,
+    aud,
     sig: signature.toString('base64'),
     ...overrides,
   };
@@ -37,9 +53,11 @@ function responseCapture() {
   };
 }
 
-function requestCapture(rawBody, auth, authorization = '') {
+function requestCapture(rawBody, auth, authorization = '', method = 'POST', path = '/register-pair') {
   return {
     rawBody,
+    method,
+    path,
     get(name) {
       if (name.toLowerCase() === 'x-sc-agent-auth') return JSON.stringify(auth);
       if (name.toLowerCase() === 'authorization') return authorization;
@@ -67,6 +85,82 @@ test('agent auth accepts a valid body-bound Ed25519 proof once', async () => {
   await createAgentAuthMiddleware({ nonceStore: nonceStore() })(req, res, () => { called = true; });
   assert.equal(called, true);
   assert.equal(req.scAgent.agentId, signed.auth.agent_id);
+  assert.equal(
+    req.scAgent.canonicalId,
+    canonicalAgentIdFromPublicKey(Buffer.from(signed.auth.pubkey_hex, 'hex')),
+  );
+});
+
+test('lifecycle signer contract requires domain-bound method, path, and audience', () => {
+  const rawBody = Buffer.from('{"action":"recover"}');
+  const timestamp = '1700000000';
+  const nonce = '00000000-0000-4000-8000-000000000000';
+  assert.throws(
+    () => signedAgentMaterial(rawBody, timestamp, nonce),
+    { name: 'TypeError' },
+  );
+  assert.notDeepEqual(
+    signedAgentMaterial(
+      rawBody,
+      timestamp,
+      nonce,
+      'POST',
+      '/confirm-recovery',
+      'selfconnect-ultra-lifecycle-v1',
+    ),
+    signedAgentMaterial(
+      rawBody,
+      timestamp,
+      nonce,
+      'POST',
+      '/register-pair',
+      'selfconnect-ultra-lifecycle-v1',
+    ),
+  );
+});
+
+test('rotation conformance emits and signs the exact recovery endpoint context', () => {
+  const identity = generateKeyPairSync('ed25519');
+  const publicDer = identity.publicKey.export({ format: 'der', type: 'spki' });
+  const publicRaw = publicDer.subarray(-32);
+  const rawBody = Buffer.from('{"agentName":"rotation-test"}');
+  const headers = buildAgentHeaders(
+    rawBody,
+    identity,
+    publicRaw,
+    'POST',
+    '/confirm-recovery',
+  );
+  const auth = JSON.parse(headers['X-SC-Agent-Auth']);
+  assert.equal(auth.method, 'POST');
+  assert.equal(auth.path, '/confirm-recovery');
+  assert.equal(auth.aud, 'selfconnect-ultra-lifecycle-v1');
+  const signature = Buffer.from(auth.sig, 'base64');
+  assert.equal(
+    verify(
+      null,
+      signedAgentMaterial(rawBody, auth.ts, auth.nonce, auth.method, auth.path, auth.aud),
+      identity.publicKey,
+      signature,
+    ),
+    true,
+  );
+  for (const [body, method, path, audience] of [
+    [Buffer.from('{"agentName":"tampered"}'), auth.method, auth.path, auth.aud],
+    [rawBody, 'PATCH', auth.path, auth.aud],
+    [rawBody, auth.method, '/register-pair', auth.aud],
+    [rawBody, auth.method, auth.path, 'wrong-audience'],
+  ]) {
+    assert.equal(
+      verify(
+        null,
+        signedAgentMaterial(body, auth.ts, auth.nonce, method, path, audience),
+        identity.publicKey,
+        signature,
+      ),
+      false,
+    );
+  }
 });
 
 test('agent auth rejects replay', async () => {
@@ -112,6 +206,40 @@ test('agent id derivation matches the documented SHA-256 fingerprint', () => {
   const raw = Buffer.alloc(32, 0xab);
   const expected = `SC-${createHash('sha256').update(raw).digest('hex').slice(0, 8).toUpperCase()}`;
   assert.equal(agentIdFromPublicKey(raw), expected);
+});
+
+test('agent auth proof is domain and endpoint bound', async () => {
+  const signed = signedRequest({ action: 'register' });
+  for (const [method, path] of [
+    ['POST', '/provision-tsk'],
+    ['GET', '/register-pair'],
+  ]) {
+    const res = responseCapture();
+    await createAgentAuthMiddleware({ nonceStore: nonceStore() })(
+      requestCapture(signed.rawBody, signed.auth, '', method, path),
+      res,
+      () => assert.fail('redirected lifecycle proof accepted'),
+    );
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.payload.error, 'AGENT_AUTH_MALFORMED');
+  }
+
+  const altered = { ...signed.auth, aud: 'another-protocol' };
+  const res = responseCapture();
+  await createAgentAuthMiddleware({ nonceStore: nonceStore() })(
+    requestCapture(signed.rawBody, altered),
+    res,
+    () => assert.fail('cross-protocol proof accepted'),
+  );
+  assert.equal(res.statusCode, 401);
+  assert.equal(res.payload.error, 'AGENT_AUTH_MALFORMED');
+});
+
+test('colliding display ids retain distinct canonical authorization principals', () => {
+  const left = Buffer.from('67bc101981dfd63eaf5af3c05448a9f8e40902ffe4d6c1d3813fad97f99c8b1f', 'hex');
+  const right = Buffer.from('3a1a9a9ab515f2baa029ee9df63f93cb65b97a446fb86b13da8824433bbb874b', 'hex');
+  assert.equal(agentIdFromPublicKey(left), agentIdFromPublicKey(right));
+  assert.notEqual(canonicalAgentIdFromPublicKey(left), canonicalAgentIdFromPublicKey(right));
 });
 
 test('admin auth fails closed and accepts only the exact bearer', () => {

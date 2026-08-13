@@ -35,6 +35,27 @@ from enterprise.approval_audit import (  # noqa: F401
     canonical_context_digest,
 )
 from enterprise.control import AgentControlRecord, ControlPlane  # noqa: F401
+from enterprise.delegation import (  # noqa: F401
+    AgentActionProof,
+    DelegatedActionReceipt,
+    DelegationGrant,
+    DelegationVerification,
+    issue_delegation_grant,
+    sign_delegated_action,
+    sign_delegated_receipt,
+    verify_delegated_action,
+    verify_delegated_receipt,
+)
+from enterprise.acp_shim import (  # noqa: F401
+    ACPShim,
+    GovernedRuntimeBackend,
+    RevocationSnapshot,
+    SQLiteActionReplayStore,
+    acp_action_payload,
+    serve_stdio,
+)
+from enterprise.acp_auth import ACPTrustStore  # noqa: F401
+from enterprise.agt_adapter import AGTCedarAdapter, AGTConfigurationError  # noqa: F401
 from enterprise.egress_guard import EgressGuard  # noqa: F401
 from enterprise.export_guard import ExportGuard  # noqa: F401
 from enterprise.labels import (
@@ -107,6 +128,7 @@ from enterprise.identity_gate import (  # noqa: F401
     MODE_ENFORCE,
 )
 from enterprise.mcp_dispatch import MCPDispatcher, dispatch_tool, get_default_dispatcher  # noqa: F401
+from enterprise.mcp_governor import MCPGovernor  # noqa: F401
 from enterprise.irs_evidence import (  # noqa: F401
     HighImpactDetermination,
     IRSActionRecordKind,
@@ -140,6 +162,12 @@ from enterprise.provenance import (  # noqa: F401
     SessionState,
 )
 from enterprise.session_index import SessionIndex, SessionIndexError  # noqa: F401
+from enterprise.nostr_export import (  # noqa: F401
+    NostrEventSigner,
+    export_from_verified_observer,
+    export_verified_record,
+)
+from enterprise.revocation import RevocationRegistry, RevocationState, RevocationWatcher  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Windows-only imports (Win32 API — not available on Linux/macOS)

@@ -1,4 +1,4 @@
-import { createHash, verify as cryptoVerify } from 'node:crypto';
+import { createHash, createPublicKey, verify as cryptoVerify } from 'node:crypto';
 import {
   assertHeaderConformant,
   assertStreamHeadBinds,
@@ -11,7 +11,10 @@ import {
 const ID = /^[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const B64URL = /^[A-Za-z0-9_-]+$/;
-const FORMAT = 'selfconnect-promoted-tsk-credential-proof-v1';
+const DISPLAY_AGENT_ID = /^SC-[0-9A-F]{8}$/;
+const CANONICAL_AGENT_ID = /^SCID-[0-9a-f]{64}$/;
+const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+const FORMAT = 'selfconnect-promoted-tsk-credential-proof-v2';
 const CAPABILITIES = new WeakMap();
 
 function exact(value, keys, name) {
@@ -91,25 +94,57 @@ function publicEd25519(value, name) {
   return value;
 }
 
+export function promotedTskAgentIdentity(value, name = 'promoted TSK agent identity') {
+  const { agentId, agentPublicKeyHex, canonicalId } = value ?? {};
+  if (typeof agentPublicKeyHex !== 'string' || !HEX64.test(agentPublicKeyHex)) {
+    throw new Error(`${name}.agentPublicKeyHex must be a lowercase raw Ed25519 public key`);
+  }
+  if (typeof agentId !== 'string' || !DISPLAY_AGENT_ID.test(agentId)) {
+    throw new Error(`${name}.agentId must be a display agent ID`);
+  }
+  if (typeof canonicalId !== 'string' || !CANONICAL_AGENT_ID.test(canonicalId)) {
+    throw new Error(`${name}.canonicalId must be a canonical agent ID`);
+  }
+  const rawPublicKey = Buffer.from(agentPublicKeyHex, 'hex');
+  const publicKey = createPublicKey({
+    key: Buffer.concat([ED25519_SPKI_PREFIX, rawPublicKey]),
+    format: 'der',
+    type: 'spki',
+  });
+  publicEd25519(publicKey, `${name}.agentPublicKeyHex`);
+  const fingerprint = createHash('sha256').update(rawPublicKey).digest('hex');
+  if (agentId !== `SC-${fingerprint.slice(0, 8).toUpperCase()}` ||
+      canonicalId !== `SCID-${fingerprint}`) {
+    throw new Error(`${name} does not match its raw Ed25519 public key`);
+  }
+  return Object.freeze({ agentId, agentPublicKeyHex, canonicalId });
+}
+
 function assertExpected(expected) {
-  exact(expected, ['agentId', 'pairId', 'sourceClientId', 'sourceSecretDigest'], 'expected binding');
-  identifier(expected.agentId, 'expected.agentId');
+  exact(expected, [
+    'agentId', 'agentPublicKeyHex', 'canonicalId', 'pairId', 'sourceClientId',
+    'sourceSecretDigest',
+  ], 'expected binding');
+  promotedTskAgentIdentity(expected, 'expected binding');
   identifier(expected.pairId, 'expected.pairId');
   identifier(expected.sourceClientId, 'expected.sourceClientId');
   digest(expected.sourceSecretDigest, 'expected.sourceSecretDigest');
 }
 
-export function promotedTskCredentialLabel({ agentId, commandId, pairId }) {
-  identifier(agentId, 'credential label agentId');
-  identifier(commandId, 'credential label commandId');
-  identifier(pairId, 'credential label pairId');
+export function promotedTskCredentialLabel(value) {
+  const identity = promotedTskAgentIdentity(value, 'credential label');
+  const commandId = identifier(value.commandId, 'credential label commandId');
+  const pairId = identifier(value.pairId, 'credential label pairId');
   return `ha-reprovision:${createHash('sha256').update(
-    canonicalize({ agentId, commandId, pairId }), 'utf8',
+    canonicalize({ ...identity, commandId, pairId }), 'utf8',
   ).digest('hex')}`;
 }
 
 function assertProofShape(proof) {
-  exact(proof, ['activationLease', 'agentId', 'commandId', 'format', 'head', 'pairId', 'record'], 'credential proof');
+  exact(proof, [
+    'activationLease', 'agentId', 'agentPublicKeyHex', 'canonicalId', 'commandId',
+    'format', 'head', 'pairId', 'record',
+  ], 'credential proof');
   assertLeaseShape(proof.activationLease, 'credential proof activationLease');
   exact(proof.record, [
     'contractVersion', 'fenceToken', 'mutation', 'opDigest', 'sequence', 'sourceEpoch', 'streamId',
@@ -217,10 +252,13 @@ export async function verifyPromotedTskCredentialProof(capability, candidate, ex
   assertProofShape(proof);
 
   if (proof.format !== FORMAT) throw new Error('credential proof format is unsupported');
-  identifier(proof.agentId, 'credential proof agentId');
+  promotedTskAgentIdentity(proof, 'credential proof');
   identifier(proof.pairId, 'credential proof pairId');
   identifier(proof.commandId, 'credential proof commandId');
-  if (proof.agentId !== expected.agentId || proof.pairId !== expected.pairId) {
+  if (proof.agentId !== expected.agentId ||
+      proof.canonicalId !== expected.canonicalId ||
+      proof.agentPublicKeyHex !== expected.agentPublicKeyHex ||
+      proof.pairId !== expected.pairId) {
     throw new Error('credential proof principal binding mismatch');
   }
 
@@ -274,6 +312,8 @@ export async function verifyPromotedTskCredentialProof(capability, candidate, ex
   return Object.freeze({
     activationGrantDigest: lease.grantDigest,
     agentId: proof.agentId,
+    agentPublicKeyHex: proof.agentPublicKeyHex,
+    canonicalId: proof.canonicalId,
     commandId: proof.commandId,
     headDigest: proof.head.headDigest,
     operationDigest: proof.record.opDigest,
@@ -292,12 +332,17 @@ export async function verifySourceTskCredentialProof(capability, candidate, expe
   const authority = requireCapability(capability);
   const proof = snapshot(candidate, 'source credential proof');
   const expected = snapshot(expectedCandidate, 'source expected binding');
-  exact(expected, ['agentId', 'pairId', 'sourceClientId'], 'source expected binding');
-  identifier(expected.agentId, 'source expected.agentId');
+  exact(expected, [
+    'agentId', 'agentPublicKeyHex', 'canonicalId', 'pairId', 'sourceClientId',
+  ], 'source expected binding');
+  promotedTskAgentIdentity(expected, 'source expected binding');
   identifier(expected.pairId, 'source expected.pairId');
   identifier(expected.sourceClientId, 'source expected.sourceClientId');
   assertProofShape(proof);
+  promotedTskAgentIdentity(proof, 'source credential proof');
   if (proof.format !== FORMAT || proof.agentId !== expected.agentId ||
+      proof.canonicalId !== expected.canonicalId ||
+      proof.agentPublicKeyHex !== expected.agentPublicKeyHex ||
       proof.pairId !== expected.pairId) {
     throw new Error('source credential proof principal/format mismatch');
   }
@@ -317,7 +362,7 @@ export async function verifySourceTskCredentialProof(capability, candidate, expe
   if (mutation.kind !== 'tsk.credential.snapshot.v1' || mutation.counter < 1 ||
       mutation.clientId !== mutation.tumblerId || mutation.clientId !== expected.sourceClientId ||
       mutation.publicMap.clientId !== mutation.clientId || mutation.publicMap.status !== 'active' ||
-      mutation.publicMap.label !== `agent:${proof.agentId}`) {
+      mutation.publicMap.label !== `agent:${proof.canonicalId}`) {
     throw new Error('source credential proof does not bind the active source credential');
   }
   if (canonicalOpDigest({
@@ -342,6 +387,8 @@ export async function verifySourceTskCredentialProof(capability, candidate, expe
   return Object.freeze({
     activationGrantDigest: lease.grantDigest,
     agentId: proof.agentId,
+    agentPublicKeyHex: proof.agentPublicKeyHex,
+    canonicalId: proof.canonicalId,
     commandId: proof.commandId,
     headDigest: proof.head.headDigest,
     operationDigest: proof.record.opDigest,

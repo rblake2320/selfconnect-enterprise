@@ -145,7 +145,9 @@ function signedProtocolEvidence({ commandId, sourceSystemId, targetSystemId, key
   return { bpcPromotionAttestation, tskActivationLease, tskFinalizedReceipt };
 }
 
-function signedSourceCredentialBinding({ agentId, map, pairId, protocolEvidence, guardPublicKey }) {
+function signedSourceCredentialBinding({
+  agentId, agentPublicKeyHex, canonicalId, map, pairId, protocolEvidence, guardPublicKey,
+}) {
   const headKeys = generateKeyPairSync('ed25519');
   const publicMap = JSON.parse(JSON.stringify(map));
   delete publicMap.sharedSecret;
@@ -186,6 +188,8 @@ function signedSourceCredentialBinding({ agentId, map, pairId, protocolEvidence,
   const proof = {
     format: PROMOTED_TSK_CREDENTIAL_PROOF_FORMAT,
     agentId,
+    agentPublicKeyHex,
+    canonicalId,
     pairId,
     commandId: lease.commandId,
     activationLease: lease,
@@ -203,7 +207,7 @@ function signedSourceCredentialBinding({ agentId, map, pairId, protocolEvidence,
       headKeyResolver: { resolve: (keyId, alg) =>
         keyId === unsignedHead.keyId && alg === 'ed25519' ? headKeys.publicKey : null },
     }),
-    expected: { agentId, pairId, sourceClientId: map.clientId },
+    expected: { agentId, agentPublicKeyHex, canonicalId, pairId, sourceClientId: map.clientId },
     proof,
   };
 }
@@ -219,6 +223,22 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     guard: generateKeyPairSync('ed25519'),
   };
   const suffix = randomUUID();
+  // These two valid Ed25519 raw public keys share the same legacy 32-bit
+  // display ID while retaining distinct canonical principals.
+  const agentPublicKeyHex = '67bc101981dfd63eaf5af3c05448a9f8e40902ffe4d6c1d3813fad97f99c8b1f';
+  const agentKeyDigest = createHash('sha256').update(
+    Buffer.from(agentPublicKeyHex, 'hex'),
+  ).digest('hex');
+  const displayAgentId = `SC-${agentKeyDigest.slice(0, 8).toUpperCase()}`;
+  const canonicalId = `SCID-${agentKeyDigest}`;
+  const colliderPublicKeyHex = '3a1a9a9ab515f2baa029ee9df63f93cb65b97a446fb86b13da8824433bbb874b';
+  const colliderKeyDigest = createHash('sha256').update(
+    Buffer.from(colliderPublicKeyHex, 'hex'),
+  ).digest('hex');
+  const colliderDisplayAgentId = `SC-${colliderKeyDigest.slice(0, 8).toUpperCase()}`;
+  const colliderCanonicalId = `SCID-${colliderKeyDigest}`;
+  assert.equal(colliderDisplayAgentId, displayAgentId);
+  assert.notEqual(colliderCanonicalId, canonicalId);
   const clusterId = `ha-${suffix}`;
   const commandId = `promote-${suffix}`;
   const pairId = `pair-${suffix}`;
@@ -256,15 +276,17 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     };
 
     sourceMap = generateTumblerMap();
-    sourceMap.label = `agent:agent-${suffix}`;
+    sourceMap.label = `agent:${canonicalId}`;
     sourceMap.status = 'active';
     targetMap = generateTumblerMap();
-    targetMap.label = `agent:agent-${suffix}`;
+    targetMap.label = `agent:${canonicalId}`;
     targetMap.status = 'active';
 
     await a.query(
-      'INSERT INTO ultra_identity_bindings (pair_id, tsk_client_id, agent_id) VALUES ($1,$2,$3)',
-      [pairId, sourceMap.clientId, `agent-${suffix}`],
+      `INSERT INTO ultra_identity_bindings
+         (pair_id, tsk_client_id, agent_id, canonical_id, agent_public_key_hex)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [pairId, sourceMap.clientId, displayAgentId, canonicalId, agentPublicKeyHex],
     );
     await a.query(
       'INSERT INTO ultra_tumbler_maps (client_id, map) VALUES ($1,$2::jsonb)',
@@ -275,7 +297,7 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
        VALUES ($1,'safe-op',$3,'complete',$2::jsonb),
               ($4,'secret-op',$3,'complete',$5::jsonb),
               ($6,'forged-redaction-op',$3,'complete',$7::jsonb)`,
-      [safeKey, JSON.stringify({ ok: true, pairId }), `agent-${suffix}`, secretKey,
+      [safeKey, JSON.stringify({ ok: true, pairId }), displayAgentId, secretKey,
        JSON.stringify({ ok: true, sharedSecret: 'must-not-cross-sites' }), forgedRedactionKey,
        JSON.stringify({ ok: false, error: 'SECRET_REPROVISION_REQUIRED',
          originalResponseDigest: 'a'.repeat(64) })],
@@ -293,7 +315,9 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       sourcePrivateKey: source.privateKey,
       protocolEvidence,
       sourceCredentialProofs: [signedSourceCredentialBinding({
-        agentId: `agent-${suffix}`,
+        agentId: displayAgentId,
+        agentPublicKeyHex,
+        canonicalId,
         map: sourceMap,
         pairId,
         protocolEvidence,
@@ -301,7 +325,7 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       })],
     };
     const unboundMap = generateTumblerMap();
-    unboundMap.label = `agent:agent-${suffix}`;
+    unboundMap.label = `agent:${canonicalId}`;
     unboundMap.status = 'active';
     await a.query(
       'INSERT INTO ultra_tumbler_maps (client_id, map) VALUES ($1,$2::jsonb)',
@@ -319,6 +343,13 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     assert.equal(sourceBundle.manifest.state.idempotency.find(
       (item) => item.idempotencyKey === secretKey,
     ).secretReprovisionRequired, true);
+    assert.deepEqual(sourceBundle.manifest.state.identityBindings[0], {
+      agentId: displayAgentId,
+      agentPublicKeyHex,
+      canonicalId,
+      pairId,
+      tskClientId: sourceMap.clientId,
+    });
     const forgedRedaction = sourceBundle.manifest.state.idempotency.find(
       (item) => item.idempotencyKey === forgedRedactionKey,
     );
@@ -425,7 +456,7 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     assert.equal(imported.idempotent, false);
     assert.equal((await b.query(
       'SELECT agent_id FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
-    )).rows[0].agent_id, `agent-${suffix}`);
+    )).rows[0].agent_id, displayAgentId);
     assert.equal((await importIndependentState(b, bundle, {
       advisoryLockKey: lockKey,
       bpcPromotionDigest,
@@ -469,7 +500,7 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     );
     assert.deepEqual((await b.query(
       'SELECT tsk_client_id, agent_id FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
-    )).rows[0], { tsk_client_id: sourceMap.clientId, agent_id: `agent-${suffix}` });
+    )).rows[0], { tsk_client_id: sourceMap.clientId, agent_id: displayAgentId });
     assert.deepEqual((await b.query(
       'SELECT response FROM ultra_idempotency WHERE idempotency_key=$1', [secretKey],
     )).rows[0].response.error, 'SECRET_REPROVISION_REQUIRED');
@@ -478,7 +509,7 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     await b.query(
       `INSERT INTO ultra_idempotency (idempotency_key, operation, agent_id, state)
        VALUES ($1,'in-flight-op',$2,'processing')`,
-      [processingKey, `agent-${suffix}`],
+      [processingKey, displayAgentId],
     );
     await assert.rejects(assertIndependentStateReady(b, {
       clusterId, commandId, sourceEpoch: 1, manifestDigest: bundle.manifestDigest,
@@ -487,9 +518,27 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     await assert.rejects(assertIndependentStateReady(b, {
       clusterId, commandId, sourceEpoch: 1, manifestDigest: bundle.manifestDigest,
     }), /requires TSK credential reprovisioning/);
+    const importedIdentity = await readImportedTskReprovision(b, { clusterId, pairId });
+    assert.equal(importedIdentity.agentPublicKeyHex, agentPublicKeyHex);
+    assert.equal(importedIdentity.canonicalId, canonicalId);
     await assert.rejects(completeImportedTskReprovision(b, {
       advisoryLockKey: lockKey,
-      agentId: `agent-${suffix}`,
+      agentId: colliderDisplayAgentId,
+      agentPublicKeyHex: colliderPublicKeyHex,
+      canonicalId: colliderCanonicalId,
+      assertWritable: async () => ({ ok: true, fenceEpoch: 1 }),
+      clusterId,
+      commandId,
+      pairId,
+      sourceClientId: sourceMap.clientId,
+      sourceEpoch: 1,
+      targetMap,
+    }), /fresh active owned credential|binding mismatch/);
+    await assert.rejects(completeImportedTskReprovision(b, {
+      advisoryLockKey: lockKey,
+      agentId: displayAgentId,
+      agentPublicKeyHex,
+      canonicalId,
       assertWritable: async () => ({ ok: true, fenceEpoch: 2 }),
       clusterId,
       commandId,
@@ -500,7 +549,9 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     }), /writer fence was lost/);
     const reprovision = await completeImportedTskReprovision(b, {
       advisoryLockKey: lockKey,
-      agentId: `agent-${suffix}`,
+      agentId: displayAgentId,
+      agentPublicKeyHex,
+      canonicalId,
       clusterId,
       commandId,
       pairId,
@@ -513,7 +564,9 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     assert.equal(JSON.stringify(reprovision).includes(targetMap.sharedSecret), false);
     assert.equal((await completeImportedTskReprovision(b, {
       advisoryLockKey: lockKey,
-      agentId: `agent-${suffix}`,
+      agentId: displayAgentId,
+      agentPublicKeyHex,
+      canonicalId,
       clusterId,
       commandId,
       pairId,
@@ -537,7 +590,9 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     }), /rolled back or tampered/);
     await assert.rejects(completeImportedTskReprovision(b, {
       advisoryLockKey: lockKey,
-      agentId: `agent-${suffix}`,
+      agentId: displayAgentId,
+      agentPublicKeyHex,
+      canonicalId,
       assertWritable: async () => ({ ok: true, fenceEpoch: 1 }),
       clusterId,
       commandId,
@@ -567,23 +622,13 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       clusterId, commandId, sourceEpoch: 1, manifestDigest: bundle.manifestDigest,
     }), /active unbound TSK credential/);
     await b.query('DELETE FROM ultra_tumbler_maps WHERE client_id=$1', [unboundMap.clientId]);
-    await b.query('UPDATE ultra_identity_bindings SET agent_id=$2 WHERE pair_id=$1', [pairId, 'attacker']);
-    await assert.rejects(assertIndependentStateReady(b, {
+    await assert.rejects(
+      b.query('UPDATE ultra_identity_bindings SET agent_id=$2 WHERE pair_id=$1', [pairId, 'attacker']),
+      /ultra_identity_bindings_full_key_identity/,
+    );
+    assert.equal((await assertIndependentStateReady(b, {
       clusterId, commandId, sourceEpoch: 1, manifestDigest: bundle.manifestDigest,
-    }), /rolled back or tampered/);
-    await assert.rejects(importIndependentState(b, bundle, {
-      advisoryLockKey: lockKey,
-      bpcPromotionDigest,
-      clusterId,
-      commandId,
-      sourceEpoch: 1,
-      sourcePublicKey: source.publicKey,
-      guardPublicKey: guard.publicKey,
-      ...resolvers,
-      tskActivationDigest,
-      tskFinalizedDigest,
-    }), /rolled back or tampered/);
-    await b.query('UPDATE ultra_identity_bindings SET agent_id=$2 WHERE pair_id=$1', [pairId, `agent-${suffix}`]);
+    })).targetSystemId, systemB.rows[0].id);
 
     const fork = structuredClone(bundle);
     fork.manifestDigest = '0'.repeat(64);
@@ -622,7 +667,9 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       sourcePrivateKey: source.privateKey,
       protocolEvidence: failbackEvidence,
       sourceCredentialProofs: [signedSourceCredentialBinding({
-        agentId: `agent-${suffix}`,
+        agentId: displayAgentId,
+        agentPublicKeyHex,
+        canonicalId,
         map: targetMap,
         pairId,
         protocolEvidence: failbackEvidence,
@@ -667,11 +714,13 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
       manifestDigest: failbackBundle.manifestDigest,
     }), /requires TSK credential reprovisioning/);
     failbackMap = generateTumblerMap();
-    failbackMap.label = `agent:agent-${suffix}`;
+    failbackMap.label = `agent:${canonicalId}`;
     failbackMap.status = 'active';
     await completeImportedTskReprovision(a, {
       advisoryLockKey: lockKey,
-      agentId: `agent-${suffix}`,
+      agentId: displayAgentId,
+      agentPublicKeyHex,
+      canonicalId,
       assertWritable: async () => ({ ok: true, fenceEpoch: 2 }),
       clusterId,
       commandId: failbackCommandId,
@@ -689,7 +738,7 @@ test('signed independent-state handoff is atomic, redacted, replay-safe, and rol
     assert.equal(failbackReady.targetSystemId, systemA.rows[0].id);
     assert.deepEqual((await a.query(
       'SELECT tsk_client_id, agent_id FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
-    )).rows[0], { tsk_client_id: failbackMap.clientId, agent_id: `agent-${suffix}` });
+    )).rows[0], { tsk_client_id: failbackMap.clientId, agent_id: displayAgentId });
     console.log('same-principal failback A -> B -> A completed; data-loss-RPO=0');
   } finally {
     for (const pool of [a, b]) {

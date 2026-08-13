@@ -11,8 +11,18 @@ import {
   PgIdentityBindingStore,
   PgTumblerStore,
   ULTRA_PG_SCHEMA,
+  identityPrincipalsFromPublicKeyHex,
   initializePgSchemas,
+  validateIdentityBinding,
 } from './runtime-stores.js';
+import { ultraStateMutationSanitizer } from './ultra-state-outbox.js';
+
+const COLLIDING_KEY_A = 'b71042b79f8a5b631eab1a0bf9eeb716506cc4021101190b54e9bc9058058b69';
+const COLLIDING_KEY_B = '92abf75c9884799c19a780015345a8cce5ae56c2791ad5771d79969125c15b3f';
+
+function binding(tskClientId, agentPublicKeyHex = COLLIDING_KEY_A) {
+  return { tskClientId, agentPublicKeyHex, ...identityPrincipalsFromPublicKeyHex(agentPublicKeyHex) };
+}
 
 test('memory idempotency completion and operation locks are retry safe', async () => {
   const store = new MemoryIdempotencyStore();
@@ -36,19 +46,73 @@ test('memory idempotency completion and operation locks are retry safe', async (
 
 test('memory identity binding compare-and-swap is idempotent and conflict aware', async () => {
   const store = new MemoryIdentityBindingStore();
-  await store.set('pair-1', { tskClientId: 'old', agentId: 'agent-1' });
+  await store.set('pair-1', binding('old'));
   assert.equal(await store.compareAndSwap(
-    'pair-1', 'old', { tskClientId: 'new', agentId: 'agent-1' },
+    'pair-1', 'old', binding('new'),
   ), 'updated');
   assert.equal(await store.compareAndSwap(
-    'pair-1', 'old', { tskClientId: 'new', agentId: 'agent-1' },
+    'pair-1', 'old', binding('new'),
   ), 'already');
   assert.equal(await store.compareAndSwap(
-    'pair-1', 'other', { tskClientId: 'wrong', agentId: 'agent-1' },
+    'pair-1', 'other', binding('wrong'),
   ), 'conflict');
   assert.equal(await store.compareAndSwap(
-    'missing', 'old', { tskClientId: 'new', agentId: 'agent-1' },
+    'pair-1', 'new', binding('wrong', COLLIDING_KEY_B),
+  ), 'conflict');
+  assert.equal(await store.compareAndSwap(
+    'missing', 'old', binding('new'),
   ), 'missing');
+  await assert.rejects(store.set('pair-1', binding('attacker', COLLIDING_KEY_B)), /existing owner/);
+});
+
+test('identity triple derives both principals and isolates colliding display ids', () => {
+  const first = binding('client-a', COLLIDING_KEY_A);
+  const collider = binding('client-b', COLLIDING_KEY_B);
+  assert.equal(first.agentId, 'SC-385C9C9B');
+  assert.equal(collider.agentId, first.agentId);
+  assert.notEqual(collider.canonicalId, first.canonicalId);
+  assert.throws(
+    () => validateIdentityBinding({ ...first, canonicalId: collider.canonicalId }),
+    /does not match/,
+  );
+  assert.throws(
+    () => validateIdentityBinding({ ...first, agentPublicKeyHex: COLLIDING_KEY_B }),
+    /does not match/,
+  );
+  assert.throws(
+    () => validateIdentityBinding({ ...first, agentPublicKeyHex: COLLIDING_KEY_A.toUpperCase() }),
+    /lowercase 32-byte/,
+  );
+});
+
+test('schema quarantines legacy rows and enforces derived full-key identity for new writes', () => {
+  assert.match(ULTRA_PG_SCHEMA, /ADD COLUMN IF NOT EXISTS canonical_id/);
+  assert.match(ULTRA_PG_SCHEMA, /ultra_identity_bindings_full_key_identity/);
+  assert.match(ULTRA_PG_SCHEMA, /NOT VALID/);
+  assert.match(ULTRA_PG_SCHEMA, /sha256\(decode\(agent_public_key_hex, 'hex'\)\)/);
+});
+
+test('outbox v2 binding rejects weak legacy and tampered full-key identities', () => {
+  const first = binding('client-a', COLLIDING_KEY_A);
+  const collider = binding('client-b', COLLIDING_KEY_B);
+  const clean = ultraStateMutationSanitizer.sanitize({
+    kind: 'ultra.binding.set.v2', pairId: 'pair-1', ...first,
+  });
+  assert.deepEqual(clean, { kind: 'ultra.binding.set.v2', pairId: 'pair-1', ...first });
+  assert.throws(
+    () => ultraStateMutationSanitizer.sanitize({
+      kind: 'ultra.binding.set.v1', pairId: 'pair-1',
+      tskClientId: first.tskClientId, agentId: first.agentId,
+    }),
+    /unsupported/,
+  );
+  assert.throws(
+    () => ultraStateMutationSanitizer.sanitize({
+      kind: 'ultra.binding.swap.v2', pairId: 'pair-1', expectedClientId: 'client-a',
+      ...first, canonicalId: collider.canonicalId,
+    }),
+    /does not match/,
+  );
 });
 
 const connectionString = process.env.DATABASE_URL;
@@ -236,26 +300,32 @@ test('PostgreSQL stores preserve monotonic counters and atomic idempotency', {
     await Promise.all([enter(), enter(), enter()]);
     assert.equal(maximum, 1);
 
-    await bindings.set(pairId, { tskClientId: clientId, agentId: 'SC-12345678' });
+    const owner = binding(clientId);
+    await bindings.set(pairId, owner);
     const secondBindingInstance = new PgIdentityBindingStore(pool);
     assert.deepEqual(
       await secondBindingInstance.get(pairId),
-      { tskClientId: clientId, agentId: 'SC-12345678' },
+      owner,
     );
     assert.equal(await bindings.compareAndSwap(
       pairId,
       clientId,
-      { tskClientId: rotatedClientId, agentId: 'SC-12345678' },
+      binding(rotatedClientId),
     ), 'updated');
     assert.equal(await secondBindingInstance.compareAndSwap(
       pairId,
       clientId,
-      { tskClientId: rotatedClientId, agentId: 'SC-12345678' },
+      binding(rotatedClientId),
     ), 'already');
     assert.equal(await bindings.compareAndSwap(
       pairId,
       clientId,
-      { tskClientId: 'wrong', agentId: 'SC-12345678' },
+      binding('wrong'),
+    ), 'conflict');
+    assert.equal(await bindings.compareAndSwap(
+      pairId,
+      rotatedClientId,
+      binding('attacker', COLLIDING_KEY_B),
     ), 'conflict');
   } finally {
     await pool.query('DELETE FROM ultra_identity_bindings WHERE pair_id=$1', [pairId]);

@@ -51,6 +51,7 @@ import ctypes.wintypes
 import hashlib
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -71,8 +72,12 @@ _SAFE_AGENT_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$')
 
 # ── DPAPI ctypes interface ─────────────────────────────────────────────────────
 
-crypt32 = ctypes.windll.crypt32
-kernel32 = ctypes.windll.kernel32
+if sys.platform == "win32":
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+else:
+    crypt32 = None
+    kernel32 = None
 
 CRYPTPROTECT_UI_FORBIDDEN = 0x01
 
@@ -88,6 +93,8 @@ class _DATA_BLOB(ctypes.Structure):
 
 def _dpapi_encrypt(plaintext: bytes) -> bytes:
     """Encrypt bytes with DPAPI (current user + machine scope)."""
+    if crypt32 is None or kernel32 is None:
+        raise OSError("Windows DPAPI is unavailable on this platform")
     in_blob = _DATA_BLOB()
     in_blob.cbData = len(plaintext)
     in_blob.pbData = ctypes.cast(
@@ -114,6 +121,8 @@ def _dpapi_encrypt(plaintext: bytes) -> bytes:
 
 def _dpapi_decrypt(ciphertext: bytes) -> bytes:
     """Decrypt a DPAPI blob (must run on same machine + user that encrypted it)."""
+    if crypt32 is None or kernel32 is None:
+        raise OSError("Windows DPAPI is unavailable on this platform")
     in_buf = (ctypes.c_ubyte * len(ciphertext))(*ciphertext)
     in_blob = _DATA_BLOB()
     in_blob.cbData = len(ciphertext)
@@ -249,6 +258,11 @@ class AgentIdentity:
     def agent_id(self) -> str:
         """Permanent identifier: 'SC-' + 8-char SHA-256 fingerprint of public key."""
         return self._agent_id
+
+    @property
+    def canonical_id(self) -> str:
+        """Full-key authorization principal; the short display ID is not one."""
+        return "SCID-" + hashlib.sha256(self._pub_raw).hexdigest()
 
     @property
     def agent_name(self) -> str:

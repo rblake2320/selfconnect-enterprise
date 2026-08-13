@@ -111,6 +111,16 @@ test('executes the full live lifecycle when dedicated acceptance authorities are
   }
   assert.equal(result.tskCommit, TSK_COMMIT);
   assert.equal(result.publicCredentialSource.status, 'active');
+  assert.match(result.agentIdentity.agentId, /^SC-[0-9A-F]{8}$/);
+  assert.match(result.agentIdentity.canonicalId, /^SCID-[0-9a-f]{64}$/);
+  assert.match(result.agentIdentity.agentPublicKeyHex, /^[0-9a-f]{64}$/);
+  for (const proof of [result.sourceCredentialProof, result.targetCredentialProof,
+    result.returnCredentialProof, result.repeatForwardCredential.proof,
+    result.repeatReturnCredential.proof, result.recoveredSite.credential.proof]) {
+    assert.equal(proof.agentId, result.agentIdentity.agentId);
+    assert.equal(proof.canonicalId, result.agentIdentity.canonicalId);
+    assert.equal(proof.agentPublicKeyHex, result.agentIdentity.agentPublicKeyHex);
+  }
   assert.equal(result.publicCredentialTarget.status, 'active');
   assert.equal(result.publicCredentialSource.sequence, 1);
   assert.equal(result.publicCredentialTarget.sequence, 1);

@@ -126,7 +126,7 @@ def test_stamp_writes_scid_sig_and_sts(tmp_path):
 
 # ── verify_signed_birth_tag ────────────────────────────────────────────────────
 
-def _run_verify(store, pub_key_bytes, max_age=0.0):
+def _run_verify(store, pub_key_bytes, max_age=60.0):
     """Run verify_signed_birth_tag with mocked Win32 prop calls."""
     with patch("enterprise.registry.get_agent_prop", side_effect=store.get), \
          patch("enterprise.registry.set_agent_prop", side_effect=store.set):
@@ -140,7 +140,7 @@ def test_sign_then_verify_ok(tmp_path):
     ts = time.time()
     _run_stamp(identity, store, ts=ts)
 
-    ok, reason = _run_verify(store, identity.public_key_bytes, max_age=0.0)
+    ok, reason = _run_verify(store, identity.public_key_bytes)
     assert ok is True
     assert reason == "ok"
 
@@ -206,6 +206,25 @@ def test_verify_passes_before_expiry(tmp_path):
     assert ok is True, reason
 
 
+@pytest.mark.parametrize("window", [0.0, -1.0, float("nan"), float("inf"), True])
+def test_verify_freshness_cannot_be_disabled(tmp_path, window):
+    identity = make_identity(tmp_path)
+    store = FakePropStore()
+    _run_stamp(identity, store, ts=time.time())
+    ok, reason = _run_verify(store, identity.public_key_bytes, max_age=window)
+    assert ok is False
+    assert "freshness window" in reason
+
+
+def test_verify_rejects_future_timestamp(tmp_path):
+    identity = make_identity(tmp_path)
+    store = FakePropStore()
+    _run_stamp(identity, store, ts=time.time() + 5.1)
+    ok, reason = _run_verify(store, identity.public_key_bytes)
+    assert ok is False
+    assert "future" in reason
+
+
 def test_verify_fails_if_scid_tampered(tmp_path):
     """Tampering with the unsigned SCID after signing breaks signature."""
     identity = make_identity(tmp_path)
@@ -269,7 +288,7 @@ def test_sign_verify_real_dpapi(tmp_path):
     with patch("enterprise.registry.get_agent_prop", side_effect=store.get), \
          patch("enterprise.registry.set_agent_prop", side_effect=store.set):
         ok, reason = verify_signed_birth_tag(
-            FAKE_HWND, identity.public_key_bytes, max_age_seconds=0.0
+            FAKE_HWND, identity.public_key_bytes, max_age_seconds=60.0
         )
 
     assert ok is True, f"verify failed with real DPAPI: {reason}"

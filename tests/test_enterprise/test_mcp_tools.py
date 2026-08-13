@@ -188,7 +188,7 @@ class TestSecurityConstraints:
         assert "maxLength" in prop, (
             "sc_inject_text.text missing maxLength — description says 65535 but schema does not enforce it"
         )
-        from experiments.win32_probe.channel_router import MAX_PAYLOAD_LENGTH
+        from enterprise_experiments.win32_probe.channel_router import MAX_PAYLOAD_LENGTH
 
         assert prop["maxLength"] == MAX_PAYLOAD_LENGTH == 4096
 

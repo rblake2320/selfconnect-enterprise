@@ -393,7 +393,7 @@ async function claimIdempotency(req, res, operation) {
     res.status(400).json({ ok: false, error: 'INVALID_IDEMPOTENCY_KEY' });
     return null;
   }
-  const claim = await idempotencyStore.claim(headerKey, operation, req.scAgent.agentId);
+  const claim = await idempotencyStore.claim(headerKey, operation, req.scAgent.canonicalId);
   if (claim.kind === 'conflict') {
     res.status(409).json({ ok: false, error: 'IDEMPOTENCY_KEY_CONFLICT' });
     return null;
@@ -448,11 +448,12 @@ app.post('/register-pair', requireWriterLease, ...registrationGuards, async (req
     if (name !== req.scAgent.agentId) {
       return res.status(403).json({ ok: false, error: 'AGENT_OWNERSHIP_MISMATCH' });
     }
+    const principal = req.scAgent.canonicalId;
     const idem = await claimIdempotency(req, res, 'register-pair');
     if (!idem) return;
     if (idem.cached) return res.json(idem.cached);
-    return idempotencyStore.withLock(`register-pair:${name}`, async () => {
-      const forAgent = (await registry.list()).filter((pair) => pair.name === name);
+    return idempotencyStore.withLock(`register-pair:${principal}`, async () => {
+      const forAgent = (await registry.list()).filter((pair) => pair.name === principal);
       const activeForAgent = forAgent.filter((pair) => pair.status === 'active');
       const exact = forAgent.filter(
         (pair) =>
@@ -476,7 +477,7 @@ app.post('/register-pair', requireWriterLease, ...registrationGuards, async (req
 
       // registerDirect(PairRegistration) — returns the assigned pairId
       const pairId = await registry.registerDirect({
-        name,
+        name: principal,
         scope: scope ?? 'read-write',
         mode: RUNTIME_MODE,
         secretHash,
@@ -503,9 +504,10 @@ app.post('/provision-tsk', requireWriterLease, requireAgentAuth, async (req, res
     if (requestorId !== req.scAgent.agentId) {
       return res.status(403).json({ ok: false, error: 'AGENT_OWNERSHIP_MISMATCH' });
     }
+    const principal = req.scAgent.canonicalId;
     if (RUNTIME_MODE === 'production') {
       const enrolled = (await registry.list()).some(
-        (pair) => pair.name === requestorId && pair.status === 'active',
+        (pair) => pair.name === principal && pair.status === 'active',
       );
       if (!enrolled) {
         return res.status(403).json({ ok: false, error: 'AGENT_NOT_ENROLLED' });
@@ -515,7 +517,7 @@ app.post('/provision-tsk', requireWriterLease, requireAgentAuth, async (req, res
     if (!idem) return;
     if (idem.cached) {
       const currentMap = await tskStore.get(idem.cached.clientId);
-      if (!currentMap || currentMap.label !== `agent:${requestorId}`) {
+      if (!currentMap || currentMap.label !== `agent:${principal}`) {
         return res.status(409).json({ ok: false, error: 'IDEMPOTENT_TSK_STATE_MISSING' });
       }
       return res.json({
@@ -525,8 +527,8 @@ app.post('/provision-tsk', requireWriterLease, requireAgentAuth, async (req, res
       });
     }
 
-    return idempotencyStore.withLock(`provision-tsk:${requestorId}`, async () => {
-      const existing = await findTskMaps((map) => map.label === `agent:${requestorId}`);
+    return idempotencyStore.withLock(`provision-tsk:${principal}`, async () => {
+      const existing = await findTskMaps((map) => map.label === `agent:${principal}`);
       if (existing.length > 1) {
         return res.status(409).json({ ok: false, error: 'AMBIGUOUS_TSK_RECOVERY' });
       }
@@ -544,8 +546,8 @@ app.post('/provision-tsk', requireWriterLease, requireAgentAuth, async (req, res
           ...(minTumblers ? { minTumblers } : {}),
           ...(maxTumblers ? { maxTumblers } : {}),
         },
-        requestorId,
-        { label: `agent:${requestorId}` },
+        principal,
+        { label: `agent:${principal}` },
       );
 
       if (!result.ok) {
@@ -575,13 +577,22 @@ function owningClientResponse(map) {
   };
 }
 
-function rotationLabel(agentId, pairId, oldClientId) {
-  return `rotation:${agentId}:${pairId}:${oldClientId}`;
+function rotationLabel(agentPrincipal, pairId, oldClientId) {
+  return `rotation:${agentPrincipal}:${pairId}:${oldClientId}`;
 }
 
 function bpcActivityLock(pairId) {
   const digest = createHash('sha256').update(String(pairId), 'utf8').digest('hex');
   return `bpc-activity:${digest}`;
+}
+
+// agent_id is intentionally a short operator-facing fingerprint.  It is not an
+// authorization principal: every lifecycle operation must also match the full
+// Ed25519 public key authenticated by agent-auth.js.
+function bindingOwnedBy(binding, scAgent) {
+  return Boolean(binding) && binding.agentId === scAgent.agentId &&
+    binding.canonicalId === scAgent.canonicalId &&
+    binding.agentPublicKeyHex === scAgent.publicKeyHex;
 }
 
 // Resume the currently bound TSK client after a process restart. Production
@@ -595,12 +606,13 @@ app.post('/resume-identity', requireWriterLease, ...registrationGuards, async (r
     }
     const pair = await registry.get(pairId);
     const binding = await identityBinding.get(pairId);
-    if (!pair || pair.name !== agentId || !binding || binding.agentId !== agentId) {
+    const principal = req.scAgent.canonicalId;
+    if (!pair || pair.name !== principal || !bindingOwnedBy(binding, req.scAgent)) {
       return res.status(404).json({ ok: false, error: 'BOUND_IDENTITY_NOT_FOUND' });
     }
     const map = await tskStore.get(binding.tskClientId);
-    const ownedLabel = map?.label === `agent:${agentId}`
-      || map?.label?.startsWith(`rotation:${agentId}:${pairId}:`);
+    const ownedLabel = map?.label === `agent:${principal}`
+      || map?.label?.startsWith(`rotation:${principal}:${pairId}:`);
     if (!map || !ownedLabel || map.status !== 'active') {
       return res.status(409).json({ ok: false, error: 'BOUND_TSK_STATE_INVALID' });
     }
@@ -620,15 +632,16 @@ app.post('/rotate-tsk/prepare', requireWriterLease, ...registrationGuards, async
     }
     const pair = await registry.get(pairId);
     const binding = await identityBinding.get(pairId);
+    const principal = req.scAgent.canonicalId;
     if (
-      !pair || pair.name !== agentId || !binding ||
-      binding.agentId !== agentId || binding.tskClientId !== oldClientId
+      !pair || pair.name !== principal || !binding ||
+      !bindingOwnedBy(binding, req.scAgent) || binding.tskClientId !== oldClientId
     ) {
       return res.status(409).json({ ok: false, error: 'ROTATION_SOURCE_MISMATCH' });
     }
     const idem = await claimIdempotency(req, res, 'rotate-tsk-prepare');
     if (!idem) return;
-    const expectedLabel = rotationLabel(agentId, pairId, oldClientId);
+    const expectedLabel = rotationLabel(principal, pairId, oldClientId);
     if (idem.cached) {
       const cachedMap = await tskStore.get(idem.cached.clientId);
       if (!cachedMap || cachedMap.label !== expectedLabel || cachedMap.status !== 'active') {
@@ -649,7 +662,7 @@ app.post('/rotate-tsk/prepare', requireWriterLease, ...registrationGuards, async
         return res.json(await finishIdempotent(idem, recovered));
       }
 
-      const result = await provisioner.provision({}, agentId, { label: expectedLabel });
+      const result = await provisioner.provision({}, principal, { label: expectedLabel });
       if (!result.ok || !result.tumblerMap) {
         return res.status(500).json({ ok: false, error: result.error ?? 'ROTATION_PREPARE_FAILED' });
       }
@@ -683,11 +696,13 @@ app.post('/rotate-tsk/commit', requireWriterLease, ...registrationGuards, async 
       return res.status(400).json({ ok: false, error: 'INVALID_ROTATION_REQUEST' });
     }
     const pair = await registry.get(pairId);
+    const binding = await identityBinding.get(pairId);
     const oldMap = await tskStore.get(oldClientId);
     const newMap = await tskStore.get(newClientId);
+    const principal = req.scAgent.canonicalId;
     if (
-      !pair || pair.name !== agentId || !oldMap || !newMap ||
-      newMap.label !== rotationLabel(agentId, pairId, oldClientId) ||
+      !pair || pair.name !== principal || !bindingOwnedBy(binding, req.scAgent) || !oldMap || !newMap ||
+      newMap.label !== rotationLabel(principal, pairId, oldClientId) ||
       newMap.status !== 'active'
     ) {
       return res.status(409).json({ ok: false, error: 'ROTATION_CANDIDATE_MISMATCH' });
@@ -695,7 +710,8 @@ app.post('/rotate-tsk/commit', requireWriterLease, ...registrationGuards, async 
     const swap = await identityBinding.compareAndSwap(
       pairId,
       oldClientId,
-      { tskClientId: newClientId, agentId },
+      { tskClientId: newClientId, agentId, canonicalId: req.scAgent.canonicalId,
+        agentPublicKeyHex: req.scAgent.publicKeyHex },
     );
     if (swap === 'missing' || swap === 'conflict') {
       return res.status(409).json({ ok: false, error: 'ROTATION_BINDING_CONFLICT' });
@@ -704,7 +720,7 @@ app.post('/rotate-tsk/commit', requireWriterLease, ...registrationGuards, async 
       || await provisioner.updateKey(
         oldClientId,
         { status: 'revoked' },
-        agentId,
+        principal,
         'rotation-commit',
       );
     if (!revoked) {
@@ -740,22 +756,28 @@ app.post('/bind-identity', requireWriterLease, requireAgentAuth, async (req, res
     if (!idem) return;
     if (idem.cached) return res.json(idem.cached);
     return idempotencyStore.withLock(`bind-identity:${pairId}`, async () => {
-      const pair = await registry.get(pairId);
-      const tskMap = await tskStore.get(tskClientId);
-      if (
-        !pair || pair.name !== agentId || pair.status !== 'active' || !tskMap ||
-        tskMap.label !== `agent:${agentId}` || tskMap.status !== 'active'
+    const pair = await registry.get(pairId);
+    const tskMap = await tskStore.get(tskClientId);
+    const principal = req.scAgent.canonicalId;
+    if (
+        !pair || pair.name !== principal || pair.status !== 'active' || !tskMap ||
+        tskMap.label !== `agent:${principal}` || tskMap.status !== 'active'
       ) {
         return res.status(403).json({ ok: false, error: 'IDENTITY_BINDING_MISMATCH' });
       }
       const existing = await identityBinding.get(pairId);
       if (existing) {
-        if (existing.tskClientId !== tskClientId || existing.agentId !== agentId) {
+        if (existing.tskClientId !== tskClientId || !bindingOwnedBy(existing, req.scAgent)) {
           return res.status(409).json({ ok: false, error: 'IDENTITY_BINDING_CONFLICT' });
         }
         return res.json(await finishIdempotent(idem, { ok: true }));
       }
-      await identityBinding.set(pairId, { tskClientId, agentId });
+      await identityBinding.set(pairId, {
+        tskClientId,
+        agentId,
+        canonicalId: req.scAgent.canonicalId,
+        agentPublicKeyHex: req.scAgent.publicKeyHex,
+      });
       console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', event: 'identity_bound', pairId, clientId: tskClientId }));
       return res.json(await finishIdempotent(idem, { ok: true }));
     });
@@ -970,7 +992,10 @@ app.post('/ha/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromo
         return res.status(400).json({ ok: false, error: 'INVALID_TSK_REPROVISION_REQUEST' });
       }
       const pending = await readImportedTskReprovision(runtimePgPool, { clusterId, pairId });
-      if (!pending || pending.agentId !== agentId || pending.sourceClientId !== sourceClientId) {
+      if (!pending || pending.agentId !== agentId ||
+          pending.canonicalId !== req.scAgent.canonicalId ||
+          pending.agentPublicKeyHex !== req.scAgent.publicKeyHex ||
+          pending.sourceClientId !== sourceClientId) {
         return res.status(409).json({ ok: false, error: 'TSK_REPROVISION_BINDING_MISMATCH' });
       }
       if (!promotedTskRuntime || !pending.sourceSecretDigest) {
@@ -978,7 +1003,9 @@ app.post('/ha/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromo
       }
       const { provisioned, receipt } = await promotedTskRuntime.withRuntime(async (authority) => {
         const provisioned = await authority.provision({
-          agentId,
+          agentId: pending.agentId,
+          agentPublicKeyHex: pending.agentPublicKeyHex,
+          canonicalId: pending.canonicalId,
           commandId,
           pairId,
           sourceClientId,
@@ -990,6 +1017,8 @@ app.post('/ha/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromo
           {
             advisoryLockKey: HA_CONFIG.advisoryLockKey,
             agentId,
+            agentPublicKeyHex: pending.agentPublicKeyHex,
+            canonicalId: pending.canonicalId,
             clusterId,
             commandId,
             pairId,
@@ -1007,6 +1036,7 @@ app.post('/ha/reprovision-tsk', requireAdminAuth, requireAgentAuth, requirePromo
         level: 'INFO',
         event: 'ha_tsk_reprovisioned',
         agentId,
+        canonicalId: pending.canonicalId,
         pairId,
         sourceClientId,
         targetClientId: provisioned.targetClientId,

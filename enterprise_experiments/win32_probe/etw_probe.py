@@ -1,4 +1,4 @@
-"""etw_probe.py — ETW-based push-notification for terminal output changes.
+"""Enterprise etw_probe.py — ETW terminal output notifications.
 
 Event Tracing for Windows (ETW) provides kernel-level, push-based notification of
 console host events without requiring UIA accessibility infrastructure. This is a
@@ -12,7 +12,7 @@ Patent relevance:
 
 Requires: Windows, ctypes (stdlib), elevation for StartTrace.
 
-Run:  python experiments/win32_probe/etw_probe.py
+Run:  python enterprise_experiments/win32_probe/etw_probe.py
 """
 from __future__ import annotations
 

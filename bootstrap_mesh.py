@@ -5,15 +5,14 @@ Run once before starting the SelfConnect mesh:
 
 Steps:
   1. Prompts for a mesh secret (used for BPC Layer 3 HMAC derivation).
-  2. Saves the secret to %APPDATA%\SelfConnect\mesh.key (plaintext for now;
-     DPAPI encryption is optional — see --encrypt flag).
+  2. Stores the secret in Windows Credential Manager.
   3. Starts the Ultra Server sidecar (Node.js on localhost:7777).
   4. Verifies sidecar health.
 
 Usage:
   python bootstrap_mesh.py                  # interactive
-  python bootstrap_mesh.py --secret "..."   # non-interactive
-  python bootstrap_mesh.py --encrypt        # DPAPI-encrypt mesh.key
+  printf "..." | python bootstrap_mesh.py --secret-stdin
+  python bootstrap_mesh.py --migrate        # migrate and remove verified legacy files
   python bootstrap_mesh.py --stop           # kill the ultra_server sidecar
   python bootstrap_mesh.py --status         # check if sidecar is running
 
@@ -28,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hmac
 import json
 import os
 import subprocess
@@ -35,6 +35,9 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+
+from enterprise.identity import _dpapi_decrypt
+from enterprise.windows_credentials import MESH_SECRET_TARGET, read_credential, write_credential
 
 
 SIDECAR_DIR = Path(__file__).parent / "ultra_server"
@@ -50,31 +53,45 @@ def _appdata_sc() -> Path:
     return p
 
 
-def save_mesh_secret(secret: str, encrypt: bool = False) -> Path:
-    """Save mesh secret to %APPDATA%\SelfConnect\mesh.key."""
+def save_mesh_secret(secret: str) -> str:
+    """Store and read-back verify a strong mesh secret in Credential Manager."""
+    if len(secret.encode("utf-8")) < 32:
+        raise ValueError("mesh secret must contain at least 32 UTF-8 bytes")
+    write_credential(MESH_SECRET_TARGET, secret)
+    verified = read_credential(MESH_SECRET_TARGET)
+    if verified is None or not hmac.compare_digest(verified, secret):
+        raise RuntimeError("Credential Manager read-back verification failed")
+    print(f"[bootstrap] Mesh secret stored in Credential Manager as {MESH_SECRET_TARGET}")
+    return MESH_SECRET_TARGET
+
+
+def migrate_legacy_mesh_secret() -> dict[str, object]:
+    """Migrate plaintext/DPAPI files, deleting only after credential read-back."""
     key_file = _appdata_sc() / "mesh.key"
-    key_file.write_text(secret, encoding="utf-8")
-    key_file.chmod(0o600)
-    print(f"[bootstrap] Mesh secret saved to {key_file}")
-    if encrypt:
-        _dpapi_encrypt(key_file)
-    return key_file
-
-
-def _dpapi_encrypt(key_file: Path) -> None:
-    """Optionally encrypt mesh.key with DPAPI via PowerShell."""
-    try:
-        ps_cmd = (
-            f"$data = [System.IO.File]::ReadAllBytes('{key_file}');"
-            f"$enc = [System.Security.Cryptography.ProtectedData]::Protect("
-            f"  $data, $null, 'CurrentUser');"
-            f"[System.IO.File]::WriteAllBytes('{key_file}.dpapi', $enc);"
-            f"Remove-Item '{key_file}'"
+    dpapi_file = _appdata_sc() / "mesh.key.dpapi"
+    found: list[tuple[Path, str]] = []
+    if key_file.exists():
+        found.append((key_file, key_file.read_text(encoding="utf-8").strip()))
+    if dpapi_file.exists():
+        found.append((dpapi_file, _dpapi_decrypt(dpapi_file.read_bytes()).decode("utf-8").strip()))
+    if not found:
+        return {"migrated": False, "removed": []}
+    secret = found[0][1]
+    if any(not hmac.compare_digest(secret, value) for _, value in found[1:]):
+        raise RuntimeError("legacy mesh-secret files disagree; refusing migration")
+    existing = read_credential(MESH_SECRET_TARGET)
+    if existing is None:
+        save_mesh_secret(secret)
+    elif not hmac.compare_digest(existing, secret):
+        raise RuntimeError(
+            "legacy mesh secret conflicts with the rotated Credential Manager value; "
+            "refusing migration"
         )
-        subprocess.run(["powershell", "-Command", ps_cmd], check=True, capture_output=True)
-        print(f"[bootstrap] Encrypted to {key_file}.dpapi (DPAPI / CurrentUser scope)")
-    except Exception as exc:
-        print(f"[bootstrap] DPAPI encryption failed (continuing with plaintext): {exc}")
+    removed: list[str] = []
+    for path, _ in found:
+        path.unlink()
+        removed.append(str(path))
+    return {"migrated": True, "removed": removed}
 
 
 def start_sidecar() -> subprocess.Popen:
@@ -140,12 +157,17 @@ def check_status() -> None:
     except Exception as exc:
         print(f"[bootstrap] Ultra Server unreachable: {exc}")
         print("  Start with: python bootstrap_mesh.py")
+    try:
+        print(f"[bootstrap] Credential present: {read_credential(MESH_SECRET_TARGET) is not None}")
+    except OSError as exc:
+        print(f"[bootstrap] Credential Manager unavailable: {exc}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="SelfConnect BPC+TSK mesh bootstrap")
-    parser.add_argument("--secret", help="Mesh secret (omit to be prompted)")
-    parser.add_argument("--encrypt", action="store_true", help="DPAPI-encrypt mesh.key")
+    parser.add_argument("--secret-stdin", action="store_true", help="read the secret from stdin")
+    parser.add_argument("--encrypt", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--migrate", action="store_true", help="migrate verified legacy mesh.key files")
     parser.add_argument("--stop", action="store_true", help="Stop the Ultra Server sidecar")
     parser.add_argument("--status", action="store_true", help="Check sidecar status")
     parser.add_argument("--no-start", action="store_true", help="Set secret only, don't start sidecar")
@@ -159,27 +181,20 @@ def main() -> None:
         check_status()
         return
 
-    # Mesh secret setup
-    key_file = _appdata_sc() / "mesh.key"
-    dpapi_file = _appdata_sc() / "mesh.key.dpapi"
-
-    if key_file.exists() or dpapi_file.exists():
-        print(f"[bootstrap] Existing mesh.key found at {key_file.parent}/")
-        use_existing = input("Use existing secret? [Y/n] ").strip().lower()
-        if use_existing not in ("n", "no"):
-            secret = None  # UltraGate will load it automatically
-        else:
-            secret = args.secret or getpass.getpass("New mesh secret (min 16 chars, upper+lower+digit+2 special): ")
-            save_mesh_secret(secret, encrypt=args.encrypt)
+    if args.migrate or (_appdata_sc() / "mesh.key").exists() or (_appdata_sc() / "mesh.key.dpapi").exists():
+        migration = migrate_legacy_mesh_secret()
+        print(f"[bootstrap] Legacy migration: {migration}")
+    existing = read_credential(MESH_SECRET_TARGET)
+    if args.secret_stdin:
+        save_mesh_secret(sys.stdin.readline().rstrip("\r\n"))
+    elif existing is None:
+        secret = getpass.getpass("Mesh secret (at least 32 UTF-8 bytes): ")
+        save_mesh_secret(secret)
     else:
-        secret = args.secret or getpass.getpass("Mesh secret (min 16 chars, upper+lower+digit+2 special): ")
-        if len(secret) < 16:
-            print("[bootstrap] ERROR: Secret must be at least 16 characters.")
-            sys.exit(1)
-        save_mesh_secret(secret, encrypt=args.encrypt)
+        print(f"[bootstrap] Using existing Credential Manager entry {MESH_SECRET_TARGET}")
 
     if args.no_start:
-        print("[bootstrap] --no-start: secret saved, sidecar NOT started.")
+        print("[bootstrap] --no-start: credential ready, sidecar NOT started.")
         return
 
     # Start sidecar

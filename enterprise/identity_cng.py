@@ -181,6 +181,11 @@ class CngIdentity:
         return self._agent_id
 
     @property
+    def canonical_id(self) -> str:
+        """Full-key authorization principal; the short display ID is not one."""
+        return "SCID-" + cng_sha384(self.public_key_bytes).hex()
+
+    @property
     def agent_name(self) -> str:
         """Logical name this identity was initialised under."""
         return self._agent_name

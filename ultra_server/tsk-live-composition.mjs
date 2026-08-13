@@ -251,7 +251,7 @@ function derivedId(prefix, value) {
 }
 
 async function readPublicCredentialProof(pool, streamId, clientId, expectedSequence,
-  activationLease, { agentId, pairId, commandId }) {
+  activationLease, { agentId, agentPublicKeyHex, canonicalId, pairId, commandId }) {
   const row = (await pool.query(
     `SELECT sequence::text,source_epoch,fence_token::text,op_digest,mutation,
             head_prev,head_digest,head_key_id,head_alg,head_sig
@@ -266,8 +266,10 @@ async function readPublicCredentialProof(pool, streamId, clientId, expectedSeque
     mutation?.secretDigest]) assert.match(String(value), /^[0-9a-f]{64}$/);
   assert.equal(Number(row.sequence), expectedSequence);
   return Object.freeze({
-    format: 'selfconnect-promoted-tsk-credential-proof-v1',
+    format: 'selfconnect-promoted-tsk-credential-proof-v2',
     agentId,
+    agentPublicKeyHex,
+    canonicalId,
     pairId,
     commandId,
     activationLease: structuredClone(activationLease),
@@ -301,6 +303,7 @@ function publicCredentialSummary(proof) {
 
 function createMaterial() {
   return Object.freeze({
+    agent: generateKeyPairSync('ed25519'),
     guard: generateKeyPairSync('ed25519'),
     source: generateKeyPairSync('ed25519'),
     aHead: generateKeyPairSync('ed25519'),
@@ -489,7 +492,19 @@ export async function runTskLiveComposition(rawOptions) {
   const leaseId = 'enterprise28-source-lease-1';
   const bNodeId = keyIds.bReceipt;
   const credentialStreamId = derivedId('tsk:credential', options.streamId);
-  const credentialAgentId = 'enterprise28-agent-1';
+  const credentialAgentPublicKeyHex = Buffer.from(
+    material.agent.publicKey.export({ format: 'jwk' }).x, 'base64url',
+  ).toString('hex');
+  const credentialAgentKeyDigest = createHash('sha256').update(
+    Buffer.from(credentialAgentPublicKeyHex, 'hex'),
+  ).digest('hex');
+  const credentialCanonicalId = `SCID-${credentialAgentKeyDigest}`;
+  const credentialDisplayAgentId = `SC-${credentialAgentKeyDigest.slice(0, 8).toUpperCase()}`;
+  const credentialAgentIdentity = Object.freeze({
+    agentId: credentialDisplayAgentId,
+    agentPublicKeyHex: credentialAgentPublicKeyHex,
+    canonicalId: credentialCanonicalId,
+  });
   const credentialPairId = 'enterprise28-pair-1';
   const sourceCredentialLeaseId = derivedId('lease-a', options.commandId);
   const targetCredentialLeaseId = derivedId('lease-b', options.commandId);
@@ -699,12 +714,12 @@ export async function runTskLiveComposition(rawOptions) {
     const sourceCredentialMap = generateTumblerMap({
       keyLength: 64, minTumblers: 2, maxTumblers: 2,
     });
-    sourceCredentialMap.label = `agent:${credentialAgentId}`;
+    sourceCredentialMap.label = `agent:${credentialCanonicalId}`;
     sourceCredentialMap.status = 'active';
     await sourceCredentialStore.set(sourceCredentialMap.clientId, sourceCredentialMap);
     const sourceCredentialProof = await readPublicCredentialProof(
       aPool, credentialStreamId, sourceCredentialMap.clientId, 1, sourceCredentialGrant,
-      { agentId: credentialAgentId, pairId: credentialPairId,
+      { ...credentialAgentIdentity, pairId: credentialPairId,
         commandId: sourceCredentialGrant.commandId },
     );
     const publicCredentialSource = publicCredentialSummary(sourceCredentialProof);
@@ -987,7 +1002,7 @@ export async function runTskLiveComposition(rawOptions) {
       keyLength: 64, minTumblers: 2, maxTumblers: 2,
     });
     credentialMap.label = promotedTskCredentialLabel({
-      commandId, pairId: credentialPairId, agentId: credentialAgentId,
+      commandId, pairId: credentialPairId, ...credentialAgentIdentity,
     });
     credentialMap.status = 'active';
     await credentialStore.set(credentialMap.clientId, credentialMap);
@@ -997,7 +1012,7 @@ export async function runTskLiveComposition(rawOptions) {
     const targetCredentialProof = await readPublicCredentialProof(
       bPool, credentialStreamId, credentialMap.clientId, 1,
       credentialActivationLeaseGrant,
-      { agentId: credentialAgentId, pairId: credentialPairId, commandId },
+      { ...credentialAgentIdentity, pairId: credentialPairId, commandId },
     );
     const publicCredentialTarget = publicCredentialSummary(targetCredentialProof);
     assert.notEqual(
@@ -1016,7 +1031,7 @@ export async function runTskLiveComposition(rawOptions) {
     const loadedPromotedRuntime = await loadPromotedTskCredentialRuntime(descriptorFile);
     try {
       const resumedCredential = await loadedPromotedRuntime.provision({
-        agentId: credentialAgentId,
+        ...credentialAgentIdentity,
         pairId: credentialPairId,
         commandId,
         sourceClientId: publicCredentialSource.clientId,
@@ -1761,14 +1776,14 @@ export async function runTskLiveComposition(rawOptions) {
     returnCredentialMap.label = promotedTskCredentialLabel({
       commandId: returnCommandId,
       pairId: credentialPairId,
-      agentId: credentialAgentId,
+      ...credentialAgentIdentity,
     });
     returnCredentialMap.status = 'active';
     await returnCredentialStore.set(returnCredentialMap.clientId, returnCredentialMap);
     const returnCredentialProof = await readPublicCredentialProof(
       aPool, returnCredentialStreamId, returnCredentialMap.clientId, 1,
       returnCredentialActivationLeaseGrant,
-      { agentId: credentialAgentId, pairId: credentialPairId,
+      { ...credentialAgentIdentity, pairId: credentialPairId,
         commandId: returnCommandId },
     );
     const publicCredentialReturn = publicCredentialSummary(returnCredentialProof);
@@ -1836,13 +1851,13 @@ export async function runTskLiveComposition(rawOptions) {
       map.label = promotedTskCredentialLabel({
         commandId: credentialCommandId,
         pairId: credentialPairId,
-        agentId: credentialAgentId,
+        ...credentialAgentIdentity,
       });
       map.status = 'active';
       await store.set(map.clientId, map);
       const proof = await readPublicCredentialProof(
         pool, streamId, map.clientId, 1, leaseGrant, {
-          agentId: credentialAgentId,
+          ...credentialAgentIdentity,
           pairId: credentialPairId,
           commandId: credentialCommandId,
         },
@@ -2130,6 +2145,7 @@ export async function runTskLiveComposition(rawOptions) {
       publicCredentialSource,
       publicCredentialTarget,
       publicCredentialReturn,
+      agentIdentity: credentialAgentIdentity,
       sourceCredentialProof,
       targetCredentialProof,
       returnCredentialProof,

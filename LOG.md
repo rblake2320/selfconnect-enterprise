@@ -54,6 +54,193 @@ related records sufficient to reconstruct the action.
 
 ## Register
 
+## LOG-20260731-006 - Keep workspace and forge layers outside SelfConnect
+
+**Timestamp (UTC):** 2026-07-31T22:40:00Z
+**Actor:** Codex, requested by the repository owner
+**Category:** decision, documentation
+**Base commit:** `364dcd77af12c8d3b4e20a5f0463c01614a3fb99` plus the current uncommitted governed ACP work
+**Change reference:** working tree containing this entry
+**Why:** [WHY-20260731-006](WHY.md#why-20260731-006)
+**Parked records:** None
+
+**Changed:** Recorded that SelfConnect Enterprise reuses Buzz's separate-agent
+principal and access-removal concepts without absorbing workspace, community,
+forge, Git-hosting, or collaboration-product surfaces.
+
+**Reason:** Preserve SelfConnect's governed OS-terminal enforcement scope and
+avoid treating coarse membership as a substitute for signed delegation.
+
+**Full actions and links:** `WHY.md`, `docs/PRODUCT_SCOPE_BOUNDARY.md`,
+[Buzz security design](https://github.com/block/buzz/security), and
+[Buzz support](https://block.github.io/buzz/support.html).
+
+**Validation:** Documentation record schema and cross-reference tests.
+
+**Notes:** Documentation-only scope decision; no runtime behavior changed.
+
+## LOG-20260731-005 - Add durable agent revocation without human replacement
+
+**Timestamp (UTC):** 2026-07-31T22:36:20Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, test, documentation
+**Base commit:** `364dcd77af12c8d3b4e20a5f0463c01614a3fb99` plus the current uncommitted governed ACP work
+**Change reference:** working tree containing this entry
+**Why:** [WHY-20260731-005](WHY.md#why-20260731-005)
+**Parked records:** None
+
+**Changed:** Added durable terminal agent/grant revocations, monotonic epochs,
+idempotent retries, ACP snapshot integration, revoked-agent session removal, and
+an explicit test that the enrolled human owner public key remains active.
+
+**Reason:** Compromised agents must be replaceable without forcing a human
+identity rotation or allowing an already-open ACP session to continue acting.
+
+**Full actions and links:** `enterprise/revocation.py`,
+`tests/test_enterprise/test_revocation.py`, `docs/REVOCATION_LIFECYCLE.md`, and
+[WHY-20260731-005](WHY.md#why-20260731-005).
+
+**Validation:** Revocation, ACP shim, and ACP authentication tests passed 36/36;
+Ruff, compilation, and diff checks passed.
+
+**Notes:** Local cross-process visibility now has a bounded SQLite epoch watcher.
+Remote distribution and HA remain open. The registry does not replace BPC/TSK
+or the existing control plane.
+
+## LOG-20260731-004 - Add one-way NIP-01 evidence export
+
+**Timestamp (UTC):** 2026-07-31T22:30:19Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, test, documentation
+**Base commit:** `364dcd77af12c8d3b4e20a5f0463c01614a3fb99` plus the current uncommitted governed ACP work
+**Change reference:** working tree containing this entry
+**Why:** [WHY-20260731-004](WHY.md#why-20260731-004)
+**Parked records:** None
+
+**Changed:** Added a one-way exporter that verifies the source record, produces
+the exact NIP-01 event serialization and ID, requires a dedicated injected
+x-only secp256k1 Schnorr signer, binds canonical source content and digest, and
+rejects caller attempts to override authoritative export tags.
+
+**Reason:** Nostr's signed-event envelope is useful for portable external
+evidence, but adopting its relay as the execution or trust substrate would
+replace SelfConnect's differentiated governance, BPC/TSK, ledger, and
+terminal-as-medium boundaries.
+
+**Full actions and links:** `enterprise/nostr_export.py`,
+`tests/test_enterprise/test_nostr_export.py`, `docs/NOSTR_EVIDENCE_EXPORT.md`,
+and [WHY-20260731-004](WHY.md#why-20260731-004).
+
+**Validation:** Nostr export tests passed 13/13; Ruff, compilation, and diff checks
+passed. No production Schnorr signer or live relay was exercised.
+
+**Notes:** Export only. No event ingestion, relay transport, execution
+authority, event-kind allocation claim, or identity-key substitution exists.
+
+## LOG-20260731-003 - Add ACP possession-proof setup and registry hold gate
+
+**Timestamp (UTC):** 2026-07-31T22:15:09Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, test, documentation
+**Base commit:** `364dcd77af12c8d3b4e20a5f0463c01614a3fb99` plus the uncommitted delegation and ACP core slices
+**Change reference:** working tree containing this entry
+**Why:** [WHY-20260731-003](WHY.md#why-20260731-003)
+**Parked records:** None
+
+**Changed:** Added public-only SQLite owner trust roots, explicit-confirmation
+fresh-challenge possession proof, conditional ACP Preview terminal-auth
+advertisement, fail-closed session gating, the executable `scent-acp --setup`
+path, and a registry-readiness preflight that refuses to equate a local entry
+point with a published distribution.
+
+**Reason:** Registry authentication requires a user-facing ceremony, but honest
+publication also requires a real supported distribution and client acceptance.
+The implementation closes the local security ceremony without fabricating
+release coordinates or overstating unstable-protocol interoperability.
+
+**Full actions and links:** `enterprise/acp_auth.py`,
+`enterprise/acp_entry.py`, `tools/acp_registry_readiness.py`, their 16 focused
+tests, [ACP shim guide](docs/ACP_SHIM.md), and
+[registry readiness](docs/acp/REGISTRY_READINESS.md).
+
+**Validation:** Authentication, entry, readiness, and ACP shim tests passed
+36/36; Ruff passed. The full enterprise suite reached 1,616 passes and 5 skips;
+its sole failure was the fail-closed dependency-audit test because `pip-audit`
+timed out at its own 120-second scanner boundary. The terminal-auth initialize
+shape passed the pinned ACP unstable v1 JSON Schema locally.
+
+**Notes:** Registry status is HOLD. No distribution was published, no metadata
+candidate with invented coordinates was created, and no real-client
+setup/reconnect or registry CI acceptance is claimed.
+
+## LOG-20260731-002 - Add a governed ACP v1 core shim
+
+**Timestamp (UTC):** 2026-07-31T22:07:30Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, test, documentation
+**Base commit:** `364dcd77af12c8d3b4e20a5f0463c01614a3fb99` plus the uncommitted delegation slice
+**Change reference:** working tree containing this entry
+**Why:** [WHY-20260731-002](WHY.md#why-20260731-002)
+**Parked records:** None
+
+**Changed:** Added an ACP v1 core request/session shim, strict signed action
+envelope, live trust/revocation injection, durable SQLite replay consumption,
+newline-delimited stdio runner, exact `GovernedRuntime` production backend,
+20 tests, usage documentation, and explicit gap boundaries.
+
+**Reason:** ACP provides broad editor/agent interoperability, but it must not
+replace SelfConnect authorization or erase agent authorship. The adapter needed
+to terminate in the governed runtime and bind every requested call to the
+owner-signed grant plus agent-signed proof.
+
+**Full actions and links:** `enterprise/acp_shim.py`,
+`tests/test_enterprise/test_acp_shim.py`, [ACP shim guide](docs/ACP_SHIM.md),
+[CHANGELOG.md](CHANGELOG.md), [GAPS.md](GAPS.md), and
+[WHY-20260731-002](WHY.md#why-20260731-002).
+
+**Validation:** The combined ACP, delegation, documentation, identity, policy,
+approval, provenance, governed-runtime, and MCP suite passed 374/374. Ruff,
+`py_compile`, and `git diff --check` passed. Initialize, new-session,
+prompt-response, and session-update shapes validated against the official ACP v1
+JSON Schema at commit `0bfa27d5bf30c98d5d9a6bfec523597756188333`.
+
+**Notes:** No registry publication, full ACP conformance, MCP-server forwarding,
+user authentication ceremony, or general natural-language coding-agent proxy is
+claimed. Synchronous cancellation cannot interrupt a call already executing.
+
+## LOG-20260731-001 - Add portable dual-signature delegation proofs
+
+**Timestamp (UTC):** 2026-07-31T21:57:01Z
+**Actor:** Codex, requested by the repository owner
+**Category:** implementation, test, documentation
+**Base commit:** `364dcd77af12c8d3b4e20a5f0463c01614a3fb99`
+**Change reference:** working tree containing this entry
+**Why:** [WHY-20260731-001](WHY.md#why-20260731-001)
+**Parked records:** None
+
+**Changed:** Added a canonical authority-signed `DelegationGrant`, agent-signed
+`AgentActionProof`, structured offline verifier, package exports, adversarial
+tests, usage documentation, and explicit integration gaps.
+
+**Reason:** The repository already separated authorization from authorship
+across signed policy, operator proof, agent event signatures, and recorder
+countersignatures, but did not expose one portable proof linking a narrowly
+scoped authority grant to the exact agent-authored action.
+
+**Full actions and links:** `enterprise/delegation.py`,
+`tests/test_enterprise/test_delegation.py`, [README.md](README.md),
+[CHANGELOG.md](CHANGELOG.md), [GAPS.md](GAPS.md), and
+[WHY-20260731-001](WHY.md#why-20260731-001).
+
+**Validation:** `tests/test_enterprise/test_delegation.py` passed 22/22 with
+real Ed25519 operations and an ephemeral P-384 authority. Ruff and `py_compile` passed. Related identity, policy,
+policy-signing, approval-audit, provenance, governed-runtime, and MCP-dispatch
+tests passed 324/324 with one existing warning that the unit-test provenance
+recorder had no live immutable replication sink configured.
+
+**Notes:** This slice is transport-neutral and non-mutating. It does not yet
+make delegation proofs mandatory in `GovernedRuntime`, persist replay
+consumption, or supply a durable revocation authority.
 ## LOG-20260720-012 - Compose final multi-authority Ultra HA acceptance
 
 **Timestamp (UTC):** 2026-07-21T03:30:00Z

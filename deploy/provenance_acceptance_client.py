@@ -170,7 +170,7 @@ def _wheel_record_hash(value: bytes) -> str:
 def _expected_wheel_layout(repo_root: Path) -> tuple[list[str], dict[str, bytes], str]:
     source_files = sorted(
         path.relative_to(repo_root).as_posix()
-        for package in ("enterprise", "experiments")
+        for package in ("enterprise", "enterprise_experiments")
         for path in (repo_root / package).rglob("*.py")
         if path.is_file()
     )

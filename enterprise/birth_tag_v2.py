@@ -14,17 +14,18 @@ What the signature covers:
 Signing key:
     Uses the agent's ed25519 signing key via enterprise.identity.AgentIdentity.
     AgentIdentity stores a DPAPI-wrapped ed25519 keypair — it does NOT use
-    Platform KSP or NCrypt.  The Platform KSP (TPM-bound P-384) is a separate
-    system in enterprise.identity_cng.CngIdentity, used only by the Tier 2
-    handshake.  The two key systems are INDEPENDENT (Gap C) — binding them is
+    Platform KSP or NCrypt. The current P-384 binding key uses the Microsoft
+    Software Key Storage Provider and is not TPM/hardware-backed. A Platform
+    Crypto Provider/TPM path would be a separate deployment-specific mechanism.
+    `enterprise.identity_cng.CngIdentity` supplies the separate Software-KSP
+    P-384 key used by the Tier 2 handshake. The two software-key systems are
+    INDEPENDENT (Gap C) — binding them is
     an explicit required deliverable before SC_HANDSHAKE=v2 flag flip.
     Call AgentIdentity.load() once at startup to get the identity object.
 
-Why Tier 1 (no flag, no verifier):
-    The signer can land unconditionally — peers that don't understand `SCID_SIG`
-    simply ignore the extra property (dict.get() access pattern is confirmed for
-    all consumers).  The verifier (which enforces rejection) ships in Tier 2 as
-    enterprise.version_gate, gated on SC_SUNSET_V1.
+Verification:
+    Authenticated peer paths require a valid, fresh `SCID_SIG`. The ordinary
+    registry properties remain observational compatibility metadata only.
 
 Anti-replay (Tier 2 enforcement):
     The `ts` field inside the signed payload allows Tier 2 verifiers to reject
@@ -51,6 +52,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from typing import Optional
 
@@ -162,7 +164,7 @@ def verify_signed_birth_tag(
         hwnd:             Window handle to read properties from.
         public_key_bytes: Raw ed25519 public key bytes (32 bytes).
         max_age_seconds:  Maximum allowed age of the signed timestamp.
-                          Tier 2 enforces 60s; tests may pass 0.0 to skip.
+                          Must be positive; freshness cannot be disabled.
 
     Returns:
         (True, "ok") on success.
@@ -184,10 +186,19 @@ def verify_signed_birth_tag(
     except ValueError:
         return False, f"SCID_STS is not a float: {sts_str!r}"
 
-    if max_age_seconds > 0:
-        age = time.time() - ts
-        if age > max_age_seconds:
-            return False, f"SCID_SIG expired: age={age:.1f}s > {max_age_seconds}s"
+    if (
+        isinstance(max_age_seconds, bool)
+        or not isinstance(max_age_seconds, (int, float))
+        or not math.isfinite(float(max_age_seconds))
+        or float(max_age_seconds) <= 0
+    ):
+        return False, "SCID_SIG freshness window is invalid"
+    current = time.time()
+    if not math.isfinite(ts) or ts > current + 5.0:
+        return False, "SCID_SIG timestamp is in the future"
+    age = current - ts
+    if age > float(max_age_seconds):
+        return False, f"SCID_SIG expired: age={age:.1f}s > {max_age_seconds}s"
 
     agent_id = get_agent_prop(hwnd, "SCID")
     pid_str  = get_agent_prop(hwnd, "SCPID")

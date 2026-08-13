@@ -1,4 +1,4 @@
-"""chained_channel.py — a bounded local composition experiment.
+"""Enterprise chained_channel.py — a bounded local composition experiment.
 
 One experimental loop binding three locally exercised legs:
   READ      : UIA TextChanged on a terminal text surface -> delta   (uia_textpattern)
@@ -17,7 +17,7 @@ Why this differs from the selfconnect-repo draft (see REVIEW_chained_channel.md)
     not remote attestation or a production identity-binding protocol
   - uses the exercised GetModule / comtypes-handler / 64-bit-handle paths (no ABI truncation)
 
-Run:  python experiments/win32_probe/chained_channel.py
+Run:  python enterprise_experiments/win32_probe/chained_channel.py
 Exit: 0 = CHAIN COMPLETE (all four legs), 1 = a leg failed
 """
 from __future__ import annotations
@@ -45,25 +45,46 @@ import win32file
 import win32pipe
 import win32security
 
-from named_pipe_identity import _advapi32, _build_sa_with_dacl
-from tpm_identity import (
-    NCRYPT,
-    NCRYPT_OVERWRITE_KEY_FLAG,
-    NCRYPT_SILENT_FLAG,
-    _ck,
-    _export_pub_blob,
-    _open_platform_provider,
-    _sign,
-    _verify,
-)
-from uia_textpattern import (
-    UIA_Text_TextChangedEventId,
-    compute_delta,
-    get_uia,
-    read_text,
-    register_textchanged,
-    text_element,
-)
+if __package__:
+    from .named_pipe_identity import _advapi32, _build_sa_with_dacl
+    from .tpm_identity import (
+        NCRYPT,
+        NCRYPT_OVERWRITE_KEY_FLAG,
+        NCRYPT_SILENT_FLAG,
+        _ck,
+        _export_pub_blob,
+        _open_platform_provider,
+        _sign,
+        _verify,
+    )
+    from .uia_textpattern import (
+        UIA_Text_TextChangedEventId,
+        compute_delta,
+        get_uia,
+        read_text,
+        register_textchanged,
+        text_element,
+    )
+else:  # Direct-script compatibility.
+    from named_pipe_identity import _advapi32, _build_sa_with_dacl
+    from tpm_identity import (
+        NCRYPT,
+        NCRYPT_OVERWRITE_KEY_FLAG,
+        NCRYPT_SILENT_FLAG,
+        _ck,
+        _export_pub_blob,
+        _open_platform_provider,
+        _sign,
+        _verify,
+    )
+    from uia_textpattern import (
+        UIA_Text_TextChangedEventId,
+        compute_delta,
+        get_uia,
+        read_text,
+        register_textchanged,
+        text_element,
+    )
 
 
 def _unique_pipe_name() -> str:

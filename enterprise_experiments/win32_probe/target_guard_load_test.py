@@ -1,4 +1,4 @@
-"""target_guard_load_test.py — CRUCIBLE rapid-fire load test for target_guard.py
+"""Enterprise CRUCIBLE rapid-fire target guard load test.
 
 Tests:
   0. _own_pid() returns the correct non-zero PID (WRAITH-002 guard-bypass fix)
@@ -23,8 +23,12 @@ import unittest.mock
 # ---------------------------------------------------------------------------
 # Import the module under test
 # ---------------------------------------------------------------------------
-import target_guard
-from target_guard import _own_pid, verify_target  # noqa: E402  (same directory)
+if __package__:
+    from . import target_guard
+    from .target_guard import _own_pid, verify_target
+else:  # Direct-script compatibility.
+    import target_guard
+    from target_guard import _own_pid, verify_target  # noqa: E402  (same directory)
 
 user32 = ctypes.windll.user32
 

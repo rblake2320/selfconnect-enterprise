@@ -50,12 +50,12 @@ New action strings (Tier 1+):
     "handshake_initiated"           — challenge-response started (Tier 2)
     "handshake_succeeded"           — challenge-response completed successfully (Tier 2)
     "handshake_rejected:{reason}"   — challenge-response failed (Tier 2)
-    "v1_peer_accepted_during_grace" — unsigned peer accepted while sunset not yet reached (Tier 2)
+    "v1_peer_accepted_during_grace" — historical only; current verifier rejects unsigned peers
     "v1_peer_rejected_at_sunset"    — unsigned peer rejected after sunset date (Tier 2)
     "key_rotation"                  — TPM key rotation transaction (Tier 2 + Tier 3)
     "mitigation_policy_applied"     — process hardening flags enabled (Tier 2)
     "birth_time_mismatch"           — per-message birth time validation failed (Tier 2)
-    "emergency_override_activated"  — a rollback override flag was set (any tier)
+    "emergency_override_activated"  — historical only; signature bypass is retired
 
 New action strings (Tier 3 — BPC+TSK ultra-gate):
     "ultra_gate_pass"               — injection authorized (full 7-layer or degraded level N)
@@ -488,6 +488,25 @@ class AgentLedger:
             )
         return total
 
+    def head_hash(self) -> str:
+        """Return the current canonical ledger-chain head hash."""
+        return self._load_last_hash()
+
+    def contains_verified_hash(self, expected_hash: str) -> bool:
+        """Return whether a digest is an entry hash in the verified chain."""
+        if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+            return False
+        valid, _count, _message, entries = self._verify_snapshot()
+        if not valid:
+            return False
+        for entry in entries:
+            unsigned = dict(entry)
+            unsigned.pop("sig", None)
+            encoded = json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+            if hashlib.sha256(encoded).hexdigest() == expected_hash:
+                return True
+        return expected_hash == GENESIS_HASH and not entries
+
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _load_last_seq(self) -> int:
@@ -661,6 +680,15 @@ class ThreadSafeAgentLedger(AgentLedger):
         """Thread-safe entry_count() — serialised through an RLock."""
         with self._lock:
             return super().entry_count()
+
+    def head_hash(self) -> str:
+        """Thread-safe current canonical ledger-chain head hash."""
+        with self._lock:
+            return super().head_hash()
+
+    def contains_verified_hash(self, expected_hash: str) -> bool:
+        with self._lock:
+            return super().contains_verified_hash(expected_hash)
 
     def find_entries_by_nested_value(
         self,

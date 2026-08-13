@@ -134,7 +134,7 @@ $env:SC_IDENTITY_BYPASS_CONFIRMED = "1"
 Run the chain proof (requires a live Windows session with a console window):
 
 ```powershell
-python experiments/win32_probe/chained_channel.py
+python enterprise_experiments/win32_probe/chained_channel.py
 ```
 
 Expected output (exit code 0):
@@ -298,7 +298,7 @@ python -m pytest tests/test_enterprise/test_dependency_integrity.py -v
 ### Step 6 — Verify chain proof
 
 ```powershell
-python experiments/win32_probe/chained_channel.py
+python enterprise_experiments/win32_probe/chained_channel.py
 # Must exit 0
 ```
 

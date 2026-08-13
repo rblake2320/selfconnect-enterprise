@@ -51,6 +51,252 @@ related records.
 
 ## Register
 
+## WHY-20260731-006 - Keep workspace and forge layers outside SelfConnect
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-31T22:40:00Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260731-006](LOG.md#log-20260731-006)
+**Parked records:** None
+**Source state:** `selfconnect-enterprise`, local branch
+`local/windows-tools-namespace-20260719`, working tree based on
+`364dcd77af12c8d3b4e20a5f0463c01614a3fb99`
+
+**Decision:** Reuse Buzz's separate-agent-principal/access-removal concept, but
+exclude its workspace, community, forge, Git-hosting, and collaboration-product
+surfaces from SelfConnect Enterprise.
+
+**Why:** SelfConnect's differentiated responsibility is governed OS-terminal
+execution. ACP already supplies client interoperability and Nostr-shaped export
+supplies portable evidence. Building collaboration and source-hosting products
+would dilute verification effort without strengthening the enforcement chain.
+
+**Alternatives considered:** Feature parity with Buzz and an integrated forge
+were rejected as thesis drift. Treating membership as the sole authorization
+model was rejected because SelfConnect requires finer signed delegation,
+policy, approval, classification, target, replay, and revocation controls.
+
+**Consequences:** Product investment stays concentrated on governance. External
+clients and repository systems remain composable rather than duplicated.
+
+**Rollback conditions:** Reconsider only for a named regulated deployment where
+an excluded surface is itself an unavoidable enforcement dependency.
+
+**Evidence and links:** [Product scope boundary](docs/PRODUCT_SCOPE_BOUNDARY.md),
+[Buzz security design](https://github.com/block/buzz/security), and
+[Buzz support](https://block.github.io/buzz/support.html), plus
+[LOG-20260731-006](LOG.md#log-20260731-006).
+
+## WHY-20260731-005 - Separate agent revocation from human identity lifecycle
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-31T22:36:20Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260731-005](LOG.md#log-20260731-005)
+**Parked records:** None
+**Source state:** `selfconnect-enterprise`, local branch
+`local/windows-tools-namespace-20260719`, working tree based on
+`364dcd77af12c8d3b4e20a5f0463c01614a3fb99`
+
+**Decision:** Make agent and grant revocations durable and terminal while
+keeping the enrolled human owner trust root independent and unchanged.
+
+**Why:** Agent compromise is expected lifecycle churn; human identity
+replacement is a different, higher-cost ceremony. Conflating them would expand
+the incident blast radius and prevent the same accountable owner from
+authorizing a clean replacement agent.
+
+**Alternatives considered:** Revoking the owner key with the agent was rejected
+as excessive blast radius. Process-local sets were rejected as restart-unsafe.
+Un-revoke was rejected because replacement under a fresh agent identity gives a
+clearer evidence trail.
+
+**Consequences:** Revocations survive restart, advance a portable epoch, and
+terminate the affected ACP session on its next action. Cross-process immediate
+push and replicated authority remain open deployment work.
+
+**Rollback conditions:** Replace the registry if monotonicity, durability,
+operator authorization, HA, or revocation propagation requirements exceed the
+single-node design. Preserve separate human and agent lifecycles.
+
+**Evidence and links:** `enterprise/revocation.py`,
+`tests/test_enterprise/test_revocation.py`,
+[revocation guide](docs/REVOCATION_LIFECYCLE.md), and
+[LOG-20260731-005](LOG.md#log-20260731-005).
+
+## WHY-20260731-004 - Adopt Nostr event shape only as an evidence export
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-31T22:30:19Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260731-004](LOG.md#log-20260731-004)
+**Parked records:** None
+**Source state:** `selfconnect-enterprise`, local branch
+`local/windows-tools-namespace-20260719`, working tree based on
+`364dcd77af12c8d3b4e20a5f0463c01614a3fb99`
+
+**Decision:** Support the NIP-01 signed-event shape as a one-way export of
+verified SelfConnect evidence. Require a real deployment-injected Nostr signer;
+do not reinterpret SelfConnect identity keys, import relay events, or make Nostr
+a core transport or authority.
+
+**Why:** Signed portable events improve interoperability with systems such as
+Buzz. SelfConnect's durable advantage, however, is the enforcement chain behind
+the record. Exporting that record is additive; replacing the native trust and
+actuation path would weaken the product thesis.
+
+**Alternatives considered:** Replacing the ledger/transport with a Nostr relay
+was rejected as architectural displacement. Encoding Ed25519 or P-384 material
+in NIP-01 fields was rejected because NIP-01 requires secp256k1 Schnorr. Adding
+an unreviewed crypto dependency and production key custody was deferred.
+
+**Consequences:** Verified evidence can be rendered into standard NIP-01 event
+bytes without granting the external event authority. Deployment must still
+supply audited Schnorr custody, select a kind, publish deliberately, and test
+relay acceptance and retention.
+
+**Rollback conditions:** Remove or replace the adapter if NIP-01 serialization
+tests diverge from the primary specification, signer custody cannot be bounded,
+or any consumer treats exported events as execution authority.
+
+**Evidence and links:** `enterprise/nostr_export.py`,
+`tests/test_enterprise/test_nostr_export.py`,
+[Nostr export guide](docs/NOSTR_EVIDENCE_EXPORT.md), and
+[LOG-20260731-004](LOG.md#log-20260731-004).
+
+## WHY-20260731-003 - Prove owner-key possession but hold registry publication
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-31T22:15:09Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260731-003](LOG.md#log-20260731-003)
+**Parked records:** None
+**Source state:** `selfconnect-enterprise`, local branch
+`local/windows-tools-namespace-20260719`, working tree based on
+`364dcd77af12c8d3b4e20a5f0463c01614a3fb99`
+
+**Decision:** Implement ACP Preview terminal setup as an explicit local
+proof-of-possession ceremony, advertise it only to capable clients, gate serving
+on active trust, and keep registry publication on hold until truthful
+distribution and client-acceptance evidence exist.
+
+**Why:** A stored public key alone does not prove the enrolling operator controls
+its private key. A local console script alone also does not satisfy registry
+distribution requirements. Separating these facts closes the security gap
+without converting schema validation into a deployment or publication claim.
+
+**Alternatives considered:** Blind public-key import was rejected because it
+lacks possession proof. Always advertising unstable terminal authentication was
+rejected because incapable clients did not negotiate it. Inventing an archive
+URL or `uvx` package for a candidate registry record was rejected as false
+release evidence.
+
+**Consequences:** Operators have a concrete setup and revocation gate, and a
+future submission has a repeatable local preflight. The Preview extension may
+change, and registry work still requires package publication, final icon and
+metadata, real-client reconnect evidence, and registry CI.
+
+**Rollback conditions:** Replace the advertisement and setup contract if ACP
+stabilizes an incompatible authentication flow or client acceptance shows the
+current out-of-band behavior is incorrect. Retain confirmation, key-possession
+proof, public-only storage, and fail-closed serving in any replacement.
+
+**Evidence and links:** `enterprise/acp_auth.py`, `enterprise/acp_entry.py`,
+`tools/acp_registry_readiness.py`, [registry readiness](docs/acp/REGISTRY_READINESS.md),
+and [LOG-20260731-003](LOG.md#log-20260731-003).
+
+## WHY-20260731-002 - Put ACP above governance, not in place of it
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-31T22:07:30Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260731-002](LOG.md#log-20260731-002)
+**Parked records:** None
+**Source state:** `selfconnect-enterprise`, local branch
+`local/windows-tools-namespace-20260719`, delegation working tree based on
+`364dcd77af12c8d3b4e20a5f0463c01614a3fb99`
+
+**Decision:** Use ACP as an interoperability/session transport above the
+SelfConnect governance boundary. Accept only strict structured action envelopes,
+bind the exact call to the owner grant and agent proof, consume replay state
+before dispatch, and require the canonical `GovernedRuntime` backend in
+production.
+
+**Why:** ACP can make SelfConnect reachable from a broad editor/agent ecosystem,
+but an ACP session or free-form prompt is not authorization. Preserving separate
+owner authorization and agent authorship keeps the transport from silently
+becoming a trust root and prevents natural language from expanding scope.
+
+**Alternatives considered:** A free-form prompt-to-tool translator was rejected
+because model interpretation cannot create authority. Direct MCPDispatcher or
+SDK/Win32 backends were rejected for production because they can bypass the
+mandatory composition claim. Advertising unsupported ACP features or a no-op
+authentication method was rejected as false interoperability.
+
+**Consequences:** Ecosystem clients can use the ACP v1 core and stdio transport
+for cryptographically governed actions. The first slice is intentionally narrow
+and requires clients/agents to construct signed envelopes. Full coding-agent
+proxy behavior, registry authentication, MCP forwarding, and async cancellation
+remain separate reviewed work.
+
+**Rollback conditions:** Remove or replace the shim if schema conformance,
+client interoperability, replay atomicity, trust pinning, or runtime-boundary
+review fails. Any replacement must retain exact call binding, separate authority
+and authorship signatures, fail-closed revocation, and no direct production
+actuation bypass.
+
+**Evidence and links:** `enterprise/acp_shim.py`,
+`tests/test_enterprise/test_acp_shim.py`, [ACP shim guide](docs/ACP_SHIM.md),
+[GAPS.md](GAPS.md), and [LOG-20260731-002](LOG.md#log-20260731-002).
+
+**Clarification 2026-07-31:** ACP ecosystem breadth is a reason to expose the
+governed boundary, not to replace it. Terminal-as-medium injection remains the
+actuation mechanism and BPC/TSK remain the core identity/trust protocols.
+
+## WHY-20260731-001 - Preserve authorization and authorship as linked signatures
+
+**Status:** Accepted
+**Decision date (UTC):** 2026-07-31T21:57:01Z
+**Decision owner:** Repository owner
+**Action log:** [LOG-20260731-001](LOG.md#log-20260731-001)
+**Parked records:** None
+**Source state:** `selfconnect-enterprise`, local branch
+`local/windows-tools-namespace-20260719`,
+`364dcd77af12c8d3b4e20a5f0463c01614a3fb99`
+
+**Decision:** Represent delegation as two distinct but cryptographically linked
+claims: an authority signs narrowly scoped permission, and the delegated agent
+signs the exact action it authored. Bind both full public keys, the grant digest,
+action, target, payload digest, governance mode, classification, validity
+window, nonce, and revocation checkpoint in a transport-neutral contract.
+
+**Why:** An authorization signature proves permission but must not erase who
+performed the work. An agent signature proves authorship but must not create or
+expand authority. Linking the two lets an offline verifier answer both questions
+without creating a second policy engine, identity store, approval queue, or
+ledger.
+
+**Alternatives considered:** A single recorder signature was rejected because
+it collapses authorization and authorship. Reusing only the short `SC-XXXXXXXX`
+label was rejected because it is a lookup label rather than a collision-resistant
+principal binding. Immediate runtime wiring was deferred so the portable
+contract and adversarial verification boundary could stabilize first.
+
+**Consequences:** Integrators receive a small reusable proof format and
+non-throwing verifier. They must still pin the issuer key, provide current
+revocation/replay state, atomically consume successful action IDs, and route
+execution through a later governed-runtime integration. Delegation v1 uses
+exact-match classification intentionally.
+
+**Rollback conditions:** Remove or replace this contract if external review
+finds canonicalization ambiguity, signature-confusion risk, insufficient scope
+binding, or incompatibility with the eventual governed receipt. Any replacement
+must retain distinct authority and agent signatures and pass equivalent or
+stronger substitution, expiry, revocation, replay, and payload tests.
+
+**Evidence and links:** `enterprise/delegation.py`,
+`tests/test_enterprise/test_delegation.py`, [GAPS.md](GAPS.md), and
+[LOG-20260731-001](LOG.md#log-20260731-001).
 ## WHY-20260720-012 - Make the portfolio-locked fault matrix the completion gate
 
 **Status:** Accepted

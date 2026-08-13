@@ -78,35 +78,13 @@ Full functionality of pre-Tier-2 system.
 
 ---
 
-## Flag: `SC_DISABLE_SIG_VERIFY=1` (Emergency — Signed Birth Tag Verifier)
+## Retired flag: `SC_DISABLE_SIG_VERIFY`
 
-**When to use:** Signed-tag verifiers are hard-rejecting legitimate v2 peers.
-Common cause: clock skew causing tag freshness check to fail (tags older than 60s
-are rejected even during grace period).
-
-**Rollback:**
-```bash
-# Disable sig verification entirely — falls back to v1 trust model
-SC_DISABLE_SIG_VERIFY=1 python -m enterprise.agent_runner
-```
-
-**Security impact:** Disabling sig verify returns to the pre-Tier-1 trust model.
-No cryptographic verification of birth tags. Document in ledger immediately.
-
-**Ledger entry to emit manually:**
-```python
-ledger.log(
-    action="emergency_override_activated",
-    result="SC_DISABLE_SIG_VERIFY=1",
-    metadata={"reason": "<describe root cause>", "operator": "<name>"}
-)
-```
-
-**Root-cause checklist before re-enabling:**
-- [ ] Identify which agents were generating stale tags (>60s freshness violation)
-- [ ] Fix clock sync or birth-tag re-sign cadence
-- [ ] Re-run WRAITH red-team against the fixed configuration
-- [ ] Set SC_SUNSET_V1 deadline forward by 14 days to allow clean re-rollout
+This flag is intentionally ignored. It previously converted an identity failure
+into acceptance and therefore allowed an unsigned peer to bypass the trust
+boundary. If signed birth tags cannot be verified, stop privileged routing,
+capture the clock/key/window evidence, repair the signer or verifier, and retry.
+There is no fail-open rollback for identity verification.
 
 ---
 

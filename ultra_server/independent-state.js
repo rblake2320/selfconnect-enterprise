@@ -11,13 +11,16 @@ import {
   verifyPromotedTskCredentialProof,
   verifySourceTskCredentialProof,
 } from './promoted-tsk-authority.js';
+import { agentIdFromPublicKey, canonicalAgentIdFromPublicKey } from './agent-auth.js';
 
 const IDENTIFIER = /^[A-Za-z0-9_.:-]{1,128}$/;
 const STREAM_IDENTIFIER = /^[A-Za-z0-9_.:/-]{1,128}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
+const DISPLAY_AGENT_ID = /^SC-[0-9A-F]{8}$/;
+const CANONICAL_AGENT_ID = /^SCID-[0-9a-f]{64}$/;
 const SECRET_FIELD = /(?:secret|token|password|private|credential|provisionpayload)/i;
 const INDEPENDENT_STATE_SCHEMA = 'public';
-const INDEPENDENT_STATE_SCHEMA_VERSION = 1;
+const INDEPENDENT_STATE_SCHEMA_VERSION = 2;
 const INDEPENDENT_STATE_TABLES = Object.freeze([
   'ultra_tumbler_maps',
   'ultra_identity_bindings',
@@ -35,7 +38,7 @@ const MAX_SNAPSHOT_NODES = 100_000;
 // There is deliberately no environment override: changing the authority schema requires a
 // reviewed source change and a new pin.
 export const ULTRA_INDEPENDENT_STATE_MANIFEST_DIGEST =
-  'd917df185baf879664b9724fb5f6b9518f55a0a6344c3f5bebec8b409c2c300b';
+  'd54eaf675f636c2170585316953667d762930ec8620032a2a5816b7c6f1759c1';
 
 export const ULTRA_INDEPENDENT_STATE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS ultra_nonce_tombstones (
@@ -71,6 +74,8 @@ CREATE TABLE IF NOT EXISTS ultra_ha_tsk_reprovision (
   cluster_id TEXT NOT NULL REFERENCES ultra_ha_import_head(cluster_id) ON DELETE CASCADE,
   pair_id TEXT NOT NULL,
   agent_id TEXT NOT NULL,
+  canonical_id TEXT NOT NULL CHECK (canonical_id ~ '^SCID-[0-9a-f]{64}$'),
+  agent_public_key_hex TEXT NOT NULL CHECK (agent_public_key_hex ~ '^[0-9a-f]{64}$'),
   source_client_id TEXT NOT NULL,
   source_secret_digest TEXT NOT NULL CHECK (source_secret_digest ~ '^[0-9a-f]{64}$'),
   target_client_id TEXT,
@@ -91,6 +96,33 @@ function requiredIdentifier(value, name) {
     throw new Error(`${name} must match ${IDENTIFIER}`);
   }
   return value;
+}
+
+function requiredAgentPublicKeyHex(value, name) {
+  if (typeof value !== 'string' || !DIGEST.test(value)) {
+    throw new Error(`${name} must be a lowercase 32-byte public key`);
+  }
+  return value;
+}
+
+function canonicalAgentId(agentPublicKeyHex) {
+  return canonicalAgentIdFromPublicKey(Buffer.from(
+    requiredAgentPublicKeyHex(agentPublicKeyHex, 'agentPublicKeyHex'), 'hex',
+  ));
+}
+
+function requireAgentIdentity({ agentId, canonicalId, agentPublicKeyHex }, name) {
+  const rawKey = Buffer.from(requiredAgentPublicKeyHex(
+    agentPublicKeyHex, `${name}.agentPublicKeyHex`,
+  ), 'hex');
+  if (!DISPLAY_AGENT_ID.test(agentId) || agentId !== agentIdFromPublicKey(rawKey)) {
+    throw new Error(`${name}.agentId does not match the public key`);
+  }
+  if (!CANONICAL_AGENT_ID.test(canonicalId) ||
+      canonicalId !== canonicalAgentIdFromPublicKey(rawKey)) {
+    throw new Error(`${name}.canonicalId does not match the public key`);
+  }
+  return Object.freeze({ agentId, canonicalId, agentPublicKeyHex });
 }
 
 function positiveSafeInteger(value, name) {
@@ -392,7 +424,11 @@ function snapshotFromRows({ bindings, idempotency, nonces }) {
   });
   return {
     identityBindings: bindings.map((row) => ({
-      agentId: row.agent_id,
+      ...requireAgentIdentity({
+        agentId: row.agent_id,
+        agentPublicKeyHex: row.agent_public_key_hex,
+        canonicalId: row.canonical_id,
+      }, 'identity binding'),
       pairId: row.pair_id,
       tskClientId: row.tsk_client_id,
     })),
@@ -434,7 +470,8 @@ function targetIdempotencyRecord(row) {
 
 async function readTargetAuthorityState(exec) {
   const bindings = await exec.query(
-    'SELECT pair_id, tsk_client_id, agent_id FROM ultra_identity_bindings ORDER BY pair_id COLLATE "C"',
+    `SELECT pair_id, tsk_client_id, agent_id, canonical_id, agent_public_key_hex
+       FROM ultra_identity_bindings ORDER BY pair_id COLLATE "C"`,
   );
   const idempotency = await exec.query(
     `SELECT i.idempotency_key::text, i.operation, i.agent_id, i.response,
@@ -448,7 +485,13 @@ async function readTargetAuthorityState(exec) {
       ORDER BY i.idempotency_key::text COLLATE "C"`,
   );
   const identityBindings = bindings.rows.map((row) => ({
-      agentId: row.agent_id, pairId: row.pair_id, tskClientId: row.tsk_client_id,
+    ...requireAgentIdentity({
+      agentId: row.agent_id,
+      agentPublicKeyHex: row.agent_public_key_hex,
+      canonicalId: row.canonical_id,
+    }, 'identity binding'),
+    pairId: row.pair_id,
+    tskClientId: row.tsk_client_id,
   }));
   const proofRows = await exec.query(
     `SELECT cluster_id,pair_id,target_client_id,target_proof_digest,activation_grant_digest
@@ -566,6 +609,16 @@ export async function attestIndependentStateSchema(pool) {
   return withSerializable(pool, enterIndependentStateAuthority, { attest: false });
 }
 
+// Maintainer-only helper for regenerating the pinned PostgreSQL-16 catalog
+// digest after an explicitly reviewed DDL/schema-version change. It is never
+// consulted by the authority path, which compares only against the source pin.
+export async function computeIndependentStateCatalogDigest(pool) {
+  return withSerializable(pool, async (client) => {
+    const manifest = await independentStateCatalogManifest(client);
+    return createHash('sha256').update(manifest, 'utf8').digest('hex');
+  }, { attest: false });
+}
+
 async function assertNoActiveUnboundCredentials(exec) {
   const { rows } = await exec.query(
     `SELECT COUNT(*)::int AS count FROM ultra_tumbler_maps m
@@ -677,15 +730,23 @@ export async function exportIndependentState(pool, input) {
     if (processing.rows[0].count !== 0) throw new Error('cannot export while idempotency work is processing');
     await client.query('DELETE FROM ultra_nonce_tombstones WHERE expires_at <= clock_timestamp()');
     const bindings = await client.query(
-      'SELECT pair_id, tsk_client_id, agent_id FROM ultra_identity_bindings ORDER BY pair_id COLLATE "C"',
+      `SELECT pair_id, tsk_client_id, agent_id, canonical_id, agent_public_key_hex
+         FROM ultra_identity_bindings ORDER BY pair_id COLLATE "C"`,
     );
     if (verifiedSourceCredentials.length !== bindings.rows.length) {
       throw new Error('signed source TSK credential inventory does not match identity bindings');
     }
     const credentialBindings = [];
     for (const binding of bindings.rows) {
+      const identity = requireAgentIdentity({
+        agentId: binding.agent_id,
+        canonicalId: binding.canonical_id,
+        agentPublicKeyHex: binding.agent_public_key_hex,
+      }, 'identity binding');
       const verified = verifiedSourceCredentialByPair.get(binding.pair_id);
-      if (!verified || verified.agentId !== binding.agent_id ||
+      if (!verified || verified.agentId !== identity.agentId ||
+          verified.canonicalId !== identity.canonicalId ||
+          verified.agentPublicKeyHex !== identity.agentPublicKeyHex ||
           verified.pairId !== binding.pair_id ||
           verified.sourceClientId !== binding.tsk_client_id) {
         throw new Error('signed source TSK credential does not match identity binding');
@@ -730,7 +791,7 @@ export async function exportIndependentState(pool, input) {
         }
       }
       credentialBindings.push({
-        agentId: binding.agent_id,
+        ...identity,
         pairId: binding.pair_id,
         sourceClientId: binding.tsk_client_id,
         sourceSecretDigest: verified.secretDigest,
@@ -773,7 +834,7 @@ export async function exportIndependentState(pool, input) {
       ),
       clusterId,
       commandId,
-      format: 'selfconnect-ultra-independent-state-v2',
+      format: 'selfconnect-ultra-independent-state-v3',
       itemCount,
       sourceEpoch,
       sourceSystemId: await systemIdentifier(client),
@@ -899,18 +960,23 @@ function validateState(state) {
   for (let index = 0; index < state.identityBindings.length; index += 1) {
     const binding = state.identityBindings[index];
     const credential = state.credentialBindings[index];
-    strictKeys(binding, new Set(['agentId', 'pairId', 'tskClientId']), 'identity binding');
+    strictKeys(binding, new Set([
+      'agentId', 'agentPublicKeyHex', 'canonicalId', 'pairId', 'tskClientId',
+    ]), 'identity binding');
     strictKeys(credential, new Set([
-      'agentId', 'pairId', 'sourceClientId', 'sourceSecretDigest',
+      'agentId', 'agentPublicKeyHex', 'canonicalId', 'pairId', 'sourceClientId',
+      'sourceSecretDigest',
     ]), 'credential binding');
-    requiredIdentifier(binding.agentId, 'identityBindings.agentId');
+    requireAgentIdentity(binding, 'identityBindings');
     requiredIdentifier(binding.pairId, 'identityBindings.pairId');
     requiredIdentifier(binding.tskClientId, 'identityBindings.tskClientId');
-    requiredIdentifier(credential.agentId, 'credentialBindings.agentId');
+    requireAgentIdentity(credential, 'credentialBindings');
     requiredIdentifier(credential.pairId, 'credentialBindings.pairId');
     requiredIdentifier(credential.sourceClientId, 'credentialBindings.sourceClientId');
     requiredDigest(credential.sourceSecretDigest, 'credentialBindings.sourceSecretDigest');
-    if (binding.agentId !== credential.agentId || binding.pairId !== credential.pairId ||
+    if (binding.canonicalId !== credential.canonicalId ||
+        binding.agentPublicKeyHex !== credential.agentPublicKeyHex ||
+        binding.agentId !== credential.agentId || binding.pairId !== credential.pairId ||
         binding.tskClientId !== credential.sourceClientId) {
       throw new Error('credential binding does not match identity binding');
     }
@@ -958,7 +1024,7 @@ function validateManifest(manifest) {
     'sourceSystemId', 'state', 'stateBytes', 'stateDigest', 'tskActivationDigest',
     'tskFinalizedDigest', 'tskStreamId', 'tskTargetEpoch',
   ]), 'independent state manifest');
-  if (manifest.format !== 'selfconnect-ultra-independent-state-v2') throw new Error('manifest format invalid');
+  if (manifest.format !== 'selfconnect-ultra-independent-state-v3') throw new Error('manifest format invalid');
   requiredIdentifier(manifest.clusterId, 'manifest.clusterId');
   requiredIdentifier(manifest.commandId, 'manifest.commandId');
   positiveSafeInteger(manifest.sourceEpoch, 'manifest.sourceEpoch');
@@ -1097,8 +1163,11 @@ export async function importIndependentState(pool, bundle, input) {
     await client.query('DELETE FROM ultra_tumbler_maps');
     for (const item of manifest.state.identityBindings) {
       await client.query(
-        'INSERT INTO ultra_identity_bindings (pair_id, tsk_client_id, agent_id) VALUES ($1,$2,$3)',
-        [item.pairId, item.tskClientId, item.agentId],
+        `INSERT INTO ultra_identity_bindings
+           (pair_id, tsk_client_id, agent_id, canonical_id, agent_public_key_hex)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [item.pairId, item.tskClientId, item.agentId, item.canonicalId,
+          item.agentPublicKeyHex],
       );
     }
     for (const item of manifest.state.idempotency) {
@@ -1153,10 +1222,11 @@ export async function importIndependentState(pool, bundle, input) {
     for (const item of manifest.state.credentialBindings) {
       await client.query(
         `INSERT INTO ultra_ha_tsk_reprovision
-           (cluster_id, pair_id, agent_id, source_client_id, source_secret_digest, status)
-         VALUES ($1,$2,$3,$4,$5,'pending')`,
-        [manifest.clusterId, item.pairId, item.agentId, item.sourceClientId,
-          item.sourceSecretDigest],
+           (cluster_id, pair_id, agent_id, canonical_id, agent_public_key_hex,
+            source_client_id, source_secret_digest, status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'pending')`,
+        [manifest.clusterId, item.pairId, item.agentId, item.canonicalId,
+          item.agentPublicKeyHex, item.sourceClientId, item.sourceSecretDigest],
       );
     }
     const importedAuthorityDigest = digest(await readTargetAuthorityState(client));
@@ -1173,6 +1243,8 @@ export async function completeImportedTskReprovision(pool, input) {
   const expected = Object.freeze({
     advisoryLockKey: input.advisoryLockKey,
     agentId: input.agentId,
+    agentPublicKeyHex: input.agentPublicKeyHex,
+    canonicalId: input.canonicalId,
     clusterId: input.clusterId,
     commandId: input.commandId,
     pairId: input.pairId,
@@ -1184,10 +1256,10 @@ export async function completeImportedTskReprovision(pool, input) {
   requiredIdentifier(expected.commandId, 'commandId');
   positiveSafeInteger(expected.sourceEpoch, 'sourceEpoch');
   requiredIdentifier(expected.pairId, 'pairId');
-  requiredIdentifier(expected.agentId, 'agentId');
+  requireAgentIdentity(expected, 'TSK reprovision identity');
   requiredIdentifier(expected.sourceClientId, 'sourceClientId');
   requiredIdentifier(targetMap?.clientId, 'targetMap.clientId');
-  if (targetMap.clientId === expected.sourceClientId || targetMap.label !== `agent:${expected.agentId}` ||
+  if (targetMap.clientId === expected.sourceClientId || targetMap.label !== `agent:${expected.canonicalId}` ||
       targetMap.status !== 'active' || typeof targetMap.sharedSecret !== 'string' ||
       targetMap.sharedSecret.length < 32 || !Array.isArray(targetMap.segments) ||
       targetMap.segments.length === 0) {
@@ -1206,12 +1278,18 @@ export async function completeImportedTskReprovision(pool, input) {
       throw new Error('TSK reprovision does not match the imported promotion');
     }
     const pending = (await client.query(
-      `SELECT agent_id, source_client_id, source_secret_digest, target_client_id,
-              status, receipt_digest, target_proof_digest, activation_grant_digest
-       FROM ultra_ha_tsk_reprovision WHERE cluster_id=$1 AND pair_id=$2 FOR UPDATE`,
+      `SELECT r.agent_id, r.canonical_id, r.agent_public_key_hex, r.source_client_id,
+               r.source_secret_digest, r.target_client_id,
+               status, receipt_digest, target_proof_digest, activation_grant_digest
+         FROM ultra_ha_tsk_reprovision r
+        WHERE cluster_id=$1 AND pair_id=$2 FOR UPDATE`,
       [expected.clusterId, expected.pairId],
     )).rows[0];
-    if (!pending || pending.agent_id !== expected.agentId || pending.source_client_id !== expected.sourceClientId) {
+    if (!pending || pending.agent_id !== expected.agentId ||
+        pending.agent_public_key_hex !== expected.agentPublicKeyHex ||
+        pending.canonical_id !== expected.canonicalId ||
+        canonicalAgentId(pending.agent_public_key_hex) !== expected.canonicalId ||
+        pending.source_client_id !== expected.sourceClientId) {
       throw new Error('TSK reprovision binding mismatch');
     }
     if (digest(await readTargetAuthorityState(client)) !== head.authority_digest) {
@@ -1220,6 +1298,8 @@ export async function completeImportedTskReprovision(pool, input) {
     await assertNoActiveUnboundCredentials(client);
     const receipt = {
       agentId: expected.agentId,
+      agentPublicKeyHex: expected.agentPublicKeyHex,
+      canonicalId: expected.canonicalId,
       clusterId: expected.clusterId,
       commandId: expected.commandId,
       pairId: expected.pairId,
@@ -1251,15 +1331,19 @@ export async function completeImportedTskReprovision(pool, input) {
     );
     const rebound = await client.query(
       `UPDATE ultra_identity_bindings SET tsk_client_id=$3, updated_at=clock_timestamp()
-       WHERE pair_id=$1 AND agent_id=$2 AND tsk_client_id=$4`,
-      [expected.pairId, expected.agentId, targetMap.clientId, expected.sourceClientId],
+       WHERE pair_id=$1 AND agent_id=$2 AND canonical_id=$5 AND
+             agent_public_key_hex=$6 AND tsk_client_id=$4`,
+      [expected.pairId, expected.agentId, targetMap.clientId, expected.sourceClientId,
+        expected.canonicalId, expected.agentPublicKeyHex],
     );
     if (rebound.rowCount !== 1) throw new Error('imported identity rebind failed');
     await client.query(
       `UPDATE ultra_ha_tsk_reprovision SET target_client_id=$3, status='complete',
          receipt_digest=$4, updated_at=clock_timestamp()
-       WHERE cluster_id=$1 AND pair_id=$2`,
-      [expected.clusterId, expected.pairId, targetMap.clientId, receiptDigest],
+       WHERE cluster_id=$1 AND pair_id=$2 AND agent_id=$5 AND canonical_id=$6 AND
+             agent_public_key_hex=$7`,
+      [expected.clusterId, expected.pairId, targetMap.clientId, receiptDigest,
+        expected.agentId, expected.canonicalId, expected.agentPublicKeyHex],
     );
     const authorityDigest = digest(await readTargetAuthorityState(client));
     await client.query(
@@ -1293,6 +1377,8 @@ export async function completeImportedPromotedTskCredential(pool, authorityCapab
   const expected = Object.freeze({
     advisoryLockKey: input.advisoryLockKey,
     agentId: input.agentId,
+    agentPublicKeyHex: input.agentPublicKeyHex,
+    canonicalId: input.canonicalId,
     clusterId: input.clusterId,
     commandId: input.commandId,
     pairId: input.pairId,
@@ -1304,7 +1390,7 @@ export async function completeImportedPromotedTskCredential(pool, authorityCapab
   requiredIdentifier(expected.commandId, 'commandId');
   positiveSafeInteger(expected.sourceEpoch, 'sourceEpoch');
   requiredIdentifier(expected.pairId, 'pairId');
-  requiredIdentifier(expected.agentId, 'agentId');
+  requireAgentIdentity(expected, 'TSK reprovision identity');
   requiredIdentifier(expected.sourceClientId, 'sourceClientId');
   requiredDigest(expected.sourceSecretDigest, 'sourceSecretDigest');
   const verified = await verifyPromotedTskCredentialProof(
@@ -1312,6 +1398,8 @@ export async function completeImportedPromotedTskCredential(pool, authorityCapab
     targetProof,
     {
       agentId: expected.agentId,
+      agentPublicKeyHex: expected.agentPublicKeyHex,
+      canonicalId: expected.canonicalId,
       pairId: expected.pairId,
       sourceClientId: expected.sourceClientId,
       sourceSecretDigest: expected.sourceSecretDigest,
@@ -1326,6 +1414,8 @@ export async function completeImportedPromotedTskCredential(pool, authorityCapab
   const receipt = Object.freeze({
     activationGrantDigest: verified.activationGrantDigest,
     agentId: expected.agentId,
+    agentPublicKeyHex: expected.agentPublicKeyHex,
+    canonicalId: expected.canonicalId,
     clusterId: expected.clusterId,
     commandId: expected.commandId,
     headDigest: verified.headDigest,
@@ -1347,13 +1437,17 @@ export async function completeImportedPromotedTskCredential(pool, authorityCapab
       throw new StaleImportedPromotionError('TSK reprovision does not match the imported promotion');
     }
     const pending = (await client.query(
-      `SELECT agent_id,source_client_id,source_secret_digest,target_client_id,status,
-              target_proof,target_proof_digest,activation_grant_digest,receipt_digest
-         FROM ultra_ha_tsk_reprovision
+      `SELECT r.agent_id,r.canonical_id,r.agent_public_key_hex,r.source_client_id,r.source_secret_digest,
+              r.target_client_id,r.status,r.target_proof,r.target_proof_digest,
+              r.activation_grant_digest,r.receipt_digest
+         FROM ultra_ha_tsk_reprovision r
         WHERE cluster_id=$1 AND pair_id=$2 FOR UPDATE`,
       [expected.clusterId, expected.pairId],
     )).rows[0];
     if (!pending || pending.agent_id !== expected.agentId ||
+        pending.agent_public_key_hex !== expected.agentPublicKeyHex ||
+        pending.canonical_id !== expected.canonicalId ||
+        canonicalAgentId(pending.agent_public_key_hex) !== expected.canonicalId ||
         pending.source_client_id !== expected.sourceClientId ||
         pending.source_secret_digest !== expected.sourceSecretDigest) {
       throw new StaleImportedPromotionError('TSK reprovision binding mismatch');
@@ -1373,8 +1467,10 @@ export async function completeImportedPromotedTskCredential(pool, authorityCapab
     }
     const rebound = await client.query(
       `UPDATE ultra_identity_bindings SET tsk_client_id=$3, updated_at=clock_timestamp()
-       WHERE pair_id=$1 AND agent_id=$2 AND tsk_client_id=$4`,
-      [expected.pairId, expected.agentId, verified.targetClientId, expected.sourceClientId],
+       WHERE pair_id=$1 AND agent_id=$2 AND canonical_id=$6 AND
+             agent_public_key_hex=$5 AND tsk_client_id=$4`,
+      [expected.pairId, expected.agentId, verified.targetClientId, expected.sourceClientId,
+        expected.agentPublicKeyHex, expected.canonicalId],
     );
     if (rebound.rowCount !== 1) throw new Error('imported identity rebind failed');
     await client.query(
@@ -1382,10 +1478,11 @@ export async function completeImportedPromotedTskCredential(pool, authorityCapab
           SET target_client_id=$3,status='complete',target_proof=$4::jsonb,
               target_proof_digest=$5,activation_grant_digest=$6,receipt_digest=$7,
               updated_at=clock_timestamp()
-        WHERE cluster_id=$1 AND pair_id=$2`,
+        WHERE cluster_id=$1 AND pair_id=$2 AND agent_id=$8 AND canonical_id=$9 AND
+              agent_public_key_hex=$10`,
       [expected.clusterId, expected.pairId, verified.targetClientId,
         JSON.stringify(targetProof), targetProofDigest, verified.activationGrantDigest,
-        receiptDigest],
+        receiptDigest, expected.agentId, expected.canonicalId, expected.agentPublicKeyHex],
     );
     const authorityDigest = digest(await readTargetAuthorityState(client));
     await client.query(
@@ -1401,14 +1498,18 @@ export async function readImportedTskReprovision(pool, input) {
   requiredIdentifier(input.pairId, 'pairId');
   return withSerializable(pool, async (client) => {
     const { rows } = await client.query(
-      `SELECT agent_id, source_client_id, source_secret_digest, target_client_id,
-              status, receipt_digest, target_proof_digest, activation_grant_digest
-       FROM ultra_ha_tsk_reprovision WHERE cluster_id=$1 AND pair_id=$2`,
+      `SELECT r.agent_id, r.canonical_id, r.agent_public_key_hex, r.source_client_id,
+              r.source_secret_digest, r.target_client_id, r.status, r.receipt_digest,
+              r.target_proof_digest, r.activation_grant_digest
+         FROM ultra_ha_tsk_reprovision r
+        WHERE cluster_id=$1 AND pair_id=$2`,
       [input.clusterId, input.pairId],
     );
     if (!rows[0]) return null;
     return Object.freeze({
       agentId: rows[0].agent_id,
+      agentPublicKeyHex: rows[0].agent_public_key_hex,
+      canonicalId: rows[0].canonical_id,
       pairId: input.pairId,
       receiptDigest: rows[0].receipt_digest,
       sourceClientId: rows[0].source_client_id,

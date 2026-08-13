@@ -51,6 +51,26 @@ function fingerprint(pem) {
   ).digest('hex');
 }
 
+function assertCredentialIdentity(value, expected = value) {
+  assert.match(value.agentId, /^SC-[0-9A-F]{8}$/);
+  assert.match(value.canonicalId, /^SCID-[0-9a-f]{64}$/);
+  assert.match(value.agentPublicKeyHex, /^[0-9a-f]{64}$/);
+  const fingerprint = createHash('sha256').update(
+    Buffer.from(value.agentPublicKeyHex, 'hex'),
+  ).digest('hex');
+  assert.equal(value.agentId, `SC-${fingerprint.slice(0, 8).toUpperCase()}`);
+  assert.equal(value.canonicalId, `SCID-${fingerprint}`);
+  assert.deepEqual({
+    agentId: value.agentId,
+    agentPublicKeyHex: value.agentPublicKeyHex,
+    canonicalId: value.canonicalId,
+  }, {
+    agentId: expected.agentId,
+    agentPublicKeyHex: expected.agentPublicKeyHex,
+    canonicalId: expected.canonicalId,
+  });
+}
+
 function parseHostPort(value, name) {
   const [host, portText, ...rest] = required(value, name).split(':');
   const port = Number(portText);
@@ -136,6 +156,15 @@ async function importPinnedServer(root, component) {
 }
 
 export function validateLiveProtocolComposition(bpc, tsk, commandId) {
+  assertCredentialIdentity(tsk.agentIdentity);
+  for (const proof of [
+    tsk.sourceCredentialProof,
+    tsk.targetCredentialProof,
+    tsk.returnCredentialProof,
+    tsk.repeatForwardCredential.proof,
+    tsk.repeatReturnCredential.proof,
+    tsk.recoveredSite.credential.proof,
+  ]) assertCredentialIdentity(proof, tsk.agentIdentity);
   assert.equal(bpc.readinessAttestation.commandId, commandId);
   assert.equal(tsk.bFinalizedReceipt.commandId, commandId);
   assert.equal(tsk.activationLeaseGrant.commandId, commandId);
@@ -341,7 +370,7 @@ export async function runLiveProtocolComposition(env = process.env) {
     credentialAuthority,
     tsk.targetCredentialProof,
     {
-      agentId: tsk.targetCredentialProof.agentId,
+      ...tsk.agentIdentity,
       pairId: tsk.targetCredentialProof.pairId,
       sourceClientId: tsk.publicCredentialSource.clientId,
       sourceSecretDigest: tsk.publicCredentialSource.secretDigest,
@@ -359,7 +388,7 @@ export async function runLiveProtocolComposition(env = process.env) {
     sourceCredentialAuthority,
     tsk.sourceCredentialProof,
     {
-      agentId: tsk.sourceCredentialProof.agentId,
+      ...tsk.agentIdentity,
       pairId: tsk.sourceCredentialProof.pairId,
       sourceClientId: tsk.publicCredentialSource.clientId,
     },
@@ -379,7 +408,7 @@ export async function runLiveProtocolComposition(env = process.env) {
     returnCredentialAuthority,
     tsk.returnCredentialProof,
     {
-      agentId: tsk.returnCredentialProof.agentId,
+      ...tsk.agentIdentity,
       pairId: tsk.returnCredentialProof.pairId,
       sourceClientId: tsk.publicCredentialTarget.clientId,
       sourceSecretDigest: tsk.publicCredentialTarget.secretDigest,
@@ -394,7 +423,7 @@ export async function runLiveProtocolComposition(env = process.env) {
     repeatForwardCredentialAuthority,
     tsk.repeatForwardCredential.proof,
     {
-      agentId: tsk.repeatForwardCredential.proof.agentId,
+      ...tsk.agentIdentity,
       pairId: tsk.repeatForwardCredential.proof.pairId,
       sourceClientId: tsk.publicCredentialReturn.clientId,
       sourceSecretDigest: tsk.publicCredentialReturn.secretDigest,
@@ -409,7 +438,7 @@ export async function runLiveProtocolComposition(env = process.env) {
     repeatReturnCredentialAuthority,
     tsk.repeatReturnCredential.proof,
     {
-      agentId: tsk.repeatReturnCredential.proof.agentId,
+      ...tsk.agentIdentity,
       pairId: tsk.repeatReturnCredential.proof.pairId,
       sourceClientId: tsk.repeatForwardCredential.publicCredential.clientId,
       sourceSecretDigest: tsk.repeatForwardCredential.publicCredential.secretDigest,
@@ -424,7 +453,7 @@ export async function runLiveProtocolComposition(env = process.env) {
     recoveredCredentialAuthority,
     tsk.recoveredSite.credential.proof,
     {
-      agentId: tsk.recoveredSite.credential.proof.agentId,
+      ...tsk.agentIdentity,
       pairId: tsk.recoveredSite.credential.proof.pairId,
       sourceClientId: tsk.repeatReturnCredential.publicCredential.clientId,
       sourceSecretDigest: tsk.repeatReturnCredential.publicCredential.secretDigest,

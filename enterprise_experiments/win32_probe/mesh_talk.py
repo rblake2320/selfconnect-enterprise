@@ -1,4 +1,4 @@
-"""Mesh comms helper — talk to peer agent terminals via the SelfConnect SDK.
+"""Enterprise mesh comms helper using the SelfConnect SDK.
 
 Targets are chosen EXPLICITLY by hwnd (never by broad title match) after `list`,
 so we only ever touch the intended peer windows.
@@ -25,7 +25,7 @@ from self_connect import (  # noqa: E402
     send_string,
     submit_claude_input,
 )
-from experiments.win32_probe.target_guard import assert_safe_target  # noqa: E402
+from enterprise_experiments.win32_probe.target_guard import assert_safe_target  # noqa: E402
 
 
 def cmd_list() -> None:

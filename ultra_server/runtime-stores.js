@@ -1,4 +1,48 @@
+import { createHash } from 'node:crypto';
+
 import { commitValidationToMap } from '@tsk/server';
+
+const AGENT_ID = /^SC-[0-9A-F]{8}$/;
+const CANONICAL_AGENT_ID = /^SCID-[0-9a-f]{64}$/;
+const ED25519_PUBLIC_KEY_HEX = /^[0-9a-f]{64}$/;
+
+export function identityPrincipalsFromPublicKeyHex(agentPublicKeyHex) {
+  if (typeof agentPublicKeyHex !== 'string' || !ED25519_PUBLIC_KEY_HEX.test(agentPublicKeyHex)) {
+    throw new TypeError('identity binding requires a lowercase 32-byte Ed25519 public key');
+  }
+  const digest = createHash('sha256').update(Buffer.from(agentPublicKeyHex, 'hex')).digest('hex');
+  return Object.freeze({
+    agentId: `SC-${digest.slice(0, 8).toUpperCase()}`,
+    canonicalId: `SCID-${digest}`,
+  });
+}
+
+export function validateIdentityBinding(binding) {
+  if (!binding || typeof binding !== 'object' || Array.isArray(binding) ||
+      Object.getPrototypeOf(binding) !== Object.prototype) {
+    throw new TypeError('identity binding must be plain data');
+  }
+  const keys = Object.keys(binding).sort();
+  const expectedKeys = ['agentId', 'agentPublicKeyHex', 'canonicalId', 'tskClientId'];
+  if (keys.length !== expectedKeys.length ||
+      keys.some((key, index) => key !== expectedKeys[index])) {
+    throw new TypeError('identity binding must contain the exact full-key identity triple');
+  }
+  if (typeof binding.tskClientId !== 'string' || binding.tskClientId.length === 0 ||
+      !AGENT_ID.test(binding.agentId) || !CANONICAL_AGENT_ID.test(binding.canonicalId)) {
+    throw new TypeError('identity binding fields are invalid');
+  }
+  const derived = identityPrincipalsFromPublicKeyHex(binding.agentPublicKeyHex);
+  if (binding.agentId !== derived.agentId || binding.canonicalId !== derived.canonicalId) {
+    throw new TypeError('identity binding principal does not match its full public key');
+  }
+  return Object.freeze({
+    tskClientId: binding.tskClientId,
+    agentId: binding.agentId,
+    canonicalId: binding.canonicalId,
+    agentPublicKeyHex: binding.agentPublicKeyHex,
+  });
+}
 
 export const ULTRA_PG_SCHEMA = `
 CREATE TABLE IF NOT EXISTS ultra_tumbler_maps (
@@ -11,8 +55,49 @@ CREATE TABLE IF NOT EXISTS ultra_identity_bindings (
   pair_id TEXT PRIMARY KEY,
   tsk_client_id TEXT NOT NULL,
   agent_id TEXT NOT NULL,
+  agent_public_key_hex TEXT NOT NULL DEFAULT '',
+  canonical_id TEXT NOT NULL DEFAULT '',
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE ultra_identity_bindings
+  ADD COLUMN IF NOT EXISTS agent_public_key_hex TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE ultra_identity_bindings
+  ADD COLUMN IF NOT EXISTS canonical_id TEXT NOT NULL DEFAULT '';
+
+-- Backfill only rows whose display ID already agrees with the complete key.
+-- Rows that cannot be proven are deliberately left invalid; application reads
+-- reject them and the NOT VALID constraint prevents any new weak row without
+-- making a legacy upgrade silently assign authority.
+UPDATE ultra_identity_bindings
+   SET canonical_id = 'SCID-' || encode(sha256(decode(agent_public_key_hex, 'hex')), 'hex')
+ WHERE canonical_id = ''
+   AND agent_public_key_hex ~ '^[0-9a-f]{64}$'
+   AND agent_id = 'SC-' || upper(substr(
+         encode(sha256(decode(agent_public_key_hex, 'hex')), 'hex'), 1, 8
+       ));
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'ultra_identity_bindings_full_key_identity'
+       AND conrelid = 'ultra_identity_bindings'::regclass
+  ) THEN
+    ALTER TABLE ultra_identity_bindings
+      ADD CONSTRAINT ultra_identity_bindings_full_key_identity CHECK (
+        CASE WHEN agent_public_key_hex ~ '^[0-9a-f]{64}$' THEN
+          agent_id = 'SC-' || upper(substr(
+            encode(sha256(decode(agent_public_key_hex, 'hex')), 'hex'), 1, 8
+          ))
+          AND canonical_id = 'SCID-' || encode(
+            sha256(decode(agent_public_key_hex, 'hex')), 'hex'
+          )
+        ELSE FALSE END
+      ) NOT VALID;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS ultra_idempotency (
   idempotency_key UUID PRIMARY KEY,
@@ -58,14 +143,28 @@ function canonicalJson(value) {
 export class MemoryIdentityBindingStore {
   constructor() { this.bindings = new Map(); }
   async get(pairId) { return this.bindings.get(pairId) ?? null; }
-  async set(pairId, binding) { this.bindings.set(pairId, { ...binding }); }
+  async set(pairId, binding) {
+    binding = validateIdentityBinding(binding);
+    const current = this.bindings.get(pairId);
+    if (current && (current.tskClientId !== binding.tskClientId ||
+        current.agentId !== binding.agentId || current.canonicalId !== binding.canonicalId ||
+        current.agentPublicKeyHex !== binding.agentPublicKeyHex)) {
+      throw new Error('identity binding set conflicts with existing owner');
+    }
+    this.bindings.set(pairId, { ...binding });
+  }
   async compareAndSwap(pairId, expectedClientId, binding) {
+    binding = validateIdentityBinding(binding);
     const current = this.bindings.get(pairId);
     if (!current) return 'missing';
-    if (current.tskClientId === binding.tskClientId && current.agentId === binding.agentId) {
+    if (current.tskClientId === binding.tskClientId && current.agentId === binding.agentId &&
+        current.canonicalId === binding.canonicalId &&
+        current.agentPublicKeyHex === binding.agentPublicKeyHex) {
       return 'already';
     }
-    if (current.tskClientId !== expectedClientId || current.agentId !== binding.agentId) {
+    if (current.tskClientId !== expectedClientId || current.agentId !== binding.agentId ||
+        current.canonicalId !== binding.canonicalId ||
+        current.agentPublicKeyHex !== binding.agentPublicKeyHex) {
       return 'conflict';
     }
     this.bindings.set(pairId, { ...binding });
@@ -78,31 +177,51 @@ export class PgIdentityBindingStore {
   constructor(pool) { this.pool = pool; }
   async get(pairId) {
     const { rows } = await this.pool.query(
-      'SELECT tsk_client_id, agent_id FROM ultra_identity_bindings WHERE pair_id=$1', [pairId],
+      `SELECT tsk_client_id, agent_id, canonical_id, agent_public_key_hex
+         FROM ultra_identity_bindings WHERE pair_id=$1`, [pairId],
     );
-    return rows[0] ? { tskClientId: rows[0].tsk_client_id, agentId: rows[0].agent_id } : null;
+    return rows[0] ? validateIdentityBinding({
+      tskClientId: rows[0].tsk_client_id,
+      agentId: rows[0].agent_id,
+      canonicalId: rows[0].canonical_id,
+      agentPublicKeyHex: rows[0].agent_public_key_hex,
+    }) : null;
   }
   async set(pairId, binding) {
-    await this.pool.query(
-      `INSERT INTO ultra_identity_bindings (pair_id, tsk_client_id, agent_id)
-       VALUES ($1,$2,$3)
-       ON CONFLICT (pair_id) DO UPDATE SET
-         tsk_client_id=EXCLUDED.tsk_client_id, agent_id=EXCLUDED.agent_id, updated_at=NOW()`,
-      [pairId, binding.tskClientId, binding.agentId],
+    binding = validateIdentityBinding(binding);
+    const inserted = await this.pool.query(
+      `INSERT INTO ultra_identity_bindings
+         (pair_id, tsk_client_id, agent_id, canonical_id, agent_public_key_hex)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (pair_id) DO UPDATE SET updated_at=NOW()
+         WHERE ultra_identity_bindings.tsk_client_id=EXCLUDED.tsk_client_id
+           AND ultra_identity_bindings.agent_id=EXCLUDED.agent_id
+           AND ultra_identity_bindings.canonical_id=EXCLUDED.canonical_id
+           AND ultra_identity_bindings.agent_public_key_hex=EXCLUDED.agent_public_key_hex
+       RETURNING pair_id`,
+      [pairId, binding.tskClientId, binding.agentId, binding.canonicalId,
+        binding.agentPublicKeyHex],
     );
+    if (inserted.rows[0]) return;
+    throw new Error('identity binding set conflicts with existing owner');
   }
   async compareAndSwap(pairId, expectedClientId, binding) {
+    binding = validateIdentityBinding(binding);
     const updated = await this.pool.query(
       `UPDATE ultra_identity_bindings SET
          tsk_client_id=$3, updated_at=NOW()
-       WHERE pair_id=$1 AND tsk_client_id=$2 AND agent_id=$4
+       WHERE pair_id=$1 AND tsk_client_id=$2 AND agent_id=$4 AND canonical_id=$5
+         AND agent_public_key_hex=$6
        RETURNING pair_id`,
-      [pairId, expectedClientId, binding.tskClientId, binding.agentId],
+      [pairId, expectedClientId, binding.tskClientId, binding.agentId, binding.canonicalId,
+        binding.agentPublicKeyHex],
     );
     if (updated.rows[0]) return 'updated';
     const current = await this.get(pairId);
     if (!current) return 'missing';
-    if (current.tskClientId === binding.tskClientId && current.agentId === binding.agentId) {
+    if (current.tskClientId === binding.tskClientId && current.agentId === binding.agentId &&
+        current.canonicalId === binding.canonicalId &&
+        current.agentPublicKeyHex === binding.agentPublicKeyHex) {
       return 'already';
     }
     return 'conflict';

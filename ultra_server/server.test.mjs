@@ -2,7 +2,11 @@
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto';
 import { Pool } from 'pg';
 
-import { agentIdFromPublicKey, signedAgentMaterial } from './agent-auth.js';
+import {
+  agentIdFromPublicKey,
+  canonicalAgentIdFromPublicKey,
+  signedAgentMaterial,
+} from './agent-auth.js';
 
 const BASE = process.env.ULTRA_SERVER_URL ?? 'http://127.0.0.1:7777';
 const ADMIN_TOKEN = process.env.ULTRA_ADMIN_TOKEN ?? '';
@@ -15,17 +19,26 @@ const identity = generateKeyPairSync('ed25519');
 const publicDer = identity.publicKey.export({ format: 'der', type: 'spki' });
 const publicRaw = publicDer.subarray(-32);
 const agentId = agentIdFromPublicKey(publicRaw);
+const agentPrincipal = canonicalAgentIdFromPublicKey(publicRaw);
 
-function agentHeaders(rawBody) {
+function agentHeaders(rawBody, path, method = 'POST') {
   const ts = String(Date.now() / 1000);
   const nonce = randomUUID();
-  const sig = sign(null, signedAgentMaterial(rawBody, ts, nonce), identity.privateKey);
+  const aud = 'selfconnect-ultra-lifecycle-v1';
+  const sig = sign(
+    null,
+    signedAgentMaterial(rawBody, ts, nonce, method, path, aud),
+    identity.privateKey,
+  );
   return {
     'X-SC-Agent-Auth': JSON.stringify({
       agent_id: agentId,
       pubkey_hex: publicRaw.toString('hex'),
       ts,
       nonce,
+      method,
+      path,
+      aud,
       sig: sig.toString('base64'),
     }),
   };
@@ -54,7 +67,7 @@ function p256Jwk() {
 async function signedPost(path, body, idempotencyKey, extraHeaders = {}) {
   const raw = Buffer.from(JSON.stringify(body));
   return request('POST', path, body, {
-    ...agentHeaders(raw),
+    ...agentHeaders(raw, path),
     ...(idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : {}),
     ...extraHeaders,
   });
@@ -120,14 +133,14 @@ if (status.body.runtimeMode === 'production') {
 }
 const registerRaw = Buffer.from(JSON.stringify(registerBody));
 const pair = await request('POST', '/register-pair', registerBody, {
-  ...agentHeaders(registerRaw),
+  ...agentHeaders(registerRaw, '/register-pair'),
   'X-Idempotency-Key': registerKey,
   ...admin,
 });
 assert(pair.status === 200 && pair.body.pairId, 'signed pair registration failed');
 await simulateCrashAfterSideEffect(registerKey);
 const pairRetry = await request('POST', '/register-pair', registerBody, {
-  ...agentHeaders(registerRaw),
+  ...agentHeaders(registerRaw, '/register-pair'),
   'X-Idempotency-Key': registerKey,
   ...admin,
 });
@@ -231,7 +244,7 @@ const recoveryWithoutAdmin = await signedPost('/confirm-recovery', recoveryBody)
 assert(recoveryWithoutAdmin.status === 401, 'recovery accepted without operator authorization');
 const recoveryRaw = Buffer.from(JSON.stringify(recoveryBody));
 const recovery = await request('POST', '/confirm-recovery', recoveryBody, {
-  ...agentHeaders(recoveryRaw),
+  ...agentHeaders(recoveryRaw, '/confirm-recovery'),
   ...admin,
 });
 assert(recovery.status === 200 && recovery.body.token, 'authorized recovery token issuance failed');
@@ -264,16 +277,16 @@ const keys = await request('GET', '/tsk/keys', undefined, admin);
 assert(pairs.status === 200 && pairs.body.pairs.some((item) => item.id === pair.body.pairId), 'pair absent');
 assert(keys.status === 200 && keys.body.keys.some((item) => item.clientId === tsk.body.clientId), 'TSK key absent');
 assert(
-  pairs.body.pairs.filter((item) => item.name === agentId && item.status === 'active').length === 1,
+  pairs.body.pairs.filter((item) => item.name === agentPrincipal && item.status === 'active').length === 1,
   'idempotency recovery duplicated the active pair',
 );
 assert(
-  keys.body.keys.filter((item) => item.label === `agent:${agentId}`).length === 1,
+  keys.body.keys.filter((item) => item.label === `agent:${agentPrincipal}`).length === 1,
   'idempotency recovery duplicated the initial TSK key',
 );
 assert(
   keys.body.keys.filter(
-    (item) => item.label === `rotation:${agentId}:${pair.body.pairId}:${tsk.body.clientId}`,
+    (item) => item.label === `rotation:${agentPrincipal}:${pair.body.pairId}:${tsk.body.clientId}`,
   ).length === 1,
   'idempotency recovery duplicated the rotation candidate',
 );
@@ -295,7 +308,7 @@ if (hasDatabase) {
   );
   const keysAfterRefusal = await request('GET', '/tsk/keys', undefined, admin);
   assert(
-    keysAfterRefusal.body.keys.filter((item) => item.label === `agent:${agentId}`).length === 1,
+    keysAfterRefusal.body.keys.filter((item) => item.label === `agent:${agentPrincipal}`).length === 1,
     'inactive recovery created a replacement TSK resource',
   );
 }

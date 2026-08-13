@@ -6,6 +6,7 @@ import {
 } from 'node:crypto';
 import { chmod, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   agentIdFromPublicKey,
@@ -13,6 +14,7 @@ import {
 } from '../ultra_server/agent-auth.js';
 
 const BASE = process.env.ULTRA_SERVER_URL ?? 'http://127.0.0.1:7777';
+const LIFECYCLE_AUDIENCE = 'selfconnect-ultra-lifecycle-v1';
 
 function statePath() {
   const index = process.argv.indexOf('--state');
@@ -30,16 +32,23 @@ async function request(method, path, body, headers = {}) {
   return { status: response.status, body: await response.json().catch(() => ({})) };
 }
 
-function agentHeaders(rawBody, identity, publicRaw) {
+export function buildAgentHeaders(rawBody, identity, publicRaw, method, path) {
   const ts = String(Date.now() / 1000);
   const nonce = randomUUID();
-  const sig = sign(null, signedAgentMaterial(rawBody, ts, nonce), identity.privateKey);
+  const sig = sign(
+    null,
+    signedAgentMaterial(rawBody, ts, nonce, method, path, LIFECYCLE_AUDIENCE),
+    identity.privateKey,
+  );
   return {
     'X-SC-Agent-Auth': JSON.stringify({
       agent_id: agentIdFromPublicKey(publicRaw),
       pubkey_hex: publicRaw.toString('hex'),
       ts,
       nonce,
+      method,
+      path,
+      aud: LIFECYCLE_AUDIENCE,
       sig: sig.toString('base64'),
     }),
   };
@@ -60,7 +69,7 @@ async function issue(path) {
   const raw = Buffer.from(JSON.stringify(body));
   const response = await request('POST', '/confirm-recovery', body, {
     Authorization: `Bearer ${adminToken}`,
-    ...agentHeaders(raw, identity, publicRaw),
+    ...buildAgentHeaders(raw, identity, publicRaw, 'POST', '/confirm-recovery'),
   });
   if (response.status !== 200 || !response.body.token) {
     throw new Error(`recovery token issuance failed with HTTP ${response.status}`);
@@ -108,8 +117,10 @@ async function verify(path) {
   }));
 }
 
-const command = process.argv[2];
-const path = statePath();
-if (command === 'issue') await issue(path);
-else if (command === 'verify') await verify(path);
-else throw new Error('command must be issue or verify');
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  const command = process.argv[2];
+  const path = statePath();
+  if (command === 'issue') await issue(path);
+  else if (command === 'verify') await verify(path);
+  else throw new Error('command must be issue or verify');
+}
