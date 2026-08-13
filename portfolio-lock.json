@@ -3,7 +3,7 @@
   "components": {
     "selfconnect": {
       "repository": "https://github.com/rblake2320/selfconnect.git",
-      "commit": "5c493300b937a0f912e32a131061a132d2c11fe8",
+      "commit": "3b48fc6d456e13957366d2cdf6b2f3b62cea2280",
       "package_name": "selfconnect",
       "package_version": "0.12.0",
       "manifest": "pyproject.toml"
