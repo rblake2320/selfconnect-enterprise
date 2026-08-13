@@ -24,7 +24,7 @@ dev = [
     "pip-audit>=2.7",
     "pytest>=8",
     "rich>=13.0",
-    "ruff>=0.4",
+    "ruff==0.14.8",
     "tomli>=2; python_version < '3.11'",
 ]
 

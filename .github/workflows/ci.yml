@@ -36,7 +36,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --upgrade pip
-          pip install "pytest==9.1.1" "ruff>=0.4" "hypothesis>=6.0" "pip-audit>=2.7" pywin32 "cryptography>=50.0.0" comtypes "rich>=13.0"
+          pip install "pytest==9.1.1" "ruff==0.14.8" "hypothesis>=6.0" "pip-audit>=2.7" pywin32 "cryptography>=50.0.0" comtypes "rich>=13.0"
           $portfolio = Get-Content portfolio-lock.json | ConvertFrom-Json
           $sdk = $portfolio.components.selfconnect
           git submodule update --init --recursive
