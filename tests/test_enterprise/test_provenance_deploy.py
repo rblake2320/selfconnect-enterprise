@@ -81,6 +81,32 @@ def test_windows_service_runtime_dependency_and_admin_command_are_packaged():
     )
 
 
+def test_packaged_win32_probes_declare_runtime_dependencies_and_package_imports():
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = config["project"]["dependencies"]
+    assert "comtypes>=1.4; sys_platform == 'win32'" in dependencies
+
+    target_guard_load = ast.parse(
+        (ROOT / "experiments" / "win32_probe" / "target_guard_load_test.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    chained_channel = ast.parse(
+        (ROOT / "experiments" / "win32_probe" / "chained_channel.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    relative_imports = {
+        node.module
+        for tree in (target_guard_load, chained_channel)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level == 1
+    }
+    assert {"target_guard", "named_pipe_identity", "tpm_identity", "uia_textpattern"} <= (
+        relative_imports
+    )
+
+
 @pytest.mark.skipif(os.name != "nt", reason="PowerShell deployment contract")
 @pytest.mark.parametrize(
     "relative_path",

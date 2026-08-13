@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "selfconnect @ git+https://github.com/rblake2320/selfconnect.git@e849934236a5ab2709534dbd913709014798b5f9",
     "cryptography>=50.0.0",
+    "comtypes>=1.4; sys_platform == 'win32'",
     "pywin32>=306; sys_platform == 'win32'",
 ]
 

@@ -45,25 +45,46 @@ import win32file
 import win32pipe
 import win32security
 
-from named_pipe_identity import _advapi32, _build_sa_with_dacl
-from tpm_identity import (
-    NCRYPT,
-    NCRYPT_OVERWRITE_KEY_FLAG,
-    NCRYPT_SILENT_FLAG,
-    _ck,
-    _export_pub_blob,
-    _open_platform_provider,
-    _sign,
-    _verify,
-)
-from uia_textpattern import (
-    UIA_Text_TextChangedEventId,
-    compute_delta,
-    get_uia,
-    read_text,
-    register_textchanged,
-    text_element,
-)
+if __package__:
+    from .named_pipe_identity import _advapi32, _build_sa_with_dacl
+    from .tpm_identity import (
+        NCRYPT,
+        NCRYPT_OVERWRITE_KEY_FLAG,
+        NCRYPT_SILENT_FLAG,
+        _ck,
+        _export_pub_blob,
+        _open_platform_provider,
+        _sign,
+        _verify,
+    )
+    from .uia_textpattern import (
+        UIA_Text_TextChangedEventId,
+        compute_delta,
+        get_uia,
+        read_text,
+        register_textchanged,
+        text_element,
+    )
+else:  # Direct-script compatibility.
+    from named_pipe_identity import _advapi32, _build_sa_with_dacl
+    from tpm_identity import (
+        NCRYPT,
+        NCRYPT_OVERWRITE_KEY_FLAG,
+        NCRYPT_SILENT_FLAG,
+        _ck,
+        _export_pub_blob,
+        _open_platform_provider,
+        _sign,
+        _verify,
+    )
+    from uia_textpattern import (
+        UIA_Text_TextChangedEventId,
+        compute_delta,
+        get_uia,
+        read_text,
+        register_textchanged,
+        text_element,
+    )
 
 
 def _unique_pipe_name() -> str:

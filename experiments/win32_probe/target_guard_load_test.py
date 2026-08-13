@@ -23,8 +23,12 @@ import unittest.mock
 # ---------------------------------------------------------------------------
 # Import the module under test
 # ---------------------------------------------------------------------------
-import target_guard
-from target_guard import _own_pid, verify_target  # noqa: E402  (same directory)
+if __package__:
+    from . import target_guard
+    from .target_guard import _own_pid, verify_target
+else:  # Direct-script compatibility.
+    import target_guard
+    from target_guard import _own_pid, verify_target  # noqa: E402  (same directory)
 
 user32 = ctypes.windll.user32
 
